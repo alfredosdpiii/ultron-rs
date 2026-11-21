@@ -148,11 +148,16 @@ pub fn request_body(params: &BodyParams<'_>) -> Result<Body, ClaudeError> {
                 body.insert("thinking".into(), json!({"type": "disabled"}));
                 // Native clear-thinking context edits are invalid when thinking is disabled.
                 body.insert("context_management".into(), json!({"edits": []}));
+            } else {
+                // Thinking cannot be turned off on this route; ask for the lowest effort instead of leaving native
+                // at its default effort (which reaches `--effort low` on the CLI).
+                body.insert("output_config".into(), json!({"effort": "low"}));
             }
         } else {
             // Routes without adaptive thinking (Haiku 4.5) 400 on the block; the effort still applies.
+            // Claude 4.7+ defaults `thinking.display` to "omitted" (empty thinking text), so request "summarized".
             if reasoning.enabled == Some(true) && supports_adaptive_thinking(params.model) {
-                body.insert("thinking".into(), json!({"type": "adaptive"}));
+                body.insert("thinking".into(), json!({"type": "adaptive", "display": "summarized"}));
             }
             if let Some(effort) = effort {
                 body.insert("output_config".into(), json!({"effort": effort}));
@@ -316,7 +321,12 @@ pub fn prepare_history(messages: &[Message], names: &BTreeSet<String>) -> Result
             }
             Message::Assistant(assistant) => {
                 if let Some(native) = carried(assistant)? {
-                    for message in native {
+                    for mut message in native {
+                        // Native sizes its local "Prompt is too long" gate from the newest assistant message's
+                        // `usage`. After Ultron compacts history, stale `usage` triggers a false local refusal.
+                        if let Some(obj) = message.as_object_mut() {
+                            obj.shift_remove("usage");
+                        }
                         frames.push(json!({"type": "assistant", "message": message}));
                     }
                     continue;
@@ -369,4 +379,21 @@ pub fn prepare_history(messages: &[Message], names: &BTreeSet<String>) -> Result
         ));
     }
     Ok(frames)
+}
+
+/// A deterministic UUIDv4 native session id derived from what the conversation starts with (the system prompt and
+/// first frame): stays identical across every turn until compaction rewrites history, so native's per-session
+/// scratchpad path never moves the prompt-cache prefix.
+pub fn conversation_session_id(system: &str, frames: &[Value]) -> String {
+    let first = frames.first().and_then(|f| f.get("message"));
+    let seed = json!([system, first]).to_string();
+    let digest = ring::digest::digest(&ring::digest::SHA256, seed.as_bytes());
+    let mut b = [0u8; 16];
+    b.copy_from_slice(&digest.as_ref()[..16]);
+    b[6] = (b[6] & 0x0f) | 0x40; // version 4
+    b[8] = (b[8] & 0x3f) | 0x80; // RFC 4122 variant
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+    )
 }

@@ -183,7 +183,11 @@ fn answer(inventory: &Inventory, request: &Request) -> Reply {
             let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
             let (reply, answer) = oneshot::channel();
             let (cancel, cancelled) = oneshot::channel();
-            inventory.cancels.lock().expect("bridge cancels").insert(id.to_string(), cancel);
+            inventory
+                .cancels
+                .lock()
+                .expect("bridge cancels")
+                .insert(id.to_string(), cancel);
             let _ = inventory.sender.send(Captured {
                 name: name.to_string(),
                 arguments,
@@ -208,7 +212,11 @@ async fn serve(stream: TcpStream, inventory: std::sync::Arc<Inventory>) {
                     result = answer => result,
                     _ = cancelled => return,
                 };
-                inventory.cancels.lock().expect("bridge cancels").remove(&id.to_string());
+                inventory
+                    .cancels
+                    .lock()
+                    .expect("bridge cancels")
+                    .remove(&id.to_string());
                 match result {
                     Ok(result) => (200, json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string()),
                     Err(_) => return,

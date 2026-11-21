@@ -160,8 +160,18 @@ fn ai_claude_subscription_canonical_request_lifecycle() {
     let native: Value = serde_json::from_str(&blocks("mcp__ultron__rlm")).unwrap();
     assert_eq!(
         frames[1],
-        json!({"type": "assistant", "message": {"id": "msg_native", "role": "assistant", "model": "claude-sonnet-5-5[1m]", "content": native, "stop_reason": "tool_use", "usage": serde_json::from_str::<Value>(USAGE).unwrap()}})
+        json!({"type": "assistant", "message": {"id": "msg_native", "role": "assistant", "model": "claude-sonnet-5-5[1m]", "content": native, "stop_reason": "tool_use"}})
     );
+    // Same conversation reuses the same deterministic --session-id across turns.
+    assert_eq!(
+        flag(&record["argv"], "--session-id"),
+        flag(&fake.last()["argv"], "--session-id")
+    );
+    assert_eq!(record["env"]["CLAUDE_CODE_ENTRYPOINT"], "ultron");
+    assert_eq!(record["env"]["CLAUDE_CODE_DISABLE_ARTIFACT"], "1");
+    assert_eq!(record["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "1");
+    assert_eq!(record["env"]["CLAUDE_CODE_DISABLE_CLAUDE_MDS"], "1");
+    assert_eq!(record["env"]["CLAUDE_CODE_DISABLE_TERMINAL_TITLE"], "1");
     assert_eq!(frames[0]["shouldQuery"], false);
     assert_eq!(
         frames[2],
@@ -536,6 +546,7 @@ fn ai_claude_subscription_child_environment_and_argv_are_isolated() {
         .collect();
     let system = argv[argv.iter().position(|a| *a == "--system-prompt-file").unwrap() + 1];
     let settings = argv[argv.iter().position(|a| *a == "--settings").unwrap() + 1];
+    let session_id = argv[argv.iter().position(|a| *a == "--session-id").unwrap() + 1];
     let mcp = argv[argv.iter().position(|a| *a == "--mcp-config").unwrap() + 1];
     assert_eq!(
         argv,
@@ -564,8 +575,12 @@ fn ai_claude_subscription_child_environment_and_argv_are_isolated() {
             "--permission-mode",
             "dontAsk",
             "--no-session-persistence",
+            "--session-id",
+            session_id,
             "--mcp-config",
             mcp,
+            "--effort",
+            "low",
         ]
     );
     let mcp: Value = serde_json::from_str(mcp).unwrap();
@@ -846,28 +861,37 @@ fn turn_env(fake: &Fake, vars: &[(&str, &str)]) -> Value {
 }
 
 #[test]
-fn ai_claude_subscription_telemetry_stays_on_by_default_and_the_cli_never_updates_itself() {
+fn ai_claude_subscription_telemetry_is_off_by_default_and_the_cli_never_updates_itself() {
     seal();
     let fake = Fake::new();
     for env in [
         turn_env(&fake, &[]),
-        turn_env(&fake, &[(ai::claude_subscription::process::TELEMETRY_ENV, "true")]),
+        turn_env(&fake, &[(ai::claude_subscription::process::TELEMETRY_ENV, "false")]),
+        turn_env(&fake, &[(ai::claude_subscription::process::TELEMETRY_ENV, "0")]),
     ] {
         for flag in QUIET {
-            assert!(env.get(flag).is_none(), "{flag}");
+            assert_eq!(env[flag], "1", "{flag}");
         }
         assert_eq!(env["DISABLE_AUTOUPDATER"], "1");
         assert_eq!(env["DISABLE_FEEDBACK_COMMAND"], "1");
+        assert_eq!(env["CLAUDE_CODE_DISABLE_TERMINAL_TITLE"], "1");
     }
-    for value in ["false", "off", "0", "no"] {
+    for value in ["true", "on", "1", "yes"] {
         let env = turn_env(&fake, &[(ai::claude_subscription::process::TELEMETRY_ENV, value)]);
         for flag in QUIET {
-            assert_eq!(env[flag], "1", "{value} {flag}");
+            assert!(env.get(flag).is_none(), "{value} {flag}");
         }
         assert_eq!(env["DISABLE_AUTOUPDATER"], "1");
     }
-    // A user's own opt-out is never stripped.
-    let env = turn_env(&fake, &[("DISABLE_TELEMETRY", "1"), ("DO_NOT_TRACK", "1")]);
+    // A user's own opt-out is never stripped even when telemetry is turned on.
+    let env = turn_env(
+        &fake,
+        &[
+            (ai::claude_subscription::process::TELEMETRY_ENV, "true"),
+            ("DISABLE_TELEMETRY", "1"),
+            ("DO_NOT_TRACK", "1"),
+        ],
+    );
     assert_eq!(
         (env["DISABLE_TELEMETRY"].as_str(), env["DO_NOT_TRACK"].as_str()),
         (Some("1"), Some("1"))
@@ -877,9 +901,9 @@ fn ai_claude_subscription_telemetry_stays_on_by_default_and_the_cli_never_update
         NO_UPSTREAM,
         &[("FAKE_OFFLINE_BLOCKS", r#"[{"type":"text","text":"ok"}]"#)],
     );
-    config.telemetry = Some(false);
+    config.telemetry = Some(true);
     call(config, &model("sonnet"), &first_turn(), &options());
-    assert_eq!(fake.last()["env"]["DISABLE_TELEMETRY"], "1");
+    assert!(fake.last()["env"].get("DISABLE_TELEMETRY").is_none());
 }
 
 fn cwd_of(fake: &Fake, config: Config) -> String {

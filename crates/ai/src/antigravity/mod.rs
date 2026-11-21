@@ -11,7 +11,7 @@ use crate::options::SimpleStreamOptions;
 use crate::provider::Run;
 use crate::types::{
     AssistantContent, AssistantMessage, AssistantMessageEvent, EventSink, Message, Model, StopReason, TextContent,
-    ToolCall, TranscriptContext, Usage,
+    ThinkingContent, ToolCall, TranscriptContext, Usage,
 };
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -85,7 +85,6 @@ fn delta_prompt(messages: &[Message]) -> Option<String> {
     (text.len() <= PROMPT_BUDGET).then_some(text)
 }
 
-
 fn usage(result: &Value) -> Usage {
     let count = |key: &str| result["usage"][key].as_u64().unwrap_or(0);
     let thought = count("thoughtTokens");
@@ -114,6 +113,13 @@ fn permitted(tool: &Value, names: &HashSet<String>) -> bool {
             None => tool["title"] == format!("Run {qualified}"),
         }
     })
+}
+
+/// Live chunk streamed by `agy acp` during a turn.
+#[derive(Clone, Debug)]
+pub(super) enum AgyDelta {
+    Text(String),
+    Thinking(String),
 }
 
 enum Event {
@@ -145,6 +151,7 @@ struct Agy {
     /// The tool call Ultron is running for agy, with the held MCP request it answers.
     held: Option<(String, oneshot::Sender<Value>)>,
     text: String,
+    thought: String,
     /// The context agy last reported in a `usage_update` (`used`), the only size it sends mid-turn.
     context_used: u64,
 }
@@ -180,7 +187,13 @@ impl Agy {
         let workspace = tempfile::tempdir()?;
         let mut command = Command::new("agy");
         command
-            .args(["acp", "--stdio", "--sandbox", "--include-default-customizations=false"])
+            .args([
+                "acp",
+                "--stdio",
+                "--sandbox",
+                "--include-default-customizations=false",
+                "--disable-telemetry",
+            ])
             .current_dir(workspace.path())
             .process_group(0)
             .kill_on_drop(true)
@@ -234,6 +247,7 @@ impl Agy {
             turn: None,
             held: None,
             text: String::new(),
+            thought: String::new(),
             context_used: 0,
         };
         match agy.open(model, messages, sessions).await {
@@ -283,14 +297,14 @@ impl Agy {
 
     async fn request(&mut self, method: &str, params: Value) -> io::Result<Value> {
         let id = self.call(method, params).await?;
-        match self.next(id).await? {
+        match self.next(id, None).await? {
             Event::Reply(result) => Ok(result),
             Event::Call(_) => unreachable!("tool calls are watched only during a prompt"),
         }
     }
 
     /// Serves agy's requests and collects its text until the reply to `id` or, during a prompt, a captured tool call.
-    async fn next(&mut self, id: u64) -> io::Result<Event> {
+    async fn next(&mut self, id: u64, deltas: Option<&mpsc::UnboundedSender<AgyDelta>>) -> io::Result<Event> {
         loop {
             let frame = tokio::select! {
                 biased;
@@ -331,10 +345,26 @@ impl Agy {
                 if update["sessionUpdate"] == "usage_update" {
                     self.context_used = update["used"].as_u64().unwrap_or(self.context_used);
                 } else if update["sessionUpdate"] == "agent_message_chunk" {
-                    self.text
-                        .push_str(update["content"]["text"].as_str().unwrap_or_default());
+                    let chunk = update["content"]["text"].as_str().unwrap_or_default();
+                    if !chunk.is_empty() {
+                        self.text.push_str(chunk);
+                        if let Some(tx) = deltas {
+                            let _ = tx.send(AgyDelta::Text(chunk.to_string()));
+                        }
+                    }
                     if self.text.len() > FRAME_LIMIT as usize {
                         return Err(io::Error::other("agy response exceeds limit"));
+                    }
+                } else if update["sessionUpdate"] == "agent_thought_chunk" {
+                    let chunk = update["content"]["text"].as_str().unwrap_or_default();
+                    if !chunk.is_empty() {
+                        self.thought.push_str(chunk);
+                        if let Some(tx) = deltas {
+                            let _ = tx.send(AgyDelta::Thinking(chunk.to_string()));
+                        }
+                    }
+                    if self.thought.len() > FRAME_LIMIT as usize {
+                        return Err(io::Error::other("agy thought exceeds limit"));
                     }
                 }
             }
@@ -342,7 +372,11 @@ impl Agy {
     }
 
     /// Runs agy to its next captured tool call or the end of its turn.
-    async fn advance(&mut self, step: Step) -> io::Result<(AssistantContent, Usage)> {
+    async fn advance(
+        &mut self,
+        step: Step,
+        deltas: Option<&mpsc::UnboundedSender<AgyDelta>>,
+    ) -> io::Result<(Vec<AssistantContent>, Usage)> {
         match step {
             Step::Prompt(text) => {
                 let params = json!({"sessionId":self.session,"prompt":[{"type":"text","text":text}]});
@@ -358,11 +392,24 @@ impl Agy {
             }
         }
         self.text.clear();
+        self.thought.clear();
         let turn = self.turn.ok_or_else(|| io::Error::other("agy has no turn in flight"))?;
-        match self.next(turn).await? {
+        match self.next(turn, deltas).await? {
             Event::Call(call) => {
-                // Chunks agy streamed before the call belong to this step, not to the reply after the result.
-                self.text.clear();
+                let mut content = Vec::new();
+                if !self.thought.is_empty() {
+                    content.push(AssistantContent::Thinking(ThinkingContent {
+                        thinking: std::mem::take(&mut self.thought),
+                        thinking_signature: None,
+                        redacted: None,
+                    }));
+                }
+                if !self.text.is_empty() {
+                    content.push(AssistantContent::Text(TextContent {
+                        text: std::mem::take(&mut self.text),
+                        text_signature: None,
+                    }));
+                }
                 let id = jsrt::random::random_hex(16);
                 self.held = Some((id.clone(), call.reply));
                 let call = ToolCall {
@@ -372,13 +419,14 @@ impl Agy {
                     namespace: None,
                     thought_signature: None,
                 };
+                content.push(AssistantContent::ToolCall(call));
                 // Token counts come only with the reply that ends the turn; mid-turn agy reports its context size.
                 let usage = Usage {
                     input: self.context_used,
                     total_tokens: self.context_used,
                     ..Usage::default()
                 };
-                Ok((AssistantContent::ToolCall(call), usage))
+                Ok((content, usage))
             }
             Event::Reply(result) => {
                 self.turn = None;
@@ -390,14 +438,19 @@ impl Agy {
                         "agy ended its turn without text or an Ultron tool call",
                     ));
                 }
-                let text = std::mem::take(&mut self.text);
-                Ok((
-                    AssistantContent::Text(TextContent {
-                        text,
-                        text_signature: None,
-                    }),
-                    usage(&result),
-                ))
+                let mut content = Vec::new();
+                if !self.thought.is_empty() {
+                    content.push(AssistantContent::Thinking(ThinkingContent {
+                        thinking: std::mem::take(&mut self.thought),
+                        thinking_signature: None,
+                        redacted: None,
+                    }));
+                }
+                content.push(AssistantContent::Text(TextContent {
+                    text: std::mem::take(&mut self.text),
+                    text_signature: None,
+                }));
+                Ok((content, usage(&result)))
             }
         }
     }
@@ -423,11 +476,78 @@ async fn turn(
     model: &Model,
     context: &TranscriptContext,
     env: Option<&ProviderEnv>,
-) -> io::Result<(AssistantContent, Usage)> {
+    deltas: mpsc::UnboundedSender<AgyDelta>,
+) -> io::Result<(Vec<AssistantContent>, Usage)> {
     let (mut agy, step) = Agy::start(model, &context.messages, env, false).await?;
-    match agy.advance(step).await {
+    match agy.advance(step, Some(&deltas)).await {
         Ok(done) => Ok(done),
         Err(error) => Err(agy.failed(error).await),
+    }
+}
+
+#[derive(Default)]
+struct AgyStream {
+    text_index: Option<usize>,
+    thought_index: Option<usize>,
+}
+
+impl Run<'_, '_, AgyStream> {
+    fn delta(&mut self, delta: AgyDelta) {
+        match delta {
+            AgyDelta::Text(chunk) => {
+                let index = match self.state.text_index {
+                    Some(index) => index,
+                    None => {
+                        let index = self.output.content.len();
+                        self.output.content.push(AssistantContent::Text(TextContent {
+                            text: String::new(),
+                            text_signature: None,
+                        }));
+                        self.state.text_index = Some(index);
+                        self.emit(|partial| AssistantMessageEvent::TextStart {
+                            content_index: index,
+                            partial,
+                        });
+                        index
+                    }
+                };
+                if let AssistantContent::Text(block) = &mut self.output.content[index] {
+                    block.text.push_str(&chunk);
+                }
+                self.emit(|partial| AssistantMessageEvent::TextDelta {
+                    content_index: index,
+                    delta: chunk,
+                    partial,
+                });
+            }
+            AgyDelta::Thinking(chunk) => {
+                let index = match self.state.thought_index {
+                    Some(index) => index,
+                    None => {
+                        let index = self.output.content.len();
+                        self.output.content.push(AssistantContent::Thinking(ThinkingContent {
+                            thinking: String::new(),
+                            thinking_signature: None,
+                            redacted: None,
+                        }));
+                        self.state.thought_index = Some(index);
+                        self.emit(|partial| AssistantMessageEvent::ThinkingStart {
+                            content_index: index,
+                            partial,
+                        });
+                        index
+                    }
+                };
+                if let AssistantContent::Thinking(block) = &mut self.output.content[index] {
+                    block.thinking.push_str(&chunk);
+                }
+                self.emit(|partial| AssistantMessageEvent::ThinkingDelta {
+                    content_index: index,
+                    delta: chunk,
+                    partial,
+                });
+            }
+        }
     }
 }
 
@@ -437,58 +557,124 @@ pub async fn stream_simple(
     options: &SimpleStreamOptions,
     sink: &mut EventSink<'_>,
 ) -> Result<AssistantMessage, String> {
-    let mut run = Run::new(AssistantMessage::pending(model, jsrt::date::now_ms()), sink, ());
+    let mut run = Run::new(
+        AssistantMessage::pending(model, jsrt::date::now_ms()),
+        sink,
+        AgyStream::default(),
+    );
     run.start();
     let signal = options.base.signal.as_ref();
     let bound = Duration::from_millis(options.base.timeout_ms.unwrap_or(300_000));
     let env = options.base.env.as_ref();
+    let (delta_tx, mut delta_rx) = mpsc::unbounded_channel();
     let work = async {
         if sessions::enabled(env) {
-            sessions::submit(model.clone(), context.clone(), env.cloned()).await
+            sessions::submit(model.clone(), context.clone(), env.cloned(), delta_tx).await
         } else {
-            turn(model, context, env).await
+            turn(model, context, env, delta_tx).await
         }
     };
-    let result = tokio::select! {
-        biased;
-        () = crate::http::cancelled(signal) => Err("Antigravity request aborted".to_string()),
-        response = tokio::time::timeout(bound, work) => response.map_err(|_| "Antigravity request timed out".to_string()).and_then(|r| r.map_err(|e| e.to_string())),
+    tokio::pin!(work);
+    let sleep = tokio::time::sleep(bound);
+    tokio::pin!(sleep);
+    let result = loop {
+        tokio::select! {
+            biased;
+            () = crate::http::cancelled(signal) => break Err("Antigravity request aborted".to_string()),
+            Some(delta) = delta_rx.recv() => run.delta(delta),
+            () = &mut sleep => break Err("Antigravity request timed out".to_string()),
+            response = &mut work => {
+                while let Ok(delta) = delta_rx.try_recv() {
+                    run.delta(delta);
+                }
+                break response.map_err(|e| e.to_string());
+            }
+        }
     };
     let ended = result.map(|(content, usage)| {
         run.output.usage = usage;
-        run.output.content.push(content.clone());
-        match content {
-            AssistantContent::ToolCall(tool_call) => {
-                run.output.stop_reason = StopReason::ToolUse;
-                run.emit(|partial| AssistantMessageEvent::ToolCallStart {
-                    content_index: 0,
-                    partial,
-                });
-                run.emit(|partial| AssistantMessageEvent::ToolCallEnd {
-                    content_index: 0,
-                    tool_call,
-                    partial,
-                });
-            }
-            AssistantContent::Text(block) => {
-                run.output.stop_reason = StopReason::Stop;
-                run.emit(|partial| AssistantMessageEvent::TextStart {
-                    content_index: 0,
-                    partial,
-                });
-                run.emit(|partial| AssistantMessageEvent::TextDelta {
-                    content_index: 0,
-                    delta: block.text.clone(),
-                    partial,
-                });
-                run.emit(|partial| AssistantMessageEvent::TextEnd {
-                    content_index: 0,
-                    content: block.text,
-                    partial,
-                });
-            }
-            AssistantContent::Thinking(_) => unreachable!("ACP returns text or a captured tool call"),
+        // Close any live-streamed blocks and emit any tool call or unstreamed block.
+        let streamed_thought = run.state.thought_index;
+        let streamed_text = run.state.text_index;
+        if let Some(index) = streamed_thought
+            && let Some(AssistantContent::Thinking(block)) = run.output.content.get(index).cloned()
+        {
+            run.emit(|partial| AssistantMessageEvent::ThinkingEnd {
+                content_index: index,
+                content: block.thinking,
+                partial,
+            });
         }
+        if let Some(index) = streamed_text
+            && let Some(AssistantContent::Text(block)) = run.output.content.get(index).cloned()
+        {
+            run.emit(|partial| AssistantMessageEvent::TextEnd {
+                content_index: index,
+                content: block.text,
+                partial,
+            });
+        }
+        let mut has_tool = false;
+        for block in content {
+            match block {
+                AssistantContent::ToolCall(tool_call) => {
+                    has_tool = true;
+                    let index = run.output.content.len();
+                    run.output.content.push(AssistantContent::ToolCall(tool_call.clone()));
+                    run.emit(|partial| AssistantMessageEvent::ToolCallStart {
+                        content_index: index,
+                        partial,
+                    });
+                    run.emit(|partial| AssistantMessageEvent::ToolCallEnd {
+                        content_index: index,
+                        tool_call,
+                        partial,
+                    });
+                }
+                AssistantContent::Text(block) if streamed_text.is_none() => {
+                    let index = run.output.content.len();
+                    run.output.content.push(AssistantContent::Text(block.clone()));
+                    run.emit(|partial| AssistantMessageEvent::TextStart {
+                        content_index: index,
+                        partial,
+                    });
+                    run.emit(|partial| AssistantMessageEvent::TextDelta {
+                        content_index: index,
+                        delta: block.text.clone(),
+                        partial,
+                    });
+                    run.emit(|partial| AssistantMessageEvent::TextEnd {
+                        content_index: index,
+                        content: block.text,
+                        partial,
+                    });
+                }
+                AssistantContent::Thinking(block) if streamed_thought.is_none() => {
+                    let index = run.output.content.len();
+                    run.output.content.push(AssistantContent::Thinking(block.clone()));
+                    run.emit(|partial| AssistantMessageEvent::ThinkingStart {
+                        content_index: index,
+                        partial,
+                    });
+                    run.emit(|partial| AssistantMessageEvent::ThinkingDelta {
+                        content_index: index,
+                        delta: block.thinking.clone(),
+                        partial,
+                    });
+                    run.emit(|partial| AssistantMessageEvent::ThinkingEnd {
+                        content_index: index,
+                        content: block.thinking,
+                        partial,
+                    });
+                }
+                _ => {}
+            }
+        }
+        run.output.stop_reason = if has_tool {
+            StopReason::ToolUse
+        } else {
+            StopReason::Stop
+        };
     });
     Ok(run.end(ended, signal))
 }
@@ -676,15 +862,26 @@ mod tests {
         let written: Value = serde_json::from_slice(&std::fs::read(config.join("mcp_config.json")).unwrap()).unwrap();
         assert_eq!(written["keep"], 1);
         assert_eq!(written["mcpServers"]["other"]["serverUrl"], "http://x");
-        assert_eq!(written["mcpServers"]["ultron"]["timeoutSeconds"], 900);
+        assert_eq!(written["mcpServers"]["ultron"]["timeoutSeconds"], -1);
+        assert_eq!(
+            written["mcpServers"]["ultron"]["tools"],
+            json!({"rlm": {"eager": true, "background": "off"}})
+        );
         let script = config.join("ultron-mcp-relay.py");
         assert_eq!(written["mcpServers"]["ultron"]["args"], json!([script]));
-        assert!(std::fs::read_to_string(&script).unwrap().contains("ULTRON_AGY_BRIDGE_URL"));
+        assert!(
+            std::fs::read_to_string(&script)
+                .unwrap()
+                .contains("ULTRON_AGY_BRIDGE_URL")
+        );
         let mut off = env.clone();
         off.insert("ULTRON_AGY_SESSIONS".into(), "0".into());
         assert!(!sessions::enabled(Some(&off)));
         std::fs::write(config.join("mcp_config.json"), "[1]").unwrap();
-        assert!(!sessions::enabled(Some(&env)), "a config Ultron cannot extend leaves session mode off");
+        assert!(
+            !sessions::enabled(Some(&env)),
+            "a config Ultron cannot extend leaves session mode off"
+        );
         assert_eq!(std::fs::read_to_string(config.join("mcp_config.json")).unwrap(), "[1]");
     }
 
@@ -730,14 +927,9 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
         }
-        let last = stream_simple(
-            &model,
-            &TranscriptContext { messages },
-            &options,
-            &mut |_| {},
-        )
-        .await
-        .unwrap();
+        let last = stream_simple(&model, &TranscriptContext { messages }, &options, &mut |_| {})
+            .await
+            .unwrap();
         assert_eq!(last.stop_reason, StopReason::Stop, "{:?}", last.error_message);
         assert_eq!(reply_text(&last)["echo"], json!([{"type":"text","text":"olleh"}]));
     }
@@ -791,7 +983,11 @@ mod tests {
         let report = reply_text(&first);
         assert_eq!(report["echo"], json!([{"type":"text","text":"olleh"}]));
         assert_eq!(
-            (report["append"].as_str(), report["system"].as_bool(), report["prompts"].as_u64()),
+            (
+                report["append"].as_str(),
+                report["system"].as_bool(),
+                report["prompts"].as_u64()
+            ),
             (None, Some(true), Some(1))
         );
         assert_eq!(first.usage.input, 12000);

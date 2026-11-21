@@ -61,6 +61,12 @@ fn ai_claude_subscription_aliases_resolve_to_pinned_routes_and_models_resolve_by
         ("claude-fable-5", "claude-fable-5[1m]"),
         ("claude-opus-4-7", "claude-opus-4-7[1m]"),
         ("claude-opus-5-5", "claude-opus-5-5[1m]"),
+        ("sonnet-5-5", "claude-sonnet-5-5[1m]"),
+        ("sonnet-5.5", "claude-sonnet-5-5[1m]"),
+        ("opus-4.8", "claude-opus-4-8[1m]"),
+        ("haiku-4-5", "claude-haiku-4-5-20251001"),
+        ("claude-mythos-5-2", "claude-mythos-5-2[1m]"),
+        ("mythos-5.1", "claude-mythos-5-1[1m]"),
         ("unqualified-future-model", "unqualified-future-model"),
     ];
     for (requested, expected) in aliases {
@@ -146,7 +152,8 @@ fn ai_claude_subscription_thinking_policy_follows_each_route() {
     let disabled = body("claude-sonnet-5", off());
     assert_eq!(disabled["thinking"], json!({"type": "disabled"}));
     assert_eq!(disabled["context_management"], json!({"edits": []}));
-    // Fable, Opus 5.5, Sonnet 5.5 and Haiku 5.5 answer the disable with a 400: it is omitted on every spelling.
+    // Fable, Opus 5.5, Sonnet 5.5, Haiku 5.5 and Mythos answer the disable with a 400: omit thinking and ask for
+    // the lowest effort instead so native does not think at its default effort.
     for route in [
         "fable",
         "opus",
@@ -158,10 +165,13 @@ fn ai_claude_subscription_thinking_policy_follows_each_route() {
         "haiku",
         "claude-haiku-5-5",
         "claude-haiku-5-5[1m]",
+        "claude-mythos-5-1",
+        "claude-mythos-5-2",
     ] {
         let mandatory = body(route, off());
         assert!(mandatory.get("thinking").is_none(), "{route}");
         assert!(mandatory.get("context_management").is_none(), "{route}");
+        assert_eq!(mandatory["output_config"], json!({"effort": "low"}), "{route}");
     }
     for route in [
         "claude-opus-5",
@@ -182,12 +192,15 @@ fn ai_claude_subscription_thinking_policy_follows_each_route() {
     assert_eq!(effort["output_config"], json!({"effort": "low"}));
     assert!(effort.get("thinking").is_none());
     let adaptive = body("sonnet", on("medium"));
-    assert_eq!(adaptive["thinking"], json!({"type": "adaptive"}));
+    assert_eq!(
+        adaptive["thinking"],
+        json!({"type": "adaptive", "display": "summarized"})
+    );
     assert_eq!(adaptive["output_config"], json!({"effort": "medium"}));
     for route in ["haiku", "claude-haiku-5-5", "claude-haiku-5-5[1m]"] {
         assert_eq!(
             body(route, on("medium"))["thinking"],
-            json!({"type": "adaptive"}),
+            json!({"type": "adaptive", "display": "summarized"}),
             "{route}"
         );
     }

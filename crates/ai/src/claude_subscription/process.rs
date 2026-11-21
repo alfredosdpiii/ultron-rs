@@ -5,9 +5,10 @@
 
 use super::admission::{AbortHandle, Admission};
 use super::catalog::native_model;
-use super::history::{Body, PREFIX, TOOL};
+use super::history::{Body, PREFIX, TOOL, conversation_session_id};
 use super::{ClaudeError, Config, Env, INSTALL_HINT, LOGGED_OUT_HINT};
 use serde_json::{Value, json};
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
@@ -34,15 +35,27 @@ pub const BACKEND_OVERRIDES: &[&str] = &[
     "CLAUDE_CODE_USE_FOUNDRY",
 ];
 
-/// Set whatever the telemetry setting: no self-update of the user's CLI, no feedback upload path.
-pub const ALWAYS_QUIET: &[(&str, &str)] = &[("DISABLE_AUTOUPDATER", "1"), ("DISABLE_FEEDBACK_COMMAND", "1")];
-/// Set only with telemetry off; any one of them turns the CLI's feature-flag fetch off.
+/// Set whatever the telemetry setting: no self-update of the user's CLI, no feedback upload path, and no
+/// background session-title request racing the turn for the one admitted upstream request.
+pub const ALWAYS_QUIET: &[(&str, &str)] = &[
+    ("DISABLE_AUTOUPDATER", "1"),
+    ("DISABLE_FEEDBACK_COMMAND", "1"),
+    ("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "1"),
+];
+/// Non-SDK caller identity (`anthropics/claude-code#97074`): `-p` defaults to `sdk-cli`, which subscriptions meter
+/// roughly 2x heavier per token. `CLAUDE_CODE_DISABLE_ARTIFACT` keeps native's artifact scratchpad off.
+pub const CALLER_IDENTITY: &[(&str, &str)] = &[
+    ("CLAUDE_CODE_ENTRYPOINT", "ultron"),
+    ("CLAUDE_CODE_DISABLE_ARTIFACT", "1"),
+];
+/// Set when telemetry is off (the default); any one of them turns the CLI's feature-flag fetch off (~0.25 s faster).
 pub const QUIET_TRAFFIC: &[(&str, &str)] = &[
     ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
     ("DISABLE_TELEMETRY", "1"),
     ("DISABLE_ERROR_REPORTING", "1"),
 ];
-const OFF: &[&str] = &["false", "0", "no", "off"];
+const ON: &[&str] = &["true", "1", "yes", "on"];
+const REFRESH_LOCK_STALE: Duration = Duration::from_secs(60);
 
 /// Inherited request knobs this provider owns; dropped with [`crate::claude_code_cli::PARENT_SESSION_ENV`].
 const REQUEST_KNOB_ENV: [&str; 2] = ["CLAUDE_CODE_EXTRA_BODY", "CLAUDE_CODE_EFFORT_LEVEL"];
@@ -94,7 +107,7 @@ pub fn resolve_claude(command: Option<&[String]>, env: &Env) -> Option<Vec<Strin
         if head != "claude" {
             return None;
         }
-        let home = env.get("HOME").filter(|h| !h.is_empty());
+        let home = env.get("HOME").filter(|h| !h.is_empty() && Path::new(h).is_absolute());
         let prefixes: Vec<String> = home
             .into_iter()
             .flat_map(|home| HOME_PREFIXES.iter().map(move |p| format!("{home}/{p}")))
@@ -127,12 +140,57 @@ pub fn conflicts(env: &Env) -> Vec<&'static str> {
     found
 }
 
-/// Whether telemetry and feature flags stay on: the config, else `ULTRON_CLAUDE_TELEMETRY`, default on.
+/// Whether telemetry and feature flags stay on: the config, else `ULTRON_CLAUDE_TELEMETRY`, default off.
 pub fn telemetry_enabled(config: &Config, env: &Env) -> bool {
     config.telemetry.unwrap_or_else(|| {
         env.get(TELEMETRY_ENV)
-            .is_none_or(|v| !OFF.contains(&v.trim().to_ascii_lowercase().as_str()))
+            .is_some_and(|v| ON.contains(&v.trim().to_ascii_lowercase().as_str()))
     })
+}
+
+/// Carry the login identity Claude Code's local check reads (`USER`/`LOGNAME`): without `USER`, a logged-in CLI
+/// under a daemon/systemd unit can report `loggedIn: false` immediately with no upstream request.
+fn with_login_identity(env: &mut Env) {
+    let name = env
+        .get("USER")
+        .filter(|v| !v.is_empty())
+        .cloned()
+        .or_else(|| std::env::var("USER").ok().filter(|v| !v.is_empty()));
+    if let Some(name) = name {
+        env.entry("USER".into()).or_insert_with(|| name.clone());
+        env.entry("LOGNAME".into()).or_insert(name);
+    }
+}
+
+/// Remove an empty `.oauth_refresh.lock` directory left behind by a Claude Code process that exited mid-refresh
+/// (`anthropics/claude-code#95236`), once it is past Claude Code's 60 s stale window. Non-empty or fresh locks are
+/// never touched (`remove_dir` refuses non-empty directories).
+pub fn reap_orphaned_refresh_lock(env: &Env) {
+    let config_dir = env
+        .get("CLAUDE_CONFIG_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            env.get("HOME")
+                .filter(|h| !h.is_empty() && Path::new(h).is_absolute())
+                .map(|h| PathBuf::from(h).join(".claude"))
+        });
+    let Some(dir) = config_dir else { return };
+    let lock = dir.join(".oauth_refresh.lock");
+    let Ok(meta) = std::fs::symlink_metadata(&lock) else {
+        return;
+    };
+    if !meta.is_dir() {
+        return;
+    }
+    if meta
+        .modified()
+        .ok()
+        .and_then(|m| m.elapsed().ok())
+        .is_some_and(|age| age > REFRESH_LOCK_STALE)
+    {
+        let _ = std::fs::remove_dir(&lock);
+    }
 }
 
 /// Set the traffic flags on a child env. Never removes anything: an opt-out the user exported still applies.
@@ -391,6 +449,7 @@ struct Cleanup<'a> {
     dir: Option<PathBuf>,
     admission: Option<Admission>,
     reader: Option<std::thread::JoinHandle<()>>,
+    err_reader: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for Cleanup<'_> {
@@ -405,9 +464,28 @@ impl Drop for Cleanup<'_> {
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
+        if let Some(err_reader) = self.err_reader.take() {
+            let _ = err_reader.join();
+        }
         if let Some(dir) = self.dir.take() {
             remove_tree(&dir);
         }
+    }
+}
+
+fn stderr_tail(lines: &Mutex<VecDeque<String>>) -> String {
+    let guard = lines.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let joined: String = guard
+        .iter()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if joined.is_empty() {
+        String::new()
+    } else {
+        let clipped: String = joined.chars().take(400).collect();
+        format!(" (native stderr: {clipped})")
     }
 }
 
@@ -454,6 +532,7 @@ pub fn run(
         dir: None,
         admission: None,
         reader: None,
+        err_reader: None,
     };
     let root = private_temp(&temp_root, "ultron-claude-").map_err(|e| ClaudeError::Failed(e.to_string()))?;
     cleanup.dir = Some(root.clone());
@@ -462,20 +541,27 @@ pub fn run(
         std::fs::write(&path, text).map_err(|e| ClaudeError::Failed(e.to_string()))?;
         Ok(path)
     };
-    let manifest = write("tools.json", &Value::Array(prepared.body.manifest.clone()).to_string())?;
-    let mut inert = match &config.inert_mcp {
-        Some(command) => command.clone(),
-        None => {
-            let exe = config::paths::own_executable().map_err(|e| ClaudeError::Failed(e.to_string()))?;
-            vec![
-                exe.to_string_lossy().into_owned(),
-                "__internal".into(),
-                "inert-mcp".into(),
-            ]
-        }
+    // Skip the inert MCP server on tool-less calls (titles, summaries, judges): saves a spawn + MCP handshake.
+    let mcp = if prepared.body.manifest.is_empty() {
+        json!({"mcpServers": {}})
+    } else {
+        let manifest = write("tools.json", &Value::Array(prepared.body.manifest.clone()).to_string())?;
+        let mut inert = match &config.inert_mcp {
+            Some(command) => command.clone(),
+            None => {
+                let exe = config::paths::own_executable().map_err(|e| ClaudeError::Failed(e.to_string()))?;
+                vec![
+                    exe.to_string_lossy().into_owned(),
+                    "__internal".into(),
+                    "inert-mcp".into(),
+                ]
+            }
+        };
+        inert.push(manifest.to_string_lossy().into_owned());
+        json!({"mcpServers": {"ultron": {"command": inert[0], "args": inert[1..]}}})
     };
-    inert.push(manifest.to_string_lossy().into_owned());
-    let mcp = json!({"mcpServers": {"ultron": {"command": inert[0], "args": inert[1..]}}});
+    with_login_identity(&mut env);
+    reap_orphaned_refresh_lock(&env);
     for key in crate::claude_code_cli::PARENT_SESSION_ENV
         .iter()
         .chain(&REQUEST_KNOB_ENV)
@@ -487,10 +573,15 @@ pub fn run(
         ("CLAUDE_CODE_MAX_RETRIES", "0"),
         ("DISABLE_AUTO_COMPACT", "1"),
         ("DISABLE_COMPACT", "1"),
-        // Ultron owns budgets; native's replayed reminder invalidates cached history.
+        // Ultron owns budgets, memory, and instructions; native's reminders invalidate cache and leak into user turns.
         ("CLAUDE_CODE_TOTAL_TOKENS_REMINDER", "off"),
-    ] {
-        env.insert(k.into(), v.into());
+        ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
+        ("CLAUDE_CODE_DISABLE_CLAUDE_MDS", "1"),
+    ]
+    .iter()
+    .chain(CALLER_IDENTITY)
+    {
+        env.insert((*k).into(), (*v).into());
     }
     let telemetry = telemetry_enabled(config, &env);
     apply_traffic_policy(&mut env, telemetry);
@@ -518,6 +609,7 @@ pub fn run(
     if let Some(max) = parsed.get("max_tokens") {
         env.insert("CLAUDE_CODE_MAX_OUTPUT_TOKENS".into(), max.to_string());
     }
+    let session_id = conversation_session_id(&prepared.system, &prepared.frames);
     let mut argv: Vec<String> = resolved;
     argv.extend(
         [
@@ -545,6 +637,8 @@ pub fn run(
             "--permission-mode",
             "dontAsk",
             "--no-session-persistence",
+            "--session-id",
+            &session_id,
             "--mcp-config",
             &mcp.to_string(),
         ]
@@ -556,6 +650,7 @@ pub fn run(
     }
     let cwd = workdir(&temp_root).map_err(|e| ClaudeError::Failed(e.to_string()))?;
     let (sender, events) = std::sync::mpsc::channel::<Event>();
+    let native_stderr: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::with_capacity(40)));
     let mut stdin = {
         use std::os::unix::process::CommandExt;
         let mut child_slot = handle.child.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -569,13 +664,25 @@ pub fn run(
             .current_dir(&cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .process_group(0)
             .spawn()
             .map_err(|e| ClaudeError::Failed(format!("Could not start Claude Code ({}): {e}", argv[0])))?;
         let stdout = child.stdout.take().expect("stdout is piped");
+        let stderr = child.stderr.take().expect("stderr is piped");
         let stdin = child.stdin.take().expect("stdin is piped");
         *child_slot = Some(signals::child::Watched::new(child));
+        let err_sink = native_stderr.clone();
+        cleanup.err_reader = Some(std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines() {
+                let Ok(line) = line else { break };
+                let mut guard = err_sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if guard.len() >= 40 {
+                    guard.pop_front();
+                }
+                guard.push_back(line);
+            }
+        }));
         cleanup.reader = Some(std::thread::spawn(move || {
             // A launcher script may print before it starts Claude Code (mise's `claude` wrapper reports the tool on
             // stdout): what comes before the stream's first JSON line is not the stream. When no stream follows,
@@ -735,6 +842,10 @@ pub fn run(
     if let Some(reader) = cleanup.reader.take() {
         let _ = reader.join();
     }
+    if let Some(err_reader) = cleanup.err_reader.take() {
+        let _ = err_reader.join();
+    }
+    let err_tail = stderr_tail(&native_stderr);
     if handle.cancelled() {
         return Err(ClaudeError::Cancelled);
     }
@@ -779,18 +890,20 @@ pub fn run(
     {
         if code.as_deref() == Some("authentication_failed") && !outcome.used {
             // No usable login where Ultron runs native: it refuses before any upstream request.
-            return Err(ClaudeError::LoggedOut(format!("{LOGGED_OUT_HINT} (native: {detail})")));
+            return Err(ClaudeError::LoggedOut(format!(
+                "{LOGGED_OUT_HINT} (native: {detail}){err_tail}"
+            )));
         }
         let error = ClaudeError::Api {
-            message: format!("Native API error: {detail}"),
+            message: format!("Native API error: {detail}{err_tail}"),
             status: code.as_deref().and_then(native_error_status),
         };
         return Err(super::limit::classify(error, &signals));
     }
     if results.len() != 1 || assistants.is_empty() || !stopped {
-        return Err(ClaudeError::Failed(
-            "Incomplete native response: assistant, message_stop and one result required".into(),
-        ));
+        return Err(ClaudeError::Failed(format!(
+            "Incomplete native response: assistant, message_stop and one result required{err_tail}"
+        )));
     }
     let last_result = &results[0];
     let names: std::collections::BTreeSet<&str> = prepared.body.names.iter().map(String::as_str).collect();
@@ -821,7 +934,7 @@ pub fn run(
         && (code != Some(0) || jsrt::value::truthy(last_result.get("is_error")) || subtype != Some(&json!("success")))
     {
         return Err(ClaudeError::Failed(format!(
-            "Native request failed: {}",
+            "Native request failed: {}{err_tail}",
             python_str(subtype)
         )));
     }

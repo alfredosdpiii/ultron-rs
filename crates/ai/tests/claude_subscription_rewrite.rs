@@ -461,7 +461,7 @@ fn ai_claude_subscription_first_request_caches_a_prefix_the_second_request_repla
 }
 
 #[test]
-fn ai_claude_subscription_first_turn_keeps_every_block_and_moves_only_the_marker() {
+fn ai_claude_subscription_first_turn_drops_prepended_context_and_moves_only_the_marker() {
     seal();
     let out: Value = serde_json::from_slice(&pin_message_breakpoint(&ft_wire(&call1()), Some(&[frame()]))).unwrap();
     let first_turn = out["messages"][0]["content"].as_array().unwrap();
@@ -473,7 +473,7 @@ fn ai_claude_subscription_first_turn_keeps_every_block_and_moves_only_the_marker
             b
         })
         .collect();
-    assert_eq!(plain, vec![frame(), reminder()]);
+    assert_eq!(plain, vec![frame()]);
     assert_eq!(first_turn[0]["cache_control"], marker());
     let count: usize = out["messages"]
         .as_array()

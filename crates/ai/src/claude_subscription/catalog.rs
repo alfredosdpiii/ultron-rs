@@ -33,7 +33,13 @@ pub const CONTEXT_WINDOWS: &[(&str, u64)] = &[
     ("claude-fable-5-2", LONG_WINDOW),
     ("claude-fable-5-1", LONG_WINDOW),
     ("claude-fable-5", LONG_WINDOW),
+    ("claude-mythos-5-2", LONG_WINDOW),
+    ("claude-mythos-5-1", LONG_WINDOW),
 ];
+
+/// Models Anthropic grants per organization: pinned for their window and thinking policy, but never listed in the
+/// static picker catalog (only offered when the account's own picker lists them).
+pub const ACCESS_GATED: &[&str] = &["claude-mythos-5-1", "claude-mythos-5-2"];
 
 /// Family aliases and the undated Haiku 4.5 id.
 pub const ALIASES: &[(&str, &str)] = &[
@@ -50,6 +56,7 @@ pub const MANDATORY_THINKING: &[&str] = &[
     "claude-opus-5-5",
     "claude-sonnet-5-5",
     "claude-haiku-5-5",
+    "claude-mythos",
 ];
 
 /// Routes that 400 on `thinking: {"type": "adaptive"}`; their effort signal still applies.
@@ -63,20 +70,52 @@ pub const MIN_CLI_VERSIONS: &[(&str, &str)] = &[
     ("claude-fable-5-2", "2.1.322"),
 ];
 
-fn alias(base: &str) -> &str {
+fn lookup_alias(base: &str) -> Option<&'static str> {
     ALIASES
         .iter()
         .find(|(name, _)| *name == base)
-        .map_or(base, |(_, target)| target)
+        .map(|(_, target)| *target)
 }
 
-/// The canonical id of `model`: `[1m]` dropped, aliases resolved.
+fn lookup_window(base: &str) -> Option<(&'static str, u64)> {
+    CONTEXT_WINDOWS
+        .iter()
+        .find(|(id, _)| *id == base)
+        .map(|(id, w)| (*id, *w))
+}
+
+/// Resolve a short or dotted name (`sonnet-5-5`, `sonnet-5.5`, `opus-4.8`, `haiku-4-5`) to its canonical catalog id,
+/// or `None` when it does not name a known route.
+fn resolve_known(base: &str) -> Option<&'static str> {
+    if let Some(target) = lookup_alias(base) {
+        return Some(target);
+    }
+    if let Some((id, _)) = lookup_window(base) {
+        return Some(id);
+    }
+    if base.contains('.') {
+        return resolve_known(&base.replace('.', "-"));
+    }
+    if !base.starts_with("claude-") {
+        let prefixed = format!("claude-{base}");
+        if let Some(target) = lookup_alias(&prefixed) {
+            return Some(target);
+        }
+        if let Some((id, _)) = lookup_window(&prefixed) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+/// The canonical id of `model`: `[1m]` dropped, short/dotted names and aliases resolved.
 pub fn canonical(model: &str) -> &str {
-    alias(model.strip_suffix(LONG).unwrap_or(model))
+    let base = model.strip_suffix(LONG).unwrap_or(model);
+    resolve_known(base).unwrap_or(base)
 }
 
 pub fn pinned_window(canonical: &str) -> Option<u64> {
-    CONTEXT_WINDOWS.iter().find(|(id, _)| *id == canonical).map(|(_, w)| *w)
+    lookup_window(canonical).map(|(_, w)| w)
 }
 
 /// The `--model` the CLI receives: pinned 1M ids gain `[1m]`, pinned 200K ids stay plain, others pass through.
@@ -132,10 +171,12 @@ pub fn catalog_label(model: &str) -> String {
         .join(" ")
 }
 
-/// Every pinned route in catalog order, with its canonical model and window (`MODEL_METADATA`).
+/// Every generally available pinned route in catalog order, with its canonical model and window (`PICKER_ROUTES`).
+/// Access-gated models (Mythos) are omitted from the static picker list.
 pub fn pinned_routes() -> Vec<(String, &'static str, u64)> {
     CONTEXT_WINDOWS
         .iter()
+        .filter(|(id, _)| !ACCESS_GATED.contains(id))
         .map(|(id, window)| (native_model(id).unwrap_or_else(|_| id.to_string()), *id, *window))
         .collect()
 }

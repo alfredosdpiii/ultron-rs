@@ -2,7 +2,7 @@
 //! of its own config (`~/.gemini/config/mcp_config.json`), the only place that raises its 3-minute MCP call timeout.
 //! Ultron's model loop builds a runtime per call, and tokio IO stays on the runtime that created it, so every live
 //! agy is driven from one process-lifetime runtime thread.
-use super::{Agy, Step, delta_prompt};
+use super::{Agy, AgyDelta, Step, delta_prompt};
 use crate::env::ProviderEnv;
 use crate::types::{AssistantContent, Message, Model, ToolResultMessage, TranscriptContext, Usage, UserContent};
 use serde_json::{Value, json};
@@ -13,11 +13,11 @@ use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
-/// Below the `timeoutSeconds` (900) of the config entry, so agy never times out a held call Ultron still owns.
+/// Idle eviction for live `agy` sessions.
 const IDLE: Duration = Duration::from_secs(600);
 const MAX_LIVE: usize = 4;
 
-type Outcome = io::Result<(AssistantContent, Usage)>;
+type Outcome = io::Result<(Vec<AssistantContent>, Usage)>;
 type Registry = Arc<Mutex<Vec<Live>>>;
 
 struct Live {
@@ -33,12 +33,15 @@ struct Job {
     model: Model,
     context: TranscriptContext,
     env: Option<ProviderEnv>,
+    deltas: mpsc::UnboundedSender<AgyDelta>,
     reply: oneshot::Sender<Outcome>,
 }
 
 /// The relay agy runs as its `ultron` config server; it reaches the lane bridge named in its environment.
 const RELAY: &str = include_str!("relay.py");
-const RELAY_TIMEOUT_SECONDS: u64 = 900;
+/// Negative `timeoutSeconds` disables agy's MCP connect and per-tool-call timeouts (`docs/mcp.md`), so long `rlm`
+/// cells never get cancelled by agy.
+const RELAY_TIMEOUT_SECONDS: i64 = -1;
 
 /// Session mode is the default; `ULTRON_AGY_SESSIONS=0` turns it off. It needs Ultron's relay entry in agy's config,
 /// which this writes (leaving every other entry alone); when it cannot, agy runs per model call.
@@ -78,13 +81,20 @@ fn install_relay(config: &Path, path: &str) -> io::Result<()> {
     let mut settings: Value = if text.trim().is_empty() {
         json!({})
     } else {
-        serde_json::from_str(&text).map_err(|e| io::Error::other(format!("{} is not valid JSON: {e}", file.display())))?
+        serde_json::from_str(&text)
+            .map_err(|e| io::Error::other(format!("{} is not valid JSON: {e}", file.display())))?
     };
     let entry = json!({
         "disabled": false,
         "command": python,
         "args": [script],
         "timeoutSeconds": RELAY_TIMEOUT_SECONDS,
+        "tools": {
+            "rlm": {
+                "eager": true,
+                "background": "off",
+            }
+        },
     });
     let servers = settings
         .as_object_mut()
@@ -109,13 +119,19 @@ fn write_atomic(target: &Path, bytes: &[u8]) -> io::Result<()> {
     std::fs::rename(&temporary, target)
 }
 
-pub(super) async fn submit(model: Model, context: TranscriptContext, env: Option<ProviderEnv>) -> Outcome {
+pub(super) async fn submit(
+    model: Model,
+    context: TranscriptContext,
+    env: Option<ProviderEnv>,
+    deltas: mpsc::UnboundedSender<AgyDelta>,
+) -> Outcome {
     let (reply, outcome) = oneshot::channel();
     worker()
         .send(Job {
             model,
             context,
             env,
+            deltas,
             reply,
         })
         .map_err(|_| io::Error::other("the agy session thread stopped"))?;
@@ -164,7 +180,7 @@ async fn run(mut job: Job, registry: Registry) {
     let messages = &job.context.messages;
     let mut slot = take(&registry, &job.model.id, messages);
     let outcome = tokio::select! {
-        outcome = serve(&mut slot, &job.model, messages, job.env.as_ref()) => outcome,
+        outcome = serve(&mut slot, &job.model, messages, job.env.as_ref(), &job.deltas) => outcome,
         () = job.reply.closed() => {
             // The caller aborted or timed out: stop agy's turn and drop the session.
             if let Some(live) = slot.as_mut() {
@@ -205,12 +221,18 @@ fn take(registry: &Registry, model: &str, messages: &[Message]) -> Option<Live> 
     Some(lives.swap_remove(index))
 }
 
-async fn serve(slot: &mut Option<Live>, model: &Model, messages: &[Message], env: Option<&ProviderEnv>) -> Outcome {
+async fn serve(
+    slot: &mut Option<Live>,
+    model: &Model,
+    messages: &[Message],
+    env: Option<&ProviderEnv>,
+    deltas: &mpsc::UnboundedSender<AgyDelta>,
+) -> Outcome {
     if let Some(live) = slot.as_mut()
         && let Some(step) = continuation(live, messages)
     {
         let answered = matches!(step, Step::Answer(_));
-        match live.agy.advance(step).await {
+        match live.agy.advance(step, Some(deltas)).await {
             Ok(done) => {
                 live.seen = messages.len();
                 live.hash = prefix_hash(messages);
@@ -231,7 +253,7 @@ async fn serve(slot: &mut Option<Live>, model: &Model, messages: &[Message], env
         hash: prefix_hash(messages),
         used: Instant::now(),
     });
-    match live.agy.advance(step).await {
+    match live.agy.advance(step, Some(deltas)).await {
         Ok(done) => Ok(done),
         Err(error) => Err(slot.take().expect("just inserted").agy.failed(error).await),
     }

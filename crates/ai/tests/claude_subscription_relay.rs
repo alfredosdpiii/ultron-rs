@@ -403,10 +403,9 @@ fn ai_claude_subscription_first_turn_frame_goes_ahead_of_native_context() {
     assert_eq!(message.stop_reason, StopReason::Stop, "{:?}", message.error_message);
     let body = upstream.requests()[0].json();
     let first = body["messages"][0]["content"].as_array().unwrap();
+    assert_eq!(first.len(), 1);
     assert_eq!(first[0]["text"], "fixture");
     assert_eq!(first[0]["cache_control"], json!({"type": "ephemeral", "ttl": "1h"}));
-    assert!(first[1]["text"].as_str().unwrap().starts_with("<system-reminder>"));
-    assert!(first[1].get("cache_control").is_none());
 }
 
 #[test]

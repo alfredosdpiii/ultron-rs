@@ -45,8 +45,9 @@ fn dump(body: &Value) -> Vec<u8> {
     serde_json::to_vec(body).unwrap_or_default()
 }
 
-/// Put Ultron's first user turn ahead of the plain-text context native prepends to it (only on a conversation's first
-/// request, only when the queried frame occurs exactly once after nothing but text). Returns whether it moved.
+/// Drop the plain-text context native prepends ahead of Ultron's first user turn (only on a conversation's first
+/// request, only when the queried frame occurs exactly once after nothing but text). Preserves any `cache_control`
+/// from the dropped prefix onto the first host block. Returns whether it changed.
 fn frame_first(messages: &mut [Value], queried: &[Value]) -> bool {
     if messages.iter().any(|m| role(m) == Some("assistant")) {
         return false;
@@ -68,10 +69,11 @@ fn frame_first(messages: &mut [Value], queried: &[Value]) -> bool {
     if k == 0 || !content[..k].iter().all(|b| b.is_object() && kind(b) == Some("text")) {
         return false;
     }
-    let mut reordered: Vec<Value> = content[k..k + queried.len()].to_vec();
-    reordered.extend_from_slice(&content[..k]);
-    reordered.extend_from_slice(&content[k + queried.len()..]);
-    *content = reordered;
+    let mark = content[..k].iter().find_map(|b| b.get("cache_control").cloned());
+    content.drain(..k);
+    if let (Some(mark), Some(first_host)) = (mark, content.first_mut().and_then(Value::as_object_mut)) {
+        first_host.entry("cache_control").or_insert(mark);
+    }
     true
 }
 
@@ -105,7 +107,7 @@ fn pin(payload: &[u8], queried: &[Value]) -> Option<Vec<u8>> {
         .copied()
         .filter(|&at| block(messages, at).get("cache_control").is_some())
         .collect();
-    if marked.is_empty() {
+    if marked.is_empty() && !reordered {
         return Some(payload.to_vec());
     }
     let last = messages.iter().rposition(|m| role(m) == Some("assistant"));
@@ -321,4 +323,52 @@ pub fn restore_queried_turn(payload: &[u8], queried: Option<&[Value]>) -> Result
     }
     newest["content"] = Value::Array(restored);
     Ok(dump(&body))
+}
+
+/// Remove native's message-level `cache_control` marks from a tool-less one-shot (titles, summaries): nothing replays
+/// that user turn, so caching it would pay a 2x write never read. System and tool marks stay.
+pub fn drop_message_breakpoints(payload: &[u8]) -> Vec<u8> {
+    let Ok(mut body) = serde_json::from_slice::<Value>(payload) else {
+        return payload.to_vec();
+    };
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return payload.to_vec();
+    };
+    let mut dropped = false;
+    for message in messages {
+        if let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) {
+            for block in content {
+                if block
+                    .as_object_mut()
+                    .and_then(|m| m.shift_remove("cache_control"))
+                    .is_some()
+                {
+                    dropped = true;
+                }
+            }
+        }
+    }
+    if dropped { dump(&body) } else { payload.to_vec() }
+}
+
+/// Ask the API to stream every tool's arguments as the model writes them (`eager_input_streaming`). Native turns
+/// fine-grained tool streaming on only for a first-party base URL, so behind the loopback relay large tool arguments
+/// otherwise arrive in one burst after minutes of silence.
+pub fn stream_tool_input(payload: &[u8]) -> Vec<u8> {
+    let Ok(mut body) = serde_json::from_slice::<Value>(payload) else {
+        return payload.to_vec();
+    };
+    let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) else {
+        return payload.to_vec();
+    };
+    let mut changed = false;
+    for tool in tools {
+        if let Some(map) = tool.as_object_mut()
+            && !map.contains_key("eager_input_streaming")
+        {
+            map.insert("eager_input_streaming".into(), Value::Bool(true));
+            changed = true;
+        }
+    }
+    if changed { dump(&body) } else { payload.to_vec() }
 }

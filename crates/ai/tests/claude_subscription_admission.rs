@@ -299,7 +299,10 @@ fn ai_claude_subscription_two_native_marks_keep_one_breakpoint_the_next_request_
         assert_eq!(message_marks(&sent_n), [(1, 4), (2, 3)]);
         assert_eq!(message_marks(&sent_n1), [(3, 4), (4, 3)]);
         assert_eq!(sent_n["system"], native_n["system"]);
-        assert_eq!(sent_n["tools"], native_n["tools"]);
+        assert_eq!(sent_n["tools"][0]["eager_input_streaming"], true);
+        let mut expected_tools = native_n["tools"].clone();
+        expected_tools[0]["eager_input_streaming"] = json!(true);
+        assert_eq!(sent_n["tools"], expected_tools);
         assert_eq!(strip(&sent_n["messages"][3]), strip(&native_n["messages"][3]));
         assert_eq!(mark_count(&sent_n), 4);
         assert_eq!(mark_count(&native_n), 4);

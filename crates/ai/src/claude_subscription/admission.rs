@@ -5,7 +5,7 @@
 //! headers pass through memory to the upstream and are never logged or persisted. The streamed text, signed
 //! thinking, tool arguments, usage and stop reason are captured before native recovery can replace them.
 
-use super::rewrite::{pin_message_breakpoint, restore_queried_turn};
+use super::rewrite::{drop_message_breakpoints, pin_message_breakpoint, restore_queried_turn, stream_tool_input};
 use crate::http::AbortSignal;
 use reqwest::Url;
 use serde_json::{Value, json};
@@ -315,6 +315,8 @@ struct Gate {
     idle: Duration,
     proxy: Option<ProxyRoute>,
     prefix: String,
+    one_shot: AtomicBool,
+    eager: AtomicBool,
     cancelled: AtomicBool,
     abort: AbortSignal,
     outcome: Mutex<Outcome>,
@@ -382,6 +384,8 @@ impl Admission {
             idle,
             proxy,
             prefix: prefix.clone(),
+            one_shot: AtomicBool::new(false),
+            eager: AtomicBool::new(true),
             cancelled: AtomicBool::new(false),
             abort: AbortSignal::new(),
             outcome: Mutex::new(Outcome::default()),
@@ -416,6 +420,14 @@ impl Admission {
 
     pub fn proxy(&self) -> Option<&ProxyRoute> {
         self.gate.proxy.as_ref()
+    }
+
+    pub fn set_one_shot(&self, one_shot: bool) {
+        self.gate.one_shot.store(one_shot, Ordering::SeqCst);
+    }
+
+    pub fn set_eager(&self, eager: bool) {
+        self.gate.eager.store(eager, Ordering::SeqCst);
     }
 
     /// Refuse further attempts and cut the active upstream exchange and native's connection.
@@ -607,7 +619,16 @@ fn forward(
             payload
         }
     };
-    let payload = pin_message_breakpoint(&payload, queried);
+    let payload = if gate.one_shot.load(Ordering::SeqCst) {
+        drop_message_breakpoints(&payload)
+    } else {
+        pin_message_breakpoint(&payload, queried)
+    };
+    let payload = if gate.eager.load(Ordering::SeqCst) {
+        stream_tool_input(&payload)
+    } else {
+        payload
+    };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
