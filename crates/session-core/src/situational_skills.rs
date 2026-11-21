@@ -421,7 +421,7 @@ impl SituationalSkills {
             return String::new();
         }
         format!(
-            "\nHygiene notes on the lines this change adds (advisory: fix each, or say why it stays):\n{}",
+            "\nHygiene and nits findings on the lines this change adds; fix each before shipping:\n{}",
             notes.join("\n")
         )
     }

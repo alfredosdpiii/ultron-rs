@@ -115,7 +115,7 @@ pub fn left_text(left: &[(String, String, Vec<String>)]) -> String {
 
 pub fn findings_text(findings: &str) -> String {
     format!(
-        "Checks of the files your last cells changed finished after their results were returned:\n{findings}\nFix what needs fixing and end the turn again; for an advisory you leave as it is, say why in a sentence."
+        "Checks of the files your last cells changed finished after their results were returned:\n{findings}\nFix every finding and hygiene/nits note above before ending the turn."
     )
 }
 

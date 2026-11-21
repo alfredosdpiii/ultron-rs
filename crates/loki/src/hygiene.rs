@@ -281,7 +281,9 @@ fn warm_hygiene_worker() -> &'static Mutex<Option<WarmWorker>> {
 /// The model's squiggles for each text, or why it could not run.
 pub fn score(texts: &[&str], deadline: Deadline) -> Result<Vec<Vec<Squiggle>>, String> {
     let weights: String = WEIGHTS.iter().map(|byte| format!("{byte:02x}")).collect();
-    if let Ok(mut slot) = warm_hygiene_worker().lock() {
+    if std::env::var_os("ULTRON_LOKI_PYTHON").is_none()
+        && let Ok(mut slot) = warm_hygiene_worker().lock()
+    {
         if slot.is_none() {
             *slot = WarmWorker::start(
                 &launchers(),

@@ -609,12 +609,12 @@ fn host_loki_after_cell_hygiene_notes_are_to_fix_and_stay_open_until_fixed() {
     let notes = notes.expect("the hygiene note");
     let lines: Vec<&str> = notes.lines().collect();
     assert_eq!(
-        lines[0], "[Loki] 1 hygiene note on lines this cell added; fix each, or say in a line why it stays:",
+        lines[0], "[Loki] 1 hygiene note on lines this cell added; fix these:",
         "{notes}"
     );
     assert_eq!(
         later.as_deref(),
-        Some("[Loki] 1 hygiene note reported earlier is still open in store.py.")
+        Some("[Loki] 1 hygiene note reported earlier is still open in store.py; fix these.")
     );
     assert!(
         lines[1].starts_with("store.py:7: loki/hygiene-swallowed-error: "),

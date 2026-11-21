@@ -360,14 +360,14 @@ impl FileWriteGuard for LokiGuard {
         }
         if !hygiene.fresh.is_empty() {
             sections.push(format!(
-                "{} on lines this cell added; fix each, or say in a line why it stays:\n{}",
+                "{} on lines this cell added; fix these:\n{}",
                 count(hygiene.fresh.len(), "hygiene note"),
                 hygiene.fresh.join("\n")
             ));
         }
         if hygiene.earlier > 0 {
             sections.push(format!(
-                "{} reported earlier {} still open in {}.",
+                "{} reported earlier {} still open in {}; fix these.",
                 count(hygiene.earlier, "hygiene note"),
                 if hygiene.earlier == 1 { "is" } else { "are" },
                 hygiene.paths.join(", ")

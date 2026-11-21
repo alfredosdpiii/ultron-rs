@@ -112,7 +112,8 @@ pub fn score(
     deadline: Deadline,
 ) -> Result<Vec<Vec<Squiggle>>, String> {
     let payload = json!({"files": files, "all": all, "min_precision": MIN_PRECISION});
-    if launchers == crate::nits::launchers().as_slice()
+    if std::env::var_os("ULTRON_LOKI_PYTHON").is_none()
+        && launchers == crate::nits::launchers().as_slice()
         && let Ok(mut slot) = warm_nits_worker().lock()
     {
         if slot.is_none() {
