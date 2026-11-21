@@ -194,22 +194,6 @@ pub fn ignored_flag_warnings(parsed: &Args) -> Vec<String> {
     warnings
 }
 
-/// The startup note for the settings `packages` ultron-rs ignores (the worker's settings: the project's only when
-/// it is trusted); none without packages.
-pub fn package_settings_note(env: &Env) -> Option<String> {
-    let settings = config::settings::SettingsManager::for_worker(&env.cwd, &env.agent_dir(), &env.home);
-    session_core::local_resources::ignored_packages_note(&settings)
-}
-
-/// The startup note naming the Pi extensions TypeScript would load from `<agentDir>/extensions/`,
-/// `<cwd>/.pi/extensions/` (a trusted project) and the settings `extensions`: ultron-rs ignores them (the `-e` flags
-/// get [`extension_flag_warnings`]). The settings are the worker's (its project trust).
-pub fn extension_settings_note(env: &Env) -> Option<String> {
-    let settings = config::settings::SettingsManager::for_worker(&env.cwd, &env.agent_dir(), &env.home);
-    let resources = session_core::local_resources::LocalResources::new(env, settings);
-    session_core::local_resources::extensions::ignored_extensions_note(&resources)
-}
-
 /// The warnings for the environment and settings that would give the model native tools in TypeScript
 /// (prompt.ts `rlmToolMode`, extension-tools.ts `extensionToolMode` / `nativeExtensionToolAllowlist`): the Rust
 /// build's model has exactly one tool, `rlm`, so `ULTRON_TOOLS=native`, `ULTRON_EXTENSION_TOOLS=native`,

@@ -6,9 +6,8 @@
 //! `.agents/skills`.
 //!
 //! Pi packages (the settings `packages`) and Pi extensions are not supported by ultron-rs: nothing is installed and
-//! no package resources are resolved; the extensions TypeScript would load are only named (see [`extensions`]).
+//! no package or extension resources are resolved.
 
-pub mod extensions;
 pub mod files;
 
 pub use files::{RESOURCE_TYPES, ResourceType};
@@ -100,24 +99,6 @@ fn string_list(value: Option<&Value>) -> Option<Vec<String>> {
     value
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
-}
-
-/// The settings `packages` entries of both scopes (a manager of an untrusted project has no project settings): Pi
-/// packages are not supported, so a session reports how many it ignores.
-pub fn ignored_packages(settings: &SettingsManager) -> usize {
-    let count = |s: &serde_json::Map<String, Value>| s.get("packages").and_then(Value::as_array).map_or(0, Vec::len);
-    count(settings.global_settings()) + count(settings.project_settings())
-}
-
-/// The startup note for settings `packages` entries ultron-rs ignores; none when there are none.
-pub fn ignored_packages_note(settings: &SettingsManager) -> Option<String> {
-    match ignored_packages(settings) {
-        0 => None,
-        n => Some(format!(
-            "Pi packages are not supported by ultron-rs; ignoring {n} package{} in settings",
-            if n == 1 { "" } else { "s" }
-        )),
-    }
 }
 
 /// Resolves the local resources of one working directory and profile.

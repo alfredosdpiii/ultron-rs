@@ -1,6 +1,6 @@
 //! Session flags of the native command whose TypeScript behavior has no Rust-observable twin to record: `-e` and
-//! `--no-extensions` (Pi extensions are not supported by ultron-rs: each flag is warned about and ignored, and so are
-//! the settings `packages`, with one note), `--models` scoping a new
+//! `--no-extensions` (Pi extensions are not supported by ultron-rs: each flag is warned about and ignored, while
+//! settings `packages` and extension directories are silently ignored), `--models` scoping a new
 //! session's model (decisions: scoped models choose it), the tool flags (the model's tool list stays `[rlm]`), the
 //! `httpProxy` setting (HTTP_PROXY for the session's provider requests), `!command` keys in auth.json, and
 //! `--append-system-prompt` (the TS server never passed it to a worker).
@@ -66,7 +66,7 @@ fn cli_native_extension_flags_and_settings_packages_are_warned_about_and_ignored
          Warning: Pi extensions are not supported by ultron-rs; ignoring --extension npm:pi-tools\n\
          Warning: Pi extensions are not supported by ultron-rs; ignoring --no-extensions\n"
     );
-    // The settings `packages` are not installed or resolved: one note says how many are ignored.
+    // Settings `packages` and `<agentDir>/extensions/` are silently ignored (no startup notes).
     let settings = sandbox.agent_dir.join("settings.json");
     let mut json: Value = std::fs::read_to_string(&settings)
         .ok()
@@ -74,12 +74,12 @@ fn cli_native_extension_flags_and_settings_packages_are_warned_about_and_ignored
         .unwrap_or_else(|| serde_json::json!({}));
     json["packages"] = serde_json::json!(["npm:pi-tools", "../exts/hello"]);
     std::fs::write(&settings, json.to_string()).unwrap();
+    let auto_ext = sandbox.agent_dir.join("extensions/prime-rlm/index.ts");
+    std::fs::create_dir_all(auto_ext.parent().unwrap()).unwrap();
+    std::fs::write(&auto_ext, "export default function () {}\n").unwrap();
     let output = run(&sandbox, &["-p", "--model", MODEL, "y"], &[]);
     assert_eq!(text(&output.stdout), "b\n", "{}", text(&output.stderr));
-    assert_eq!(
-        text(&output.stderr),
-        "Note: Pi packages are not supported by ultron-rs; ignoring 2 packages in settings\n"
-    );
+    assert_eq!(text(&output.stderr), "");
     let requests = seen.lock().unwrap().requests.clone();
     assert_eq!(requests.len(), 2);
     for request in &requests {

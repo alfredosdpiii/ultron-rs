@@ -296,8 +296,7 @@ fn session_core_resources_append_flag_replaces_the_discovered_append_file() {
 }
 
 /// Pi packages are not supported by ultron-rs: a settings package is neither installed nor resolved (the
-/// configured npm command never runs), the local and auto-discovered resources load as without it, and the startup
-/// note counts the ignored entries of both scopes (the project's only when it is trusted).
+/// configured npm command never runs), and the local and auto-discovered resources load as without it.
 #[test]
 fn session_core_resources_ignore_settings_packages_and_keep_local_ones() {
     use std::os::unix::fs::PermissionsExt;
@@ -331,15 +330,6 @@ fn session_core_resources_ignore_settings_packages_and_keep_local_ones() {
         ..run_env(&root.root)
     };
     let trusted = config::settings::SettingsManager::create(&env.cwd, &root.root.join("agent"), true);
-    assert_eq!(
-        session_core::local_resources::ignored_packages_note(&trusted).as_deref(),
-        Some("Pi packages are not supported by ultron-rs; ignoring 3 packages in settings")
-    );
-    let untrusted = config::settings::SettingsManager::create(&env.cwd, &root.root.join("agent"), false);
-    assert_eq!(
-        session_core::local_resources::ignored_packages_note(&untrusted).as_deref(),
-        Some("Pi packages are not supported by ultron-rs; ignoring 2 packages in settings")
-    );
     let resources = session_resources::resolve(&env, trusted, None);
     assert!(!ran.exists(), "npm ran for a settings package");
     let skills = session_resources::skills(&root.cwd(), &root.agent(), &resources, false, Some(&root.bundled()));
@@ -351,6 +341,4 @@ fn session_core_resources_ignore_settings_packages_and_keep_local_ones() {
         .collect();
     let got: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(got, want);
-    let empty = config::settings::SettingsManager::create(&root.root.join("nowhere"), &root.root.join("nothing"), true);
-    assert_eq!(session_core::local_resources::ignored_packages_note(&empty), None);
 }

@@ -366,12 +366,6 @@ fn run_inner(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Writ
     }
     // Everything below runs a session (or reads its files): the package files must exist from here on.
     package_files(env)?;
-    if let Some(note) = startup::package_settings_note(env) {
-        writeln!(err, "Note: {note}").map_err(io)?;
-    }
-    if let Some(note) = startup::extension_settings_note(env) {
-        writeln!(err, "Note: {note}").map_err(io)?;
-    }
     // The native worker command starts here (main.ts `shouldRunUltronWorker`).
     print_mode::trace_startup(env, "cli.native");
     // `--claude`: the root lane runs on Claude, through the claude-subscription provider (worker-root.ts
