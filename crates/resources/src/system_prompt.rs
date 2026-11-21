@@ -128,7 +128,7 @@ pub fn build_system_prompt_sections(options: &BuildOptions) -> Result<Sections, 
     match options.custom_prompt.as_deref().filter(|p| !p.is_empty()) {
         Some(custom) => set(&mut out, "preamble", custom.to_string()),
         None => {
-            set(&mut out, "preamble", "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.".to_string());
+            set(&mut out, "preamble", "You are an expert coding assistant operating inside Ultron, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.".to_string());
             let visible: Vec<String> = options
                 .selected_tools
                 .iter()
@@ -156,14 +156,14 @@ pub fn build_system_prompt_sections(options: &BuildOptions) -> Result<Sections, 
             set(&mut out, "rules", build_rules(options));
             if options.include_harness_docs {
                 let DocPaths { readme, docs, examples } = &options.doc_paths;
-                set(&mut out, "docs", format!("Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):
+                set(&mut out, "docs", format!("Ultron documentation (read only when the user asks about Ultron itself, its SDK, extensions, themes, skills, or TUI):
 - Main documentation: {readme}
 - Additional docs: {docs}
 - Examples: {examples} (extensions, custom tools, SDK)
-- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory
-- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md)
-- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing
-- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)"));
+- When reading Ultron docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory
+- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), Ultron packages (docs/packages.md), environment variables (docs/environment-variables.md)
+- When working on Ultron topics, read the docs and examples, and follow .md cross-references before implementing
+- Always read Ultron .md files completely and follow links to related docs (e.g., tui.md for TUI API details)"));
             }
         }
     }
