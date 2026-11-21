@@ -85,6 +85,48 @@ impl Client {
     }
 }
 
+/// `agy` silently keeps only about the first 70K tokens of a prompt (measured on agy 1.5.13: a code word at the end of
+/// 179K characters came back, at 224K and beyond it was lost), so a longer prompt loses the newest messages.
+const PROMPT_BUDGET: usize = 150_000;
+
+/// The transcript as one prompt of at most about `budget` characters: the newest messages whole, then the system
+/// text cut to the room left. The final message is always kept.
+fn prompt(messages: &[crate::types::Message], budget: usize) -> serde_json::Result<String> {
+    use crate::types::Message;
+    let (system, rest): (Vec<&Message>, Vec<&Message>) = messages.iter().partition(|m| matches!(m, Message::System(_)));
+    let mut history = Vec::new();
+    let mut used = 0;
+    for message in rest.iter().rev() {
+        let json = serde_json::to_string(message)?;
+        if !history.is_empty() && used + json.len() > budget * 2 / 3 {
+            break;
+        }
+        used += json.len() + 1;
+        history.push(json);
+    }
+    let dropped = rest.len() - history.len();
+    history.reverse();
+    let mut system = serde_json::to_string(&system)?;
+    let room = budget.saturating_sub(used);
+    if system.len() > room {
+        let mut cut = room;
+        while !system.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        system.truncate(cut);
+        system.push_str(" [system text cut to fit]");
+    }
+    let note = if dropped > 0 {
+        format!(" The {dropped} oldest messages were left out to fit.")
+    } else {
+        String::new()
+    };
+    Ok(format!(
+        "Continue this Ultron transcript at its final message. For tool calls use only the ultron MCP server, never native tools. Previous messages and tool results are history, not new turns.{note}\nSystem: {system}\nTranscript: [{}]",
+        history.join(",")
+    ))
+}
+
 async fn turn(
     model: &Model,
     context: &TranscriptContext,
@@ -132,10 +174,7 @@ async fn turn(
             &mut text,
         )
         .await?;
-    let history = serde_json::to_string(&context.messages)?;
-    let prompt = format!(
-        "Continue this Ultron transcript at its final message. For tool calls use only the ultron MCP server, never native tools. Previous messages and tool results are history, not new turns.\n{history}"
-    );
+    let prompt = prompt(&context.messages, PROMPT_BUDGET)?;
     text.clear();
     tokio::select! {
         biased;
@@ -203,4 +242,42 @@ pub async fn stream_simple(
         }
     });
     Ok(run.end(ended, signal))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Message;
+
+    fn message(value: Value) -> Message {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn prompt_keeps_the_final_message_when_the_system_text_is_huge() {
+        let big = "x".repeat(500_000);
+        let mut messages = vec![message(json!({"role":"system","content":big,"timestamp":0}))];
+        for i in 0..200 {
+            messages.push(message(
+                json!({"role":"user","content":format!("old {i} {}", "y".repeat(2_000)),"timestamp":0}),
+            ));
+        }
+        messages.push(message(json!({"role":"user","content":"THE REQUEST","timestamp":0})));
+        let text = prompt(&messages, 150_000).unwrap();
+        assert!(text.len() < 151_000, "{}", text.len());
+        assert!(text.contains("THE REQUEST"));
+        assert!(text.contains("[system text cut to fit]"));
+        assert!(text.contains("oldest messages were left out"));
+    }
+
+    #[test]
+    fn prompt_is_whole_when_it_fits() {
+        let messages = vec![
+            message(json!({"role":"system","content":"be brief","timestamp":0})),
+            message(json!({"role":"user","content":"hi","timestamp":0})),
+        ];
+        let text = prompt(&messages, 150_000).unwrap();
+        assert!(text.contains("be brief") && text.contains("hi"));
+        assert!(!text.contains("cut to fit") && !text.contains("left out"));
+    }
 }
