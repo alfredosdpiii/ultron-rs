@@ -4,9 +4,10 @@
 //! nits is not vendored: upstream ships no license, and its parsers are native wheels. It runs from a Python that
 //! can import it: Loki's interpreter, else `uv run --offline` at the pinned commit once uv's cache holds it.
 
-use crate::hygiene::{Squiggle, drive};
+use crate::hygiene::{Squiggle, WarmWorker, drive, parse_value};
 use crate::proc::{self, Deadline};
 use serde_json::json;
+use std::sync::{Mutex, OnceLock};
 
 /// The upstream commit uv runs. A nits installed in Loki's own Python is used as it is.
 pub const COMMIT: &str = "67c94b9f76054375f37b2df8e624a2f4d48ec0cc";
@@ -67,6 +68,41 @@ pub fn launchers() -> Vec<Vec<String>> {
     found
 }
 
+const SERVER_DRIVER: &str = r#"
+import json, sys
+try:
+    import nits
+except ImportError:
+    raise SystemExit(3)
+for raw in sys.stdin:
+    if not raw.strip():
+        continue
+    request = json.loads(raw)
+    args = request["args"]
+    if args == "ping":
+        sys.stdout.write(json.dumps({"id": request["id"], "result": True}) + "\n")
+        sys.stdout.flush()
+        continue
+    try:
+        everything = args["all"]
+        floor = None if everything else args["min_precision"]
+        found = []
+        for name, text in args["files"]:
+            lang = nits.lang_for_path(name)
+            findings = nits.check_source(text, lang=lang, include_opt_in=everything, min_precision=floor) if lang else []
+            found.append([[f.line, f.rule, f"p{nits.precision_of(f.rule, lang):.2f} {f.message}"] for f in findings])
+        reply = {"id": request["id"], "result": found}
+    except Exception as error:
+        reply = {"id": request["id"], "error": f"{type(error).__name__}: {error}"}
+    sys.stdout.write(json.dumps(reply) + "\n")
+    sys.stdout.flush()
+"#;
+
+fn warm_nits_worker() -> &'static Mutex<Option<WarmWorker>> {
+    static WORKER: OnceLock<Mutex<Option<WarmWorker>>> = OnceLock::new();
+    WORKER.get_or_init(|| Mutex::new(None))
+}
+
 /// nits' findings for each `(name, text)`, or why it could not run: its default rules that measure at least
 /// [`MIN_PRECISION`] in the file's language, or with `all` every rule, the opt-in ones included.
 pub fn score(
@@ -75,7 +111,25 @@ pub fn score(
     all: bool,
     deadline: Deadline,
 ) -> Result<Vec<Vec<Squiggle>>, String> {
-    let request = json!({"files": files, "all": all, "min_precision": MIN_PRECISION}).to_string();
+    let payload = json!({"files": files, "all": all, "min_precision": MIN_PRECISION});
+    if launchers == crate::nits::launchers().as_slice()
+        && let Ok(mut slot) = warm_nits_worker().lock()
+    {
+        if slot.is_none() {
+            *slot = WarmWorker::start(launchers, SERVER_DRIVER, json!("ping"));
+        }
+        if let Some(worker) = slot.as_mut() {
+            match worker.request(payload.clone()).and_then(|val| {
+                parse_value(val).ok_or_else(|| "unreadable reply".to_string())
+            }) {
+                Ok(found) => return Ok(found),
+                Err(_) => {
+                    *slot = None;
+                }
+            }
+        }
+    }
+    let request = payload.to_string();
     let missing = format!(
         "nits is in neither Loki's Python nor uv's cache (`uv run --no-project --with {} python -c pass` fetches it once)",
         requirement()

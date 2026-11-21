@@ -13,8 +13,11 @@ use crate::git::{git_output, text_at};
 use crate::proc::{self, Deadline, RunError};
 use crate::{nits, py, resolve};
 use serde_json::{Map, Value, json};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 
 const SOURCE: &str = include_str!("../vendor/codehygiene/__init__.py");
 const WEIGHTS: &[u8] = include_bytes!("../vendor/codehygiene/weights.npz");
@@ -147,9 +150,156 @@ pub(crate) fn drive(
     Err(missing.into())
 }
 
+/// Line-oriented JSON server that unpacks `weights.npz` once and serves repeated score requests.
+const SERVER_DRIVER: &str = r#"
+import io, json, sys, types
+try:
+    import numpy
+except ImportError:
+    raise SystemExit(3)
+init = json.loads(sys.stdin.readline())
+module = types.ModuleType("codehygiene")
+sys.modules["codehygiene"] = module
+exec(compile(init["args"]["source"], "codehygiene/__init__.py", "exec"), module.__dict__)
+with numpy.load(io.BytesIO(bytes.fromhex(init["args"]["weights"]))) as archive:
+    weights = module.unpack_ternary_archive(archive["trits"], archive["vecs"], str(archive["meta"].item()))
+sys.stdout.write(json.dumps({"id": init["id"], "result": True}) + "\n")
+sys.stdout.flush()
+for raw in sys.stdin:
+    if not raw.strip():
+        continue
+    request = json.loads(raw)
+    try:
+        found = [
+            [[s.line, s.kind, s.message] for s in module.score(text, weights=weights).squiggles]
+            for text in request["args"]
+        ]
+        reply = {"id": request["id"], "result": found}
+    except Exception as error:
+        reply = {"id": request["id"], "error": f"{type(error).__name__}: {error}"}
+    sys.stdout.write(json.dumps(reply) + "\n")
+    sys.stdout.flush()
+"#;
+
+pub(crate) struct WarmWorker {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    sequence: u64,
+}
+
+impl WarmWorker {
+    pub(crate) fn start(launchers: &[Vec<String>], driver: &str, handshake: Value) -> Option<Self> {
+        for launcher in launchers {
+            let Some((program, args)) = launcher.split_first() else {
+                continue;
+            };
+            let Ok(mut child) = Command::new(program)
+                .args(args)
+                .args(["-I", "-c", driver])
+                .current_dir(std::env::temp_dir())
+                .env("OMP_NUM_THREADS", "1")
+                .env("OPENBLAS_NUM_THREADS", "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+            else {
+                continue;
+            };
+            let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+                let _ = child.kill();
+                let _ = child.wait();
+                continue;
+            };
+            let mut worker = Self {
+                child,
+                stdin,
+                stdout: BufReader::new(stdout),
+                sequence: 0,
+            };
+            if worker.request(handshake.clone()).is_ok() {
+                return Some(worker);
+            }
+            worker.close();
+        }
+        None
+    }
+
+    pub(crate) fn request(&mut self, args: Value) -> Result<Value, String> {
+        self.sequence += 1;
+        let id = self.sequence.to_string();
+        let line = json!({"id": id, "args": args}).to_string();
+        self.stdin
+            .write_all(line.as_bytes())
+            .and_then(|()| self.stdin.write_all(b"\n"))
+            .and_then(|()| self.stdin.flush())
+            .map_err(|error| error.to_string())?;
+        let mut reply = String::new();
+        let read = self.stdout.read_line(&mut reply).map_err(|error| error.to_string())?;
+        if read == 0 {
+            return Err("worker exited".into());
+        }
+        let parsed: Value = serde_json::from_str(&reply).map_err(|error| error.to_string())?;
+        if let Some(error) = parsed.get("error").and_then(Value::as_str) {
+            return Err(error.to_string());
+        }
+        parsed
+            .get("result")
+            .cloned()
+            .ok_or_else(|| "unreadable reply".to_string())
+    }
+
+    pub(crate) fn close(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for WarmWorker {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+pub(crate) fn parse_value(value: Value) -> Option<Vec<Vec<Squiggle>>> {
+    let reply: Vec<Vec<(usize, String, String)>> = serde_json::from_value(value).ok()?;
+    let squiggle = |(line, kind, message)| Squiggle { line, kind, message };
+    Some(
+        reply
+            .into_iter()
+            .map(|file| file.into_iter().map(squiggle).collect())
+            .collect(),
+    )
+}
+
+fn warm_hygiene_worker() -> &'static Mutex<Option<WarmWorker>> {
+    static WORKER: OnceLock<Mutex<Option<WarmWorker>>> = OnceLock::new();
+    WORKER.get_or_init(|| Mutex::new(None))
+}
+
 /// The model's squiggles for each text, or why it could not run.
 pub fn score(texts: &[&str], deadline: Deadline) -> Result<Vec<Vec<Squiggle>>, String> {
     let weights: String = WEIGHTS.iter().map(|byte| format!("{byte:02x}")).collect();
+    if let Ok(mut slot) = warm_hygiene_worker().lock() {
+        if slot.is_none() {
+            *slot = WarmWorker::start(
+                &launchers(),
+                SERVER_DRIVER,
+                json!({"source": SOURCE, "weights": weights}),
+            );
+        }
+        if let Some(worker) = slot.as_mut() {
+            match worker.request(json!(texts)).and_then(|val| {
+                parse_value(val).ok_or_else(|| "unreadable reply".to_string())
+            }) {
+                Ok(found) => return Ok(found),
+                Err(_) => {
+                    *slot = None;
+                }
+            }
+        }
+    }
     let request = json!({"source": SOURCE, "weights": weights, "texts": texts}).to_string();
     let missing = "needs NumPy, which neither Loki's Python nor uv's cache has (`uv run --with numpy python -c pass` fetches it once)";
     drive(&launchers(), DRIVER, &request, deadline, missing)
@@ -233,17 +383,29 @@ pub fn changed(root: &Path, base: &str, level: Level) -> Vec<String> {
     if level == Level::Off {
         return vec![];
     }
+    let resolved = resolve(root);
+    let deadline = Deadline::after(SECONDS);
     let arguments = ["diff", "--name-only", "-z", "--diff-filter=AM", base, "--"];
-    let listed = match git_output(&resolve(root), &arguments, Deadline::after(SECONDS), None) {
+    let listed = match git_output(&resolved, &arguments, deadline, None) {
         Ok(listed) => listed,
         Err(error) => return vec![format!("NOT CHECKED hygiene: {}", error.message())],
     };
-    let files: Vec<String> = String::from_utf8_lossy(&listed)
-        .split('\0')
-        .filter(|name| !name.is_empty())
-        .take(MAX_CHANGED_FILES)
-        .map(String::from)
-        .collect();
+    let untracked = match git_output(
+        &resolved,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+        deadline,
+        None,
+    ) {
+        Ok(untracked) => untracked,
+        Err(error) => return vec![format!("NOT CHECKED hygiene: {}", error.message())],
+    };
+    let mut unique = BTreeSet::new();
+    for raw in [&listed, &untracked] {
+        for name in String::from_utf8_lossy(raw).split('\0').filter(|name| !name.is_empty()) {
+            unique.insert(name.to_string());
+        }
+    }
+    let files: Vec<String> = unique.into_iter().take(MAX_CHANGED_FILES).collect();
     against(root, &files, base, level, &nits::launchers())
 }
 
