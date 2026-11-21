@@ -160,6 +160,7 @@ pub struct Running {
     pub pid: u32,
     pub server_id: String,
     pub sessions: usize,
+    pub session_dir: PathBuf,
 }
 
 fn read_records(dir: &Path, kind: &'static str, out: &mut Vec<Running>) {
@@ -192,6 +193,7 @@ fn read_records(dir: &Path, kind: &'static str, out: &mut Vec<Running>) {
             pid,
             server_id: record["serverId"].as_str().unwrap_or_default().to_string(),
             sessions: crate::catalog::list(&session_dir).len(),
+            session_dir,
         });
     }
 }

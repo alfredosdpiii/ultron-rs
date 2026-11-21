@@ -696,6 +696,7 @@ impl Hub {
                 management,
                 plugins,
                 crate::prompt_schedules::server_service(self.me.clone()),
+                crate::session_inbox::server_service(self.me.clone()),
             ],
         }
     }

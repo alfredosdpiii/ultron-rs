@@ -18,6 +18,9 @@ pub const SESSION_CONTROL: &str = "ultron.session-control";
 pub const EXTENSION_UI: &str = "ultron.extension-ui";
 pub const MODELS: &str = "ultron.models";
 pub const SCHEDULES: &str = "ultron.schedules";
+/// Server-scoped (Rust-only, unlisted): `send(sessionId, message)` prompts a session from outside it
+/// (`ultron session send`).
+pub const SESSION_INBOX: &str = "ultron.session-inbox";
 pub const SESSION_PLUGINS: &str = "ultron.session-plugins";
 pub const LEGACY_EXTENSION_COMMANDS: &str = "ultron.legacy-extension-commands";
 /// A Rust addition: the session actor's operations (`{"op": ...}`).

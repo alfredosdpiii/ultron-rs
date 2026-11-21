@@ -20,6 +20,7 @@ pub mod routes;
 pub mod server;
 pub mod session_commands;
 pub mod session_control;
+pub mod session_inbox;
 mod sockets;
 pub mod watchdog;
 pub mod worker;

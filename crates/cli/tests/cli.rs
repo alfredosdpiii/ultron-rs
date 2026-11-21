@@ -106,6 +106,7 @@ fn cli_version_is_the_recorded_typescript_version_or_newer() {
 /// (or that TypeScript dispatched without listing them).
 const RUST_COMMANDS: &str =
     "  ultron schedule <command>        Scheduled prompts of this instance's sessions (list, wake, cancel <id|name>)
+  ultron session send <id> <msg|-> Send a message to a running session as the user's prompt
   ultron memory import <options>   Import Claude Code or Codex memory notes as Ultron memory records
   ultron memory migrate <options>  Copy Hindsight's memory into memorantado once (--to memorantado, --dry-run)
   ultron judge bench <cases.json>  Measure the judge seat's backends (Jev, d1) on labelled cases

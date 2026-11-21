@@ -1844,6 +1844,7 @@ impl Stack {
                 config.skills_dir.display().to_string(),
             ),
             (kernel::env::RLM_SPILL_DIR_ENV.into(), spill_dir.display().to_string()),
+            (kernel::env::SESSION_ID_ENV.into(), self.session_id.clone()),
             // The kernel's write skills ask the host's file hooks (Loki, the sandbox's containment) first.
             (kernel::env::FILE_HOOKS_ENV.into(), "1".into()),
             // What a running cell prints reaches the host as it is written (`cell.output`): its partial output.

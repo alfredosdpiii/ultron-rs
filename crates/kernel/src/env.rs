@@ -16,6 +16,8 @@ pub const CODE_SKILLS_DIR_ENV: &str = "ULTRON_CODE_SKILLS_DIR";
 pub const BASH_YIELD_AFTER_ENV: &str = "ULTRON_BASH_YIELD_AFTER";
 pub const CELL_YIELD_AFTER_ENV: &str = "ULTRON_CELL_YIELD_AFTER";
 pub const FILE_HOOKS_ENV: &str = "ULTRON_FILE_HOOKS";
+/// The session the kernel belongs to (`ultron session send <id>` reaches it).
+pub const SESSION_ID_ENV: &str = "ULTRON_SESSION_ID";
 /// A subagent's worktree, its parent's checkout and its branch (`worktree_api.py`).
 pub const WORKTREE_ENV: &str = "ULTRON_WORKTREE";
 pub const PARENT_REPO_ENV: &str = "ULTRON_PARENT_REPO";

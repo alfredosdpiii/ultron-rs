@@ -109,6 +109,8 @@ mod daemon_review_command;
 mod daemon_schedules;
 #[path = "daemon_session_control.rs"]
 mod daemon_session_control;
+#[path = "daemon_session_send.rs"]
+mod daemon_session_send;
 #[path = "daemon_subagents.rs"]
 mod daemon_subagents;
 #[path = "daemon_traffic.rs"]

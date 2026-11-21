@@ -39,6 +39,7 @@ pub mod schedule_cli;
 pub mod semver;
 pub mod service_cli;
 pub mod session;
+pub mod session_cli;
 pub mod setup;
 pub mod setup_core;
 pub mod setup_tui;
@@ -241,6 +242,14 @@ const COMMANDS: &[Command] = &[
         proxy: true,
         typescript: false,
         run: |argv, env, out, err| service_cli::run(&argv[1..], env, out, err),
+    },
+    // `ultron session send <id> <message|->` only: any other `ultron session ...` stays a prompt.
+    Command {
+        names: &["session"],
+        package_files: false,
+        proxy: false,
+        typescript: false,
+        run: |argv, env, out, err| session_cli::run(&argv[1..], env, out, err),
     },
     // `ultron judge bench|--help` only: any other `ultron judge ...` stays a prompt.
     Command {
