@@ -668,10 +668,18 @@ Select an Antigravity model in `/models` (also `/model`) or `/settings` → **Mo
 ultron --model antigravity-cli/gemini-3.8-flash-medium
 ```
 
-Ultron starts `agy acp` in a temporary workspace for each model response. It supplies the transcript once and
-returns MCP tool requests to the current Ultron lane; switching models does not create a second Python kernel.
-Only the Ultron `rlm` call may receive a one-time ACP permission approval. Antigravity may still run built-in tools under its own sandbox policy;
-this provider is not a guarantee that every Antigravity action goes through Ultron. Claude and the defaults are unchanged.
+Ultron keeps one `agy acp` session per conversation. When agy calls `rlm`, Ultron runs the cell in the current lane's
+kernel and answers the held call, so agy continues the same turn; a new message sends only what agy has not seen.
+agy reaches Ultron through an `ultron` server that Ultron adds to `~/.gemini/config/mcp_config.json` (a small Python
+relay, `ultron-mcp-relay.py`, with `timeoutSeconds: 900`, since agy otherwise gives up on a tool call after 3 minutes);
+other entries in that file are left alone. Without a lane the relay lists no tools, so running agy yourself is
+unaffected. After compaction, an edited history or a model change, Ultron starts a fresh agy and replays the
+transcript. `ULTRON_AGY_SESSIONS=0` starts a fresh agy for every model response instead.
+
+agy keeps only about the first 70K tokens of a prompt, so every Antigravity model has a 50K context window and
+sessions compact before that point. Ultron approves only the tools of the current request when agy asks permission;
+Antigravity may still run built-in tools under its own sandbox policy, so this provider is not a guarantee that every
+Antigravity action goes through Ultron.
 
 ## Claude Code
 

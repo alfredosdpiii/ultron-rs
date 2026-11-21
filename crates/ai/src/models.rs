@@ -63,14 +63,18 @@ pub fn antigravity_valid_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'))
 }
 
+/// The input `agy` keeps of one prompt, in its own tokens and for every model: on agy 1.5.13 a code word at the end of
+/// 179K characters came back and at 224K it was lost (about 70K tokens), and an empty prompt already costs about 10.7K.
+/// As the context window it makes sessions compact at 50K - reserveTokens (33.6K by default, about 134K characters)
+/// before `crate::antigravity` has to drop history from its prompt of 3 characters per token (150K, under the 179K
+/// that survived), and it leaves Ultron's system prompt and tool schemas (about 12.5K) under 50K - 2 * reserveTokens.
+pub const ANTIGRAVITY_INPUT_TOKENS: u64 = 50_000;
+
 pub fn antigravity_model(id: &str) -> Option<Model> {
     if !antigravity_valid_id(id) {
         return None;
     }
-    // The id carries its effort (`-low`/`-high`), so no thinking levels. `agy models` reports no limits: Neon gets the
-    // 512K Google documents for Antigravity (https://antigravity.google/docs/models, not the Gemini API's 1M); other
-    // ids keep a conservative 200K.
-    let context_window = if id.starts_with("gemini-4-neon") { 512_000 } else { 200_000 };
+    // The id carries its effort (`-low`/`-high`), so no thinking levels.
     serde_json::from_value(serde_json::json!({
         "id": id,
         "name": format!("{id} (Antigravity CLI)"),
@@ -80,7 +84,7 @@ pub fn antigravity_model(id: &str) -> Option<Model> {
         "reasoning": false,
         "input": ["text"],
         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-        "contextWindow": context_window,
+        "contextWindow": ANTIGRAVITY_INPUT_TOKENS,
         "maxTokens": 32_000,
     }))
     .ok()

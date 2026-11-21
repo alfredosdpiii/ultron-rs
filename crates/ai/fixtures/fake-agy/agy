@@ -1,37 +1,120 @@
 #!/usr/bin/env python3
-"""Offline ACP peer. On its first turn request a cell; on the next, echo its tool result."""
+"""Offline ACP peer. Per-call mode: request a cell per turn (the held call is never answered). Session mode (no
+mcpServers; the bridge comes from ULTRON_AGY_BRIDGE_URL as through the config relay): run cells inside one turn,
+then answer later prompts that carry only the new messages."""
 import json
+import os
 import sys
+import threading
+import time
 import urllib.request
+
+CELLS = ["from pathlib import Path; retained = Path('fixture.txt').read_text().strip(); print(len(retained))", "print(retained[::-1])"]
+state = {"append": None, "server": None, "prompts": 0}
+
+
+def send(frame):
+    print(json.dumps(frame), flush=True)
 
 
 def answer(message, result):
-    print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
+    send({"jsonrpc": "2.0", "id": message["id"], "result": result})
 
+
+def bridge():
+    if state["server"]:
+        return state["server"]["url"], {pair["name"]: pair["value"] for pair in state["server"]["headers"]}
+    return os.environ["ULTRON_AGY_BRIDGE_URL"], {"Authorization": "Bearer " + os.environ["ULTRON_AGY_BRIDGE_TOKEN"]}
+
+
+def mcp(method, params, timeout):
+    url, headers = bridge()
+    rpc = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+    with urllib.request.urlopen(urllib.request.Request(url, json.dumps(rpc).encode(), headers), timeout=timeout) as response:
+        return json.loads(response.read())["result"]
+
+
+def permission(tool, args, expected):
+    request = {"name": tool, "title": "Run " + tool, "args": args}
+    options = [{"optionId": "allow", "kind": "allow_once"}, {"optionId": "deny", "kind": "reject_once"}]
+    send({"jsonrpc": "2.0", "id": 900, "method": "session/request_permission", "params": {"sessionId": "offline", "toolCall": request, "options": options}})
+    outcome = json.loads(sys.stdin.readline())["result"]["outcome"]
+    assert outcome.get("outcome") == expected, f"permission for {tool} {args}: {outcome}"
+
+
+def call(name, code):
+    if state["server"]:
+        permission("mcp_ultron_" + name, {"code": code}, "selected")
+        permission("mcp_other_" + name, {}, "cancelled")
+    else:
+        permission("call_mcp_tool", {"ServerName": "ultron", "ToolName": name, "Arguments": {"code": code}}, "selected")
+        permission("call_mcp_tool", {"ServerName": "other", "ToolName": name, "Arguments": {}}, "cancelled")
+    flag = os.environ.get("FAKE_AGY_CANCEL")
+    if flag and not os.path.exists(flag):
+        # Once per test: hold the call, then time it out the way agy does after its MCP call timeout.
+        open(flag, "w").close()
+        threading.Thread(target=lambda: held_call(name, code), daemon=True).start()
+        time.sleep(0.3)
+        url, headers = bridge()
+        cancel = {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1, "reason": "context deadline exceeded"}}
+        urllib.request.urlopen(urllib.request.Request(url, json.dumps(cancel).encode(), headers), timeout=15).read()
+        return {"content": [{"type": "text", "text": "timed out"}]}
+    update = {"sessionUpdate": "usage_update", "used": 11000, "size": 1048576}
+    send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "offline", "update": update}})
+    return mcp("tools/call", {"name": name, "arguments": {"code": code}}, 15 if state["server"] else 60)
+
+
+def held_call(name, code):
+    try:
+        mcp("tools/call", {"name": name, "arguments": {"code": code}}, 15)
+    except OSError:
+        pass
+
+
+def finish(message, text, usage):
+    update = {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": text}}
+    send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "offline", "update": update}})
+    answer(message, {"stopReason": "end_turn", "usage": usage})
+
+
+USAGE = {"inputTokens": 12000, "outputTokens": 47, "cachedReadTokens": 9000, "cachedWriteTokens": 100, "thoughtTokens": 7, "totalTokens": 12047}
 
 for line in sys.stdin:
     message = json.loads(line)
-    params = message["params"]
-    method = message["method"]
+    params = message.get("params", {})
+    method = message.get("method")
     if method == "initialize":
-        answer(message, {"protocolVersion": 1})
+        answer(message, {"protocolVersion": 1, "agentCapabilities": {"_meta": {"antigravity": {"systemPrompt": {"append": True}}}}})
     elif method == "session/new":
-        server, = params["mcpServers"]
+        state["server"] = (params["mcpServers"] or [None])[0]
+        state["append"] = params.get("_meta", {}).get("antigravity", {}).get("systemPrompt", {}).get("append")
         answer(message, {"sessionId": "offline"})
     elif method == "session/set_model":
+        if params["modelId"] == "offline-logged-out":
+            print("Error: not signed in. Run `agy login` first.", file=sys.stderr, flush=True)
+            time.sleep(0.2)
+            sys.exit(1)
         assert params["modelId"] == "offline-test"
         answer(message, {})
     elif method == "session/prompt":
-        transcript = json.loads(params["prompt"][0]["text"].split("\n", 1)[1])
-        results = [entry for entry in transcript if entry["role"] == "toolResult"]
-        if len(results) < 2:
-            cells = ["from pathlib import Path; retained = Path('fixture.txt').read_text().strip(); print(len(retained))", "print(retained[::-1])"]
-            rpc = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "rlm", "arguments": {"code": cells[len(results)]}}}
-            headers = {pair["name"]: pair["value"] for pair in server["headers"]}
-            urllib.request.urlopen(urllib.request.Request(server["url"], json.dumps(rpc).encode(), headers), timeout=15)
-            raise RuntimeError("The bridge executed a cell instead of handing it back to Ultron")
-        update = {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": json.dumps(results[-1]["content"])}}
-        print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "offline", "update": update}}), flush=True)
-        answer(message, {"stopReason": "end_turn"})
+        state["prompts"] += 1
+        text = params["prompt"][0]["text"]
+        assert state["append"] is None or "\nSystem: " not in text, "system prompt sent twice"
+        report = {"pid": os.getpid(), "append": state["append"], "prompts": state["prompts"], "system": "SYSTEM RULES" in text}
+        if "\nMessages: " in text:
+            report["delta"] = len(json.loads(text.split("\nMessages: ", 1)[1]))
+            finish(message, json.dumps(report), USAGE)
+            continue
+        transcript = json.loads(text.split("\nTranscript: ", 1)[1])
+        results = [entry["content"] for entry in transcript if entry["role"] == "toolResult"]
+        tools = [tool["name"] for tool in mcp("tools/list", {}, 15)["tools"]]
+        while len(results) < 2 and "rlm" in tools:
+            results.append(call("rlm", CELLS[len(results)])["content"])
+            if state["server"]:
+                raise RuntimeError("The bridge executed a cell instead of handing it back to Ultron")
+        report["echo"] = results[-1] if results else None
+        finish(message, json.dumps(report), USAGE)
+    elif method is None or method == "session/cancel":
+        continue
     else:
         raise ValueError(method)
