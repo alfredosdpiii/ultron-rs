@@ -217,9 +217,9 @@ impl Core {
             base: StreamOptions {
                 api_key: self.keys.request_key(&model.provider),
                 max_tokens: Some(if model.max_tokens == 0 {
-                    16_384
+                    65_536
                 } else {
-                    model.max_tokens.min(16_384)
+                    model.max_tokens.min(65_536)
                 }),
                 cache_retention: Some(ai::CacheRetention::None),
                 signal: Some(signal.clone()),
