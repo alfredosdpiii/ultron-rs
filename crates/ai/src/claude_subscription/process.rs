@@ -15,13 +15,16 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 /// Settings variable naming the `claude` executable (an absolute path, or a name looked up on PATH).
 pub const COMMAND_ENV: &str = "ULTRON_CLAUDE_COMMAND";
-/// `0`/`false`/`no`/`off` turns Claude Code's telemetry and feature-flag fetch off (default on).
+/// `0`/`false`/`no`/`off` turns Claude Code's telemetry and feature-flag fetch off (default off).
 pub const TELEMETRY_ENV: &str = "ULTRON_CLAUDE_TELEMETRY";
+/// Maximum concurrent `claude -p` turn processes per Ultron process (default 4).
+pub const CONCURRENCY_ENV: &str = "ULTRON_CLAUDE_CONCURRENCY";
+pub const DEFAULT_CONCURRENCY: usize = 4;
 
 /// API credentials Claude Code would bill (the API, a gateway or Foundry) instead of the plan. They are removed from
 /// the child's environment, never refused: the subscription stays primary, and `ANTHROPIC_API_KEY` is the API
@@ -505,6 +508,63 @@ fn python_str(value: Option<&Value>) -> String {
     }
 }
 
+struct ConcurrencyPool {
+    held: Mutex<usize>,
+    ready: Condvar,
+}
+
+static CONCURRENCY_POOL: LazyLock<ConcurrencyPool> = LazyLock::new(|| ConcurrencyPool {
+    held: Mutex::new(0),
+    ready: Condvar::new(),
+});
+
+struct SlotGuard;
+
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        let mut held = CONCURRENCY_POOL
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *held = held.saturating_sub(1);
+        CONCURRENCY_POOL.ready.notify_all();
+    }
+}
+
+fn max_concurrent(env: &Env) -> usize {
+    env.get(CONCURRENCY_ENV)
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(DEFAULT_CONCURRENCY)
+}
+
+/// Wait for a free `claude -p` concurrency slot, respecting cancellation and timeout.
+fn acquire_slot(limit: usize, handle: &Handle, timeout: Duration) -> Result<SlotGuard, ClaudeError> {
+    let deadline = Instant::now() + timeout;
+    let mut held = CONCURRENCY_POOL
+        .held
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    loop {
+        if handle.cancelled() {
+            return Err(ClaudeError::Cancelled);
+        }
+        if *held < limit {
+            *held += 1;
+            return Ok(SlotGuard);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(ClaudeError::Timeout);
+        }
+        let (guard, _) = CONCURRENCY_POOL
+            .ready
+            .wait_timeout(held, remaining.min(Duration::from_millis(100)))
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        held = guard;
+    }
+}
+
 /// Run one model call against native (blocking). `upstream` is where the admitted request goes.
 pub fn run(
     config: &Config,
@@ -526,6 +586,7 @@ pub fn run(
     let resolved =
         resolve_claude(config.command.as_deref(), &env).ok_or_else(|| ClaudeError::Missing(INSTALL_HINT.into()))?;
     let model = native_model(&prepared.model).map_err(ClaudeError::Invalid)?;
+    let _slot = acquire_slot(max_concurrent(&env), handle, timeout)?;
     let temp_root = config.temp_root.clone().unwrap_or_else(std::env::temp_dir);
     let mut cleanup = Cleanup {
         handle,
@@ -914,10 +975,15 @@ pub fn run(
                 continue;
             }
             let name = block["name"].as_str().unwrap_or_default().to_string();
-            // Native sometimes drops the prefix on a tool it was offered; carry the offered name so replayed
-            // history does not teach the slip back to the model.
+            // Native sometimes drops the prefix (or only the server segment `ultron__`) on a tool it was offered;
+            // carry the offered name so replayed history does not teach the slip back to the model.
             if names.contains(name.as_str()) {
                 block["name"] = json!(format!("{PREFIX}{name}"));
+            } else if let Some(rest) = name.strip_prefix("mcp__")
+                && !name.starts_with(PREFIX)
+                && names.contains(rest)
+            {
+                block["name"] = json!(format!("{PREFIX}{rest}"));
             }
             let host = block["name"].as_str().unwrap_or_default();
             calls.push(NativeCall {

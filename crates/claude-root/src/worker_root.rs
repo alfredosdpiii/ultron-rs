@@ -25,10 +25,10 @@ fn model_error(model: &str) -> String {
     )
 }
 
-/// A bare Claude model or alias (`/^(claude-|opus|sonnet|haiku|fable)/i`).
+/// A bare Claude model or alias (`/^(claude-|opus|sonnet|haiku|fable|mythos)/i`).
 fn claude_alias(model: &str) -> bool {
     let lower = model.to_lowercase();
-    ["claude-", "opus", "sonnet", "haiku", "fable"]
+    ["claude-", "opus", "sonnet", "haiku", "fable", "mythos"]
         .iter()
         .any(|prefix| lower.starts_with(prefix))
 }

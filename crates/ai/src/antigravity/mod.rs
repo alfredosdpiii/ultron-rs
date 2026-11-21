@@ -239,7 +239,17 @@ impl Agy {
             )));
         }
         let bridge = bridge::Bridge::start(manifest).await?;
-        let mut command = Command::new("agy");
+        let path_env = env
+            .and_then(|e| e.get("PATH").cloned())
+            .or_else(|| std::env::var("PATH").ok())
+            .unwrap_or_default();
+        let home_env = env
+            .and_then(|e| e.get("HOME").cloned())
+            .or_else(|| std::env::var("HOME").ok())
+            .map(std::path::PathBuf::from);
+        let agy_bin =
+            catalog::resolve_agy(&path_env, home_env.as_deref()).unwrap_or_else(|| std::path::PathBuf::from("agy"));
+        let mut command = Command::new(agy_bin);
         command
             .args([
                 "acp",

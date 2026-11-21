@@ -800,8 +800,12 @@ fn plan_request(
     if system.is_empty() {
         system = NEUTRAL_SYSTEM_PROMPT.into();
     }
-    let resume_id = session_id.and_then(|s| s.strip_prefix("resume:")).filter(|s| !s.is_empty());
-    let create_id = session_id.and_then(|s| s.strip_prefix("create:")).filter(|s| !s.is_empty());
+    let resume_id = session_id
+        .and_then(|s| s.strip_prefix("resume:"))
+        .filter(|s| !s.is_empty());
+    let create_id = session_id
+        .and_then(|s| s.strip_prefix("create:"))
+        .filter(|s| !s.is_empty());
     let mut system_prompt_file: Option<TempPromptFile> = None;
     if resume_id.is_none() && system.encode_utf16().count() > MAX_SYSTEM_PROMPT_ARG_CHARS {
         if capabilities.flags.contains("--system-prompt-file")
@@ -883,6 +887,19 @@ fn plan_request(
         args.push(format!("--json-schema={}", jsrt::json::stringify(schema)));
     }
     let mut env = base_env.clone();
+    // Same isolation & non-SDK caller identity as claude-subscription: avoids sdk-cli's ~2x heavier subscription
+    // metering, suppresses MEMORY.md / managed CLAUDE.md injection, and stops background title/update requests.
+    for (k, v) in crate::claude_subscription::process::ALWAYS_QUIET
+        .iter()
+        .chain(crate::claude_subscription::process::CALLER_IDENTITY)
+        .chain(&[
+            ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
+            ("CLAUDE_CODE_DISABLE_CLAUDE_MDS", "1"),
+        ])
+    {
+        env.insert((*k).into(), (*v).into());
+    }
+    crate::claude_subscription::process::reap_orphaned_refresh_lock(&env);
     if let Some(max_tokens) = payload["max_tokens"].as_u64()
         && max_tokens > 0
         && max_tokens != default_max_tokens
@@ -1613,7 +1630,11 @@ mod tests {
             warnings: Vec::new(),
         };
         let plan = plan_request(model, &payload, &Env::new(), 8192, &caps, false, None).expect("plan");
-        let idx = plan.args.iter().position(|a| a == "--system-prompt-file").expect("flag");
+        let idx = plan
+            .args
+            .iter()
+            .position(|a| a == "--system-prompt-file")
+            .expect("flag");
         let path = std::path::PathBuf::from(&plan.args[idx + 1]);
         assert_eq!(std::fs::read_to_string(&path).expect("temp file"), big);
         assert_eq!(plan.message["message"]["content"].as_array().unwrap().len(), 1);

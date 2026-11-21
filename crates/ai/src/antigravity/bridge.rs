@@ -108,6 +108,7 @@ async fn read_request(reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>) ->
     let method = parts.next()?.to_string();
     let path = parts.next()?.to_string();
     let mut length = 0usize;
+    let mut chunked = false;
     let mut authorization = None;
     loop {
         line.clear();
@@ -120,15 +121,50 @@ async fn read_request(reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>) ->
         match name.trim().to_ascii_lowercase().as_str() {
             "content-length" => length = value.trim().parse().ok()?,
             "authorization" => authorization = Some(value.trim().to_string()),
-            "transfer-encoding" => return None,
+            "transfer-encoding" => {
+                if value.trim().eq_ignore_ascii_case("chunked") {
+                    chunked = true;
+                } else {
+                    return None;
+                }
+            }
             _ => {}
         }
     }
-    if length > MAX_BODY {
-        return None;
-    }
-    let mut body = vec![0; length];
-    reader.read_exact(&mut body).await.ok()?;
+    let body = if chunked {
+        let mut out = Vec::new();
+        loop {
+            line.clear();
+            reader.read_line(&mut line).await.ok().filter(|n| *n > 0)?;
+            let size = usize::from_str_radix(line.trim().split(';').next()?, 16).ok()?;
+            if size == 0 {
+                // Consume trailer headers through the empty line.
+                loop {
+                    line.clear();
+                    if reader.read_line(&mut line).await.ok()? <= 2 {
+                        break;
+                    }
+                }
+                break;
+            }
+            if out.len().saturating_add(size) > MAX_BODY {
+                return None;
+            }
+            let start = out.len();
+            out.resize(start + size, 0);
+            reader.read_exact(&mut out[start..]).await.ok()?;
+            let mut crlf = [0u8; 2];
+            reader.read_exact(&mut crlf).await.ok()?;
+        }
+        out
+    } else {
+        if length > MAX_BODY {
+            return None;
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).await.ok()?;
+        body
+    };
     Some(Request {
         method,
         path,
@@ -142,11 +178,17 @@ fn rpc_result(id: &Value, result: Value) -> Reply {
 }
 
 fn answer(inventory: &Inventory, request: &Request) -> Reply {
-    if request.method != "POST" || request.path != PATH {
+    if request.path != PATH {
         return Reply::Status(404);
     }
     if request.authorization.as_deref() != Some(inventory.authorization.as_str()) {
         return Reply::Status(401);
+    }
+    match request.method.as_str() {
+        "GET" => return Reply::Status(405),
+        "DELETE" => return Reply::Status(200),
+        "POST" => {}
+        _ => return Reply::Status(405),
     }
     let Ok(message) = serde_json::from_slice::<Value>(&request.body) else {
         return Reply::Status(400);

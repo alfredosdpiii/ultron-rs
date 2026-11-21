@@ -14,9 +14,27 @@ struct Snapshot {
     models: Vec<Model>,
 }
 
+const HOME_PREFIXES: &[&str] = &[".gemini/antigravity-cli/bin", ".local/bin", "bin"];
+const SYSTEM_PREFIXES: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin"];
+
+/// Locate `agy` on `path`, falling back to its standard install directories under `home` and system prefixes
+/// (a systemd service or desktop launch often inherits a bare PATH).
+pub fn resolve_agy(path: &str, home: Option<&Path>) -> Option<PathBuf> {
+    if let Some(found) = jsrt::process::which("agy", path) {
+        return Some(found);
+    }
+    let prefixes: Vec<String> = home
+        .filter(|h| h.is_absolute())
+        .into_iter()
+        .flat_map(|h| HOME_PREFIXES.iter().map(move |p| h.join(p).display().to_string()))
+        .chain(SYSTEM_PREFIXES.iter().map(|p| (*p).to_string()))
+        .collect();
+    jsrt::process::which("agy", &prefixes.join(":"))
+}
+
 pub fn discover(path: &str, home: &Path) -> Vec<Model> {
     static CACHE: Mutex<Option<Snapshot>> = Mutex::new(None);
-    let Some(executable) = jsrt::process::which("agy", path) else {
+    let Some(executable) = resolve_agy(path, Some(home)) else {
         return vec![];
     };
     let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
