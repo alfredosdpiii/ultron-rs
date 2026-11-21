@@ -515,6 +515,7 @@ pub const OPS: &[Op] = &[
     op("gates.list", "services::gates", &[], &[]),
     op("refinements.activate", "services::local", &["id"], &[]),
     op("refinements.list", "services::local", &[], &[]),
+    op("refinements.promote", "services::local", &["id"], &[]),
     op(
         "refinements.propose",
         "services::local",

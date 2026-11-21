@@ -943,10 +943,10 @@ impl Runtime {
             ),
             None => None,
         };
+        let shared_memory = memory.clone().map(Arc::new);
         let skills_config = config.clone();
         let no_skills = self.services.session.no_skills;
         let extra = self.services.resources.clone();
-        let loader: kernel_apis::SkillLoader = Arc::new(move || Ok(skill_sources(&skills_config, &extra, no_skills)));
         // Skill test kernels start from the session's environment, as the lanes' kernels do.
         let code = CodeSkills::new(CodeSkillsOptions::for_session(
             &config.skills_dir,
@@ -966,11 +966,24 @@ impl Runtime {
         // Refinements follow the conversation branch (`mainBranch`): anchored at the main lane's tip, read back only
         // while the anchor is on the branch in use (A07).
         let branch = values.as_ref().map(crate::session_modules::main_branch);
-        let refinements = services::instruction_hook(local.clone(), branch.clone());
+        let refinements = services::instruction_hook_with_memory(local.clone(), branch.clone(), shared_memory.clone());
         let ledger = crate::auto_refine::Ledger {
             services: local.clone(),
             branch: branch.clone(),
+            memory: shared_memory.clone(),
         };
+        let skill_ledger = ledger.clone();
+        let loader: kernel_apis::SkillLoader = Arc::new(move || {
+            let mut sources = skill_sources(&skills_config, &extra, no_skills);
+            for (target, content) in skill_ledger.active_skills() {
+                if let Some(source) = refined_skill_source(&target, content)
+                    && !sources.iter().any(|existing| existing.name == source.name)
+                {
+                    sources.push(source);
+                }
+            }
+            Ok(sources)
+        });
         // `session_start` of the MCP extension: eager servers connect in the background; configuration errors were
         // reported with the runtime's diagnostics.
         let gateway = config.mcp_gateway();
@@ -1029,10 +1042,7 @@ impl Runtime {
         });
         let _ = procedures.interrupt_orphans();
         let apis = ApiModules {
-            local: Arc::new(services::LocalServicesModule {
-                services: local,
-                branch,
-            }),
+            local: services::local_module(local, branch, shared_memory),
             gates: Arc::new(services::ReleaseGateModule::new(modules("release-gates"), None)),
             procedures,
             skills,
@@ -1475,6 +1485,39 @@ impl Runtime {
         .recording_cell_writes(!config.ts_guide)
         .sandboxed(&config.settings, &config.home, Some(&tmp_dir)))
     }
+}
+
+/// Converts an active validated `skill:*` refinement's `SKILL.md` text into a [`SkillSource`] for `skills.*`.
+fn refined_skill_source(target: &str, content: String) -> Option<SkillSource> {
+    let trimmed = content.trim_start();
+    let rest = trimmed
+        .strip_prefix("---\r\n")
+        .or_else(|| trimmed.strip_prefix("---\n"))?;
+    let end = rest.find("\n---").or_else(|| rest.find("\r\n---"))?;
+    let front = &rest[..end];
+    let mut name = None;
+    let mut description = None;
+    for line in front.lines() {
+        let line = line.trim();
+        if let Some(val) = line.strip_prefix("name:") {
+            let val = val.trim();
+            if !val.is_empty() {
+                name = Some(val.to_string());
+            }
+        } else if let Some(val) = line.strip_prefix("description:") {
+            let val = val.trim();
+            if !val.is_empty() {
+                description = Some(val.to_string());
+            }
+        }
+    }
+    Some(SkillSource {
+        name: name?,
+        description: description?,
+        file_path: format!("refinement://{target}"),
+        content,
+        disable_model_invocation: false,
+    })
 }
 
 /// The skill catalog `skills.*` serves: the session's skills with their file contents.

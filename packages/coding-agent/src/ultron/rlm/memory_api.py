@@ -47,6 +47,7 @@ class Refinements:
         return await self._bridge.request('refinements.propose', {'kind':kind,'target':target,'baseVersion':base_version,'content':content,'evidence':evidence,'scope':scope})
     async def list(self): return await self._bridge.request('refinements.list')
     async def activate(self, id): return await self._bridge.request('refinements.activate', {'id':id})
+    async def promote(self, id): return await self._bridge.request('refinements.promote', {'id':id})
     async def rollback(self, id): return await self._bridge.request('refinements.rollback', {'id':id})
     async def reject(self, id): return await self._bridge.request('refinements.reject', {'id':id})
 

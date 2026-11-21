@@ -15,3 +15,5 @@ mod hook_and_values;
 mod kernel_fixture;
 #[path = "local_fixture.rs"]
 mod local_fixture;
+#[path = "project_refinements.rs"]
+mod project_refinements;

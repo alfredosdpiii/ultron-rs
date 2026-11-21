@@ -2512,13 +2512,68 @@ impl Core {
         let Some((id, summary)) = newest.filter(|(_, summary)| !summary.trim().is_empty()) else {
             return;
         };
-        if !self.auto_refine.start_pass() {
+        if !self.auto_refine.start_pass_for(&id, false) {
             return;
         }
         let summarizer = self.summarizer();
-        crate::auto_refine::propose(self.lane.stack.ledger.clone(), id, summary, move |system, prompt| {
-            summarizer.ask(system, prompt)
-        });
+        let agent_dir = Some(self.runtime.config.agent_dir.clone());
+        crate::auto_refine::propose(
+            self.lane.stack.ledger.clone(),
+            format!("compaction:{id}"),
+            summary,
+            agent_dir,
+            move |system, prompt| summarizer.ask(system, prompt),
+        );
+    }
+
+    /// Propose refinements from the uncompacted session tail on idle or close, when automatic refinement is on and
+    /// memorantado is configured (so durable lessons persist into future sessions even if a session never compacts).
+    fn refine_tail(&self, in_background: bool) {
+        if !self.auto_refine.on
+            || !self
+                .lane
+                .stack
+                .ledger
+                .memory
+                .as_ref()
+                .is_some_and(|m| m.supports_project_refinements())
+        {
+            return;
+        }
+        let (session_id, entries) = {
+            let session = lock_session(&self.session);
+            (
+                session.id().to_string(),
+                session.branch_entries(MAIN_LANE).unwrap_or_default(),
+            )
+        };
+        let cwd = self.runtime.config.cwd.display().to_string();
+        let Some(keep) = crate::auto_memory::tail_keep(&session_id, &cwd, &entries) else {
+            return;
+        };
+        if !self.auto_refine.start_pass_for(&keep.through, !in_background) {
+            return;
+        }
+        let summarizer = self.summarizer();
+        let agent_dir = self.runtime.config.agent_dir.clone();
+        let source_ref = format!("tail:{}", keep.through);
+        if in_background {
+            crate::auto_refine::propose(
+                self.lane.stack.ledger.clone(),
+                source_ref,
+                keep.source,
+                Some(agent_dir),
+                move |system, prompt| summarizer.ask(system, prompt),
+            );
+        } else {
+            let _ = crate::auto_refine::propose_sync(
+                &self.lane.stack.ledger,
+                &source_ref,
+                &keep.source,
+                Some(&agent_dir),
+                move |system, prompt| summarizer.ask(system, prompt),
+            );
+        }
     }
 
     /// After a completed compaction: distil its summary into long-term memory, when automatic retain is on
@@ -2541,10 +2596,12 @@ impl Core {
         }
     }
 
-    /// Keep what no compaction summarized in long-term memory, when automatic retain is on (crate::auto_memory).
+    /// Keep what no compaction summarized in long-term memory, when automatic retain is on (crate::auto_memory), and
+    /// extract project refinements from the tail when memorantado is configured (crate::auto_refine).
     /// `in_background` when the session stays open (it went quiet): the call does not hold the session up, and its
     /// outcome is shown. As it closes, the keep waits at most [`crate::auto_memory::CLOSE_TIMEOUT`] and is not shown.
     pub(super) fn retain_tail(&self, in_background: bool) {
+        self.refine_tail(in_background);
         if !self.auto_memory.retain {
             return;
         }

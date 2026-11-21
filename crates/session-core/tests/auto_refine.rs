@@ -134,3 +134,289 @@ fn session_core_auto_refine_off_runs_the_unmodified_harness() {
             .any(|r| r["messages"].to_string().contains("[refinements]"))
     );
 }
+
+#[test]
+fn session_core_auto_refine_keyed_superseding_recency_limit_and_logging() {
+    use kernel_apis::artifacts::MemoryKeyedDocuments;
+    use services::LocalServices;
+    use session_core::auto_refine::{Ledger, MESSAGE_LIMIT, message, propose_sync};
+    use std::sync::Arc;
+
+    let services = Arc::new(LocalServices::worker(Box::new(MemoryKeyedDocuments::default())));
+    let ledger = Ledger {
+        services: services.clone(),
+        branch: None,
+        memory: None,
+    };
+    let dir = tempfile::tempdir().unwrap();
+
+    // First pass proposes under semantic key `test-runner` (v1).
+    let out1 = propose_sync(&ledger, "compaction:c1", SUMMARY, Some(dir.path()), |_, _| {
+        Ok(json!({
+            "proposals": [{
+                "key": "test-runner",
+                "text": "Run tests with scripts/nextest.sh.",
+                "quote": "always run scripts/nextest.sh, never cargo test",
+                "rationale": "user correction",
+                "expectedOutcome": "faster tests",
+            }],
+            "rollback": [],
+            "used": [],
+        })
+        .to_string())
+    });
+    assert_eq!(out1.proposed, 1);
+    assert_eq!(ledger.active().len(), 1);
+    assert_eq!(ledger.active()[0]["version"], 1);
+    assert_eq!(ledger.active()[0]["target"], "instruction:main.test-runner");
+
+    // Second pass with the same key supersedes v1 -> v2 instead of colliding.
+    let out2 = propose_sync(&ledger, "compaction:c2", SUMMARY, Some(dir.path()), |_, _| {
+        Ok(json!({
+            "proposals": [{
+                "key": "test-runner",
+                "text": "Always run scripts/nextest.sh --locked.",
+                "quote": "always run scripts/nextest.sh, never cargo test",
+                "rationale": "refined command",
+                "expectedOutcome": "locked runs",
+            }],
+            "rollback": [],
+            "used": [],
+        })
+        .to_string())
+    });
+    assert_eq!(out2.proposed, 1);
+    let active = ledger.active();
+    assert_eq!(active.len(), 1, "superseded instead of duplicating");
+    assert_eq!(active[0]["version"], 2);
+    assert_eq!(active[0]["text"], "Always run scripts/nextest.sh --locked.");
+
+    // Adding more than MESSAGE_LIMIT refinements delivers the NEWEST ones (not oldest).
+    for i in 0..(MESSAGE_LIMIT + 3) {
+        let p = services
+            .handle(
+                "refinements.propose",
+                &json!({
+                    "kind": "instruction",
+                    "target": format!("instruction:main.extra-{i}"),
+                    "baseVersion": 0,
+                    "content": format!("Rule {i}"),
+                    "evidence": [{"ref": "compaction:c3"}],
+                }),
+                None,
+            )
+            .unwrap();
+        services
+            .handle("refinements.activate", &json!({"id": p["id"]}), None)
+            .unwrap();
+    }
+    let active = ledger.active();
+    let msg = message(&active, None, 100).unwrap();
+    let content = msg["content"].as_str().unwrap();
+    assert!(
+        content.contains(&format!("Rule {}", MESSAGE_LIMIT + 2)),
+        "newest refinement must be delivered: {content}"
+    );
+    assert!(
+        !content.contains("Rule 0"),
+        "oldest refinements beyond MESSAGE_LIMIT are trimmed first: {content}"
+    );
+
+    // Log file recorded both passes.
+    let log = std::fs::read_to_string(dir.path().join("memory/auto-refine.log")).unwrap();
+    assert!(log.contains("source=compaction:c1 proposed=1"));
+    assert!(log.contains("source=compaction:c2 proposed=1"));
+}
+
+#[test]
+fn session_core_auto_refine_promotes_to_memorantado_confirms_rolls_back_and_loads_skills() {
+    use kernel::Signal;
+    use kernel::store::MemoryDocumentStore;
+    use kernel_apis::artifacts::MemoryKeyedDocuments;
+    use kernel_apis::{MemoryBackend, MemoryService, worker_gate};
+    use serde_json::Map;
+    use services::LocalServices;
+    use session_core::auto_refine::{Ledger, message, propose_sync};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct FakeMem {
+        claims: Mutex<Vec<Value>>,
+        confirmed: Mutex<Vec<String>>,
+        next_id: Mutex<u64>,
+    }
+
+    impl MemoryBackend for FakeMem {
+        fn namespace(&self) -> String {
+            "fake-mem".into()
+        }
+        fn scope_tags(&self) -> Map<String, Value> {
+            json!({"session": ["ultron:session:s1"], "project": ["ultron:project:p1"]})
+                .as_object()
+                .cloned()
+                .unwrap()
+        }
+        fn supports(&self, call: &str) -> bool {
+            matches!(call, "recall" | "retain" | "get" | "delete" | "fileEvidence" | "claims")
+        }
+        fn recall(&self, _: &Value, _: &Signal) -> Result<Value, String> {
+            Ok(json!({"results": []}))
+        }
+        fn retain(&self, request: &Value, _: &Signal) -> Result<Value, String> {
+            let mut claims = self.claims.lock().unwrap();
+            let mut next = self.next_id.lock().unwrap();
+            for item in request["items"].as_array().into_iter().flatten() {
+                let key = item["document_id"].as_str().unwrap_or_default().to_string();
+                for existing in claims.iter_mut() {
+                    if existing["key"] == key.as_str() && existing["status"] == "active" {
+                        existing["status"] = "superseded".into();
+                    }
+                }
+                *next += 1;
+                claims.push(json!({
+                    "id": next.to_string(),
+                    "key": key,
+                    "kind": "refinement",
+                    "text": item["content"],
+                    "tags": item["tags"],
+                    "metadata": item["metadata"],
+                    "status": "active",
+                    "createdAt": item["timestamp"],
+                    "lastConfirmedAt": Value::Null,
+                }));
+            }
+            Ok(json!({"success": true, "async": false}))
+        }
+        fn get(&self, _: &str, _: &Signal) -> Result<Value, String> {
+            Ok(Value::Null)
+        }
+        fn delete(&self, _: &str, _: &Signal) -> Result<Value, String> {
+            Ok(json!({"success": true}))
+        }
+        fn operation(&self, _: &str, _: &Signal) -> Result<Value, String> {
+            Ok(json!({"status": "completed"}))
+        }
+        fn list(&self, request: &Value, _: &Signal) -> Result<Value, String> {
+            let want_tags = &request["tags"];
+            let want_status = request["status"].as_str();
+            let claims: Vec<Value> = self
+                .claims
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| &c["tags"] == want_tags && want_status.is_none_or(|s| c["status"] == s))
+                .cloned()
+                .collect();
+            Ok(json!({"claims": claims}))
+        }
+        fn curate(&self, unit_id: &str, request: &Value, _: &Signal) -> Result<Value, String> {
+            let mut claims = self.claims.lock().unwrap();
+            let claim = claims.iter_mut().find(|c| c["id"] == unit_id).ok_or("UNKNOWN_MEMORY")?;
+            claim["status"] = request["state"].clone();
+            Ok(json!({"id": unit_id, "state": request["state"]}))
+        }
+        fn confirm(&self, id: &str, _: &Value, _: &Signal) -> Result<Value, String> {
+            self.confirmed.lock().unwrap().push(id.to_string());
+            Ok(json!({"id": id}))
+        }
+    }
+
+    let backend = Arc::new(FakeMem::default());
+    let memory =
+        Arc::new(MemoryService::new(Arc::new(MemoryDocumentStore::default()), backend.clone(), worker_gate()).unwrap());
+
+    // Session 1 proposes one always-on durable refinement and one situational (pathGlobs) durable refinement.
+    let s1 = Ledger {
+        services: Arc::new(LocalServices::worker(Box::new(MemoryKeyedDocuments::default()))),
+        branch: None,
+        memory: Some(memory.clone()),
+    };
+    let out = propose_sync(&s1, "tail:t1", SUMMARY, None, |_, _| {
+        Ok(json!({
+            "proposals": [
+                {
+                    "key": "test-runner",
+                    "text": "Always run scripts/nextest.sh.",
+                    "quote": "always run scripts/nextest.sh, never cargo test",
+                    "rationale": "user correction",
+                    "expectedOutcome": "consistent tests",
+                    "durable": true,
+                    "situation": "running tests",
+                },
+                {
+                    "key": "parser-only",
+                    "text": "Run parser fuzzing on parser edits.",
+                    "quote": "Ship the parser.",
+                    "rationale": "parser invariant",
+                    "expectedOutcome": "no parser regressions",
+                    "durable": true,
+                    "pathGlobs": ["crates/parser/**/*.rs"],
+                }
+            ],
+            "rollback": [],
+            "used": [],
+        })
+        .to_string())
+    });
+    assert_eq!(out.proposed, 2);
+    assert_eq!(out.promoted, 2);
+
+    // Session 2 (fresh empty local ledger) sees ONLY the always-on project refinement (not the pathGlobs one).
+    let s2 = Ledger {
+        services: Arc::new(LocalServices::worker(Box::new(MemoryKeyedDocuments::default()))),
+        branch: None,
+        memory: Some(memory.clone()),
+    };
+    let active = s2.active();
+    assert_eq!(
+        active.len(),
+        1,
+        "situational pathGlobs refinement excluded from always-on: {active:#?}"
+    );
+    assert_eq!(active[0]["id"], "project:1");
+    assert_eq!(active[0]["scope"], "project");
+    let msg = message(&active, None, 10).unwrap();
+    assert!(
+        msg["content"]
+            .as_str()
+            .unwrap()
+            .contains("[project:1 project] Always run scripts/nextest.sh.")
+    );
+
+    // Confirming `project:1` records confirmation in memorantado; rolling it back retires it across sessions.
+    let out2 = propose_sync(&s2, "compaction:c1", SUMMARY, None, |_, _| {
+        Ok(json!({"proposals": [], "rollback": [], "used": ["project:1"]}).to_string())
+    });
+    assert_eq!(out2.confirmed, 1);
+    assert_eq!(*backend.confirmed.lock().unwrap(), vec!["1".to_string()]);
+
+    let out3 = propose_sync(&s2, "compaction:c2", SUMMARY, None, |_, _| {
+        Ok(json!({"proposals": [], "rollback": ["project:1"], "used": []}).to_string())
+    });
+    assert_eq!(out3.rolled_back, 1);
+    assert!(s2.active().is_empty(), "retired project refinement is gone");
+
+    // Active skill refinements are surfaced by `active_skills()`.
+    let skill_md =
+        "---\nname: nextest-runner\ndescription: Run workspace tests safely\n---\nAlways use scripts/nextest.sh.";
+    let p = s2
+        .services
+        .handle(
+            "refinements.propose",
+            &json!({
+                "kind": "skill",
+                "target": "skill:nextest-runner",
+                "baseVersion": 0,
+                "content": skill_md,
+                "evidence": [{"ref": "compaction:c2"}],
+            }),
+            None,
+        )
+        .unwrap();
+    s2.services
+        .handle("refinements.activate", &json!({"id": p["id"]}), None)
+        .unwrap();
+    let skills = s2.active_skills();
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].0, "skill:nextest-runner");
+}
