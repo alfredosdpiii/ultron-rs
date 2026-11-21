@@ -69,6 +69,35 @@ const ANTI_SLOP: [(&str, &[u8]); 20] = [
     asset!("vendor/anti-slop/shared/reflect-method.ts"),
 ];
 
+/// `vendor/landmines`, installed as `.loki/oxlint/landmines`.
+const LANDMINES: [(&str, &[u8]); 18] = [
+    asset!("vendor/landmines/LICENSE"),
+    asset!("vendor/landmines/UPSTREAM.md"),
+    asset!("vendor/landmines/lib/allowlist.ts"),
+    asset!("vendor/landmines/lib/test-owner.ts"),
+    asset!("vendor/landmines/plugins/structure.ts"),
+    asset!("vendor/landmines/plugins/style.ts"),
+    asset!("vendor/landmines/plugins/testing.ts"),
+    asset!("vendor/landmines/plugins/types.ts"),
+    asset!("vendor/landmines/rules/colocated-tests.ts"),
+    asset!("vendor/landmines/rules/no-comments.ts"),
+    asset!("vendor/landmines/rules/no-explicit-return-types.ts"),
+    asset!("vendor/landmines/rules/no-fixed-sleep.ts"),
+    asset!("vendor/landmines/rules/no-flake-masking.ts"),
+    asset!("vendor/landmines/rules/no-test-doubles.ts"),
+    asset!("vendor/landmines/rules/no-unsignaled-poll.ts"),
+    asset!("vendor/landmines/rules/package-exports.ts"),
+    asset!("vendor/landmines/rules/strict-msw.ts"),
+    asset!("vendor/landmines/rules/test-file-names.ts"),
+];
+
+/// `vendor/codehygiene`, installed as `.loki/vendor/codehygiene`.
+const CODEHYGIENE: [(&str, &[u8]); 3] = [
+    asset!("vendor/codehygiene/UPSTREAM.md"),
+    asset!("vendor/codehygiene/__init__.py"),
+    asset!("vendor/codehygiene/weights.npz"),
+];
+
 /// An error loki.py's `init` catches (`OSError`, `ValueError`): printed as `loki: {error}`, exit 1.
 pub type InitError = String;
 
@@ -304,6 +333,18 @@ pub fn install_target(target: &str, force: bool) -> Result<(), InitError> {
         &ANTI_SLOP,
         "vendor/anti-slop/",
         &target.join(".loki/oxlint/anti-slop"),
+        force,
+    )?;
+    copy_owned_tree(
+        &LANDMINES,
+        "vendor/landmines/",
+        &target.join(".loki/oxlint/landmines"),
+        force,
+    )?;
+    copy_owned_tree(
+        &CODEHYGIENE,
+        "vendor/codehygiene/",
+        &target.join(".loki/vendor/codehygiene"),
         force,
     )?;
     let config_path = target.join(".loki/loki.json");

@@ -2,11 +2,11 @@
 	"version": "0.1.9",
 	"source": {
 		"kind": "git",
-		"commit": "d7a6fa01f290842c4926ad9c6cc6c29e96f0503e",
+		"commit": "2af11b9",
 		"repository": "https://github.com/alfredosdpiii/loki"
 	},
 	"files": {
-		"loki.py": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
+		"loki.py": "4f0487b46802d6bb9ae002289d9b6480cee4dae8ac0190ff7e5744bcbd9d025a",
 		"templates/loki.json": "a397f86c9287ad96505a2e31ecaf898afdc0f3c8b0f83b3a9e6ef13d12507f88",
 		"LICENSE": "107c3b93ec7cdd2aa8314e6184c176d794899630266774c204f870a3198e75fe"
 	}
