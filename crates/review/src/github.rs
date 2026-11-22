@@ -9,6 +9,7 @@
 //! - Request bodies are written by serde_json (JavaScript's JSON.stringify differs only for non-integral numbers).
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use indexmap::IndexMap;
 use regex::Regex;
@@ -322,6 +323,21 @@ pub struct RequestOptions {
 
 pub type EnvSource = Arc<dyn Fn() -> Result<Env, Error> + Send + Sync>;
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
+type SleepFn = Arc<dyn Fn(u64) + Send + Sync>;
+
+/// Backoff delays (ms) for transient `GET` transport/gateway failures; covers the 0-3 s connect blip window.
+const TRANSIENT_BACKOFF_MS: [u64; 3] = [500, 1_500, 3_000];
+
+fn is_transient_failure(method: &str, error: &Error) -> bool {
+    if !method.eq_ignore_ascii_case("GET") {
+        return false;
+    }
+    match error {
+        Error::GitHub { status: 0, message } => message.contains("error connecting to"),
+        Error::GitHub { status: 502..=504, .. } => true,
+        _ => false,
+    }
+}
 
 /// One account's view of GitHub.
 #[derive(Clone)]
@@ -330,6 +346,7 @@ pub struct GitHub {
     runner: Arc<dyn Runner>,
     env: EnvSource,
     now: Clock,
+    sleep: SleepFn,
 }
 
 const THREADS_QUERY: &str = "query($owner:String!,$repo:String!,$number:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{id isResolved comments(first:1){totalCount nodes{databaseId reactionGroups{content reactors{totalCount}}}}}}}}}";
@@ -346,6 +363,7 @@ impl GitHub {
             runner,
             env,
             now: now.unwrap_or_else(|| Arc::new(jsrt::date::now_ms)),
+            sleep: Arc::new(|ms| std::thread::sleep(Duration::from_millis(ms))),
         }
     }
 
@@ -353,7 +371,8 @@ impl GitHub {
         format!("repos/{}/{}", r.owner, r.repo)
     }
 
-    /// One API request. Fails with [`Error::RateLimit`] when GitHub says to wait, [`Error::GitHub`] otherwise.
+    /// One API request, retrying transient `GET` connect and 502/503/504 failures with bounded backoff.
+    /// Fails with [`Error::RateLimit`] when GitHub says to wait, [`Error::GitHub`] otherwise.
     pub fn request(&self, method: &str, path: &str, options: &RequestOptions) -> Result<ApiResponse, Error> {
         let mut argv: Vec<String> = [
             "gh",
@@ -381,7 +400,32 @@ impl GitHub {
             input: options.body.as_ref().map(|body| body.to_string()),
             ..RunOptions::default()
         };
-        let result = self.runner.run(&argv, &run);
+        for attempt in 0..=TRANSIENT_BACKOFF_MS.len() {
+            match self.request_once(method, path, options, &argv, &run) {
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    let Some(&delay_ms) = TRANSIENT_BACKOFF_MS.get(attempt) else {
+                        return Err(error);
+                    };
+                    if !is_transient_failure(method, &error) {
+                        return Err(error);
+                    }
+                    (self.sleep)(delay_ms);
+                }
+            }
+        }
+        unreachable!("retry loop always returns on the final attempt")
+    }
+
+    fn request_once(
+        &self,
+        method: &str,
+        path: &str,
+        options: &RequestOptions,
+        argv: &[String],
+        run: &RunOptions,
+    ) -> Result<ApiResponse, Error> {
+        let result = self.runner.run(argv, run);
         let parsed = parse_api_output(&result.stdout);
         if parsed.status == 0 {
             let detail = if result.stderr.is_empty() {
@@ -1043,5 +1087,142 @@ impl GitHub {
     pub fn resolve_thread(&self, thread_id: &str) -> Result<(), Error> {
         self.graphql(RESOLVE_MUTATION, json!({ "threadId": thread_id }))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::runner::RunResult;
+
+    struct QueueRunner {
+        replies: Mutex<VecDeque<RunResult>>,
+        attempts: Mutex<usize>,
+    }
+
+    impl Runner for QueueRunner {
+        fn run(&self, _argv: &[String], _options: &RunOptions) -> RunResult {
+            *self.attempts.lock().expect("attempts") += 1;
+            self.replies
+                .lock()
+                .expect("replies")
+                .pop_front()
+                .expect("scripted reply")
+        }
+    }
+
+    fn ok_reply() -> RunResult {
+        RunResult {
+            code: 0,
+            stdout: "HTTP/2.0 200 OK\r\n\r\n{\"ok\":true}".into(),
+            stderr: String::new(),
+        }
+    }
+
+    fn connect_err_reply() -> RunResult {
+        RunResult {
+            code: 1,
+            stdout: String::new(),
+            stderr: "error connecting to api.github.com\ncheck your internet connection".into(),
+        }
+    }
+
+    fn status_reply(status: u16, body: &str) -> RunResult {
+        RunResult {
+            code: 1,
+            stdout: format!("HTTP/2.0 {status} Error\r\n\r\n{body}"),
+            stderr: format!("gh: HTTP {status}"),
+        }
+    }
+
+    fn make_client(replies: Vec<RunResult>) -> (GitHub, Arc<QueueRunner>, Arc<Mutex<Vec<u64>>>) {
+        let runner = Arc::new(QueueRunner {
+            replies: Mutex::new(replies.into()),
+            attempts: Mutex::new(0),
+        });
+        let sleeps = Arc::new(Mutex::new(Vec::new()));
+        let recorded = sleeps.clone();
+        let mut client = GitHub::new(
+            runner.clone(),
+            Account::new("bot", "github.com"),
+            Arc::new(|| Ok(Env::new())),
+            Some(Arc::new(|| 1_791_108_000_000)),
+        );
+        client.sleep = Arc::new(move |ms| recorded.lock().expect("sleeps").push(ms));
+        (client, runner, sleeps)
+    }
+
+    #[test]
+    fn get_retries_connect_errors_until_success_or_exhaustion() {
+        for failures in 0..=TRANSIENT_BACKOFF_MS.len() {
+            let mut replies = vec![connect_err_reply(); failures];
+            replies.push(ok_reply());
+            let (client, runner, sleeps) = make_client(replies);
+            let response = client
+                .request("GET", "repos/o/r/pulls/1", &RequestOptions::default())
+                .expect("should recover within retry budget");
+            assert_eq!(response.status, 200);
+            assert_eq!(*runner.attempts.lock().expect("attempts"), failures + 1);
+            assert_eq!(*sleeps.lock().expect("sleeps"), TRANSIENT_BACKOFF_MS[..failures]);
+        }
+
+        let total_attempts = TRANSIENT_BACKOFF_MS.len() + 1;
+        let (client, runner, sleeps) = make_client(vec![connect_err_reply(); total_attempts]);
+        let error = client
+            .request("GET", "repos/o/r/pulls/1", &RequestOptions::default())
+            .expect_err("should fail after exhausting retries");
+        assert!(matches!(error, Error::GitHub { status: 0, .. }));
+        assert_eq!(*runner.attempts.lock().expect("attempts"), total_attempts);
+        assert_eq!(*sleeps.lock().expect("sleeps"), TRANSIENT_BACKOFF_MS);
+    }
+
+    #[test]
+    fn get_retries_502_503_504_but_not_500_404_or_429() {
+        for status in [502, 503, 504] {
+            let (client, runner, sleeps) = make_client(vec![status_reply(status, "upstream"), ok_reply()]);
+            let response = client
+                .request("GET", "notifications", &RequestOptions::default())
+                .expect("gateway error should retry");
+            assert_eq!(response.status, 200);
+            assert_eq!(*runner.attempts.lock().expect("attempts"), 2);
+            assert_eq!(*sleeps.lock().expect("sleeps"), vec![500]);
+        }
+
+        for status in [500, 404, 429] {
+            let reply = status_reply(status, "{\"message\":\"err\"}");
+            let (client, runner, sleeps) = make_client(vec![reply]);
+            let result = client.request("GET", "repos/o/r/pulls/1", &RequestOptions::default());
+            assert!(result.is_err(), "status {status} should fail immediately");
+            assert_eq!(*runner.attempts.lock().expect("attempts"), 1);
+            assert!(sleeps.lock().expect("sleeps").is_empty());
+        }
+    }
+
+    #[test]
+    fn stops_retrying_when_later_attempt_hits_non_transient_error() {
+        let (client, runner, sleeps) = make_client(vec![
+            connect_err_reply(),
+            status_reply(404, "{\"message\":\"Not Found\"}"),
+        ]);
+        let error = client
+            .request("GET", "repos/o/r/pulls/1", &RequestOptions::default())
+            .expect_err("404 after transient failure should stop immediately");
+        assert!(matches!(error, Error::GitHub { status: 404, .. }));
+        assert_eq!(*runner.attempts.lock().expect("attempts"), 2);
+        assert_eq!(*sleeps.lock().expect("sleeps"), vec![500]);
+    }
+
+    #[test]
+    fn non_get_never_retries_transient_errors() {
+        for reply in [connect_err_reply(), status_reply(503, "busy")] {
+            let (client, runner, sleeps) = make_client(vec![reply]);
+            let result = client.request("POST", "repos/o/r/pulls/1/reviews", &RequestOptions::default());
+            assert!(result.is_err());
+            assert_eq!(*runner.attempts.lock().expect("attempts"), 1);
+            assert!(sleeps.lock().expect("sleeps").is_empty());
+        }
     }
 }
