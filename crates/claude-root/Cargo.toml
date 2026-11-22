@@ -24,7 +24,7 @@ jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.2" }
 kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.2" }
 kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.2" }
 lanes = { package = "ultron-lanes", path = "../lanes", version = "=1.0.2" }
-loki = { package = "loki-guardrails", version = "0.2.2" }
+loki = { package = "loki-guardrails", version = "=0.2.2" }
 mcp = { package = "ultron-mcp", path = "../mcp", version = "=1.0.2" }
 regex = "=1.13.1"
 resources = { package = "ultron-resources", path = "../resources", version = "=1.0.2" }

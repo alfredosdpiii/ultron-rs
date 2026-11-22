@@ -13,7 +13,7 @@ name = "lsp"
 [dependencies]
 host = { package = "ultron-host", path = "../host", version = "=1.0.2" }
 jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.2" }
-loki = { package = "loki-guardrails", version = "0.2.2" }
+loki = { package = "loki-guardrails", version = "=0.2.2" }
 sandbox = { package = "ultron-sandbox", path = "../sandbox", version = "=1.0.2" }
 rustix = { version = "=1.1.5", features = ["process", "std"] }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }

@@ -318,6 +318,13 @@ impl Core {
         let Ok(prepared) = self.prepare_compaction_of(&pi, settings, resumed.is_some()) else {
             return Ok(false);
         };
+        // Avoid looping empty auto-compactions when every message still sits inside keepRecentTokens.
+        if resumed.is_none()
+            && prepared.preparation.messages_to_summarize.is_empty()
+            && prepared.preparation.turn_prefix_messages.is_empty()
+        {
+            return Ok(false);
+        }
         let reason = if resumed.is_some() {
             Reason::Overflow
         } else {

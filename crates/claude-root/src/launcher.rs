@@ -440,19 +440,60 @@ pub fn run(
         config::paths::write_private(path, content).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     let interactive = !parsed.claude_args.iter().any(|a| a == "-p" || a == "--print");
-    if parsed.watch && var("TMUX").is_some_and(|v| !v.is_empty()) {
+    open_watch_pane(
+        parsed.watch,
+        interactive,
+        &self_cmd,
+        &launch.socket,
+        &launch.watch_command,
+        var,
+        err,
+    )?;
+    let _ = err.flush();
+    let _ = out.flush();
+    Ok(exec_claude(&launch, &dir, err))
+}
+
+/// Opens `ultron watch` in a tmux split or `herdr-app` right pane when `--watch` is requested, else prints the watch
+/// command to stderr.
+pub(crate) fn open_watch_pane(
+    watch: bool,
+    interactive: bool,
+    self_cmd: &SelfCommand,
+    socket: &str,
+    watch_command: &str,
+    var: &dyn Fn(&str) -> Option<String>,
+    err: &mut dyn std::io::Write,
+) -> Result<(), String> {
+    if watch && var("TMUX").is_some_and(|v| !v.is_empty()) {
         let _ = std::process::Command::new("tmux")
-            .args(["split-window", "-h", "-d", &launch.watch_command])
+            .args(["split-window", "-h", "-d", watch_command])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();
-    } else if interactive || parsed.watch {
-        writeln!(err, "Ultron RLM view: {}", launch.watch_command).map_err(|e| e.to_string())?;
+        return Ok(());
     }
-    let _ = err.flush();
-    let _ = out.flush();
-    Ok(exec_claude(&launch, &dir, err))
+    if watch && var("HC_TERMINAL_ID").is_some_and(|v| !v.trim().is_empty()) {
+        let mut watch_argv = vec![self_cmd.command.clone()];
+        watch_argv.extend(self_cmd.args.iter().cloned());
+        watch_argv.extend(["watch".into(), "--socket".into(), socket.to_string()]);
+        let argv_json = serde_json::to_string(&watch_argv).expect("argv serializes");
+        let opened = std::process::Command::new("herdr-app")
+            .args(["do", "terminal.open", "--place", "right", "--argv", &argv_json])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if opened {
+            return Ok(());
+        }
+    }
+    if interactive || watch {
+        writeln!(err, "Ultron RLM view: {watch_command}").map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Replace this process with Claude Code (so Ctrl-C and the exit status are Claude Code's own, as TypeScript gets by

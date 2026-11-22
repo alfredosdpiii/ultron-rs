@@ -239,16 +239,15 @@ pub fn run(
         .agy_args
         .iter()
         .any(|a| a == "-p" || a == "--print" || a == "--prompt");
-    if parsed.watch && var("TMUX").is_some_and(|v| !v.is_empty()) {
-        let _ = std::process::Command::new("tmux")
-            .args(["split-window", "-h", "-d", &launch.watch_command])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    } else if interactive || parsed.watch {
-        writeln!(err, "Ultron RLM view: {}", launch.watch_command).map_err(|e| e.to_string())?;
-    }
+    crate::launcher::open_watch_pane(
+        parsed.watch,
+        interactive,
+        &self_cmd,
+        &launch.socket,
+        &launch.watch_command,
+        var,
+        err,
+    )?;
     let _ = err.flush();
     let _ = out.flush();
     Ok(exec_agy(&launch, &dir, err))

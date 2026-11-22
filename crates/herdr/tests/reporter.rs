@@ -466,6 +466,14 @@ fn herdr_core_detection_osc_7501_and_session_note() {
         "\x1b]7501;state=blocked:kind=question:app=ultron:title=Rml4IGF1dGg=:msg=UHJvY2VlZD8=\x1b\\"
     );
     assert_eq!(osc_7501_clear(), "\x1b]7501;state=clear\x1b\\");
+    assert_eq!(
+        herdr::osc_7501_task("sub/1", State::Working, None, Some("ultron"), None, None),
+        "\x1b]7501;state=working:id=sub/1:app=ultron\x1b\\"
+    );
+    assert_eq!(
+        herdr::osc_7501_clear_task("sub/1"),
+        "\x1b]7501;state=clear:id=sub/1\x1b\\"
+    );
 
     let (tx, rx) = mpsc::channel();
     struct Capture(mpsc::Sender<String>);

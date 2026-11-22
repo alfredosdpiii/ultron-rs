@@ -2,17 +2,18 @@
 //! of its own config (`~/.gemini/config/mcp_config.json`), the only place that raises its 3-minute MCP call timeout.
 //! Ultron's model loop builds a runtime per call, and tokio IO stays on the runtime that created it, so every live
 //! agy is driven from one process-lifetime runtime thread.
-use super::{Agy, AgyDelta, Step, delta_prompt};
+use super::{Agy, AgyDelta, Step, WorkspaceDir, delta_prompt};
 use crate::env::ProviderEnv;
 use crate::types::{
     AssistantContent, Message, Model, ToolResultMessage, TranscriptContext, Usage, UserContent, UserMessageContent,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Once, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot};
 
 /// Idle eviction for live `agy` processes (30 min); evicted sessions can still reattach via ACP `session/load`.
@@ -41,15 +42,123 @@ struct Live {
     used: Instant,
 }
 
-/// An evicted `agy` session whose process was stopped to free RAM, but whose ACP `session_id` and workspace are kept
-/// so a later turn can reattach via `session/load` and send only the delta messages.
+/// An evicted or persisted `agy` session whose process was stopped, keeping its ACP `session_id` and workspace so a
+/// later turn (including after an Ultron restart) can reattach via `session/load` and send only the delta messages.
 struct Archived {
     session_id: String,
-    workspace: tempfile::TempDir,
+    workspace: WorkspaceDir,
     model: String,
     seen: usize,
     hash: u64,
     used: Instant,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PersistedSession {
+    session_id: String,
+    workspace: String,
+    model: String,
+    seen: usize,
+    hash: u64,
+    saved_ms: u64,
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+fn store_dir(env: Option<&ProviderEnv>) -> Option<PathBuf> {
+    let var = |key: &str| {
+        env.and_then(|e| e.get(key).cloned())
+            .or_else(|| std::env::var(key).ok())
+            .filter(|v| !v.trim().is_empty())
+    };
+    if let Some(agent_dir) = var("ULTRON_CODING_AGENT_DIR") {
+        return Some(PathBuf::from(agent_dir));
+    }
+    var("HOME").map(|h| PathBuf::from(h).join(".ultron/agent"))
+}
+
+fn persist_live(live: &Live, env: Option<&ProviderEnv>) {
+    if live.agy.held.is_some() || live.agy.turn.is_some() || live.agy.session.is_empty() {
+        return;
+    }
+    let Some(WorkspaceDir::Persistent(workspace)) = live.agy.workspace.as_ref() else {
+        return;
+    };
+    let Some(dir) = store_dir(env) else {
+        return;
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let file = dir.join("agy-sessions.json");
+    let now = now_ms();
+    let ttl_ms = ARCHIVE_TTL.as_millis() as u64;
+    let mut entries: Vec<PersistedSession> = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    entries.retain(|e| {
+        let keep = now.saturating_sub(e.saved_ms) < ttl_ms && Path::new(&e.workspace).is_dir();
+        if !keep && e.session_id != live.agy.session {
+            let _ = std::fs::remove_dir_all(&e.workspace);
+        }
+        keep && e.session_id != live.agy.session
+    });
+    entries.push(PersistedSession {
+        session_id: live.agy.session.clone(),
+        workspace: workspace.display().to_string(),
+        model: live.model.clone(),
+        seen: live.seen,
+        hash: live.hash,
+        saved_ms: now,
+    });
+    entries.sort_by_key(|e| e.saved_ms);
+    while entries.len() > MAX_ARCHIVED {
+        let evicted = entries.remove(0);
+        let _ = std::fs::remove_dir_all(&evicted.workspace);
+    }
+    if let Ok(bytes) = serde_json::to_vec_pretty(&entries) {
+        let _ = write_atomic(&file, &bytes);
+    }
+}
+
+fn load_persisted(model: &str, messages: &[Message], env: Option<&ProviderEnv>) -> Option<Archived> {
+    let dir = store_dir(env)?;
+    let file = dir.join("agy-sessions.json");
+    let entries: Vec<PersistedSession> = serde_json::from_str(&std::fs::read_to_string(&file).ok()?).ok()?;
+    let now = now_ms();
+    let ttl_ms = ARCHIVE_TTL.as_millis() as u64;
+    entries
+        .into_iter()
+        .filter(|e| {
+            e.model == model
+                && now.saturating_sub(e.saved_ms) < ttl_ms
+                && e.seen < messages.len()
+                && Path::new(&e.workspace).is_dir()
+                && prefix_hash(&messages[..e.seen]) == e.hash
+        })
+        .max_by_key(|e| e.seen)
+        .map(|e| Archived {
+            session_id: e.session_id,
+            workspace: WorkspaceDir::Persistent(PathBuf::from(e.workspace)),
+            model: e.model,
+            seen: e.seen,
+            hash: e.hash,
+            used: Instant::now(),
+        })
+}
+
+fn session_workspace(env: Option<&ProviderEnv>) -> io::Result<WorkspaceDir> {
+    if let Some(dir) = store_dir(env) {
+        let path = dir.join("agy-workspaces").join(jsrt::random::random_hex(8));
+        std::fs::create_dir_all(&path)?;
+        return Ok(WorkspaceDir::Persistent(path));
+    }
+    Ok(WorkspaceDir::Temp(tempfile::tempdir()?))
 }
 
 impl Pool {
@@ -239,7 +348,7 @@ async fn reap(registry: Registry) {
 /// Runs one model call. The session is out of the registry meanwhile, so no two calls drive one agy.
 async fn run(mut job: Job, registry: Registry) {
     let messages = &job.context.messages;
-    let (mut slot, archived) = take(&registry, &job.model.id, messages);
+    let (mut slot, archived) = take(&registry, &job.model.id, messages, job.env.as_ref());
     let outcome = tokio::select! {
         outcome = serve(&mut slot, archived, &job.model, messages, job.env.as_ref(), &job.deltas) => outcome,
         () = job.reply.closed() => {
@@ -260,6 +369,7 @@ async fn run(mut job: Job, registry: Registry) {
         && let Some(mut live) = slot
     {
         live.used = Instant::now();
+        persist_live(&live, job.env.as_ref());
         let mut pool = registry.lock().expect("agy registry");
         pool.live.push(live);
         while pool.live.len() > MAX_LIVE {
@@ -274,7 +384,12 @@ async fn run(mut job: Job, registry: Registry) {
     let _unread = job.reply.send(outcome);
 }
 
-fn take(registry: &Registry, model: &str, messages: &[Message]) -> (Option<Live>, Option<Archived>) {
+fn take(
+    registry: &Registry,
+    model: &str,
+    messages: &[Message],
+    env: Option<&ProviderEnv>,
+) -> (Option<Live>, Option<Archived>) {
     let mut pool = registry.lock().expect("agy registry");
     if let Some(index) = (0..pool.live.len())
         .filter(|&i| {
@@ -292,7 +407,8 @@ fn take(registry: &Registry, model: &str, messages: &[Message]) -> (Option<Live>
         })
         .max_by_key(|&i| pool.archived[i].seen)
         .map(|index| pool.archived.swap_remove(index));
-    (None, archived)
+    drop(pool);
+    (None, archived.or_else(|| load_persisted(model, messages, env)))
 }
 
 async fn serve(
@@ -349,7 +465,8 @@ async fn serve(
     }
     // No live or archived session continues this transcript, or the one that did failed: replay it to a fresh agy.
     *slot = None;
-    let (agy, step) = Agy::start(model, messages, env, true).await?;
+    let workspace = session_workspace(env)?;
+    let (agy, step) = Agy::start_in(model, messages, env, true, workspace).await?;
     let live = slot.insert(Live {
         agy,
         model: model.id.clone(),

@@ -209,7 +209,33 @@ pub fn osc_7501(
     title: Option<&str>,
     msg: Option<&str>,
 ) -> String {
+    osc_7501_inner(None, state, kind, app, title, msg)
+}
+
+/// Formats a keyed OSC 7501 sub-task record (`id=<id>`) for concurrent subagents or background jobs.
+pub fn osc_7501_task(
+    id: &str,
+    state: State,
+    kind: Option<BlockKind>,
+    app: Option<&str>,
+    title: Option<&str>,
+    msg: Option<&str>,
+) -> String {
+    osc_7501_inner(Some(id), state, kind, app, title, msg)
+}
+
+fn osc_7501_inner(
+    id: Option<&str>,
+    state: State,
+    kind: Option<BlockKind>,
+    app: Option<&str>,
+    title: Option<&str>,
+    msg: Option<&str>,
+) -> String {
     let mut parts = vec![format!("state={}", state.osc_str())];
+    if let Some(id) = id.map(str::trim).filter(|i| !i.is_empty()) {
+        parts.push(format!("id={id}"));
+    }
     if state == State::Blocked
         && let Some(kind) = kind
     {
@@ -230,6 +256,11 @@ pub fn osc_7501(
 /// Clears the terminal's OSC 7501 status on exit.
 pub fn osc_7501_clear() -> &'static str {
     "\x1b]7501;state=clear\x1b\\"
+}
+
+/// Clears one keyed OSC 7501 sub-task record.
+pub fn osc_7501_clear_task(id: &str) -> String {
+    format!("\x1b]7501;state=clear:id={}\x1b\\", id.trim())
 }
 
 /// The agent session a pane shows (and resumes after a herdr restart).

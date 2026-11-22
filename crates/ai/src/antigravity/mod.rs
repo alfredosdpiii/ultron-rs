@@ -46,7 +46,7 @@ fn prompt(messages: &[Message], budget: usize) -> io::Result<String> {
         let json = serde_json::to_string(message)?;
         if history.is_empty() && json.len() > budget {
             return Err(io::Error::other(format!(
-                "The final message is {} characters, over the {budget} agy keeps of a prompt; shorten it",
+                "The final message is {} bytes, over the {budget} agy keeps of a prompt; shorten it",
                 json.len()
             )));
         }
@@ -195,6 +195,21 @@ enum Step {
     Answer(Value),
 }
 
+/// Workspace directory for an `agy acp` process: ephemeral for one-shot turns, persistent for resumable sessions.
+pub(super) enum WorkspaceDir {
+    Temp(tempfile::TempDir),
+    Persistent(std::path::PathBuf),
+}
+
+impl WorkspaceDir {
+    pub(super) fn path(&self) -> &std::path::Path {
+        match self {
+            WorkspaceDir::Temp(dir) => dir.path(),
+            WorkspaceDir::Persistent(path) => path.as_path(),
+        }
+    }
+}
+
 /// One running `agy acp` with its tool bridge; dropping it kills agy's process group.
 struct Agy {
     child: Child,
@@ -205,7 +220,7 @@ struct Agy {
     tail: tokio::task::JoinHandle<Vec<u8>>,
     bridge: bridge::Bridge,
     names: HashSet<String>,
-    workspace: Option<tempfile::TempDir>,
+    workspace: Option<WorkspaceDir>,
     session: String,
     next_id: u64,
     /// The `session/prompt` in flight.
@@ -229,17 +244,13 @@ impl Drop for Agy {
 
 impl Agy {
     /// Spawns `agy acp` in `workspace` with its loopback MCP bridge ready.
-    async fn spawn_in(
-        messages: &[Message],
-        env: Option<&ProviderEnv>,
-        workspace: tempfile::TempDir,
-    ) -> io::Result<Agy> {
+    async fn spawn_in(messages: &[Message], env: Option<&ProviderEnv>, workspace: WorkspaceDir) -> io::Result<Agy> {
         let tools = crate::transcript::current_tools(messages);
         let manifest = bridge::manifest(&tools);
         let size = manifest.to_string().len();
         if size > MANIFEST_BUDGET {
             return Err(io::Error::other(format!(
-                "The {} tool schemas are {size} characters, over the {MANIFEST_BUDGET} agy keeps for one MCP server; agy would drop tools silently",
+                "The {} tool schemas are {size} bytes, over the {MANIFEST_BUDGET} agy keeps for one MCP server; agy would drop tools silently",
                 tools.len()
             )));
         }
@@ -321,30 +332,39 @@ impl Agy {
         })
     }
 
-    /// Starts a fresh `agy` session for `messages` and returns the step that sends their full replay. With `sessions`,
-    /// agy reaches the bridge through the `ultron` server of its own config, whose relay reads the bridge from agy's
-    /// environment.
-    async fn start(
+    /// Starts a fresh `agy` session in `workspace` and returns the step that sends their full replay.
+    async fn start_in(
         model: &Model,
         messages: &[Message],
         env: Option<&ProviderEnv>,
         sessions: bool,
+        workspace: WorkspaceDir,
     ) -> io::Result<(Agy, Step)> {
-        let mut agy = Self::spawn_in(messages, env, tempfile::tempdir()?).await?;
+        let mut agy = Self::spawn_in(messages, env, workspace).await?;
         match agy.open(model, messages, sessions).await {
             Ok(step) => Ok((agy, step)),
             Err(error) => Err(agy.failed(error).await),
         }
     }
 
+    /// Starts a fresh `agy` session for `messages` in a temporary workspace.
+    async fn start(
+        model: &Model,
+        messages: &[Message],
+        env: Option<&ProviderEnv>,
+        sessions: bool,
+    ) -> io::Result<(Agy, Step)> {
+        Self::start_in(model, messages, env, sessions, WorkspaceDir::Temp(tempfile::tempdir()?)).await
+    }
+
     /// Reattaches a fresh `agy acp` process to a previously saved `session_id` via ACP `session/load`, avoiding a
-    /// full transcript replay after an idle eviction.
+    /// full transcript replay after an idle eviction or Ultron restart.
     async fn resume(
         model: &Model,
         messages: &[Message],
         env: Option<&ProviderEnv>,
         session_id: String,
-        workspace: tempfile::TempDir,
+        workspace: WorkspaceDir,
     ) -> io::Result<Agy> {
         let mut agy = Self::spawn_in(messages, env, workspace).await?;
         let loaded = async {
@@ -1208,7 +1228,7 @@ mod tests {
             &messages,
             options.base.env.as_ref(),
             "offline".into(),
-            tempfile::tempdir().unwrap(),
+            WorkspaceDir::Temp(tempfile::tempdir().unwrap()),
         )
         .await
         .unwrap();
