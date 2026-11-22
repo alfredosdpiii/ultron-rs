@@ -144,11 +144,22 @@ pub fn self_review(settings: &Value) -> SelfReview {
     }
 }
 
-/// `command` without its quoted text: a search for the words "gh pr create" ships nothing.
-// ponytail: a command inside quotes (`bash -c "git push"`) is not seen; parse the shell if that gets used to dodge.
+/// `command` without its quoted text (so `rg "gh pr create"` ships nothing), except quoted payloads passed to
+/// `sh`/`bash`/`zsh -c "..."` which are unwrapped so subshells cannot bypass ship guards.
 fn unquoted(command: &str) -> String {
+    static SHELL_C: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#"\b(?:ba|z|da)?sh\s+(?:-[a-zA-Z]*c[a-zA-Z]*)\s+(?:'([^']*)'|"([^"]*)")"#).expect("valid")
+    });
     static QUOTED: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#"'[^']*'|"[^"]*""#).expect("valid"));
-    QUOTED.replace_all(command, "''").into_owned()
+    let expanded = SHELL_C.replace_all(command, |caps: &regex::Captures| {
+        let inner = caps
+            .get(1)
+            .or_else(|| caps.get(2))
+            .map(|m| m.as_str())
+            .unwrap_or_default();
+        format!(" ; {inner} ; ")
+    });
+    QUOTED.replace_all(&expanded, "''").into_owned()
 }
 
 /// Whether `command` (unquoted) commits, pushes or opens a pull request.
@@ -161,7 +172,6 @@ fn ships(command: &str) -> bool {
 
 /// Where `command` (unquoted) opens its pull request: the last `cd <dir>` before `gh pr create`, else `cwd`. `None`
 /// when it opens none.
-// ponytail: a quoted or `~` directory is not followed and falls back to `cwd`; parse the shell if that matters.
 fn pr_directory(command: &str, cwd: &Path) -> Option<PathBuf> {
     static CREATE: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"\bgh\s+pr\s+create\b").expect("valid"));
@@ -174,12 +184,40 @@ fn push_directory(command: &str, cwd: &Path) -> Option<PathBuf> {
     directory_of(command, cwd, &PUSH)
 }
 
+fn expand_tilde(raw: &str) -> PathBuf {
+    if raw == "~"
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return PathBuf::from(home);
+    }
+    if let Some(rest) = raw.strip_prefix("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return PathBuf::from(home).join(rest);
+    }
+    PathBuf::from(raw)
+}
+
 fn directory_of(command: &str, cwd: &Path, what: &regex::Regex) -> Option<PathBuf> {
-    static CD: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"(?:^|[;&|(\n])\s*cd\s+([^\s;&|)']+)").expect("valid"));
+    static CD: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#"(?:^|[;&|(\n])\s*cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|)'"]+))"#).expect("valid")
+    });
     let before = &command[..what.find(command)?.start()];
     Some(match CD.captures_iter(before).last() {
-        Some(found) => cwd.join(&found[1]),
+        Some(found) => {
+            let dir = found
+                .get(1)
+                .or_else(|| found.get(2))
+                .or_else(|| found.get(3))
+                .map(|m| m.as_str())
+                .unwrap_or_default();
+            let expanded = expand_tilde(dir);
+            if expanded.is_absolute() {
+                expanded
+            } else {
+                cwd.join(expanded)
+            }
+        }
         None => cwd.to_path_buf(),
     })
 }
@@ -590,4 +628,31 @@ pub fn session_observer(
                 .with_hygiene(hygiene),
         ) as Arc<dyn CellObserver>
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quoted_shell_subcommands_still_trigger_ship_guard() {
+        assert!(ships(&unquoted(r#"bash -c "git push origin main""#)));
+        assert!(ships(&unquoted(r#"sh -ec 'git commit -m "msg"'"#)));
+        assert!(!ships(&unquoted(r#"rg "git push" src/"#)));
+    }
+
+    #[test]
+    fn directory_of_handles_quoted_and_tilde_paths() {
+        let cwd = Path::new("/work");
+        assert_eq!(
+            push_directory(r#"cd "my repo" && git push"#, cwd),
+            Some(PathBuf::from("/work/my repo"))
+        );
+        if let Ok(home) = std::env::var("HOME") {
+            assert_eq!(
+                push_directory("cd ~/proj && git push", cwd),
+                Some(PathBuf::from(home).join("proj"))
+            );
+        }
+    }
 }

@@ -2989,7 +2989,6 @@ version = "1.0.2"
 dependencies = [
  "serde_json",
  "tempfile",
- "ultron-assets",
  "ultron-jsrt",
  "ultron-loki",
  "ultron-model-scope",
@@ -3292,6 +3291,7 @@ name = "ultron-loki"
 version = "1.0.2"
 dependencies = [
  "fancy-regex 0.19.2",
+ "flate2",
  "regex",
  "reqwest",
  "rustix",

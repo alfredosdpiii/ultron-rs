@@ -198,9 +198,16 @@ impl DurableChildren {
             }
             lock(session).commit(&writes)?;
         }
+        let prompt = if run.fork_at.is_none()
+            && let Some(block) = crate::auto_refine::prompt_block(&stack.ledger.active())
+        {
+            format!("{}\n\n{block}", run.prompt)
+        } else {
+            run.prompt.clone()
+        };
         let input = ChildInput {
             name: run.lane_name.clone(),
-            prompt: run.prompt.clone(),
+            prompt,
             model: Some(ModelRef::new(&setup.model.provider, &setup.model.id)),
             timeout_ms: Some(run.timeout_ms),
             keep: false,

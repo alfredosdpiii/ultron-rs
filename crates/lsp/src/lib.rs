@@ -26,9 +26,10 @@ pub const BUDGET: Duration = Duration::from_secs(4);
 const START_LIMIT: Duration = Duration::from_secs(15);
 /// `mise exec` may download and build the server first.
 const INSTALL_LIMIT: Duration = Duration::from_secs(600);
-/// ponytail: the least recently used server is stopped for a fifth one, and none stops for being idle; a timer if
-/// an idle session's servers cost too much memory.
+/// Maximum live language servers per session; the least recently used is evicted when starting another.
 const MAX_LIVE: usize = 4;
+/// Servers idle longer than this are stopped on the next check (or via [`LspGuard::evict_idle`]).
+const IDLE_LIMIT: Duration = Duration::from_secs(15 * 60);
 const MAX_SHOWN: usize = 10;
 const MAX_MESSAGE_CHARS: usize = 240;
 
@@ -79,8 +80,8 @@ struct Candidate {
 
 enum Slot {
     Starting,
-    /// With `Inner::uses` at its last check.
-    Ready(Arc<Client>, u64),
+    /// With `Inner::uses` and wall time at its last check.
+    Ready(Arc<Client>, u64, Instant),
     Failed(String),
 }
 
@@ -126,6 +127,18 @@ impl Inner {
         };
         let args = spec.args.iter().map(|arg| arg.to_string());
         let mut out = Vec::new();
+        // Prefer a project-pinned binary in `node_modules/.bin` before global PATH or mise.
+        let local_bin = root.join("node_modules/.bin").join(spec.command);
+        if local_bin.is_file() {
+            out.push(Candidate {
+                argv: std::iter::once(local_bin.to_string_lossy().into_owned())
+                    .chain(args.clone())
+                    .collect(),
+                env: self.env.clone(),
+                cwd: root.to_path_buf(),
+                limit: START_LIMIT,
+            });
+        }
         if let Some(server) = on_path(spec.command) {
             out.push(Candidate {
                 argv: std::iter::once(server).chain(args.clone()).collect(),
@@ -201,7 +214,7 @@ impl LspGuard {
         let inner = self.inner.clone();
         std::thread::spawn(move || {
             let slot = match inner.start(spec, &key.1) {
-                Ok(client) => Slot::Ready(Arc::new(client), 0),
+                Ok(client) => Slot::Ready(Arc::new(client), 0, Instant::now()),
                 Err(reason) => Slot::Failed(reason),
             };
             // Unless it was given up on meanwhile.
@@ -209,6 +222,16 @@ impl LspGuard {
                 *known = slot;
             }
             inner.changed.notify_all();
+        });
+    }
+
+    /// Stops any ready language server that has been idle for at least `idle_limit`.
+    pub fn evict_idle(&self, idle_limit: Duration) {
+        let now = Instant::now();
+        let mut slots = sync::lock(&self.inner.slots);
+        slots.by_key.retain(|_, slot| match slot {
+            Slot::Ready(_, _, last_used) => now.saturating_duration_since(*last_used) < idle_limit,
+            _ => true,
         });
     }
 
@@ -221,17 +244,23 @@ impl LspGuard {
         let Some(root) = servers::root_of(spec, path) else {
             return Report::Unwatched;
         };
-        let spec = servers::in_project(spec, &root);
+        let spec = servers::in_project(spec, &root, path);
         let server = spec.name;
         let key: Key = (server, root.clone());
-        let deadline = Instant::now() + budget;
+        let now = Instant::now();
+        let deadline = now + budget;
         let mut slots = sync::lock(&self.inner.slots);
+        // Reap servers that have been idle past IDLE_LIMIT (never the one we are about to use).
+        slots.by_key.retain(|k, slot| match slot {
+            Slot::Ready(_, _, last_used) if k != &key => now.saturating_duration_since(*last_used) < IDLE_LIMIT,
+            _ => true,
+        });
         let first = !slots.by_key.contains_key(&key);
         if first {
             let ready = |slot: &Slot| matches!(slot, Slot::Ready(..));
             if slots.by_key.values().filter(|slot| ready(slot)).count() >= MAX_LIVE {
                 let oldest = slots.by_key.iter().filter_map(|(key, slot)| match slot {
-                    Slot::Ready(_, used) => Some((*used, key.clone())),
+                    Slot::Ready(_, used, _) => Some((*used, key.clone())),
                     _ => None,
                 });
                 if let Some((_, oldest)) = oldest.min() {
@@ -263,8 +292,9 @@ impl LspGuard {
                     reason: reason.clone(),
                 };
             }
-            Some(Slot::Ready(client, used)) => {
+            Some(Slot::Ready(client, used, last_used)) => {
                 *used = uses;
+                *last_used = Instant::now();
                 client.clone()
             }
         };

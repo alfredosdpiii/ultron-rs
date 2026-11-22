@@ -382,6 +382,33 @@ fn session_core_auto_refine_promotes_to_memorantado_confirms_rolls_back_and_load
             .unwrap()
             .contains("[project:1 project] Always run scripts/nextest.sh.")
     );
+    // `prompt_block` formats active refinements for fresh `rlm.spawn` subagents.
+    let block = session_core::auto_refine::prompt_block(&active).unwrap();
+    assert!(block.contains("[project:1] Always run scripts/nextest.sh."));
+
+    // `RefinementPointers` surfaces situational `pathGlobs` refinements when a matching file is edited (once).
+    {
+        use host::file_hooks::{CellChanges, CellObserver};
+        use session_core::auto_refine::RefinementPointers;
+        let cwd = std::path::Path::new("/repo");
+        let observer = RefinementPointers::new(s2.clone(), true);
+        assert!(observer.enabled());
+        let changes = CellChanges {
+            files: vec![cwd.join("crates/parser/src/lib.rs")],
+            checked: Vec::new(),
+            deleted: Vec::new(),
+            complete: true,
+        };
+        let notes = observer.cell_changed(&changes, cwd, "main");
+        assert_eq!(
+            notes.len(),
+            1,
+            "situational refinement emitted on matching file: {notes:?}"
+        );
+        assert!(notes[0].contains("[refinement] project:2: Run parser fuzzing on parser edits."));
+        // Second edit to a matching file does not repeat the same refinement in the same session.
+        assert!(observer.cell_changed(&changes, cwd, "main").is_empty());
+    }
 
     // Confirming `project:1` records confirmation in memorantado; rolling it back retires it across sessions.
     let out2 = propose_sync(&s2, "compaction:c1", SUMMARY, None, |_, _| {

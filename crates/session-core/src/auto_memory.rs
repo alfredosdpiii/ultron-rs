@@ -397,6 +397,8 @@ pub struct Keep {
     /// The memories the context showed for `source`: their ids, and their text as the model saw them.
     pub recalled_ids: Vec<String>,
     pub recalled_text: String,
+    /// When true, the same distillation request also proposes/rolls back/confirms `auto_refine` instructions.
+    pub refine: bool,
 }
 
 /// How a keep ended.
@@ -481,10 +483,16 @@ pub fn distill(reply: &str, source: &str) -> Option<Distilled> {
     Some(Distilled { facts, used })
 }
 
-fn prompt(keep: &Keep) -> String {
+fn prompt(keep: &Keep, refine_section: Option<&str>) -> String {
     let source = &keep.source;
     let recalled = &keep.recalled_text;
     let ids = serde_json::to_string(&keep.recalled_ids).unwrap_or_default();
+    let refine = refine_section.unwrap_or("");
+    let schema = if refine_section.is_some() {
+        r#"{"facts": [{"text": "...", "quote": "..."}], "used": [], "refinements": [{"key": "...", "text": "...", "quote": "...", "rationale": "...", "expectedOutcome": "...", "durable": false, "situation": "...", "pathGlobs": []}], "rollback": []}"#
+    } else {
+        r#"{"facts": [{"text": "...", "quote": "..."}], "used": []}"#
+    };
     format!(
         "<source>\n{source}\n</source>\n\n<recalled>\n{recalled}\n</recalled>\n\n\
          Propose at most {MAX_FACTS} facts the agent should remember for future sessions: durable ones a future \
@@ -493,8 +501,8 @@ fn prompt(keep: &Keep) -> String {
          <source> (at least {MIN_QUOTE_CHARS} characters) and shows the fact; a fact whose quote is not in <source> is \
          discarded. Prefer none over speculative ones: a source with nothing durable gets {{\"facts\": []}}. Do not \
          restate what <recalled> already says.\n\n\
-         `used` lists the ids from {ids} that <source> relied on or corrected, copied exactly; [] if none.\n\n\
-         Answer with JSON only: {{\"facts\": [{{\"text\": \"...\", \"quote\": \"...\"}}], \"used\": []}}"
+         `used` lists the ids from {ids} that <source> relied on or corrected, copied exactly; [] if none.{refine}\n\n\
+         Answer with JSON only: {schema}"
     )
 }
 
@@ -546,6 +554,7 @@ pub fn tail_keep(session_id: &str, cwd: &str, entries: &[Value]) -> Option<Keep>
         ),
         recalled_ids,
         recalled_text,
+        refine: false,
     })
 }
 
@@ -570,13 +579,17 @@ pub fn summary_keep(session_id: &str, cwd: &str, entries: &[Value]) -> Option<Ke
         ),
         recalled_ids,
         recalled_text,
+        refine: false,
     })
 }
 
 /// Distils `keep` and stores its facts under its claim, unless the claim already covers `keep.through` (no model
-/// call then). Nothing is written once `signal` is aborted.
+/// call then). When `keep.refine` is true, also applies refinements from the same reply. Nothing is written once
+/// `signal` is aborted.
 fn distill_and_store(
     memory: &MemoryService,
+    ledger: Option<&crate::auto_refine::Ledger>,
+    agent_dir: Option<&Path>,
     keep: &Keep,
     ask: impl FnOnce(&str, &str) -> Result<String, String>,
     signal: &Signal,
@@ -584,10 +597,19 @@ fn distill_and_store(
     if memory.tail_kept_through(&keep.document_id, &keep.through, signal) {
         return Outcome::Unchanged;
     }
-    let reply = match ask(SYSTEM, &prompt(keep)) {
+    let refine_section = ledger
+        .filter(|_| keep.refine)
+        .map(crate::auto_refine::unified_prompt_section);
+    let reply = match ask(SYSTEM, &prompt(keep, refine_section.as_deref())) {
         Ok(reply) => reply,
         Err(err) => {
-            let detail: String = err.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(160).collect();
+            let detail: String = err
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(160)
+                .collect();
             let code = if detail.is_empty() {
                 "MODEL_ERROR".into()
             } else {
@@ -601,6 +623,12 @@ fn distill_and_store(
     };
     if signal.is_aborted() {
         return Outcome::Failed("TIMEOUT".into());
+    }
+    if keep.refine
+        && let Some(ledger) = ledger
+    {
+        let source_ref = format!("{}:{}", keep.kind, keep.through);
+        crate::auto_refine::apply_reply(ledger, &reply, &source_ref, &keep.source, agent_dir);
     }
     let used: Vec<String> = distilled
         .used
@@ -641,10 +669,17 @@ pub fn keep(
     let (session, kind) = (keep.session.clone(), keep.kind);
     let signal = Signal::new();
     let (tx, rx) = std::sync::mpsc::channel();
-    let (stack, work) = (stack.clone(), signal.clone());
+    let (stack, work, dir) = (stack.clone(), signal.clone(), agent_dir.to_path_buf());
     std::thread::spawn(move || {
         if let Some(memory) = stack.memory() {
-            let _ = tx.send(distill_and_store(memory, &keep, ask, &work));
+            let _ = tx.send(distill_and_store(
+                memory,
+                Some(&stack.ledger),
+                Some(&dir),
+                &keep,
+                ask,
+                &work,
+            ));
         }
     });
     let outcome = rx.recv_timeout(wait).unwrap_or_else(|_| {
@@ -980,6 +1015,7 @@ mod tests {
             context: "Session tail.".into(),
             recalled_ids: recalled_ids.iter().map(|id| id.to_string()).collect(),
             recalled_text: "- (project) Tests run under nice. [fact 42]".into(),
+            refine: false,
         }
     }
 
@@ -1030,6 +1066,8 @@ mod tests {
         let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let outcome = distill_and_store(
             &memory,
+            None,
+            None,
             &keep_of("e2", &[]),
             asked(r#"{"facts": []}"#, &count),
             &Signal::new(),
@@ -1038,6 +1076,8 @@ mod tests {
         assert!(bank.retains.lock().unwrap().is_empty());
         let outcome = distill_and_store(
             &memory,
+            None,
+            None,
             &keep_of("e2", &[]),
             asked(
                 r#"{"facts": [{"text": "Run tests.", "quote": "invented quote that is not there"}]}"#,
@@ -1060,16 +1100,37 @@ mod tests {
         let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let reply =
             r#"{"facts": [{"text": "Run tests with scripts/nextest.sh.", "quote": "always run scripts/nextest.sh"}]}"#;
-        let first = distill_and_store(&memory, &keep_of("e2", &[]), asked(reply, &count), &Signal::new());
+        let first = distill_and_store(
+            &memory,
+            None,
+            None,
+            &keep_of("e2", &[]),
+            asked(reply, &count),
+            &Signal::new(),
+        );
         assert_eq!(first, Outcome::Kept(1));
-        let again = distill_and_store(&memory, &keep_of("e2", &[]), asked(reply, &count), &Signal::new());
+        let again = distill_and_store(
+            &memory,
+            None,
+            None,
+            &keep_of("e2", &[]),
+            asked(reply, &count),
+            &Signal::new(),
+        );
         assert_eq!(again, Outcome::Unchanged);
         assert_eq!(
             count.load(std::sync::atomic::Ordering::SeqCst),
             1,
             "only the first keep asked the model"
         );
-        let later = distill_and_store(&memory, &keep_of("e5", &[]), asked(reply, &count), &Signal::new());
+        let later = distill_and_store(
+            &memory,
+            None,
+            None,
+            &keep_of("e5", &[]),
+            asked(reply, &count),
+            &Signal::new(),
+        );
         assert_eq!(later, Outcome::Kept(1), "a session that went on is distilled again");
         assert_eq!(
             bank.retains.lock().unwrap()[0]["content"],
@@ -1086,6 +1147,8 @@ mod tests {
             "used": ["42", "episode-7", "99", "f9"]}"#;
         let outcome = distill_and_store(
             &memory,
+            None,
+            None,
             &keep_of("e2", &["42", "episode-7", "f9"]),
             asked(reply, &count),
             &Signal::new(),

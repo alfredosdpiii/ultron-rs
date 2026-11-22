@@ -1164,6 +1164,7 @@ impl Core {
         };
         // The session's persona toggle and keep-going mode, before a resumed run can end.
         core.persona_load();
+        core.turn_guard_load();
         if let Some(operation) = resume {
             core.resumed = Some(core.reopen_run(&operation)?);
         } else {
@@ -2576,11 +2577,11 @@ impl Core {
         }
     }
 
-    /// After a completed compaction: distil its summary into long-term memory, when automatic retain is on
-    /// (crate::auto_memory), and propose refinements from it (crate::auto_refine).
+    /// After a completed compaction: distil its summary into long-term memory and refinements in one unified pass when
+    /// both are on (crate::auto_memory + crate::auto_refine), or run `auto_refine` standalone when memory retain is off.
     pub(super) fn retain_compaction(&self) {
-        self.refine_after_compaction();
-        if !self.auto_memory.retain {
+        if !self.auto_memory.retain || self.lane.stack.memory().is_none() {
+            self.refine_after_compaction();
             return;
         }
         let (session_id, entries) = {
@@ -2591,18 +2592,21 @@ impl Core {
             )
         };
         let cwd = self.runtime.config.cwd.display().to_string();
-        if let Some(keep) = crate::auto_memory::summary_keep(&session_id, &cwd, &entries) {
+        if let Some(mut keep) = crate::auto_memory::summary_keep(&session_id, &cwd, &entries) {
+            if self.auto_refine.start_pass_for(&keep.through, false) {
+                keep.refine = true;
+            }
             self.keep_in_background(keep);
         }
     }
 
     /// Keep what no compaction summarized in long-term memory, when automatic retain is on (crate::auto_memory), and
-    /// extract project refinements from the tail when memorantado is configured (crate::auto_refine).
+    /// extract project refinements in the same pass when memorantado is configured (crate::auto_refine).
     /// `in_background` when the session stays open (it went quiet): the call does not hold the session up, and its
     /// outcome is shown. As it closes, the keep waits at most [`crate::auto_memory::CLOSE_TIMEOUT`] and is not shown.
     pub(super) fn retain_tail(&self, in_background: bool) {
-        self.refine_tail(in_background);
-        if !self.auto_memory.retain {
+        if !self.auto_memory.retain || self.lane.stack.memory().is_none() {
+            self.refine_tail(in_background);
             return;
         }
         let (session_id, entries) = {
@@ -2613,9 +2617,21 @@ impl Core {
             )
         };
         let cwd = self.runtime.config.cwd.display().to_string();
-        let Some(keep) = crate::auto_memory::tail_keep(&session_id, &cwd, &entries) else {
+        let Some(mut keep) = crate::auto_memory::tail_keep(&session_id, &cwd, &entries) else {
             return;
         };
+        if self.auto_refine.on
+            && self
+                .lane
+                .stack
+                .ledger
+                .memory
+                .as_ref()
+                .is_some_and(|m| m.supports_project_refinements())
+            && self.auto_refine.start_pass_for(&keep.through, !in_background)
+        {
+            keep.refine = true;
+        }
         if in_background {
             self.keep_in_background(keep);
         } else {

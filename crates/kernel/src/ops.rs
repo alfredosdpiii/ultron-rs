@@ -486,6 +486,7 @@ pub const OPS: &[Op] = &[
             "max_repairs",
             "model",
             "prefix",
+            "session_id",
             "thinking",
             "timeout_ms",
         ],

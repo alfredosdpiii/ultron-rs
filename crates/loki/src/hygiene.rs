@@ -1,23 +1,16 @@
-//! Code hygiene: the vendored codehygiene model (`vendor/codehygiene`, see its UPSTREAM.md) run over the files a cell
-//! wrote. It reports as advisories the lines the change added, never the debt a file already had: upstream gates on
-//! the whole file, which flags most reviewed code (long lines and four indent levels count as squiggles).
-//!
-//! The model is NumPy code, so it runs in a Python that has NumPy: Loki's interpreter, else `uv run --offline` when
-//! NumPy is in uv's cache. Nothing is downloaded; without NumPy the check says once that it did not run.
+//! Code hygiene: the vendored codehygiene 1.58-bit ternary model (`vendor/codehygiene`, see its UPSTREAM.md) run
+//! in-process in pure Rust (`hygiene_model`) over the files a cell wrote. It reports as advisories the lines the
+//! change added, never the debt a file already had: upstream gates on the whole file, which flags most reviewed code
+//! (long lines and four indent levels count as squiggles).
 //!
 //! [`crate::nits`] reads the same files with a parser, and its findings are reported beside the model's.
-// ponytail: a Python + NumPy subprocess per check (~0.3 s plus ~0.4 s per 100 lines); port the forward pass to Rust
-// if the NumPy requirement or the latency matters.
 
 use crate::git::{git_output, text_at};
 use crate::proc::{self, Deadline, RunError};
 use crate::{nits, py, resolve};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::path::Path;
-
-const SOURCE: &str = include_str!("../vendor/codehygiene/__init__.py");
-const WEIGHTS: &[u8] = include_bytes!("../vendor/codehygiene/weights.npz");
 
 /// `off`, `on` (the default kinds) or `all` (every kind); over the global `loki.hygiene` setting.
 pub const HYGIENE_ENV: &str = "ULTRON_LOKI_HYGIENE";
@@ -34,32 +27,8 @@ const SUFFIXES: [&str; 19] = [
 const SECONDS: f64 = 20.0;
 const MAX_NOTES: usize = 10;
 const SNIPPET_CHARS: usize = 80;
-/// The driver's exit when the model itself failed (3: no NumPy in that Python).
+/// The driver's exit when a Python-backed analyzer (`nits`) failed (3: missing import in that Python).
 const FAILED: i32 = 4;
-
-/// Reads `{source, weights, texts}` on stdin and prints, per text, `[[line, kind, message], ...]`.
-const DRIVER: &str = r#"
-import io, json, sys, types
-try:
-    import numpy
-except ImportError:
-    raise SystemExit(3)
-try:
-    request = json.load(sys.stdin)
-    module = types.ModuleType("codehygiene")
-    sys.modules["codehygiene"] = module
-    exec(compile(request["source"], "codehygiene/__init__.py", "exec"), module.__dict__)
-    with numpy.load(io.BytesIO(bytes.fromhex(request["weights"]))) as archive:
-        weights = module.unpack_ternary_archive(archive["trits"], archive["vecs"], str(archive["meta"].item()))
-    found = [
-        [[s.line, s.kind, s.message] for s in module.score(text, weights=weights).squiggles]
-        for text in request["texts"]
-    ]
-except Exception as error:
-    sys.stderr.write(f"{type(error).__name__}: {error}\n")
-    raise SystemExit(4)
-json.dump(found, sys.stdout)
-"#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
@@ -87,16 +56,6 @@ pub struct Squiggle {
     pub line: usize,
     pub kind: String,
     pub message: String,
-}
-
-/// The Pythons to try, in order: Loki's own, then uv's with NumPy from its cache.
-fn launchers() -> Vec<Vec<String>> {
-    let mut found = vec![vec![crate::pyast::interpreter()]];
-    if let Some(uv) = proc::which("uv") {
-        let args = ["run", "-q", "--offline", "--no-project", "--with", "numpy", "python"];
-        found.push(std::iter::once(uv).chain(args.map(String::from)).collect());
-    }
-    found
 }
 
 fn parse(stdout: &[u8]) -> Option<Vec<Vec<Squiggle>>> {
@@ -147,12 +106,16 @@ pub(crate) fn drive(
     Err(missing.into())
 }
 
-/// The model's squiggles for each text, or why it could not run.
+/// The model's squiggles for each text, run in-process in pure Rust (`hygiene_model`), or why it could not run.
 pub fn score(texts: &[&str], deadline: Deadline) -> Result<Vec<Vec<Squiggle>>, String> {
-    let weights: String = WEIGHTS.iter().map(|byte| format!("{byte:02x}")).collect();
-    let request = json!({"source": SOURCE, "weights": weights, "texts": texts}).to_string();
-    let missing = "needs NumPy, which neither Loki's Python nor uv's cache has (`uv run --with numpy python -c pass` fetches it once)";
-    drive(&launchers(), DRIVER, &request, deadline, missing)
+    let mut out = Vec::with_capacity(texts.len());
+    for text in texts {
+        if deadline.timeout().is_err() {
+            return Err("timed out".into());
+        }
+        out.push(crate::hygiene_model::score_code(text)?);
+    }
+    Ok(out)
 }
 
 /// The 1-based lines of `after` that are not in `before`.

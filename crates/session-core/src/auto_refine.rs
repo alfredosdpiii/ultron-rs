@@ -158,6 +158,132 @@ impl Ledger {
         }
         out
     }
+
+    /// Active situational project refinements from memorantado (those with `pathGlobs`, not stale, not shadowed by a
+    /// session rollback/override), for [`RefinementPointers`].
+    pub fn situational_refinements(&self) -> Vec<Value> {
+        let Some(memory) = &self.memory else {
+            return Vec::new();
+        };
+        let branch = self.branch();
+        let records = self.session_records(branch.as_ref());
+        let shadowed: HashSet<String> = records
+            .iter()
+            .filter(|r| matches!(r["state"].as_str(), Some("active" | "rolled_back")))
+            .filter_map(|r| r["target"].as_str().map(str::to_string))
+            .collect();
+        services::safe_project_refinements(memory)
+            .into_iter()
+            .filter(|project| {
+                project["kind"] == "instruction"
+                    && project["target"].as_str().is_some_and(|t| !shadowed.contains(t))
+                    && project["pathGlobs"].as_array().is_some_and(|g| !g.is_empty())
+                    && !project["stale"].is_string()
+            })
+            .collect()
+    }
+}
+
+/// Formats active refinements as a concise block appended to fresh `rlm.spawn` subagent prompts (`None` when empty).
+pub fn prompt_block(active: &[Value]) -> Option<String> {
+    let active = &active[..active.len().min(MESSAGE_LIMIT)];
+    if active.is_empty() {
+        return None;
+    }
+    let mut lines = vec!["Active session/project refinements (follow unless your brief says otherwise):".to_string()];
+    for refinement in active {
+        let id = refinement["id"].as_str().unwrap_or_default();
+        let text = refinement["text"].as_str().unwrap_or_default();
+        let cut: String = text
+            .char_indices()
+            .take_while(|(at, _)| *at < MAX_TEXT)
+            .map(|(_, c)| c)
+            .collect();
+        lines.push(format!("- [{id}] {cut}"));
+    }
+    Some(lines.join("\n"))
+}
+
+/// File-linked observer for situational `pathGlobs` project refinements: when a cell modifies a file matching a
+/// project refinement's globs, emits `[refinement] <id>: <text>` once per session (at most 3 per cell).
+pub struct RefinementPointers {
+    ledger: Ledger,
+    enabled: bool,
+    shown: Mutex<HashSet<String>>,
+}
+
+impl RefinementPointers {
+    pub fn new(ledger: Ledger, enabled: bool) -> Self {
+        Self {
+            ledger,
+            enabled,
+            shown: Mutex::new(HashSet::new()),
+        }
+    }
+}
+
+impl host::file_hooks::CellObserver for RefinementPointers {
+    fn enabled(&self) -> bool {
+        self.enabled
+            && self
+                .ledger
+                .memory
+                .as_ref()
+                .is_some_and(|m| m.supports_project_refinements())
+    }
+
+    fn cell_changed(&self, changes: &host::file_hooks::CellChanges, cwd: &Path, _lane: &str) -> Vec<String> {
+        if !self.enabled() {
+            return Vec::new();
+        }
+        let paths: Vec<String> = changes
+            .files
+            .iter()
+            .chain(changes.checked.iter())
+            .filter_map(|path| host::file_hooks::inside(cwd, path))
+            .collect();
+        if paths.is_empty() {
+            return Vec::new();
+        }
+        let mut shown = self.shown.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut notes = Vec::new();
+        for refinement in self.ledger.situational_refinements() {
+            let Some(id) = refinement["id"].as_str() else {
+                continue;
+            };
+            if shown.contains(id) {
+                continue;
+            }
+            let matched = refinement["pathGlobs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .any(|pattern| {
+                    paths
+                        .iter()
+                        .any(|p| kernel_apis::memory_records::glob_matches(pattern, p))
+                });
+            if !matched {
+                continue;
+            }
+            shown.insert(id.to_string());
+            let text = refinement["text"].as_str().unwrap_or_default();
+            let cut: String = text
+                .char_indices()
+                .take_while(|(at, _)| *at < MAX_TEXT)
+                .map(|(_, c)| c)
+                .collect();
+            match refinement["situation"].as_str().filter(|s| !s.is_empty()) {
+                Some(situation) => notes.push(format!("[refinement] {id} ({situation}): {cut}")),
+                None => notes.push(format!("[refinement] {id}: {cut}")),
+            }
+            if notes.len() == 3 {
+                break;
+            }
+        }
+        notes
+    }
 }
 
 fn active_newest_first(records: &[Value]) -> Vec<Value> {
@@ -333,7 +459,12 @@ pub fn plan(reply: &str, source: &str) -> Plan {
             .filter(|text| !text.is_empty())
             .map(str::to_string)
     };
-    let raw_proposals = value["proposals"].as_array().into_iter().flatten();
+    let raw_proposals = value
+        .get("proposals")
+        .or_else(|| value.get("refinements"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten();
     let mut kept = Vec::new();
     let mut dropped = 0;
     for item in raw_proposals.take(MAX_PROPOSALS) {
@@ -455,6 +586,47 @@ pub fn log_outcome(agent_dir: &Path, outcome: &Outcome) {
         ),
     };
     let _ = writeln!(file, "{at} source={} {detail}", outcome.source_ref);
+}
+
+/// Prompt section appended to `auto_memory`'s distillation prompt when both automatic memory and automatic
+/// refinement share one side-request.
+pub fn unified_prompt_section(ledger: &Ledger) -> String {
+    let records = ledger.session_records(ledger.branch().as_ref());
+    let active = ledger.active();
+    let active_json = serde_json::to_string_pretty(&active).unwrap_or_default();
+    let history: Vec<Value> = records[records.len().saturating_sub(HISTORY_LIMIT)..]
+        .iter()
+        .map(|r| {
+            let view = services::refinement_view(r);
+            json!({"id": view["id"], "target": r["target"], "state": r["state"], "text": view["text"]})
+        })
+        .collect();
+    let history = serde_json::to_string_pretty(&history).unwrap_or_default();
+    format!(
+        "\n\n<active-refinements>\n{active_json}\n</active-refinements>\n\n\
+         <refinement-history>\n{history}\n</refinement-history>\n\n\
+         Also propose at most {MAX_PROPOSALS} short behavioral instructions in `refinements` (each under {MAX_TEXT} \
+         bytes, with verbatim `quote`, `key`, `rationale`, `expectedOutcome`, and `durable: true` only for repo-wide \
+         conventions; optional `situation` and `pathGlobs`). List wrong active refinement ids in `rollback`, and \
+         include any relied-on `project:*` refinement ids in `used`."
+    )
+}
+
+/// Applies refinements parsed from an already-received LLM reply (used by unified `auto_memory` + `auto_refine`
+/// distillation) and logs the outcome.
+pub fn apply_reply(
+    ledger: &Ledger,
+    reply: &str,
+    source_ref: &str,
+    source_text: &str,
+    agent_dir: Option<&Path>,
+) -> Outcome {
+    let planned = plan(reply, source_text);
+    let outcome = apply(ledger, &planned, source_ref);
+    if let Some(dir) = agent_dir {
+        log_outcome(dir, &outcome);
+    }
+    outcome
 }
 
 /// Runs one proposal pass synchronously over `source_text` (backed by `source_ref`, e.g. `compaction:<id>` or

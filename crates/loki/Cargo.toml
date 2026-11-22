@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 ultron-assets = { path = "../../packages/coding-agent", version = "=1.0.2" }
 fancy-regex = "=0.19.2"
+flate2 = "=1.1.10"
 jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.2" }
 kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.2" }
 regex = "=1.13.1"

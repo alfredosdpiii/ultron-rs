@@ -1435,7 +1435,8 @@ impl MemoryService {
             .ok_or(MemoryError::code(ErrorCode::InvalidResponse))?;
         let records = jsrt::sync::lock(&self.inner).records.clone();
         let cutoff = (self.clock)() - AUTO_MEMORY_MAX_AGE_MS;
-        let mut found = Vec::new();
+        let mut fresh = Vec::new();
+        let mut aged = Vec::new();
         for item in items {
             let (Some(id), Some(text)) = (
                 item.get("id").filter(|id| nonempty(id)).and_then(Value::as_str),
@@ -1485,9 +1486,7 @@ impl MemoryService {
             }
             let auto = item["metadata"]["ultron_source"] == "auto";
             let confirmed = item["confirmedAt"].as_str().and_then(jsrt::date::parse_date);
-            if auto && confirmed.is_some_and(|at| at < cutoff) {
-                continue;
-            }
+            let is_aged = auto && confirmed.is_some_and(|at| at < cutoff);
             let mut entry = json!({"id": id, "text": text, "scope": scope});
             if let Some(kind) = item.get("type").filter(|t| t.is_string()) {
                 entry["type"] = kind.clone();
@@ -1498,11 +1497,19 @@ impl MemoryService {
             if let Some(stale) = self.stale(scope, &item["metadata"]) {
                 entry["stale"] = stale.into();
             }
-            found.push(entry);
-            if found.len() == limit {
-                break;
+            if is_aged {
+                entry["aged"] = true.into();
+                aged.push((confirmed.unwrap_or(i64::MIN), entry));
+            } else {
+                fresh.push(entry);
             }
         }
+        // Fresh and user-authored memories always outrank aged (>90d) unconfirmed auto-memories; aged ones fill any
+        // remaining slots (newest first) rather than vanishing at a hard cutoff.
+        aged.sort_by_key(|a| std::cmp::Reverse(a.0));
+        let mut found = fresh;
+        found.extend(aged.into_iter().map(|(_, entry)| entry));
+        found.truncate(limit);
         Ok(found)
     }
 

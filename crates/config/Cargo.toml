@@ -11,7 +11,6 @@ autotests = false
 name = "config"
 
 [dependencies]
-ultron-assets = { path = "../../packages/coding-agent", version = "=1.0.2" }
 jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.2" }
 model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.2" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }

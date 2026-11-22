@@ -883,16 +883,6 @@ impl Runtime {
         // Skill procedures in progress (`skills.run`, delegation::skill_runs) watch each cell for changes outside the
         // current segment's files.
         let skill_runs = Arc::new(delegation::skill_runs::RunBook::default());
-        let observers = self
-            .memory_pointers(session_id, &memory_records)
-            .into_iter()
-            .chain(self.situational_skills())
-            .chain(Some(skill_runs.clone() as Arc<dyn host::file_hooks::CellObserver>))
-            .collect();
-        let host = Arc::new(
-            self.host_in(&config.cwd, session_id, "bash", Some(&stats), observers)?
-                .with_journal(jobs)?,
-        );
         crate::guard_log::loki_setup(&config);
         // `createSessionModuleStore(session, name)`: the session value `ultron.module/<name>`.
         let modules = |name: &str| -> Arc<dyn kernel::store::DocumentStore> {
@@ -972,6 +962,21 @@ impl Runtime {
             branch: branch.clone(),
             memory: shared_memory.clone(),
         };
+        let refine_pointers_on = config.settings["refine"]["auto"].as_bool().unwrap_or(true);
+        let observers = self
+            .memory_pointers(session_id, &memory_records)
+            .into_iter()
+            .chain(self.situational_skills())
+            .chain(Some(Arc::new(crate::auto_refine::RefinementPointers::new(
+                ledger.clone(),
+                refine_pointers_on,
+            )) as Arc<dyn host::file_hooks::CellObserver>))
+            .chain(Some(skill_runs.clone() as Arc<dyn host::file_hooks::CellObserver>))
+            .collect();
+        let host = Arc::new(
+            self.host_in(&config.cwd, session_id, "bash", Some(&stats), observers)?
+                .with_journal(jobs)?,
+        );
         let skill_ledger = ledger.clone();
         let loader: kernel_apis::SkillLoader = Arc::new(move || {
             let mut sources = skill_sources(&skills_config, &extra, no_skills);

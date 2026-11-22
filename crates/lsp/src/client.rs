@@ -16,8 +16,7 @@ use std::time::{Duration, Instant};
 
 const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STDERR_BYTES: usize = 4096;
-/// ponytail: past this many open documents all are closed and reopened as they are written again; an LRU if the
-/// reopening ever shows up.
+/// Maximum documents kept open per language server; least recently used documents are closed past this cap.
 const MAX_OPEN: usize = 64;
 /// How long a server that publishes without document versions gets to report on a change to a file it last called
 /// clean. typescript-language-server publishes nothing when a clean file stays clean, so silence is the answer.
@@ -77,6 +76,8 @@ struct Doc {
     hash: String,
     /// `State::received` when this version was sent.
     sent_at: u64,
+    /// Monotonic counter from `Client::doc_uses` for LRU eviction.
+    last_used: u64,
 }
 
 pub struct Client {
@@ -86,6 +87,7 @@ pub struct Client {
     shared: Arc<Shared>,
     stderr: Arc<Mutex<Vec<u8>>>,
     next_id: AtomicU64,
+    doc_uses: AtomicU64,
     pull: bool,
     status: bool,
     /// Held for a whole check: one at a time per server.
@@ -298,6 +300,7 @@ impl Client {
             shared,
             stderr,
             next_id: AtomicU64::new(1),
+            doc_uses: AtomicU64::new(0),
             pull: false,
             status,
             docs: Mutex::default(),
@@ -410,12 +413,17 @@ impl Client {
         let Some(uri) = uri(path) else { return false };
         let hash = jsrt::hash::sha256_hex(text);
         let sent_at = sync::lock(&self.shared.state).received;
+        let used = self.doc_uses.fetch_add(1, Ordering::Relaxed) + 1;
         match docs.get_mut(path) {
-            Some(doc) if doc.hash == hash => return false,
+            Some(doc) if doc.hash == hash => {
+                doc.last_used = used;
+                return false;
+            }
             Some(doc) => {
                 doc.version += 1;
                 doc.hash = hash;
                 doc.sent_at = sent_at;
+                doc.last_used = used;
                 self.notify(
                     "textDocument/didChange",
                     json!({ "textDocument": { "uri": uri, "version": doc.version }, "contentChanges": [{ "text": text }] }),
@@ -428,6 +436,7 @@ impl Client {
                         version: 1,
                         hash,
                         sent_at,
+                        last_used: used,
                     },
                 );
                 self.notify(
@@ -447,6 +456,21 @@ impl Client {
         }
     }
 
+    /// Notifies the server via `workspace/didChangeWatchedFiles` about files modified on disk that it does not have
+    /// open (useful for servers without their own file watcher, such as `gopls`).
+    pub fn notify_watched_changes(&self, changed: &[PathBuf]) {
+        let docs = sync::lock(&self.docs);
+        let changes: Vec<Value> = changed
+            .iter()
+            .filter(|path| !docs.contains_key(*path))
+            .filter_map(|path| uri(path).map(|uri| json!({ "uri": uri, "type": 2 })))
+            .collect();
+        drop(docs);
+        if !changes.is_empty() {
+            self.notify("workspace/didChangeWatchedFiles", json!({ "changes": changes }));
+        }
+    }
+
     /// The errors the server reports for `path` once its content is `content` (which is not on disk yet).
     pub fn check(
         &self,
@@ -456,18 +480,27 @@ impl Client {
         deadline: Instant,
     ) -> Result<Vec<Diagnostic>, Unready> {
         let mut docs = sync::lock(&self.docs);
+        // Evict only the least-recently-used document(s) when opening a new file past MAX_OPEN.
+        if !docs.contains_key(path) {
+            while docs.len() >= MAX_OPEN {
+                let oldest = docs
+                    .iter()
+                    .filter(|(open, _)| *open != path)
+                    .min_by_key(|(_, doc)| doc.last_used)
+                    .map(|(open, _)| open.clone());
+                let Some(oldest) = oldest else { break };
+                self.close(&mut docs, &oldest);
+            }
+        }
         // The other open documents follow the disk: `bash` may have changed one, and a write another guard
         // refused never reached it.
-        // ponytail: files the server has not open are left to the server's own watcher (gopls has none); send
-        // workspace/didChangeWatchedFiles from after-cell changes if stale answers show up.
         let others: Vec<PathBuf> = docs.keys().filter(|open| *open != path).cloned().collect();
-        let reset = others.len() + 1 >= MAX_OPEN;
         for other in others {
             match std::fs::read_to_string(&other) {
-                Ok(text) if !reset => {
+                Ok(text) => {
                     self.sync_doc(&mut docs, &other, language, &text);
                 }
-                _ => self.close(&mut docs, &other),
+                Err(_) => self.close(&mut docs, &other),
             }
         }
         let quiet_is_clean = {
