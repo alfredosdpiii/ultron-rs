@@ -54,7 +54,8 @@ fn session_core_situational_skills_rules_come_from_the_settings() {
             "principle-make-operations-idempotent",
             "principle-explain-the-number",
             "principle-boundary-discipline",
-            "principle-type-system-discipline"
+            "principle-type-system-discipline",
+            "maintain-formal-verification-skill"
         ],
         "no setting: the defaults"
     );
@@ -68,7 +69,8 @@ fn session_core_situational_skills_rules_come_from_the_settings() {
             "principle-make-operations-idempotent",
             "principle-explain-the-number",
             "principle-boundary-discipline",
-            "principle-type-system-discipline"
+            "principle-type-system-discipline",
+            "maintain-formal-verification-skill"
         ],
         "an always-on skill is in the prompt already"
     );
@@ -151,21 +153,21 @@ fn session_core_situational_skills_follow_only_files_written_with_edit_or_write(
 }
 
 #[test]
-fn session_core_situational_skills_bring_the_playbook_at_the_third_file_and_the_check_before_shipping() {
+fn session_core_situational_skills_bring_the_playbook_at_the_second_file_and_the_check_before_shipping() {
     let skills = observer(json!({}), Arc::new(AtomicBool::new(true)));
     let cwd = Path::new("/repo");
     let rigor = |given: &[String]| given.iter().any(|line| line.contains("rigor applies"));
-    assert!(!rigor(&skills.cell_changed(&changes(&["a.txt", "b.txt"]), cwd, "main")));
+    assert!(!rigor(&skills.cell_changed(&changes(&["a.txt"]), cwd, "main")));
     assert!(
         !rigor(&skills.cell_changed(&changes(&["a.txt"]), cwd, "main")),
         "the same file counts once"
     );
     assert!(
-        !rigor(&skills.cell_changed(&changes(&["c.txt"]), cwd, "other")),
+        !rigor(&skills.cell_changed(&changes(&["b.txt"]), cwd, "other")),
         "files count per lane"
     );
-    assert!(rigor(&skills.cell_changed(&changes(&["c.txt"]), cwd, "main")));
-    assert!(!rigor(&skills.cell_changed(&changes(&["d.txt"]), cwd, "main")), "once");
+    assert!(rigor(&skills.cell_changed(&changes(&["b.txt"]), cwd, "main")));
+    assert!(!rigor(&skills.cell_changed(&changes(&["c.txt"]), cwd, "main")), "once");
 
     assert_eq!(skills.before_shell("git status && git diff", "main"), None);
     assert_eq!(skills.before_shell("cargo test", "main"), None);
@@ -564,5 +566,124 @@ fn session_core_first_ship_of_a_lane_carries_hygiene_notes_for_the_whole_change(
     let off = skills(Level::Off)
         .before_shell("git commit -qm x", "main")
         .unwrap_or_default();
-    assert!(off.contains("blast-radius") && !off.contains("hygiene"), "{off}");
+    assert!(
+        off.contains("blast-radius") && off.contains("pstack/no-comments/SKILL.md") && !off.contains("hygiene"),
+        "{off}"
+    );
+}
+
+#[test]
+fn session_core_situational_skills_rearm_tla_specs_and_many_files_two() {
+    let on = Arc::new(AtomicBool::new(true));
+    let skills = observer(json!({}), on);
+    let cwd = Path::new("/repo");
+    // Editing a TLA+ spec triggers maintain-formal-verification-skill.
+    let spec = skills.cell_changed(&changes(&["specs/spawn-collect/spawn_collect.tla"]), cwd, "main");
+    assert_eq!(spec.len(), 1, "{spec:?}");
+    assert!(
+        spec[0].contains("maintain-formal-verification-skill"),
+        "expected formal verification skill: {:?}",
+        spec
+    );
+    // Second distinct file hits MANY_FILES (2) and triggers rigor.
+    let second = skills.cell_changed(&changes(&["src/plain.txt"]), cwd, "main");
+    assert_eq!(second.len(), 1, "{second:?}");
+    assert!(
+        second[0].starts_with("[skill] You changed 2 files: rigor applies from here on."),
+        "{second:?}"
+    );
+    // Already given before compaction.
+    assert!(
+        skills
+            .cell_changed(&changes(&["specs/spawn-collect/spawn_collect.tla"]), cwd, "main")
+            .is_empty()
+    );
+    // Rearm after compaction allows the situational skill to fire again.
+    skills.rearm("main");
+    let rearmed = skills.cell_changed(&changes(&["specs/spawn-collect/spawn_collect.tla"]), cwd, "main");
+    assert!(
+        rearmed
+            .iter()
+            .any(|msg| msg.contains("maintain-formal-verification-skill")),
+        "expected rearmed skill after compaction: {rearmed:?}"
+    );
+}
+
+#[test]
+fn session_core_ship_gate_resolves_nested_git_c_repo_for_hygiene() {
+    use loki::hygiene::{self, Level};
+    if hygiene::score(&["x = 1\n"], loki::proc::Deadline::after(60.0)).is_err() {
+        return;
+    }
+    let parent = tempfile::tempdir().unwrap();
+    let nested = parent.path().join("repo");
+    std::fs::create_dir_all(&nested).unwrap();
+    git(&nested, &["init", "-q"]);
+    std::fs::write(nested.join("store.py"), "LIMIT = 10\n").unwrap();
+    git(&nested, &["add", "."]);
+    git(&nested, &["commit", "-qm", "base"]);
+    let swallowed =
+        "def save(path, text):\n    try:\n        open(path, 'w').write(text)\n    except Exception:\n        pass\n";
+    std::fs::write(nested.join("store.py"), format!("LIMIT = 10\n\n\n{swallowed}")).unwrap();
+    // Session cwd is the non-git parent directory; command targets nested repo via `git -C repo`.
+    let skills = observer(json!({}), Arc::new(AtomicBool::new(true)))
+        .with_self_review(SelfReview::Advise, parent.path())
+        .with_hygiene(Level::On);
+    let told = skills
+        .before_shell("git -C repo commit -qm x", "main")
+        .unwrap_or_default();
+    assert!(
+        told.contains("store.py:7: loki/hygiene-swallowed-error"),
+        "expected nested repo hygiene via git -C: {told}"
+    );
+}
+
+#[test]
+fn session_core_subagent_prompt_includes_rigor_worker_rules_in_engineering_mode() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bundled =
+        std::fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent")).unwrap();
+    let env = session_core::RunEnv {
+        cwd: tmp.path().to_path_buf(),
+        home: tmp.path().to_path_buf(),
+        var: Arc::new(|_| None),
+        package: bundled,
+    };
+    let cwd = tmp.path().display().to_string();
+    let extra = session_core::session_resources::SessionResources::default();
+    let subagent_guide = resources::runtime_guide::RuntimeGuideOptions {
+        durable_apis: true,
+        reader: resources::runtime_guide::GuideReader::Subagent { swarm: true },
+        ..Default::default()
+    };
+    let root_guide = resources::runtime_guide::RuntimeGuideOptions {
+        durable_apis: true,
+        ..Default::default()
+    };
+    let eng = session_core::lane::PromptMode {
+        engineering: true,
+        ..Default::default()
+    };
+    let off = session_core::lane::PromptMode {
+        engineering: false,
+        ..Default::default()
+    };
+    let (child_eng, _) =
+        session_core::lane::system_prompt_with_resources(&env, &cwd, None, &subagent_guide, &eng, &extra).unwrap();
+    assert!(
+        child_eng.contains("You are working for the operator."),
+        "expected rigor/worker.md in engineering subagent prompt"
+    );
+    let (child_off, _) =
+        session_core::lane::system_prompt_with_resources(&env, &cwd, None, &subagent_guide, &off, &extra).unwrap();
+    assert!(
+        !child_off.contains("You are working for the operator."),
+        "worker.md should not be injected outside engineering mode"
+    );
+    let (root_eng, _) =
+        session_core::lane::system_prompt_with_resources(&env, &cwd, None, &root_guide, &eng, &extra).unwrap();
+    assert!(
+        !root_eng.contains("You are working for the operator."),
+        "worker.md is for subagents, not root"
+    );
 }

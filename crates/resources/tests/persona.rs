@@ -234,4 +234,21 @@ fn resources_bundled_skills_note_is_proactive_only_when_asked() {
             .unwrap()
             .contains("Read one only when")
     );
+    // Bundled principle-* skills surface as a compact line in proactive mode unless situational-principles is always-on.
+    let mut with_principle = vec![
+        skill("/b/pstack/plan/SKILL.md", true),
+        skill("/b/pstack/principle-subtract-before-you-add/SKILL.md", true),
+    ];
+    let note = bundled_skills_note(&with_principle, Some("/b"), true);
+    assert!(
+        note.contains("pstack principles: subtract-before-you-add"),
+        "expected principle index: {note}"
+    );
+    let mut sp = skill("/u/situational-principles/SKILL.md", true);
+    sp.always_on_content = Some("already in prompt".into());
+    with_principle.push(sp);
+    assert!(
+        !bundled_skills_note(&with_principle, Some("/b"), true).contains("pstack principles:"),
+        "omitted when situational-principles is already always-on"
+    );
 }

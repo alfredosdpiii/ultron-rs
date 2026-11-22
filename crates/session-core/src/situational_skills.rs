@@ -113,10 +113,15 @@ const DEFAULT_RULES: &[(&str, &str, &[&str])] = &[
             "**/*.scala",
         ],
     ),
+    (
+        "maintain-formal-verification-skill",
+        "You changed a formal spec or verification skill",
+        &["**/specs/**", "**/*.tla", "**/*.qnt", "**/.pi/skills/verify-*/**"],
+    ),
 ];
 
 /// Edited files on one lane from which [`MANY_FILES_SKILL`] applies.
-pub const MANY_FILES: usize = 3;
+pub const MANY_FILES: usize = 2;
 /// The playbook for a change across several files.
 pub const MANY_FILES_SKILL: &str = "rigor";
 /// The part of [`MANY_FILES_SKILL`] it brings: the routes, not its opening (an opening and a pointer were not followed).
@@ -169,9 +174,34 @@ fn pr_directory(command: &str, cwd: &Path) -> Option<PathBuf> {
 }
 
 /// Where `command` (unquoted) pushes from, by the same rule. `None` when it pushes nothing.
-fn push_directory(command: &str, cwd: &Path) -> Option<PathBuf> {
-    static PUSH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\bgit\s+push\b").expect("valid"));
-    directory_of(command, cwd, &PUSH)
+fn push_directory(typed: &str, command: &str, cwd: &Path) -> Option<PathBuf> {
+    static PUSH: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\bgit\s+(?:-C\s+\S+\s+)?push\b").expect("valid"));
+    if !PUSH.is_match(command) {
+        return None;
+    }
+    Some(git_target_dir(typed, command, cwd, &PUSH))
+}
+
+/// Directory targeted by a shipping command (`git -C <dir> ...`, else last `cd <dir>` before it, else `cwd`).
+fn ship_directory(typed: &str, command: &str, cwd: &Path) -> PathBuf {
+    static SHIP: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"\bgit\s+(?:-C\s+\S+\s+)?(commit|push)\b|\bgh\s+pr\s+create\b").expect("valid")
+    });
+    git_target_dir(typed, command, cwd, &SHIP)
+}
+
+fn git_target_dir(typed: &str, command: &str, cwd: &Path, what: &regex::Regex) -> PathBuf {
+    static GIT_C: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#"\bgit\s+-C\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|)]+))\s+(?:commit|push)\b"#).expect("valid")
+    });
+    let base = directory_of(command, cwd, what).unwrap_or_else(|| cwd.to_path_buf());
+    if let Some(found) = GIT_C.captures(typed)
+        && let Some(dir) = found.iter().skip(1).flatten().next()
+    {
+        return base.join(dir.as_str());
+    }
+    base
 }
 
 fn directory_of(command: &str, cwd: &Path, what: &regex::Regex) -> Option<PathBuf> {
@@ -409,10 +439,10 @@ impl SituationalSkills {
         self
     }
 
-    /// Hygiene notes for every line the change in the session's repository adds against where it left the default
+    /// Hygiene notes for every line the change in `dir`'s repository adds against where it left the default
     /// branch (HEAD without one): the per-write notes are advisory, one cell late and blind to committed lines.
-    fn hygiene_notes(&self) -> String {
-        let Some(root) = host::loki_guard::git_root(&self.cwd) else {
+    fn hygiene_notes(&self, dir: &Path) -> String {
+        let Some(root) = host::loki_guard::git_root(dir) else {
             return String::new();
         };
         let base = git_value(&root, &["merge-base", "HEAD", "origin/HEAD"]).unwrap_or_else(|| "HEAD".into());
@@ -424,6 +454,14 @@ impl SituationalSkills {
             "\nHygiene and nits findings on the lines this change adds; fix each before shipping:\n{}",
             notes.join("\n")
         )
+    }
+
+    /// Clear delivered skills for `lane` (called after context compaction so situational principles apply again).
+    pub fn rearm(&self, lane: &str) {
+        self.given
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(l, _)| l != lane);
     }
 
     /// What shipping asks, for commands that run in `cwd`.
@@ -541,10 +579,16 @@ impl CellObserver for SituationalSkills {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .contains(&(lane.to_string(), SHIP_SKILL.to_string()));
+        let ship_dir = ship_directory(typed, &command, &self.cwd);
         let head = format!(
-            "{SHIP_SKILL} comes first: check what this change could break outside its diff, then run the command \
-             again (it is refused once per lane).{}",
-            if first { self.hygiene_notes() } else { String::new() }
+            "{SHIP_SKILL} comes first: check what this change could break outside its diff, strip dead code and \
+             needless comments (pstack/no-comments/SKILL.md), then run the command again (it is refused once per \
+             lane).{}",
+            if first {
+                self.hygiene_notes(&ship_dir)
+            } else {
+                String::new()
+            }
         );
         self.give(lane, SHIP_SKILL, head).or_else(|| {
             if self.self_review != SelfReview::Require {
@@ -554,7 +598,7 @@ impl CellObserver for SituationalSkills {
                 return receipt_refusal(&dir).or_else(|| description_refusal(typed, &dir));
             }
             // A push stays advisory: said once per tree, then the same command goes through.
-            let dir = push_directory(&command, &self.cwd)?;
+            let dir = push_directory(typed, &command, &self.cwd)?;
             let (described, tree) = stale_description(&dir)?;
             let mut given = self.given.lock().unwrap_or_else(PoisonError::into_inner);
             given
@@ -574,6 +618,25 @@ impl CellObserver for SituationalSkills {
     }
 }
 
+/// The session's concrete observer (kept on `Stack` so compaction can [`SituationalSkills::rearm`] it),
+/// or `None` when no rule applies.
+pub fn build_observer(
+    settings: &Value,
+    cwd: &Path,
+    resolve: Box<Resolve>,
+    engineering: Box<Engineering>,
+    hygiene: loki::hygiene::Level,
+) -> Option<Arc<SituationalSkills>> {
+    let (rules, self_review) = (rules(settings), self_review(settings));
+    (!rules.is_empty() || self_review != SelfReview::Off).then(|| {
+        Arc::new(
+            SituationalSkills::new(rules, resolve, engineering)
+                .with_self_review(self_review, cwd)
+                .with_hygiene(hygiene),
+        )
+    })
+}
+
 /// The session's observer, or `None` when no rule applies.
 pub fn session_observer(
     settings: &Value,
@@ -582,12 +645,5 @@ pub fn session_observer(
     engineering: Box<Engineering>,
     hygiene: loki::hygiene::Level,
 ) -> Option<Arc<dyn CellObserver>> {
-    let (rules, self_review) = (rules(settings), self_review(settings));
-    (!rules.is_empty() || self_review != SelfReview::Off).then(|| {
-        Arc::new(
-            SituationalSkills::new(rules, resolve, engineering)
-                .with_self_review(self_review, cwd)
-                .with_hygiene(hygiene),
-        ) as Arc<dyn CellObserver>
-    })
+    build_observer(settings, cwd, resolve, engineering, hygiene).map(|observer| observer as Arc<dyn CellObserver>)
 }

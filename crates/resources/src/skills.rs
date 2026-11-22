@@ -13,7 +13,7 @@ use yaml_rust2::Yaml;
 const MAX_NAME_LENGTH: usize = 64;
 const MAX_DESCRIPTION_LENGTH: usize = 1024;
 /// Most characters of always-on skill text in one system prompt.
-pub const ALWAYS_SKILLS_MAX_CHARS: usize = 16_000;
+pub const ALWAYS_SKILLS_MAX_CHARS: usize = 24_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Skill {
@@ -446,6 +446,20 @@ pub fn bundled_skills_note(skills: &[Skill], bundled: Option<&str>, proactive: b
         )
     }];
     lines.extend(listed);
+    if proactive
+        && !skills
+            .iter()
+            .any(|s| s.name == "situational-principles" && s.always_on_content.is_some())
+    {
+        let principles: Vec<&str> = skills
+            .iter()
+            .filter(|s| s.disable_model_invocation && s.always_on_content.is_none() && s.file_path.starts_with(&prefix))
+            .filter_map(|s| s.name.strip_prefix("principle-"))
+            .collect();
+        if !principles.is_empty() {
+            lines.push(format!("pstack principles: {}", principles.join(", ")));
+        }
+    }
     lines.join("\n")
 }
 

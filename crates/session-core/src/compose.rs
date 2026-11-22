@@ -889,10 +889,16 @@ impl Runtime {
         // Skill procedures in progress (`skills.run`, delegation::skill_runs) watch each cell for changes outside the
         // current segment's files.
         let skill_runs = Arc::new(delegation::skill_runs::RunBook::default());
-        let observers = self
-            .memory_pointers(session_id, &memory_records)
+        let memory_pointers = self.memory_pointers(session_id, &memory_records);
+        let situational_skills = self.situational_skills_in(&config.cwd);
+        let observers = memory_pointers
+            .clone()
             .into_iter()
-            .chain(self.situational_skills())
+            .chain(
+                situational_skills
+                    .clone()
+                    .map(|observer| observer as Arc<dyn host::file_hooks::CellObserver>),
+            )
             .chain(Some(skill_runs.clone() as Arc<dyn host::file_hooks::CellObserver>))
             .collect();
         let host = Arc::new(
@@ -1023,7 +1029,7 @@ impl Runtime {
         // Runs a dead worker left `running` end `interrupted` now: their book died with it. A store that cannot be
         // read leaves them for the next start.
         let procedures = Arc::new(delegation::skill_runs::SkillRuns {
-            book: skill_runs,
+            book: skill_runs.clone(),
             skills: skills.clone(),
             judge: judge.clone(),
             cwd: config.cwd.clone(),
@@ -1334,6 +1340,9 @@ impl Runtime {
                 budget_note: Arc::new(std::sync::OnceLock::new()),
                 request_layer: Arc::new(std::sync::OnceLock::new()),
                 context_reminders,
+                situational_skills,
+                memory_pointers,
+                skill_runs,
                 lane_steer: Arc::new(std::sync::OnceLock::new()),
                 stats,
                 judge_rows,
@@ -1387,9 +1396,9 @@ impl Runtime {
         hooks
     }
 
-    /// The session's situational skills (crate::situational_skills): the settings' rules over the session's skills,
-    /// while engineering mode is on.
-    fn situational_skills(&self) -> Option<Arc<dyn host::file_hooks::CellObserver>> {
+    /// The session's situational skills (crate::situational_skills) rooted at `target_cwd`: the settings' rules over
+    /// the session's skills, while engineering mode is on.
+    fn situational_skills_in(&self, target_cwd: &Path) -> Option<Arc<crate::situational_skills::SituationalSkills>> {
         let config = self.config.clone();
         let (extra, no_skills) = (self.services.resources.clone(), self.services.session.no_skills);
         let resolve = move |name: &str| {
@@ -1407,16 +1416,15 @@ impl Runtime {
             self.config.agent_dir.clone(),
             self.config.home.clone(),
         );
-        let session_cwd = cwd.clone();
         let engineering = move || {
             config::settings::SettingsManager::for_worker(&cwd, &agent_dir, &home)
                 .settings()
                 .get("engineering")
                 == Some(&Value::Bool(true))
         };
-        crate::situational_skills::session_observer(
+        crate::situational_skills::build_observer(
             &self.config.settings,
-            &session_cwd,
+            target_cwd,
             Box::new(resolve),
             Box::new(engineering),
             self.config.loki_hygiene,
@@ -1634,6 +1642,12 @@ pub struct Stack {
     /// The context-pressure reminder every lane's cell results may end with (crate::context_reminder): each lane's
     /// limit and, once the session actor wired it, the meter of its context use.
     pub context_reminders: Arc<crate::context_reminder::ContextReminders>,
+    /// Situational skills observer on the root host (rearmed after context compaction).
+    pub situational_skills: Option<Arc<crate::situational_skills::SituationalSkills>>,
+    /// Shared file-linked memory pointers observer for worktree subagents.
+    memory_pointers: Option<Arc<dyn host::file_hooks::CellObserver>>,
+    /// Shared skill-procedure run book for worktree subagent observers.
+    skill_runs: Arc<delegation::skill_runs::RunBook>,
     /// Steering into a child lane's running conversation (crate::agent_hub), once the session actor wired it.
     pub lane_steer: Arc<std::sync::OnceLock<crate::agent_hub::LaneSteer>>,
     /// The session's runtime counters (crate::session_stats), for `/usage`.
@@ -1657,6 +1671,14 @@ impl Stack {
     /// values (an `ultron claude` server); a native session's go to its values already.
     pub fn record_judge_rows_in(&self, session: crate::durable_store::SharedSession) {
         let _ = self.judge_rows.set(services::SessionValues::shared(session));
+    }
+
+    /// Rearm per-compaction reminders and situational skills on `lane` after a compaction completes.
+    pub fn rearm_after_compaction(&self, lane: &str) {
+        self.context_reminders.rearm(lane);
+        if let Some(skills) = &self.situational_skills {
+            skills.rearm(lane);
+        }
     }
 
     pub(crate) fn config(&self) -> &Arc<Config> {
@@ -2267,7 +2289,7 @@ pub fn child_setup(stack: &Stack, run: &ChildRun) -> ChildSetup {
     let mut system = stack.child_system(&model);
     if let Some(cwd) = run.cwd.as_deref() {
         // A worktree subagent works in its worktree: its shell, kernel and prompt name it, not the checkout.
-        let host = Runtime {
+        let worktree_runtime = Runtime {
             config: stack.config.clone(),
             services: stack.services.clone(),
             diagnostics: Vec::new(),
@@ -2278,13 +2300,24 @@ pub fn child_setup(stack: &Stack, run: &ChildRun) -> ChildSetup {
             memorantado: None,
             memory_notice: None,
             memory_explicit: false,
-        }
-        .host_in(
+        };
+        let worktree_observers: Vec<Arc<dyn host::file_hooks::CellObserver>> = stack
+            .memory_pointers
+            .clone()
+            .into_iter()
+            .chain(
+                worktree_runtime
+                    .situational_skills_in(Path::new(cwd))
+                    .map(|observer| observer as Arc<dyn host::file_hooks::CellObserver>),
+            )
+            .chain(Some(stack.skill_runs.clone() as Arc<dyn host::file_hooks::CellObserver>))
+            .collect();
+        let host = worktree_runtime.host_in(
             Path::new(cwd),
             &stack.session_id,
             &lane_dir(&run.lane_name),
             Some(&stack.stats),
-            Vec::new(),
+            worktree_observers,
         );
         match host {
             Ok(host) => {

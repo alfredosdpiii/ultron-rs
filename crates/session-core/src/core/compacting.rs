@@ -503,6 +503,7 @@ impl Core {
                 return Err(error);
             }
         };
+        self.lane.stack.rearm_after_compaction(MAIN_LANE);
         self.announce();
         self.compacting = None;
         self.emit(WatchEvent::CompactionEnd {

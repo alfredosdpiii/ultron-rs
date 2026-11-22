@@ -44,7 +44,7 @@ pub mod model_refresh;
 pub mod naming;
 pub mod nudge;
 mod pi_view;
-mod playbook_route;
+pub mod playbook_route;
 mod prompt_budget;
 pub mod recovery;
 pub mod request_keys;

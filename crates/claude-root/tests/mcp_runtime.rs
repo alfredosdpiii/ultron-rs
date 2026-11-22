@@ -783,3 +783,117 @@ fn claude_root_mcp_judge_decide_asks_the_configured_judge_and_records_its_usage(
     assert!(!journal.contains(&key));
     server.close();
 }
+
+#[test]
+fn claude_root_mcp_hooks_inject_playbook_and_agy_always_skills() {
+    let root = Root::new();
+    let skill_dir = root.path("a/skills/eng-rule");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: eng-rule\ndescription: Custom engineering rule.\n---\n\nAlways verify real artifacts.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path("a/settings.json"),
+        json!({"engineering": true, "alwaysSkills": ["eng-rule"]}).to_string(),
+    )
+    .unwrap();
+
+    // Default `ultron mcp` (used by `ultron agy`, where `instructions` is true): SessionStart carries alwaysSkills
+    // and UserPrompt routes the fitting rigor playbook once.
+    let server = Server::start(&[], root.env(&[]));
+    let mut client = ControlClient::connect(Path::new(&server.running.socket()), HANG_GUARD).unwrap();
+    let start = client
+        .request(
+            "hook",
+            json!({"event": "session-start", "input": {}})
+                .as_object()
+                .unwrap()
+                .clone(),
+            HANG_GUARD,
+        )
+        .unwrap();
+    let start_ctx = start["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        start_ctx.contains("Always verify real artifacts.") && start_ctx.contains("Bundled skills in"),
+        "SessionStart should deliver alwaysSkills and bundled skills note for agy: {start}"
+    );
+    let first_prompt = client
+        .request(
+            "hook",
+            json!({"event": "user-prompt", "input": {"prompt": "fix the parser"}})
+                .as_object()
+                .unwrap()
+                .clone(),
+            HANG_GUARD,
+        )
+        .unwrap();
+    let first_ctx = first_prompt["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        first_ctx.contains("[playbook] This request reads as a Bug fix."),
+        "UserPrompt should inject routed playbook: {first_prompt}"
+    );
+    let second_prompt = client
+        .request(
+            "hook",
+            json!({"event": "user-prompt", "input": {"prompt": "fix another crash"}})
+                .as_object()
+                .unwrap()
+                .clone(),
+            HANG_GUARD,
+        )
+        .unwrap();
+    let second_ctx = second_prompt["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        !second_ctx.contains("[playbook]"),
+        "same playbook should not repeat in one session: {second_prompt}"
+    );
+    server.close();
+
+    // `--no-instructions` (used by `ultron claude`, which passes alwaysSkills via --system-prompt): SessionStart
+    // must not duplicate alwaysSkills, while UserPrompt still injects the routed playbook.
+    let claude_server = Server::start(&["--no-instructions"], root.env(&[]));
+    let mut claude_client = ControlClient::connect(Path::new(&claude_server.running.socket()), HANG_GUARD).unwrap();
+    let claude_start = claude_client
+        .request(
+            "hook",
+            json!({"event": "session-start", "input": {}})
+                .as_object()
+                .unwrap()
+                .clone(),
+            HANG_GUARD,
+        )
+        .unwrap();
+    let claude_start_ctx = claude_start["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        !claude_start_ctx.contains("Always verify real artifacts."),
+        "SessionStart must not duplicate alwaysSkills for ultron claude: {claude_start}"
+    );
+    let claude_prompt = claude_client
+        .request(
+            "hook",
+            json!({"event": "user-prompt", "input": {"prompt": "refactor this module"}})
+                .as_object()
+                .unwrap()
+                .clone(),
+            HANG_GUARD,
+        )
+        .unwrap();
+    let claude_prompt_ctx = claude_prompt["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        claude_prompt_ctx.contains("[playbook] This request reads as a Refactoring."),
+        "UserPrompt should still inject routed playbook for ultron claude: {claude_prompt}"
+    );
+    claude_server.close();
+}

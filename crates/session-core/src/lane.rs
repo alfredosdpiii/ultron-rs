@@ -333,6 +333,16 @@ pub fn system_prompt_with_resources(
     };
     let runtime = resources::runtime_guide::rlm_runtime_prompt(&["rlm"], guide).unwrap_or_default();
     let loki_note = loki_root.and_then(loki::session_note);
+    let worker_rules = (mode.engineering
+        && guide.durable_apis
+        && matches!(guide.reader, resources::runtime_guide::GuideReader::Subagent { .. }))
+    .then(|| {
+        let dir = bundled.as_deref()?;
+        let text = std::fs::read_to_string(std::path::Path::new(dir).join("pstack/rigor/worker.md")).ok()?;
+        let trimmed = text.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+    .flatten();
     let options = BuildOptions {
         selected_tools: vec!["rlm".into()],
         tool_snippets: vec![("rlm".into(), RLM_SNIPPET.into())],
@@ -362,6 +372,7 @@ pub fn system_prompt_with_resources(
                     .filter(|_| guide.durable_apis)
                     .map(|notes| ("model_notes".to_string(), notes)),
             )
+            .chain(worker_rules.map(|rules| ("worker_rules".to_string(), rules)))
             .collect(),
         engineering: mode.engineering,
         persona,

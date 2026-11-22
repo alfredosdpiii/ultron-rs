@@ -28,6 +28,52 @@ pub const MAX_PLAYBOOK_CHARS: usize = 5000;
 // model when these still misroute: on 217 real messages they route 92, and the rest are mostly short follow-ups.
 pub const ROUTES: &[(&str, &str, &str)] = &[
     (
+        "babysit",
+        "Babysit",
+        r"(?i)\b(babysit|get (this|the) pr green|fix ci|address review comments?|resolve review threads?)\b",
+    ),
+    ("shipping", "Shipping", r"(?i)\b(land|merge|ship) (the|this) stack\b"),
+    (
+        "opening-a-pr",
+        "Opening a PR",
+        r"(?i)\b((open|create|submit|file) (a |the )?(pr|pull request)|gh pr create)\b",
+    ),
+    (
+        "worktree-cleanup",
+        "Worktree cleanup",
+        r"(?i)\b((clean ?up|prune|remove) (old |stale |merged )?worktrees?)\b",
+    ),
+    (
+        "authoring-a-skill",
+        "Authoring a skill",
+        r"(?i)\b((write|create|edit|author|update) (a |the )?(new )?(skill|SKILL\.md))\b",
+    ),
+    (
+        "eval",
+        "Eval",
+        r"(?i)\b(run an? eval|eval(uate)? (this|the) (skill|prompt|change))\b",
+    ),
+    (
+        "runtime-forensics",
+        "Runtime forensics",
+        r"(?i)\b(memory leak|idle spin|cpu spike|deadlock|hang(s|ing)? indefinitely)\b",
+    ),
+    (
+        "trace-forensics",
+        "Trace forensics",
+        r"(?i)\b(flamegraph|heap snapshot|cpu profile|perf trace)\b",
+    ),
+    (
+        "prototype",
+        "Prototype",
+        r"(?i)\b(prototype|quick spike|throwaway sketch)\b",
+    ),
+    (
+        "multi-phase-plan",
+        "Multi-phase plan",
+        r"(?i)\b(multi-?phase plan|stacked prs?|migration plan)\b",
+    ),
+    (
         "bug-fix",
         "Bug fix",
         r"(?i)\b(fix(es)?|bug|broken|crash(es|ing)?|regression|fails?|failing|doesn'?t work|not working|wrong)\b",
@@ -35,7 +81,7 @@ pub const ROUTES: &[(&str, &str, &str)] = &[
     (
         "perf-issue",
         "Perf issue",
-        r"(?i)\b(slow(er|ness)?|perf(ormance)?|latency|speed (it )?up|faster|memory leak)\b",
+        r"(?i)\b(slow(er|ness)?|perf(ormance)?|latency|speed (it )?up|faster)\b",
     ),
     (
         "refactoring",
@@ -57,7 +103,29 @@ pub const ROUTES: &[(&str, &str, &str)] = &[
 /// Words read at each end of a message longer than both ends together.
 pub const EDGE_WORDS: usize = 40;
 /// The playbooks that change code: a question opens none of them.
-const CHANGES_CODE: &[&str] = &["bug-fix", "refactoring", "feature"];
+const CHANGES_CODE: &[&str] = &[
+    "babysit",
+    "shipping",
+    "opening-a-pr",
+    "worktree-cleanup",
+    "authoring-a-skill",
+    "prototype",
+    "multi-phase-plan",
+    "bug-fix",
+    "refactoring",
+    "feature",
+];
+/// Playbooks that do not open a new branch spec before the first edit.
+const NO_SPEC: &[&str] = &[
+    "investigation",
+    "runtime-forensics",
+    "trace-forensics",
+    "eval",
+    "worktree-cleanup",
+    "babysit",
+    "shipping",
+    "opening-a-pr",
+];
 const INVESTIGATION: (&str, &str) = ("investigation", "Investigation");
 
 static OPENS_AS_QUESTION: LazyLock<Regex> = LazyLock::new(|| {
@@ -69,7 +137,7 @@ static OPENS_AS_QUESTION: LazyLock<Regex> = LazyLock::new(|| {
 /// "lets add a flag?" and "fix the parser, and what broke it?" ask for the change.
 static OPENS_AS_REQUEST: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)^(ok(ay)?,? |so |and |also |yes,? )*(lets|let's|please|fix|add|implement|build|make|create|rename|refactor|i (want|need) (a|an|it to|ultron to|this to|the \w+ to))\b",
+        r"(?i)^(ok(ay)?,? |so |and |also |yes,? )*(lets|let's|please|fix|add|implement|build|make|create|rename|refactor|clean ?up|prune|babysit|open|ship|land|prototype|eval(uate)?|investigate|debug|trace|i (want|need) (a|an|it to|ultron to|this to|the \w+ to))\b",
     )
     .expect("valid pattern")
 });
@@ -96,7 +164,7 @@ static COMPILED: LazyLock<Vec<(&'static str, &'static str, Regex)>> = LazyLock::
 /// The playbook (file stem, title) for a user message, `None` for a command, a short reply or no match.
 pub fn route(text: &str) -> Option<(&'static str, &'static str)> {
     let words: Vec<&str> = text.split_whitespace().collect();
-    if text.trim_start().starts_with('/') || words.len() < 5 {
+    if text.trim_start().starts_with('/') || words.len() < 2 {
         return None;
     }
     let read = if words.len() > 2 * EDGE_WORDS {
@@ -106,6 +174,9 @@ pub fn route(text: &str) -> Option<(&'static str, &'static str)> {
     } else {
         words.join(" ")
     };
+    if words.len() < 5 && !OPENS_AS_REQUEST.is_match(&read) {
+        return None;
+    }
     let question = !OPENS_AS_REQUEST.is_match(&read)
         && (read.ends_with('?')
             || ASKS_FOR_STATUS.is_match(&read)
@@ -141,7 +212,7 @@ pub fn playbook_message(text: &str, rigor_dir: &Path, shown: &[String], timestam
     let dir = rigor_dir.display();
     // Work that changes code starts from what the finished work must do; the pull request's description is built
     // from it (spec_api.py). Reading changes nothing.
-    let spec = if file == "investigation" {
+    let spec = if NO_SPEC.contains(&file) {
         ""
     } else {
         " Before the first edit, also write what the finished work must do: `import spec_api; \
@@ -195,6 +266,19 @@ mod tests {
             Some("perf-issue")
         );
         assert_eq!(route("ok thanks"), None, "short replies");
+        assert_eq!(route("do it all"), None, "casual short replies");
+        assert_eq!(route("looks good"), None, "casual acknowledgments");
+        assert_eq!(route("fix the build").map(|r| r.0), Some("bug-fix"));
+        assert_eq!(route("refactor this module").map(|r| r.0), Some("refactoring"));
+        assert_eq!(route("open a pr").map(|r| r.0), Some("opening-a-pr"));
+        assert_eq!(route("babysit this pr").map(|r| r.0), Some("babysit"));
+        assert_eq!(route("ship the stack").map(|r| r.0), Some("shipping"));
+        assert_eq!(route("prune stale worktrees").map(|r| r.0), Some("worktree-cleanup"));
+        assert_eq!(route("run an eval on this skill").map(|r| r.0), Some("eval"));
+        assert_eq!(
+            route("debug the memory leak in worker").map(|r| r.0),
+            Some("runtime-forensics")
+        );
         assert_eq!(route("/model claude opus five now please"), None, "commands");
         assert_eq!(route("summarize what we did in this session today"), None, "no route");
     }

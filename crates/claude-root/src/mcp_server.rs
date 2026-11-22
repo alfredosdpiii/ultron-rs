@@ -724,6 +724,8 @@ pub struct Server {
     closed: std::sync::atomic::AtomicBool,
     /// The session's persona toggle differs from the launch prompt's and the model was told once (this server).
     persona_told: Mutex<Option<bool>>,
+    /// Rigor playbooks already injected into this external-root session (reset on SessionStart).
+    shown_playbooks: Mutex<Vec<String>>,
     /// herdr's agents panel (crate::herdr_hook).
     herdr: crate::herdr_hook::HerdrHook,
     /// The kernel APIs the guide names (crate::guide::runtime_apis).
@@ -948,7 +950,18 @@ impl Server {
             None => json!({}),
         };
         match event {
-            HookEvent::SessionStart => Ok(context(event.claude_event(), root.session_context())),
+            HookEvent::SessionStart => {
+                self.shown_playbooks
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clear();
+                let mut parts: Vec<String> = root.session_context().into_iter().collect();
+                parts.extend(self.session_skills_context());
+                Ok(context(
+                    event.claude_event(),
+                    (!parts.is_empty()).then(|| parts.join("\n\n")),
+                ))
+            }
             HookEvent::UserPrompt => {
                 let prompt = input.get("prompt").and_then(Value::as_str).unwrap_or("");
                 // `/persona on|off|auto`, `/keepgoing on|off`: the session's toggles, answered without a turn.
@@ -971,6 +984,7 @@ impl Server {
                     notice = message;
                     contexts.extend(self.persona_context(&opened));
                     contexts.extend(start);
+                    contexts.extend(self.routed_playbook(prompt));
                 }
                 let mut answer = context(
                     event.claude_event(),
@@ -1000,6 +1014,61 @@ impl Server {
                 Err(format!("unknown hook event: {}", event.command()))
             }
         }
+    }
+
+    /// In engineering mode, route `prompt` to its fitting rigor playbook once per session (native parity).
+    fn routed_playbook(&self, prompt: &str) -> Option<String> {
+        session_core::playbook_route::route(prompt)?;
+        let settings =
+            config::settings::SettingsManager::for_worker(&self.env.cwd, &self.env.agent_dir(), &self.env.home);
+        if settings.settings().get("engineering") != Some(&Value::Bool(true)) {
+            return None;
+        }
+        let bundled = session_core::session_resources::bundled_skills(&self.env.skills(), &*self.env.var)?;
+        let rigor = PathBuf::from(bundled).join("pstack/rigor");
+        let mut shown = self.shown_playbooks.lock().unwrap_or_else(PoisonError::into_inner);
+        let message =
+            session_core::playbook_route::playbook_message(prompt, &rigor, &shown, jsrt::date::now_ms() as u64)?;
+        if let Some(name) = message["details"]["playbook"].as_str() {
+            shown.push(name.to_string());
+        }
+        message["content"].as_str().map(str::to_string)
+    }
+
+    /// For external roots that do not receive `--system-prompt` (e.g. `ultron agy`, where `args.instructions` is
+    /// true), deliver engineering-mode `alwaysSkills` and the bundled-skills index via `SessionStart`.
+    fn session_skills_context(&self) -> Option<String> {
+        if !self.args.instructions || self.args.child || self.args.no_skills {
+            return None;
+        }
+        let bundled =
+            session_core::session_resources::bundled_skills(&self.env.skills(), &*self.env.var).map(PathBuf::from);
+        let resources = crate::guide::load_prompt_resources(
+            &self.env,
+            bundled.as_deref(),
+            crate::guide::ResourceFlags {
+                no_context_files: true,
+                no_skills: false,
+            },
+        );
+        if !resources.engineering {
+            return None;
+        }
+        let mut parts = Vec::new();
+        let always = resources::skills::format_always_skills_for_prompt(&resources.skills);
+        if !always.is_empty() {
+            parts.push(always);
+        }
+        let bundled_str = bundled.as_deref().map(|p| p.display().to_string());
+        let note = resources::skills::bundled_skills_note(
+            &resources.skills,
+            bundled_str.as_deref(),
+            resources.proactive_skills,
+        );
+        if !note.is_empty() {
+            parts.push(note);
+        }
+        (!parts.is_empty()).then(|| parts.join("\n\n"))
     }
 
     /// Change the session's persona state (the session value `ultron.module/persona`) with `change`, written back
@@ -1352,6 +1421,7 @@ pub fn start(argv: &[String], ctx: &Ctx) -> Result<(Arc<Running>, Arc<Handlers>)
         waiters: Default::default(),
         closed: Default::default(),
         persona_told: Mutex::new(None),
+        shown_playbooks: Mutex::new(Vec::new()),
         herdr: crate::herdr_hook::HerdrHook::start(&env, args.child),
         apis: crate::guide::runtime_apis(&env),
         world,
