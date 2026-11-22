@@ -71,24 +71,165 @@ pub fn detect(var: &dyn Fn(&str) -> Option<String>, setting: Option<&Value>) -> 
     })
 }
 
-/// `PaneAgentState`.
+/// The herdr-core (`hc`) terminal this process runs in (OSC 7501 status reporting).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CoreTerminal {
+    pub terminal_id: String,
+    pub socket: PathBuf,
+    pub debug: bool,
+}
+
+/// Either legacy `herdr` (0.9.5 unix socket API) or `herdr-core` (`hc`, OSC 7501).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Target {
+    Legacy(Pane),
+    Core(CoreTerminal),
+}
+
+/// `herdr-core` (`hc`) terminal from `HC_TERMINAL_ID` and `HC_TERMINAL_SOCKET`.
+pub fn detect_core(var: &dyn Fn(&str) -> Option<String>, setting: Option<&Value>) -> Option<CoreTerminal> {
+    if setting == Some(&Value::Bool(false)) || disabled_by_env(var(ULTRON_HERDR_ENV).as_deref()) {
+        return None;
+    }
+    if kernel::env::inside_kernel(var) {
+        return None;
+    }
+    let terminal_id = var("HC_TERMINAL_ID").filter(|v| !v.trim().is_empty())?;
+    let socket = var("HC_TERMINAL_SOCKET").filter(|v| !v.trim().is_empty())?;
+    Some(CoreTerminal {
+        terminal_id,
+        socket: PathBuf::from(socket),
+        debug: var(config::env::DEBUG_INTERNAL_ENV).as_deref() == Some("1"),
+    })
+}
+
+/// Detects either legacy `herdr` or `herdr-core` (`hc`).
+pub fn detect_any(var: &dyn Fn(&str) -> Option<String>, setting: Option<&Value>) -> Option<Target> {
+    if let Some(pane) = detect(var, setting) {
+        return Some(Target::Legacy(pane));
+    }
+    detect_core(var, setting).map(Target::Core)
+}
+
+/// System-prompt guidance when running inside `herdr-core` (`hc` + `herdr-app`).
+pub fn session_note(var: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    if disabled_by_env(var(ULTRON_HERDR_ENV).as_deref()) {
+        return None;
+    }
+    let terminal_id = var("HC_TERMINAL_ID").filter(|v| !v.trim().is_empty())?;
+    let socket = var("HC_TERMINAL_SOCKET").filter(|v| !v.trim().is_empty())?;
+    Some(format!(
+        "You are running inside herdr-core (terminal {terminal_id}, socket {socket}).\n\
+         - `herdr-core` (CLI: `hc` or `herdr-core`) manages persistent terminals, background jobs, child agents, and remote machines; run `hc --skill` (or `herdr-core --skill`) for the full manual.\n\
+         - `herdr-app` drives the user's Herdr window (spaces, tabs, panes); run `herdr-app --skill` for its commands.\n\
+         - For slow commands or delegated interactive agents the user may watch or take over, prefer `hc run --bg --name <name> ...` with `hc wait` / `hc read` instead of blocking your shell. Never run `hc server stop` or restart the user's core unless asked."
+    ))
+}
+
+/// `PaneAgentState` / OSC 7501 states.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
     Idle,
     Working,
+    Done,
     Blocked,
+    Error,
     Unknown,
 }
 
 impl State {
+    /// Legacy `herdr 0.9.5` state wire name.
     pub fn as_str(self) -> &'static str {
         match self {
-            State::Idle => "idle",
+            State::Idle | State::Done | State::Error => "idle",
             State::Working => "working",
             State::Blocked => "blocked",
             State::Unknown => "unknown",
         }
     }
+
+    /// OSC 7501 (`herdr-core`) state wire name.
+    pub fn osc_str(self) -> &'static str {
+        match self {
+            State::Idle | State::Unknown => "idle",
+            State::Working => "working",
+            State::Done => "done",
+            State::Blocked => "blocked",
+            State::Error => "error",
+        }
+    }
+}
+
+/// OSC 7501 `kind` for `blocked` states.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockKind {
+    Permission,
+    Question,
+    Auth,
+}
+
+impl BlockKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BlockKind::Permission => "permission",
+            BlockKind::Question => "question",
+            BlockKind::Auth => "auth",
+        }
+    }
+}
+
+fn base64_encode(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        out.push(TABLE[(b0 >> 2) as usize] as char);
+        out.push(TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(b2 & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+/// Formats one OSC 7501 Program Status Protocol sequence (`ESC ] 7501 ; ... ESC \`).
+pub fn osc_7501(
+    state: State,
+    kind: Option<BlockKind>,
+    app: Option<&str>,
+    title: Option<&str>,
+    msg: Option<&str>,
+) -> String {
+    let mut parts = vec![format!("state={}", state.osc_str())];
+    if state == State::Blocked
+        && let Some(kind) = kind
+    {
+        parts.push(format!("kind={}", kind.as_str()));
+    }
+    if let Some(app) = app.filter(|a| !a.is_empty()) {
+        parts.push(format!("app={app}"));
+    }
+    if let Some(title) = title.map(str::trim).filter(|t| !t.is_empty()) {
+        parts.push(format!("title={}", base64_encode(clip(title).as_bytes())));
+    }
+    if let Some(msg) = msg.map(str::trim).filter(|m| !m.is_empty()) {
+        parts.push(format!("msg={}", base64_encode(clip(msg).as_bytes())));
+    }
+    format!("\x1b]7501;{}\x1b\\", parts.join(":"))
+}
+
+/// Clears the terminal's OSC 7501 status on exit.
+pub fn osc_7501_clear() -> &'static str {
+    "\x1b]7501;state=clear\x1b\\"
 }
 
 /// The agent session a pane shows (and resumes after a herdr restart).
@@ -248,12 +389,32 @@ impl Transport for SocketTransport {
     }
 }
 
+/// Writes OSC 7501 sequences directly to `/dev/tty`.
+pub struct TtyOscTransport;
+
+impl Transport for TtyOscTransport {
+    fn send(&mut self, seq: &str) -> Result<(), String> {
+        let mut tty = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/tty")
+            .map_err(|e| format!("/dev/tty: {e}"))?;
+        tty.write_all(seq.as_bytes()).map_err(|e| e.to_string())?;
+        tty.flush().map_err(|e| e.to_string())
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Protocol {
+    LegacySocket,
+    Osc7501,
+}
+
 #[derive(Default)]
 struct Queue {
     session: Option<Session>,
     session_dirty: bool,
-    /// The pending state, its message, and when it was set.
-    state: Option<(State, Option<String>, Instant)>,
+    /// The pending state, optional block kind, message, and when it was set.
+    state: Option<(State, Option<BlockKind>, Option<String>, Instant)>,
     metadata: Option<Metadata>,
     sent_metadata: Option<Metadata>,
     metadata_at: Option<Instant>,
@@ -266,6 +427,7 @@ struct Queue {
 struct Shared {
     pane_id: String,
     agent: String,
+    protocol: Protocol,
     debug: bool,
     queue: Mutex<Queue>,
     wake: Condvar,
@@ -317,7 +479,15 @@ impl Shared {
     }
 
     fn state_request(&self, q: &mut Queue) -> String {
-        let (state, message, _) = q.state.take().expect("pending state");
+        let (state, kind, message, _) = q.state.take().expect("pending state");
+        if self.protocol == Protocol::Osc7501 {
+            let title = q
+                .metadata
+                .as_ref()
+                .or(q.sent_metadata.as_ref())
+                .and_then(|m| m.title.as_deref());
+            return osc_7501(state, kind, Some(&self.agent), title, message.as_deref());
+        }
         let mut params = Map::new();
         params.insert("state".into(), state.as_str().into());
         if let Some(message) = message {
@@ -337,19 +507,24 @@ impl Shared {
                 return Next::Exit;
             }
             q.released = true;
+            if self.protocol == Protocol::Osc7501 {
+                return Next::Send(osc_7501_clear().to_string());
+            }
             return Next::Send(self.request(q, "pane.release_agent", Map::new()));
         }
         let mut wait: Option<Duration> = None;
         if q.session_dirty {
             q.session_dirty = false;
-            let mut params = Map::new();
-            Self::session_fields(q, &mut params);
-            if let Some(source) = q.session.as_ref().and_then(|s| s.start_source.clone()) {
-                params.insert("session_start_source".into(), source.into());
+            if self.protocol == Protocol::LegacySocket {
+                let mut params = Map::new();
+                Self::session_fields(q, &mut params);
+                if let Some(source) = q.session.as_ref().and_then(|s| s.start_source.clone()) {
+                    params.insert("session_start_source".into(), source.into());
+                }
+                return Next::Send(self.request(q, "pane.report_agent_session", params));
             }
-            return Next::Send(self.request(q, "pane.report_agent_session", params));
         }
-        if let Some((state, _, at)) = &q.state {
+        if let Some((state, _, _, at)) = &q.state {
             let ready_at = if *state == State::Working { *at } else { *at + SETTLE };
             if now >= ready_at {
                 return Next::Send(self.state_request(q));
@@ -357,17 +532,21 @@ impl Shared {
             wait = Some(ready_at - now);
         }
         if q.metadata.is_some() {
-            let ready_at = q.metadata_at.map_or(now, |at| at + METADATA_INTERVAL);
-            if now >= ready_at {
-                let metadata = q.metadata.take().expect("pending metadata");
-                if let Some(params) = metadata_params(q.sent_metadata.as_ref(), &metadata) {
-                    q.metadata_at = Some(now);
-                    q.sent_metadata = Some(metadata);
-                    return Next::Send(self.request(q, "pane.report_metadata", params));
-                }
+            if self.protocol == Protocol::Osc7501 {
+                q.sent_metadata = q.metadata.take();
             } else {
-                let left = ready_at - now;
-                wait = Some(wait.map_or(left, |w| w.min(left)));
+                let ready_at = q.metadata_at.map_or(now, |at| at + METADATA_INTERVAL);
+                if now >= ready_at {
+                    let metadata = q.metadata.take().expect("pending metadata");
+                    if let Some(params) = metadata_params(q.sent_metadata.as_ref(), &metadata) {
+                        q.metadata_at = Some(now);
+                        q.sent_metadata = Some(metadata);
+                        return Next::Send(self.request(q, "pane.report_metadata", params));
+                    }
+                } else {
+                    let left = ready_at - now;
+                    wait = Some(wait.map_or(left, |w| w.min(left)));
+                }
             }
         }
         Next::Wait(wait)
@@ -467,11 +646,30 @@ impl Reporter {
         )
     }
 
-    /// A reporter over any transport (tests).
+    pub fn start_target(target: &Target, agent: &str) -> Reporter {
+        match target {
+            Target::Legacy(pane) => Reporter::start(pane, agent),
+            Target::Core(core) => {
+                Reporter::with_osc_transport(&core.terminal_id, agent, core.debug, Box::new(TtyOscTransport))
+            }
+        }
+    }
+
+    /// A legacy socket reporter over any transport (tests).
     pub fn with_transport(pane_id: &str, agent: &str, debug: bool, transport: Box<dyn Transport>) -> Reporter {
+        Reporter::spawn(pane_id, agent, Protocol::LegacySocket, debug, transport)
+    }
+
+    /// An OSC 7501 (`herdr-core`) reporter over any transport (tests).
+    pub fn with_osc_transport(terminal_id: &str, agent: &str, debug: bool, transport: Box<dyn Transport>) -> Reporter {
+        Reporter::spawn(terminal_id, agent, Protocol::Osc7501, debug, transport)
+    }
+
+    fn spawn(pane_id: &str, agent: &str, protocol: Protocol, debug: bool, transport: Box<dyn Transport>) -> Reporter {
         let shared = Arc::new(Shared {
             pane_id: pane_id.to_string(),
             agent: agent.to_string(),
+            protocol,
             debug,
             queue: Mutex::default(),
             wake: Condvar::new(),
@@ -511,7 +709,12 @@ impl Reporter {
 
     /// The agent's state; replaces a state not sent yet.
     pub fn state(&self, state: State, message: Option<String>) {
-        self.update(|q| q.state = Some((state, message, Instant::now())));
+        self.state_with_kind(state, None, message);
+    }
+
+    /// The agent's state with an optional OSC 7501 `kind` for `Blocked`.
+    pub fn state_with_kind(&self, state: State, kind: Option<BlockKind>, message: Option<String>) {
+        self.update(|q| q.state = Some((state, kind, message, Instant::now())));
     }
 
     /// The pane's metadata; sent when it differs from what was sent last, at most once a [`METADATA_INTERVAL`].

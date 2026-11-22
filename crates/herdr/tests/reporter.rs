@@ -423,3 +423,69 @@ fn herdr_question_and_needs_user_rules() {
     assert!(needs_user("Model not found: foo/bar"));
     assert!(!needs_user("connection reset by peer"));
 }
+
+#[test]
+fn herdr_core_detection_osc_7501_and_session_note() {
+    use herdr::{BlockKind, CoreTerminal, Target, detect_any, detect_core, osc_7501, osc_7501_clear, session_note};
+
+    let core_env = vars(&[
+        ("HC_TERMINAL_ID", "t9"),
+        ("HC_TERMINAL_SOCKET", "/run/user/1000/herdr-core/default.sock"),
+    ]);
+    assert_eq!(
+        detect_core(&core_env, None),
+        Some(CoreTerminal {
+            terminal_id: "t9".into(),
+            socket: PathBuf::from("/run/user/1000/herdr-core/default.sock"),
+            debug: false,
+        })
+    );
+    assert!(matches!(detect_any(&core_env, None), Some(Target::Core(_))));
+    assert_eq!(detect_core(&core_env, Some(&json!(false))), None);
+
+    let off = vars(&[
+        ("HC_TERMINAL_ID", "t9"),
+        ("HC_TERMINAL_SOCKET", "/run/user/1000/herdr-core/default.sock"),
+        ("ULTRON_HERDR", "0"),
+    ]);
+    assert_eq!(detect_core(&off, None), None);
+    assert_eq!(session_note(&off), None);
+
+    let note = session_note(&core_env).expect("session_note inside herdr-core");
+    assert!(note.contains("t9") && note.contains("hc --skill") && note.contains("herdr-app --skill"));
+
+    let seq = osc_7501(
+        State::Blocked,
+        Some(BlockKind::Question),
+        Some("ultron"),
+        Some("Fix auth"),
+        Some("Proceed?"),
+    );
+    assert_eq!(
+        seq,
+        "\x1b]7501;state=blocked:kind=question:app=ultron:title=Rml4IGF1dGg=:msg=UHJvY2VlZD8=\x1b\\"
+    );
+    assert_eq!(osc_7501_clear(), "\x1b]7501;state=clear\x1b\\");
+
+    let (tx, rx) = mpsc::channel();
+    struct Capture(mpsc::Sender<String>);
+    impl herdr::Transport for Capture {
+        fn send(&mut self, line: &str) -> Result<(), String> {
+            let _ = self.0.send(line.to_string());
+            Ok(())
+        }
+    }
+    let reporter = Reporter::with_osc_transport("t9", "ultron", false, Box::new(Capture(tx)));
+    reporter.state(State::Working, None);
+    assert_eq!(
+        rx.recv_timeout(HANG_GUARD).unwrap(),
+        "\x1b]7501;state=working:app=ultron\x1b\\"
+    );
+    reporter.state_with_kind(State::Done, None, None);
+    reporter.release();
+    assert_eq!(
+        rx.recv_timeout(HANG_GUARD).unwrap(),
+        "\x1b]7501;state=done:app=ultron\x1b\\"
+    );
+    assert_eq!(rx.recv_timeout(HANG_GUARD).unwrap(), "\x1b]7501;state=clear\x1b\\");
+}

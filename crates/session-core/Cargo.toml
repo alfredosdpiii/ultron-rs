@@ -21,6 +21,7 @@ diagram = { package = "ultron-diagram", path = "../diagram", version = "=1.0.2" 
 durable = { package = "ultron-durable", path = "../durable", version = "=1.0.2" }
 graph = { package = "ultron-graph", path = "../graph", version = "=1.0.2" }
 harness = { package = "ultron-harness", path = "../harness", version = "=1.0.2" }
+herdr = { package = "ultron-herdr", path = "../herdr", version = "=1.0.2" }
 hindsight = { package = "ultron-hindsight", path = "../hindsight", version = "=1.0.2" }
 host = { package = "ultron-host", path = "../host", version = "=1.0.2" }
 indexmap = "=2.14.2"

@@ -351,6 +351,11 @@ pub fn system_prompt_with_resources(
         sections: [("runtime".to_string(), runtime)]
             .into_iter()
             .chain(loki_note.map(|note| ("loki".to_string(), note)))
+            .chain(
+                herdr::session_note(&*env.var)
+                    .filter(|_| guide.durable_apis)
+                    .map(|note| ("herdr".to_string(), note)),
+            )
             // The TypeScript guide (`ULTRON_GUIDE=ts`, its recorded replays) keeps TypeScript's prompt.
             .chain(
                 resources::model_notes::model_notes(&mode.model)

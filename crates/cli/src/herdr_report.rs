@@ -14,20 +14,29 @@
 
 use crate::Env;
 use crate::args::Args;
-use herdr::{Metadata, Reporter, Session, State};
+use herdr::{BlockKind, Metadata, Reporter, Session, State};
 use interactive::lane::{ModelInfo, SessionOpened};
 use serde_json::Value;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 pub const DISPLAY_AGENT: &str = "Ultron";
 
-/// The pane to report to: the injected env and the `herdr` setting (global or trusted project).
-pub fn pane(env: &Env) -> Option<herdr::Pane> {
+/// The herdr target to report to (legacy `HERDR_ENV` or `herdr-core` `HC_TERMINAL_ID`), respecting the `herdr` setting.
+pub fn target(env: &Env) -> Option<herdr::Target> {
     let var = &*env.var;
-    // Outside herdr nothing else is read.
-    var("HERDR_ENV")?;
+    if var("HERDR_ENV").is_none() && var("HC_TERMINAL_ID").is_none() {
+        return None;
+    }
     let settings = config::settings::SettingsManager::for_worker(&env.cwd, &env.agent_dir(), &env.home);
-    herdr::detect(var, settings.settings().get("herdr"))
+    herdr::detect_any(var, settings.settings().get("herdr"))
+}
+
+/// Legacy helper returning a `herdr 0.9.5` pane when present.
+pub fn pane(env: &Env) -> Option<herdr::Pane> {
+    match target(env)? {
+        herdr::Target::Legacy(pane) => Some(pane),
+        herdr::Target::Core(_) => None,
+    }
 }
 
 type ResumeOverride = Box<dyn Fn(&str) -> Option<Vec<String>> + Send + Sync>;
@@ -69,24 +78,29 @@ fn first_line(text: &str) -> String {
     herdr::clip(text.trim().lines().next().unwrap_or_default())
 }
 
-/// The state a run's end reports: its status, error and the final assistant text.
-pub fn run_end_state(event: &Value, final_text: &str) -> (State, Option<String>) {
+/// The state (and optional OSC 7501 block kind) a run's end reports: its status, error and the final assistant text.
+pub fn run_end_report(event: &Value, final_text: &str) -> (State, Option<BlockKind>, Option<String>) {
     match event["status"].as_str() {
-        Some("aborted") => (State::Idle, Some("Aborted".into())),
+        Some("aborted") => (State::Idle, None, Some("Aborted".into())),
         Some("failed") => {
             let error = event["error"]["message"].as_str().unwrap_or("The run failed");
-            let state = if herdr::needs_user(error) {
-                State::Blocked
+            if herdr::needs_user(error) {
+                (State::Blocked, Some(BlockKind::Auth), Some(first_line(error)))
             } else {
-                State::Idle
-            };
-            (state, Some(first_line(error)))
+                (State::Error, None, Some(first_line(error)))
+            }
         }
         _ => match herdr::question(final_text) {
-            Some(question) => (State::Blocked, Some(question)),
-            None => (State::Idle, None),
+            Some(question) => (State::Blocked, Some(BlockKind::Question), Some(question)),
+            None => (State::Done, None, None),
         },
     }
+}
+
+/// The state a run's end reports: its status, error and the final assistant text.
+pub fn run_end_state(event: &Value, final_text: &str) -> (State, Option<String>) {
+    let (state, _, message) = run_end_report(event, final_text);
+    (state, message)
 }
 
 fn message_cost(message: &Value) -> f64 {
@@ -121,11 +135,11 @@ pub struct TuiReport {
 }
 
 impl TuiReport {
-    /// The TUI's report, when it runs in a herdr pane.
+    /// The TUI's report, when it runs in a herdr pane or `herdr-core` terminal.
     pub fn start(parsed: &Args, env: &Env) -> Option<TuiReport> {
-        let pane = pane(env)?;
+        let target = target(env)?;
         Some(TuiReport {
-            reporter: Reporter::start(&pane, herdr::AGENT),
+            reporter: Reporter::start_target(&target, herdr::AGENT),
             parsed: parsed.clone(),
             env: env.clone(),
             track: Mutex::default(),
@@ -210,8 +224,8 @@ impl TuiReport {
                 self.send_metadata(&track);
             }
             Some("run_end") => {
-                let (state, message) = run_end_state(event, &track.final_text);
-                self.reporter.state(state, message);
+                let (state, kind, message) = run_end_report(event, &track.final_text);
+                self.reporter.state_with_kind(state, kind, message);
             }
             Some("session_name") => {
                 track.name = event["name"].as_str().map(str::to_string);
@@ -261,20 +275,20 @@ pub struct PrintReport {
 
 impl PrintReport {
     pub fn start(env: &Env) -> Option<PrintReport> {
-        let reporter = Reporter::start(&pane(env)?, herdr::AGENT);
+        let reporter = Reporter::start_target(&target(env)?, herdr::AGENT);
         reporter.state(State::Working, None);
         Some(PrintReport { reporter })
     }
 
     pub fn finish(&self, result: Result<&str, &str>) {
-        let (state, message) = match result {
-            Ok(text) => run_end_state(&serde_json::json!({"status": "completed"}), text),
-            Err(error) => run_end_state(
+        let (state, kind, message) = match result {
+            Ok(text) => run_end_report(&serde_json::json!({"status": "completed"}), text),
+            Err(error) => run_end_report(
                 &serde_json::json!({"status": "failed", "error": {"message": error}}),
                 "",
             ),
         };
-        self.reporter.state(state, message);
+        self.reporter.state_with_kind(state, kind, message);
     }
 }
 
@@ -286,7 +300,7 @@ pub struct RpcReport {
 
 impl RpcReport {
     pub fn start(env: &Env) -> Option<RpcReport> {
-        let reporter = Reporter::start(&pane(env)?, herdr::AGENT);
+        let reporter = Reporter::start_target(&target(env)?, herdr::AGENT);
         reporter.state(State::Idle, None);
         Some(RpcReport {
             reporter,
@@ -305,8 +319,8 @@ impl RpcReport {
                 *text = protocol::pi_message::text(&event["message"]);
             }
             Some("run_end") => {
-                let (state, message) = run_end_state(event, &text);
-                self.reporter.state(state, message);
+                let (state, kind, message) = run_end_report(event, &text);
+                self.reporter.state_with_kind(state, kind, message);
             }
             _ => {}
         }
