@@ -79,36 +79,94 @@ fn prompt(messages: &[Message], budget: usize) -> io::Result<String> {
     ))
 }
 
-/// Replaces inline base64 `Image` blocks in a serialized message with compact placeholders and collects native ACP
-/// `image` content blocks so multimodal attachments reach `agy` natively without bloating `PROMPT_BUDGET`.
-fn strip_images(message: &Message, images: &mut Vec<Value>) -> Message {
-    let replace = |blocks: &[UserContent], images: &mut Vec<Value>| -> Vec<UserContent> {
+/// Extracts `<file name="...">...</file>` inline `@file` attachments into native ACP `resource` (`embeddedContext`)
+/// blocks so large file attachments don't eat `PROMPT_BUDGET`.
+fn extract_embedded_files(text: &str, attachments: &mut Vec<Value>) -> String {
+    const OPEN: &str = "<file name=\"";
+    const CLOSE: &str = "</file>";
+    if !text.contains(OPEN) {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(OPEN) {
+        out.push_str(&rest[..start]);
+        let after_open = &rest[start + OPEN.len()..];
+        let Some(quote_end) = after_open.find("\">") else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let path = &after_open[..quote_end];
+        let body_start = &after_open[quote_end + 2..];
+        let Some(close_at) = body_start.find(CLOSE) else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let body = body_start[..close_at].trim_matches('\n');
+        let uri = if path.starts_with("file://") {
+            path.to_string()
+        } else {
+            format!("file://{path}")
+        };
+        attachments.push(json!({
+            "type": "resource",
+            "resource": {
+                "uri": uri,
+                "mimeType": "text/plain",
+                "text": body,
+            }
+        }));
+        out.push_str(&format!("[attached file #{}: {path}]", attachments.len()));
+        rest = &body_start[close_at + CLOSE.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Replaces inline base64 `Image` blocks and `<file name="...">` attachments with compact placeholders and collects
+/// native ACP `image` / `resource` content blocks so attachments reach `agy` natively without bloating `PROMPT_BUDGET`.
+fn strip_images(message: &Message, attachments: &mut Vec<Value>) -> Message {
+    let replace = |blocks: &[UserContent], attachments: &mut Vec<Value>| -> Vec<UserContent> {
         blocks
             .iter()
             .map(|b| match b {
                 UserContent::Image(image) => {
-                    images.push(json!({"type": "image", "data": image.data, "mimeType": image.mime_type}));
+                    attachments.push(json!({"type": "image", "data": image.data, "mimeType": image.mime_type}));
                     UserContent::Text(TextContent {
-                        text: format!("[attached image #{}]", images.len()),
+                        text: format!("[attached image #{}]", attachments.len()),
                         text_signature: None,
                     })
                 }
+                UserContent::Text(text) if text.text.contains("<file name=\"") => UserContent::Text(TextContent {
+                    text: extract_embedded_files(&text.text, attachments),
+                    text_signature: text.text_signature.clone(),
+                }),
                 other => other.clone(),
             })
             .collect()
     };
     match message {
         Message::User(user) => match &user.content {
-            UserMessageContent::Blocks(blocks) if blocks.iter().any(|b| matches!(b, UserContent::Image(_))) => {
+            UserMessageContent::Text(text) if text.contains("<file name=\"") => {
                 let mut cloned = user.clone();
-                cloned.content = UserMessageContent::Blocks(replace(blocks, images));
+                cloned.content = UserMessageContent::Text(extract_embedded_files(text, attachments));
+                Message::User(cloned)
+            }
+            UserMessageContent::Blocks(blocks)
+                if blocks.iter().any(|b| {
+                    matches!(b, UserContent::Image(_))
+                        || matches!(b, UserContent::Text(t) if t.text.contains("<file name=\""))
+                }) =>
+            {
+                let mut cloned = user.clone();
+                cloned.content = UserMessageContent::Blocks(replace(blocks, attachments));
                 Message::User(cloned)
             }
             _ => message.clone(),
         },
         Message::ToolResult(result) if result.content.iter().any(|b| matches!(b, UserContent::Image(_))) => {
             let mut cloned = result.clone();
-            cloned.content = replace(&result.content, images);
+            cloned.content = replace(&result.content, attachments);
             Message::ToolResult(cloned)
         }
         _ => message.clone(),
@@ -1262,6 +1320,31 @@ mod tests {
         assert_eq!(
             blocks[1],
             json!({"type": "image", "data": "QUJD", "mimeType": "image/png"})
+        );
+    }
+
+    #[test]
+    fn prompt_blocks_extracts_file_attachments_as_acp_embedded_resources() {
+        let messages = vec![message(json!({
+            "role": "user",
+            "content": "<file name=\"/tmp/foo.rs\">\nfn main() {}\n</file>\nexplain this",
+            "timestamp": 0
+        }))];
+        let blocks = prompt_blocks(&messages, 150_000).unwrap();
+        assert_eq!(blocks.len(), 2);
+        let text = blocks[0]["text"].as_str().unwrap();
+        assert!(text.contains("[attached file #1: /tmp/foo.rs]"));
+        assert!(!text.contains("fn main() {}"));
+        assert_eq!(
+            blocks[1],
+            json!({
+                "type": "resource",
+                "resource": {
+                    "uri": "file:///tmp/foo.rs",
+                    "mimeType": "text/plain",
+                    "text": "fn main() {}"
+                }
+            })
         );
     }
 }

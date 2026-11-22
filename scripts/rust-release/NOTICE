@@ -5,9 +5,8 @@ The `ultron` binary is MIT-licensed (see LICENSE). It embeds the files below; th
 Rust crates compiled into the binary are listed, with their license texts, in THIRD_PARTY_LICENSES.txt.
 The bundled skills carry their own licenses (licenses/skills-*.LICENSE, also installed beside each skill).
 
-- Loki engine (src/ultron/loki-engine/loki.py): MIT, Copyright (c) 2026 Bryan. See licenses/loki-engine.LICENSE.
-- codehygiene v0.4.0 (crates/loki/vendor/codehygiene: __init__.py and weights.npz, unchanged from
-  github.com/brianbell-x/codehygiene commit 423c7e1): MIT as declared in its pyproject.toml, by Brian Bell.
+- Loki engine (`loki-guardrails` crate, with bundled `codehygiene` v0.4.0 model from
+  github.com/brianbell-x/codehygiene commit 423c7e1): MIT. See THIRD_PARTY_LICENSES.txt and licenses/loki-engine.LICENSE.
 - Syntax definitions TypeScript, TypeScriptReact and Nix (crates/tui/src/syntaxes): vendored from oh-my-pi
   crates/pi-natives/src/syntaxes, MIT License, Copyright (c) 2025-2026 Can Bölük et al.; Nix derived from
   wmertens/sublime-nix, MIT, Copyright (c) 2016 Wout Mertens.

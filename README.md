@@ -812,7 +812,7 @@ at most four run at once (`ULTRON_CLAUDE_CODE_CONCURRENCY`). Details:
 
 [Loki](https://github.com/alfredosdpiii/loki) checks every file Ultron writes with deterministic rules and real
 analyzers (hardcoded secrets, XSS and injection sinks, protected files, net-new Ruff/mypy/tsc/Oxlint/Clippy/Credo
-findings). The Rust build carries its own port of the engine (`crates/loki`), and the bundled engine is 0.1.9. Without
+findings). The Rust build links `loki-guardrails` directly. Without
 any analyzer installed it still flags SQL built from strings, `eval` and pickle of request data, unsafe `yaml.load`,
 open redirects and disabled TLS verification in Python; SQL built with `Sprintf` or `+`, `sh -c` with a variable and
 `InsecureSkipVerify` in Go; and `danger_accept_invalid_certs` and SQL built with `format!` in Rust. It is on by default:
@@ -831,8 +831,8 @@ open redirects and disabled TLS verification in Python; SQL built with `Sprintf`
   change required), and checks that could not run (a missing analyzer, said once per session). Existing code in an
   edited file is not reported.
 - Code hygiene notes. After that check, the bundled
-  [codehygiene](https://github.com/brianbell-x/codehygiene) model (a 13 KB network, vendored in
-  `crates/loki/vendor/codehygiene`) reads the files the cell changed, `edit()`/`write()` ones included, and Loki
+  [codehygiene](https://github.com/brianbell-x/codehygiene) model (bundled in
+  `loki-guardrails`) reads the files the cell changed, `edit()`/`write()` ones included, and Loki
   passes on what it flags on lines the change added, as notes to fix ("fix each, or say in a line why it stays"): a
   swallowed error, a noisy comment, a duplicated block, special-casing. A note left open is counted on every later
   check of that file. `loki.hygiene` (or `ULTRON_LOKI_HYGIENE`) is `on`, `all` (adds dense lines, deep

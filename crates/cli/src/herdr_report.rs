@@ -210,6 +210,18 @@ impl TuiReport {
                 track.final_text.clear();
                 self.reporter.state(State::Working, None);
             }
+            Some("tool_execution_start") => {
+                if let Some(id) = event["toolCallId"].as_str().filter(|s| !s.is_empty()) {
+                    let tool = event["toolName"].as_str().unwrap_or("rlm");
+                    self.reporter
+                        .task_state(&format!("tool/{id}"), State::Working, None, Some(tool), None);
+                }
+            }
+            Some("tool_execution_end") => {
+                if let Some(id) = event["toolCallId"].as_str().filter(|s| !s.is_empty()) {
+                    self.reporter.task_clear(&format!("tool/{id}"));
+                }
+            }
             Some("message_end") => {
                 let message = &event["message"];
                 if message["role"] == "assistant" {

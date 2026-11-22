@@ -446,6 +446,8 @@ struct Queue {
     session_dirty: bool,
     /// The pending state, optional block kind, message, and when it was set.
     state: Option<(State, Option<BlockKind>, Option<String>, Instant)>,
+    /// Keyed OSC 7501 sub-task sequences queued for immediate emission.
+    task_events: std::collections::VecDeque<String>,
     metadata: Option<Metadata>,
     sent_metadata: Option<Metadata>,
     metadata_at: Option<Instant>,
@@ -542,6 +544,9 @@ impl Shared {
                 return Next::Send(osc_7501_clear().to_string());
             }
             return Next::Send(self.request(q, "pane.release_agent", Map::new()));
+        }
+        if let Some(seq) = q.task_events.pop_front() {
+            return Next::Send(seq);
         }
         let mut wait: Option<Duration> = None;
         if q.session_dirty {
@@ -746,6 +751,31 @@ impl Reporter {
     /// The agent's state with an optional OSC 7501 `kind` for `Blocked`.
     pub fn state_with_kind(&self, state: State, kind: Option<BlockKind>, message: Option<String>) {
         self.update(|q| q.state = Some((state, kind, message, Instant::now())));
+    }
+
+    /// Reports a keyed OSC 7501 sub-task state (no-op on legacy `herdr 0.9.5` sockets).
+    pub fn task_state(
+        &self,
+        id: &str,
+        state: State,
+        kind: Option<BlockKind>,
+        title: Option<&str>,
+        message: Option<&str>,
+    ) {
+        if self.shared.protocol != Protocol::Osc7501 {
+            return;
+        }
+        let seq = osc_7501_task(id, state, kind, Some(&self.shared.agent), title, message);
+        self.update(|q| q.task_events.push_back(seq));
+    }
+
+    /// Clears a keyed OSC 7501 sub-task record (no-op on legacy `herdr 0.9.5` sockets).
+    pub fn task_clear(&self, id: &str) {
+        if self.shared.protocol != Protocol::Osc7501 {
+            return;
+        }
+        let seq = osc_7501_clear_task(id);
+        self.update(|q| q.task_events.push_back(seq));
     }
 
     /// The pane's metadata; sent when it differs from what was sent last, at most once a [`METADATA_INTERVAL`].
