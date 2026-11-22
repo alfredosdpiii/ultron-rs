@@ -6,6 +6,11 @@ mod bridge;
 pub mod catalog;
 mod sessions;
 
+pub use sessions::ensure_relay;
+
+/// Environment variable carrying the JSON argv that `ultron-mcp-relay.py` execs for `ultron agy`.
+pub const MCP_EXEC_ENV: &str = "ULTRON_AGY_MCP_EXEC";
+
 use crate::env::ProviderEnv;
 use crate::options::SimpleStreamOptions;
 use crate::provider::Run;

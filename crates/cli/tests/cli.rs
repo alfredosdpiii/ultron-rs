@@ -122,6 +122,7 @@ const RUST_COMMANDS: &str =
   ultron trace check <file>        Report the prompt-cache resets of a request trace (ULTRON_REQUEST_TRACE)
   ultron acp [options]             Run as an Agent Client Protocol agent on stdio
   ultron claude [args...]          Run Claude Code as the root agent, with Ultron's REPL as its one tool
+  ultron agy [args...]             Run Antigravity CLI (`agy`) in your terminal, with Ultron's REPL as its MCP server
   ultron watch [--once]            Show the RLM view of a running `ultron claude` session
   ultron guide [--for <who>]       Print the runtime guide (Ultron's, or the one `ultron claude` gives Claude Code)
   ultron-s [options] [prompt]      The durable instance's home session (--new, --session <id> [--home], --list)

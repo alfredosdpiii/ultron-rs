@@ -6,6 +6,7 @@
 //!
 //! RLM-first: Claude Code sees one tool, `mcp__ultron__rlm`; every capability is a kernel API reached from a cell.
 
+pub mod agy_launcher;
 pub mod child;
 mod child_usage;
 pub mod claude_cli;

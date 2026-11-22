@@ -8,7 +8,7 @@ use session_core::RunEnv;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
-pub const CLAUDE_COMMANDS: [&str; 4] = ["claude", "mcp", "hook", "guide"];
+pub const CLAUDE_COMMANDS: [&str; 5] = ["claude", "agy", "mcp", "hook", "guide"];
 
 pub const GUIDE_HELP: &str =
     "Usage: ultron guide [--for ultron|claude|claude-child] [--cwd <dir>] [--no-context-files] [--no-skills]
@@ -125,6 +125,7 @@ fn dispatch(argv: &[String], ctx: &Ctx, out: &mut dyn Write, err: &mut dyn Write
             )?)
         }
         "claude" => Ok(crate::launcher::run(rest, ctx, out, err)?),
+        "agy" => Ok(crate::agy_launcher::run(rest, ctx, out, err)?),
         other => Err(UsageError(format!("unknown command: {other}")).into()),
     }
 }

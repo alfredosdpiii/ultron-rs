@@ -112,6 +112,12 @@ pub(super) fn enabled(env: Option<&ProviderEnv>) -> bool {
     }
 }
 
+/// Ensures `~/.gemini/config/ultron-mcp-relay.py` and the `ultron` entry of `~/.gemini/config/mcp_config.json` are
+/// installed for both `agy acp` session mode and `ultron agy`.
+pub fn ensure_relay(home: &Path, path: &str) -> io::Result<()> {
+    install_relay(&home.join(".gemini/config"), path)
+}
+
 /// Writes the relay script and the `ultron` entry of `mcp_config.json` when they differ from what Ultron needs.
 fn install_relay(config: &Path, path: &str) -> io::Result<()> {
     let python = jsrt::process::which("python3", path).ok_or_else(|| io::Error::other("python3 is not on PATH"))?;

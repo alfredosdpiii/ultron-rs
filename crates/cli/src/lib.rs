@@ -200,7 +200,7 @@ const COMMANDS: &[Command] = &[
         run: |argv, env, out, err| update_cli::run_config(argv, env, out, err).map(Ok),
     },
     Command {
-        names: &["claude", "mcp", "hook", "guide"],
+        names: &["claude", "agy", "mcp", "hook", "guide"],
         package_files: true,
         proxy: true,
         typescript: true,

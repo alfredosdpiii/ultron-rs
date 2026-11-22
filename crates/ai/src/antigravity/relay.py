@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
-"""Ultron's agy MCP relay: stdio <-> the lane bridge named by ULTRON_AGY_BRIDGE_URL. Without it, lists no tools."""
+"""Ultron's agy MCP relay: execs ULTRON_AGY_MCP_EXEC (`ultron agy`), relays ULTRON_AGY_BRIDGE_URL (`agy acp`), or lists no tools."""
 import json, os, sys, threading, urllib.request
+
+EXEC = os.environ.get("ULTRON_AGY_MCP_EXEC")
+if EXEC:
+    argv = json.loads(EXEC)
+    os.execvp(argv[0], argv)
 
 URL = os.environ.get("ULTRON_AGY_BRIDGE_URL")
 TOKEN = os.environ.get("ULTRON_AGY_BRIDGE_TOKEN", "")
