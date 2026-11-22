@@ -34,7 +34,9 @@ pub mod tree_memory;
 pub use continuity::{ContinuityPolicy, ContinuityReport, LostName};
 pub use process::kill_command_group;
 pub use snapshot::{
-    RestoreReport, SnapshotReport, load_or_create_snapshot_key, process_snapshot_key, sign_snapshot, verify_snapshot,
+    DEFAULT_MAX_SNAPSHOT_BYTES, ENV_MAX_SNAPSHOT_BYTES, RestoreReport, SnapshotReport, is_orphan_snapshot_temp,
+    load_or_create_snapshot_key, max_snapshot_bytes, process_snapshot_key, sign_snapshot, sweep_orphan_snapshots,
+    verify_snapshot,
 };
 pub use tree_memory::TreeMemoryBackend;
 
@@ -1481,6 +1483,18 @@ impl Shared {
                 return Ok(reply);
             }
             let failed = |error: String| KernelReply::from_result(snapshot::snapshot_error(error));
+            let limit = snapshot::max_snapshot_bytes();
+            if limit > 0
+                && let Ok(meta) = std::fs::metadata(&unsigned)
+                && meta.len() > limit
+            {
+                return Ok(failed(format!(
+                    "snapshot skipped: {} bytes exceeds limit of {} bytes ({})",
+                    meta.len(),
+                    limit,
+                    snapshot::ENV_MAX_SNAPSHOT_BYTES
+                )));
+            }
             let content = match std::fs::read(&unsigned) {
                 Ok(content) => content,
                 Err(error) => return Ok(failed(format!("snapshot signing failed: {error}"))),

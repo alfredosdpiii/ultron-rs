@@ -84,7 +84,7 @@ fn session_core_loki_notice_opens_the_first_root_turn_once_like_typescript() {
     let w = home.open(Box::new(|_, _| text("done")), &IDENTITY, None);
     let sha = wait_for_commit(&home);
     let note = format!("Loki set up and committed ({sha}): .loki/ holds the guardrail engine and policy.");
-    assert!(Path::new(&home.cwd).join(".loki/loki.py").is_file());
+    assert!(Path::new(&home.cwd).join(".loki/loki.json").is_file());
     prompt(&w, "first");
     prompt(&w, "second");
     // The model saw the note once, before the first prompt.

@@ -984,7 +984,7 @@ fn register_command(
     if !proposals.is_empty() {
         let written = json!({
             "note": "Loki rules proposed from review rules that findings keep citing and people keep accepting. \
-                     Nothing here is applied: add an approved tuple to crates/loki/src/rules.rs.",
+                     Nothing here is applied: add an approved tuple to loki-guardrails rules.",
             "proposals": proposals,
         });
         std::fs::create_dir_all(&paths.dir).map_err(io)?;

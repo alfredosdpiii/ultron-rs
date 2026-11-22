@@ -20,6 +20,68 @@ const SIGNATURE_FORMAT: &str = "ultron-rlm-snapshot-signature";
 pub(crate) const KEY_BYTES: usize = 32;
 /// The error name kernel.ts gives refused snapshots (`SnapshotAuthenticationError.name`).
 pub const SNAPSHOT_ERROR_NAME: &str = "SnapshotIntegrityError";
+/// Default cap on a single signed snapshot file (50 MiB). Override with `ULTRON_MAX_SNAPSHOT_BYTES` (`0` disables).
+pub const DEFAULT_MAX_SNAPSHOT_BYTES: u64 = 50 * 1024 * 1024;
+pub const ENV_MAX_SNAPSHOT_BYTES: &str = "ULTRON_MAX_SNAPSHOT_BYTES";
+
+/// Maximum snapshot size in bytes (`0` disables the cap).
+pub fn max_snapshot_bytes() -> u64 {
+    std::env::var(ENV_MAX_SNAPSHOT_BYTES)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_MAX_SNAPSHOT_BYTES)
+}
+
+/// True for temporary files left behind by an interrupted `signed_snapshot` write.
+pub fn is_orphan_snapshot_temp(name: &str) -> bool {
+    name.starts_with('.') && (name.ends_with(".unsigned") || name.ends_with(".tmp"))
+}
+
+/// Removes orphaned `.unsigned` / `.tmp` snapshot files under `root` (and its immediate subdirectories) older than
+/// `min_age`. Returns `(removed_files, freed_bytes)`.
+pub fn sweep_orphan_snapshots(root: &Path, min_age: std::time::Duration) -> (usize, u64) {
+    let cutoff = std::time::SystemTime::now().checked_sub(min_age);
+    let mut removed = 0usize;
+    let mut freed = 0u64;
+    let mut dirs = vec![root.to_path_buf()];
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+                dirs.push(entry.path());
+            }
+        }
+    }
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if !is_orphan_snapshot_temp(name) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            if let (Some(cutoff), Ok(modified)) = (cutoff, meta.modified())
+                && modified > cutoff
+            {
+                continue;
+            }
+            if std::fs::remove_file(entry.path()).is_ok() {
+                removed += 1;
+                freed = freed.saturating_add(meta.len());
+            }
+        }
+    }
+    (removed, freed)
+}
 
 /// A refused snapshot: the message the kernel result reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -250,5 +312,29 @@ pub(crate) fn snapshot_error(message: impl Into<String>) -> ExecutionResult {
             evalue: message.into(),
             traceback: Vec::new(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sweep_orphan_snapshots_removes_only_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sess-1");
+        std::fs::create_dir_all(&sub).unwrap();
+        let orphan_u = sub.join(".main.snapshot.123.unsigned");
+        let orphan_t = dir.path().join(".lane.tmp");
+        let real = sub.join("main.snapshot");
+        std::fs::write(&orphan_u, b"1234").unwrap();
+        std::fs::write(&orphan_t, b"56").unwrap();
+        std::fs::write(&real, b"keep-me").unwrap();
+
+        let (removed, freed) = sweep_orphan_snapshots(dir.path(), std::time::Duration::ZERO);
+        assert_eq!((removed, freed), (2, 6));
+        assert!(!orphan_u.exists());
+        assert!(!orphan_t.exists());
+        assert!(real.exists());
     }
 }

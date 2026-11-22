@@ -59,6 +59,15 @@ impl LokiNotice {
         if config.loki == host::loki_guard::LokiMode::Off {
             return LokiNotice::known(None);
         }
+        // loki-guardrails 0.2.2 writes `.loki/loki.json` (no `loki.py`), while its `auto_setup::setup` only checks
+        // `.loki/loki.py`; treat an existing `.loki/loki.json` as already set up.
+        if config
+            .loki_root
+            .as_deref()
+            .is_some_and(|root| root.join(".loki").join("loki.json").is_file())
+        {
+            return LokiNotice::known(None);
+        }
         let settings = config::settings::SettingsManager::for_worker(&config.cwd, &config.agent_dir, &config.home);
         let settings = Value::Object(loki::settings::saved(settings.global_settings()));
         let (cwd, home, var) = (config.cwd.clone(), config.home.clone(), config.var.clone());

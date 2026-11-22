@@ -647,3 +647,29 @@ fn host_loki_outside_a_repository_runs_only_before_write_checks() {
     assert_eq!(hooks.take_pending("main"), None);
     assert_eq!(*ran.lock().unwrap(), 0);
 }
+
+#[test]
+fn host_after_cell_checked_writes_stay_attributed_to_the_writing_lane() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let reports = Arc::new(Mutex::new(Vec::new()));
+    let mut hooks = FileHooks::with_snapshots(&root, snapshotter());
+    hooks.add(Box::new(Watch(reports.clone(), root.clone())));
+
+    hooks.cell_started("b");
+    hooks.cell_started("a");
+    let verdict = hooks.before_write("b", "b.py", "X = 1\n");
+    assert_eq!(verdict["blocked"], false);
+    std::fs::write(root.join("b.py"), "X = 1\n").unwrap();
+    // Lane `a` finishes while `b` is still running: `a` must not steal `b`'s checked write.
+    hooks.cell_ended("a");
+    hooks.settled();
+    assert!(reports.lock().unwrap().is_empty());
+
+    hooks.cell_ended("b");
+    hooks.settled();
+    let reports = reports.lock().unwrap();
+    assert_eq!(reports.len(), 1);
+    assert!(reports[0].files.is_empty());
+    assert_eq!(reports[0].checked, vec![root.join("b.py")]);
+}

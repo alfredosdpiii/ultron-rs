@@ -38,15 +38,24 @@ fn committed(install: &Install, file: &str, text: &str) {
     git(&project, home, &["-c", "commit.gpgsign=false", "commit", "-qm", "init"]);
 }
 
-/// The cell result that carries Loki's note after a cell added two functions to a committed `store.lua`, in a
-/// session whose hygiene model is a stand-in flagging line 2 as a swallowed error and line 3 as a dense line.
+/// The cell result that carries Loki's note after a cell added a swallowed error and a dense line to a committed
+/// `store.py`, scored in-process by Loki's pure-Rust hygiene model.
 fn hygiene_note(level: Option<&str>) -> String {
     let provider = Provider::start(move |request| {
         let results = request.tool_results();
         if results.is_empty() {
-            let text = "LIMIT = 10\\nfunction load() end\\nfunction save() end\\n";
+            let text = concat!(
+                "LIMIT = 10\\n\\n\\n",
+                "def load(path):\\n",
+                "    try:\\n",
+                "        return open(path).read()\\n",
+                "    except Exception:\\n",
+                "        pass\\n\\n\\n",
+                "def save(items):\\n",
+                "    return [x.strip().lower().replace('a', 'b').replace('c', 'd').replace('e', 'f').split(',')[0] for x in items if x and len(x.strip()) > 0]\\n",
+            );
             return Reply::Rlm(format!(
-                "from pathlib import Path\nPath('store.lua').write_text('{text}')\nprint('written')"
+                "from pathlib import Path\nPath('store.py').write_text(\"{text}\")\nprint('written')"
             ));
         }
         if results.iter().any(|r| r.contains("[Loki]")) || results.len() > 500 {
@@ -55,17 +64,8 @@ fn hygiene_note(level: Option<&str>) -> String {
         Reply::Rlm(format!("print('next cell', {})", results.len()))
     });
     let install = Install::new(&provider);
-    committed(&install, "store.lua", "LIMIT = 10\n");
-    // Stands in for a Python with NumPy: it answers Loki's hygiene request for one file.
-    let model = install.root.path().join("hygiene-python");
-    let reply = r#"[[[2, "swallowed_error", "Ignored error"], [3, "dense_line", "Dense line"]]]"#;
-    std::fs::write(&model, format!("#!/bin/sh\ncat > /dev/null\nprintf '%s' '{reply}'\n")).unwrap();
-    std::fs::set_permissions(&model, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    let model = model.display().to_string();
-    let mut env = vec![
-        (delegation::usage::MAX_TOTAL_TURNS_ENV, "1000"),
-        ("ULTRON_LOKI_PYTHON", model.as_str()),
-    ];
+    committed(&install, "store.py", "LIMIT = 10\n");
+    let mut env = vec![(delegation::usage::MAX_TOTAL_TURNS_ENV, "1000")];
     env.extend(level.map(|level| ("ULTRON_LOKI_HYGIENE", level)));
     let mut client = install.rpc(&["--no-session"], &env);
     client.prompt_and_wait("Add the store", common::HANG).unwrap();
@@ -79,15 +79,16 @@ fn hygiene_note(level: Option<&str>) -> String {
 /// kind under `ULTRON_LOKI_HYGIENE=all`.
 #[test]
 fn acceptance_after_cell_hygiene_notes_arrive_as_things_to_fix() {
-    let swallowed = "store.lua:2: loki/hygiene-swallowed-error: Ignored error: `function load() end`";
-    let dense = "store.lua:3: loki/hygiene-dense-line: Dense line: `function save() end`";
     let note = hygiene_note(None);
     assert!(note.contains("on lines this cell added; fix these:"), "{note}");
-    assert!(note.contains(swallowed), "{note}");
+    assert!(note.contains("store.py:7: loki/hygiene-swallowed-error:"), "{note}");
     assert!(!note.contains("no change required"), "{note}");
     assert!(!note.contains("hygiene-dense-line"), "{note}");
     let all = hygiene_note(Some("all"));
-    assert!(all.contains(swallowed) && all.contains(dense), "{all}");
+    assert!(
+        all.contains("store.py:7: loki/hygiene-swallowed-error:") && all.contains("loki/hygiene-dense-line:"),
+        "{all}"
+    );
 }
 
 #[test]

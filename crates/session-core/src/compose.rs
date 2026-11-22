@@ -251,7 +251,12 @@ impl Config {
         let settings = Value::Object(manager.settings().clone());
         let loki_settings = loki::settings::saved(manager.global_settings());
         let loki = loki_mode((env.var)(LOKI_ENV).as_deref(), &loki_settings);
-        let loki_hygiene = loki::hygiene::level((env.var)(loki::hygiene::HYGIENE_ENV).as_deref(), &loki_settings);
+        let loki_hygiene = loki::hygiene::level(
+            (env.var)("ULTRON_LOKI_HYGIENE")
+                .or_else(|| (env.var)(loki::hygiene::HYGIENE_ENV))
+                .as_deref(),
+            &loki_settings,
+        );
         let loki_root = (loki != LokiMode::Off).then(|| git_root(&env.cwd).unwrap_or_else(|| env.cwd.clone()));
         let skills_dir = (env.var)(kernel::env::CODE_SKILLS_DIR_ENV)
             .map(|dir| dir.trim().to_string())
@@ -476,6 +481,7 @@ fn max_live_kernels(settings: &Value) -> usize {
 /// kernel there before evicting it.
 fn lane_snapshot_path(config: &Arc<Config>, session_id: &str) -> lanes::SnapshotPathFn {
     let snapshots = config.session_dir("rlm-snapshots", session_id);
+    kernel::sweep_orphan_snapshots(&snapshots, std::time::Duration::from_secs(600));
     Arc::new(move |lane: &str| {
         Some(
             snapshots

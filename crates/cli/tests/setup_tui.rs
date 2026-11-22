@@ -210,10 +210,11 @@ fn replay(name: &str) {
     let root_text = root.display().to_string();
     let port_text = format!(":{port}");
     let seconds = regex::Regex::new(r"in \d+\.\ds").unwrap();
+    let bundled_loki = regex::Regex::new(r"✓ Bundled Loki [^\n]+").unwrap();
     let norm = |s: &str| {
-        seconds
-            .replace_all(&normalize(s, &root_text).replace(&port_text, ":<PORT>"), "in <S>s")
-            .into_owned()
+        let base = normalize(s, &root_text).replace(&port_text, ":<PORT>");
+        let s = seconds.replace_all(&base, "in <S>s");
+        bundled_loki.replace_all(&s, "✓ Bundled Loki <VER>").into_owned()
     };
     let capture = || norm(&tmux.run(&["capture-pane", "-p", "-t", "t"]));
     for (index, step) in scenario["steps"].as_array().unwrap().iter().enumerate() {
@@ -243,7 +244,9 @@ fn replay(name: &str) {
             }
             continue;
         }
-        let want = without_node(scenario["captures"][index].as_str().unwrap());
+        let want = bundled_loki
+            .replace_all(&without_node(scenario["captures"][index].as_str().unwrap()), "✓ Bundled Loki <VER>")
+            .into_owned();
         // Wait for the recorded screen (hang guard 120 s); a real difference fails after the guard.
         let deadline = Instant::now() + Duration::from_secs(120);
         let mut screen = capture();

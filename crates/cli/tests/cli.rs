@@ -115,6 +115,7 @@ const RUST_COMMANDS: &str =
   ultron migrate <command>         Back up or restore the profile; import or export Pi sessions
   ultron mcp <command>             Configure MCP servers and sign in (add, remove, list, login, logout)
   ultron sandbox doctor            Check the shell sandbox a session in this directory gets
+  ultron gc [--dry-run] [--days N] Reclaim orphaned snapshot temp files, old snapshots, and stale session logs
   ultron instances                 List the running server instances
   ultron durable [command]         The global durable instance: attach (default, takes ultron options), start, status, stop
   ultron service <command>         Run the durable instance as a user service (install, uninstall, status, restart, run)

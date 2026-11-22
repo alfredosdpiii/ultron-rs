@@ -16,7 +16,7 @@ fancy-regex = "=0.19.2"
 image = { version = "=0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.2" }
 kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.2" }
-loki = { package = "ultron-loki", path = "../loki", version = "=1.0.2" }
+loki = { package = "loki-guardrails", version = "0.2.2" }
 sandbox = { package = "ultron-sandbox", path = "../sandbox", version = "=1.0.2" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 

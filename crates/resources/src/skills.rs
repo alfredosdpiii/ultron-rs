@@ -385,10 +385,12 @@ pub fn format_skills_for_prompt(skills: &[Skill], file_read_tool: &str) -> Strin
     for skill in visible {
         lines.push("  <skill>".to_string());
         lines.push(format!("    <name>{}</name>", escape_xml(&skill.name)));
-        lines.push(format!(
-            "    <description>{}</description>",
-            escape_xml(&skill.description)
-        ));
+        let desc = if skill.description.chars().count() > 200 {
+            short_purpose(&skill.description, 200)
+        } else {
+            skill.description.clone()
+        };
+        lines.push(format!("    <description>{}</description>", escape_xml(&desc)));
         lines.push(format!("    <location>{}</location>", escape_xml(&skill.file_path)));
         lines.push("  </skill>".to_string());
     }
@@ -445,4 +447,33 @@ pub fn bundled_skills_note(skills: &[Skill], bundled: Option<&str>, proactive: b
     }];
     lines.extend(listed);
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn skill(name: &str, description: &str) -> Skill {
+        Skill {
+            name: name.into(),
+            description: description.into(),
+            file_path: format!("/tmp/{name}/SKILL.md"),
+            base_dir: format!("/tmp/{name}"),
+            source: "user".into(),
+            disable_model_invocation: false,
+            always_on_content: None,
+        }
+    }
+
+    #[test]
+    fn format_skills_trims_only_long_descriptions() {
+        let short = "Short skill. Two sentences.";
+        let long = format!(
+            "First sentence explains the purpose. {}",
+            "Extra detail that bloats the prompt. ".repeat(10)
+        );
+        let out = format_skills_for_prompt(&[skill("short", short), skill("long", &long)], "read");
+        assert!(out.contains(&format!("<description>{short}</description>")));
+        assert!(out.contains("<description>First sentence explains the purpose.</description>"));
+    }
 }

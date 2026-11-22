@@ -21,7 +21,7 @@ image = { version = "=0.25.10", default-features = false, features = ["bmp", "gi
 ai = { package = "ultron-ai", path = "../ai", version = "=1.0.2" }
 blocking-http = { package = "ultron-blocking-http", path = "../blocking-http", version = "=1.0.2" }
 kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.2" }
-loki = { package = "ultron-loki", path = "../loki", version = "=1.0.2" }
+loki = { package = "loki-guardrails", version = "0.2.2" }
 mimalloc = { version = "=0.1.52", default-features = false }
 memorantado = { package = "ultron-memorantado", path = "../memorantado", version = "=1.0.2" }
 model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.2" }

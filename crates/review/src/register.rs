@@ -190,7 +190,7 @@ pub struct Proposal {
     /// Files it would apply to (by the extension of the file the rule was left on).
     pub paths: String,
     pub message: String,
-    /// `("rule", r#"pattern"#, "message")`, ready for `crates/loki/src/rules.rs`; None without a pattern.
+    /// `("rule", r#"pattern"#, "message")`, ready for `loki-guardrails` rules; None without a pattern.
     pub tuple: Option<String>,
     pub accepted: i64,
     pub rejected: i64,

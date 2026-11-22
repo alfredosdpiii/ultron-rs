@@ -405,8 +405,8 @@ struct Inner {
     on_record: Mutex<Option<OnRecord>>,
     now: Mutex<Clock>,
     snapshot: Option<Snapshotter>,
-    /// Checked writes since the last after-cell snapshot: absolute path -> sha256 of the checked content.
-    checked: Mutex<HashMap<PathBuf, String>>,
+    /// Checked writes since the last after-cell snapshot, per lane: lane -> (absolute path -> sha256).
+    checked: Mutex<HashMap<String, HashMap<PathBuf, String>>>,
     /// Findings not yet shown, per lane.
     pending: Mutex<HashMap<String, Vec<String>>>,
     /// The last snapshot of the directory (taken before the first watched cell, then after each).
@@ -812,6 +812,25 @@ impl Inner {
                 modified.retain(|relative| !unchanged(relative));
                 deleted.retain(|relative| !unchanged(relative));
             }
+            // Leave files matching another lane's checked write for that lane before claiming them.
+            let owned_by_other = |relative: &String| {
+                let path = resolve_lexical(&after.root, relative);
+                let checked = sync::lock(&self.checked);
+                let has_other_candidate = checked
+                    .iter()
+                    .any(|(other_lane, map)| other_lane != lane && map.contains_key(&path));
+                if !has_other_candidate {
+                    return false;
+                }
+                let Some(current_hash) = std::fs::read(&path).ok().map(|bytes| jsrt::hash::sha256_hex(&bytes)) else {
+                    return false;
+                };
+                checked
+                    .iter()
+                    .any(|(other_lane, map)| other_lane != lane && map.get(&path) == Some(&current_hash))
+            };
+            added.retain(|relative| !owned_by_other(relative));
+            modified.retain(|relative| !owned_by_other(relative));
             for other in sync::lock(&self.baselines).keys() {
                 let theirs = claimed.entry(other.clone()).or_default();
                 for relative in added.iter().chain(&modified).chain(&deleted) {
@@ -827,23 +846,29 @@ impl Inner {
             modified.retain(|relative| !theirs(relative));
             deleted.retain(|relative| !theirs(relative));
         }
-        // Checked writes outside the session directory (a sibling worktree) are in no snapshot; they are changes too.
+        // Checked writes outside the session directory (a sibling worktree) are in no snapshot; they are changes too,
+        // attributed only to the lane that performed them.
         let elsewhere: Vec<PathBuf> = {
             let mut checked = sync::lock(&self.checked);
-            let outside: Vec<PathBuf> = checked
-                .keys()
-                .filter(|p| inside(&after.root, p).is_none())
-                .cloned()
-                .collect();
-            outside
-                .into_iter()
-                .filter(|path| {
-                    let approved = checked.remove(path);
-                    approved.is_some_and(|approved| {
-                        std::fs::read(path).is_ok_and(|now| jsrt::hash::sha256_hex(&now) == approved)
-                    })
-                })
-                .collect()
+            match checked.get_mut(lane) {
+                None => Vec::new(),
+                Some(mine) => {
+                    let outside: Vec<PathBuf> = mine
+                        .keys()
+                        .filter(|p| inside(&after.root, p).is_none())
+                        .cloned()
+                        .collect();
+                    outside
+                        .into_iter()
+                        .filter(|path| {
+                            let approved = mine.remove(path);
+                            approved.is_some_and(|approved| {
+                                std::fs::read(path).is_ok_and(|now| jsrt::hash::sha256_hex(&now) == approved)
+                            })
+                        })
+                        .collect()
+                }
+            }
         };
         if added.is_empty() && modified.is_empty() && deleted.is_empty() && elsewhere.is_empty() {
             return;
@@ -855,7 +880,9 @@ impl Inner {
         };
         for relative in added.iter().chain(&modified) {
             let path = resolve_lexical(&after.root, relative);
-            let approved = sync::lock(&self.checked).remove(&path);
+            let approved = sync::lock(&self.checked)
+                .get_mut(lane)
+                .and_then(|map| map.remove(&path));
             if let Some(approved) = approved
                 && std::fs::read(&path).is_ok_and(|current| jsrt::hash::sha256_hex(&current) == approved)
             {
@@ -866,7 +893,9 @@ impl Inner {
         }
         for relative in &deleted {
             let path = resolve_lexical(&after.root, relative);
-            sync::lock(&self.checked).remove(&path);
+            if let Some(map) = sync::lock(&self.checked).get_mut(lane) {
+                map.remove(&path);
+            }
             changes.deleted.push(path);
         }
         let guards: Vec<Registered> = sync::lock(&self.guards)
@@ -1128,7 +1157,10 @@ impl Guard for FileHooks {
         }
         if reasons.is_empty() {
             // The write will happen with this content; an after-cell diff need not report it again.
-            sync::lock(&self.inner.checked).insert(path, jsrt::hash::sha256_hex(content.as_bytes()));
+            sync::lock(&self.inner.checked)
+                .entry(lane.to_string())
+                .or_default()
+                .insert(path, jsrt::hash::sha256_hex(content.as_bytes()));
             json!({ "blocked": false, "notes": notes })
         } else {
             json!({ "blocked": true, "reason": reasons.join("\n"), "notes": notes })

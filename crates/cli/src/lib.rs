@@ -17,6 +17,7 @@ pub mod durable_client;
 pub mod experimental;
 pub mod export_html;
 pub mod file_args;
+pub mod gc_cli;
 pub mod herdr_report;
 pub mod instances;
 pub mod interactive;
@@ -281,6 +282,13 @@ const COMMANDS: &[Command] = &[
         proxy: true,
         typescript: false,
         run: |argv, env, out, err| Some(sandbox_cli::run(&argv[1..], env, out, err)),
+    },
+    Command {
+        names: &["gc"],
+        package_files: false,
+        proxy: false,
+        typescript: false,
+        run: |argv, env, out, err| Some(gc_cli::run(&argv[1..], env, out, err)),
     },
 ];
 

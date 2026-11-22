@@ -55,7 +55,13 @@ fn session_core_keep_going_phrase_continues_every_working_run_until_a_report() {
         i if i % 2 == 0 => tool(&format!("t{i}"), "print(1)"),
         _ => text("Done with that part."),
     });
-    let a = actor(script, Setup::default());
+    let a = actor(
+        script,
+        Setup {
+            settings: Some(json!({"observer": {"enabled": false}})),
+            ..Setup::default()
+        },
+    );
     let reply = start(&a, "Port the parser. I'm going to sleep, keep going until it's done");
     assert_eq!(
         reply,

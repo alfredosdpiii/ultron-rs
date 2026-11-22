@@ -1300,6 +1300,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
+name = "loki-guardrails"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8714ab4156b3644fff1d20d3952a5537d14e2411468d2b51cf845e163e242bcf"
+dependencies = [
+ "fancy-regex 0.19.2",
+ "flate2",
+ "regex",
+ "reqwest",
+ "rustix",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "lru-slab"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2811,6 +2829,7 @@ dependencies = [
  "base64 0.23.1",
  "image",
  "indexmap",
+ "loki-guardrails",
  "mimalloc",
  "regex",
  "reqwest",
@@ -2839,7 +2858,6 @@ dependencies = [
  "ultron-kernel",
  "ultron-kernel-apis",
  "ultron-knowledge",
- "ultron-loki",
  "ultron-mcp",
  "ultron-memorantado",
  "ultron-model-scope",
@@ -2929,6 +2947,7 @@ name = "ultron-claude-root"
 version = "1.0.2"
 dependencies = [
  "indexmap",
+ "loki-guardrails",
  "regex",
  "rustix",
  "serde_json",
@@ -2947,7 +2966,6 @@ dependencies = [
  "ultron-kernel",
  "ultron-kernel-apis",
  "ultron-lanes",
- "ultron-loki",
  "ultron-mcp",
  "ultron-resources",
  "ultron-session-core",
@@ -2987,11 +3005,10 @@ dependencies = [
 name = "ultron-config"
 version = "1.0.2"
 dependencies = [
+ "loki-guardrails",
  "serde_json",
  "tempfile",
- "ultron-assets",
  "ultron-jsrt",
- "ultron-loki",
  "ultron-model-scope",
  "ultron-review",
  "ultron-signals",
@@ -3136,13 +3153,13 @@ version = "1.0.2"
 dependencies = [
  "fancy-regex 0.19.2",
  "image",
+ "loki-guardrails",
  "rustix",
  "serde_json",
  "tempfile",
  "ultron-assets",
  "ultron-jsrt",
  "ultron-kernel",
- "ultron-loki",
  "ultron-sandbox",
 ]
 
@@ -3288,35 +3305,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "ultron-loki"
-version = "1.0.2"
-dependencies = [
- "fancy-regex 0.19.2",
- "regex",
- "reqwest",
- "rustix",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
- "toml",
- "ultron-assets",
- "ultron-jsrt",
- "ultron-kernel",
- "ultron-signals",
-]
-
-[[package]]
 name = "ultron-lsp"
 version = "1.0.2"
 dependencies = [
+ "loki-guardrails",
  "rustix",
  "serde_json",
  "tempfile",
  "ultron-host",
  "ultron-jsrt",
  "ultron-kernel",
- "ultron-loki",
  "ultron-sandbox",
  "url",
 ]
@@ -3404,6 +3402,7 @@ name = "ultron-review"
 version = "1.0.2"
 dependencies = [
  "indexmap",
+ "loki-guardrails",
  "regex",
  "ring",
  "serde",
@@ -3418,7 +3417,6 @@ dependencies = [
  "ultron-kernel",
  "ultron-kernel-apis",
  "ultron-knowledge",
- "ultron-loki",
  "ultron-model-scope",
 ]
 
@@ -3477,6 +3475,7 @@ version = "1.0.2"
 dependencies = [
  "base64 0.23.1",
  "indexmap",
+ "loki-guardrails",
  "regex",
  "serde",
  "serde_json",
@@ -3502,7 +3501,6 @@ dependencies = [
  "ultron-kernel-apis",
  "ultron-knowledge",
  "ultron-lanes",
- "ultron-loki",
  "ultron-lsp",
  "ultron-mcp",
  "ultron-memorantado",
