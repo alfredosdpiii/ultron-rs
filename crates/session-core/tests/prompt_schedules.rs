@@ -391,7 +391,7 @@ fn session_core_pr_watch_polls_code_only_then_wakes_model_for_changed_ci() {
     let dir = tempfile::tempdir().unwrap();
     let clock = clock(dir.path());
     let gh = dir.path().join("gh");
-    std::fs::write(&gh,format!("#!{}\n", kernel::env::python(|name| std::env::var(name).ok())) + r#"import json, pathlib, sys
+    std::fs::write(&gh,format!("#!{}\n", kernel::env::python(|name| std::env::var(name).ok())) + r"import json, pathlib, sys
 root = pathlib.Path(__file__).parent
 if sys.argv[1:3] == ['pr','view']:
     print((root / 'view').read_text())
@@ -399,7 +399,7 @@ elif sys.argv[1:5] == ['api','--hostname','github.com','graphql']:
     print(json.dumps({'data':{'repository':{'pullRequest':{'reviewThreads':{'nodes':[],'pageInfo':{'hasNextPage':False}}}}}}))
 else:
     sys.exit(1)
-"#).unwrap();
+").unwrap();
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o700)).unwrap();
     let status = |ci: &str| {
         std::fs::write(
@@ -410,7 +410,7 @@ else:
             })
             .to_string(),
         )
-        .unwrap()
+        .unwrap();
     };
     status("PENDING");
     let mut config = setup(&clock);

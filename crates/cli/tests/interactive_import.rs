@@ -33,15 +33,13 @@ fn native_session_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     let dir = root
         .join("agent/experimental/sessions")
         .join(format!("--{}--", cwd.trim_start_matches('/').replace('/', "-")));
-    std::fs::read_dir(&dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.to_string_lossy().ends_with(&format!("_{id}.jsonl")))
-                .collect()
-        })
-        .unwrap_or_default()
+    std::fs::read_dir(&dir).map_or_default(|entries| {
+        entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.to_string_lossy().ends_with(&format!("_{id}.jsonl")))
+            .collect()
+    })
 }
 
 #[test]

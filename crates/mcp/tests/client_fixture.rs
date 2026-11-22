@@ -79,7 +79,7 @@ fn run_step(client: &Client, step: &Value, events: &Arc<Mutex<Vec<Value>>>, log:
             if step.get("progress") == Some(&json!(true)) {
                 let events = events.clone();
                 options.on_progress = Some(Arc::new(move |p: &Value| {
-                    events.lock().unwrap().push(json!({ "progress": p }))
+                    events.lock().unwrap().push(json!({ "progress": p }));
                 }));
             }
             let cancel = s("abort").map(|reason| (CancelToken::new(), reason.to_string()));
@@ -148,7 +148,7 @@ fn mcp_client_replays_typescript_stdio_session_frames_and_results() {
         client.on_notification("notifications/tools/list_changed", move |p| {
             sink.lock()
                 .unwrap()
-                .push(json!({ "notification": p.cloned().unwrap_or(Value::Null) }))
+                .push(json!({ "notification": p.cloned().unwrap_or(Value::Null) }));
         });
         let sink = events.clone();
         client.on_close(move || sink.lock().unwrap().push(json!({ "closed": true })));

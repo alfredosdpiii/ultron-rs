@@ -71,7 +71,10 @@ pub fn install() -> Result<(), String> {
 }
 
 fn dispatch(signal: Signal) {
-    let handler = HANDLER.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let handler = HANDLER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     let Some(handler) = handler else {
         die(signal);
     };
@@ -95,10 +98,10 @@ pub fn received() -> Option<Signal> {
 
 /// Handle the signals with `handler` from now on (replacing any previous one).
 pub fn set_handler(handler: Handler) {
-    *HANDLER.lock().unwrap_or_else(|e| e.into_inner()) = Some(handler);
+    *HANDLER.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handler);
 }
 
 /// Back to the default action.
 pub fn clear_handler() {
-    *HANDLER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *HANDLER.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 }

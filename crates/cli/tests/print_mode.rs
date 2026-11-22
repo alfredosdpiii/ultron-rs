@@ -178,7 +178,7 @@ fn cli_print_mode_matches_typescript() {
             assert_eq!(Value::from(messages), want["messages"], "{name} transcript");
             if name.starts_with("json")
                 && file.metadata().unwrap().modified().unwrap()
-                    > std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_100)
+                    > std::time::UNIX_EPOCH + std::time::Duration::from_mins(28333335)
             {
                 let id = text
                     .lines()

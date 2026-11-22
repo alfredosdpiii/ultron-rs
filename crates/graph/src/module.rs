@@ -209,7 +209,7 @@ impl KnowledgeModule {
     }
 
     fn transport(&self) -> Result<Arc<dyn Transport>, String> {
-        let mut slot = self.transport.lock().unwrap_or_else(|e| e.into_inner());
+        let mut slot = self.transport.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(transport) = slot.as_ref() {
             return Ok(transport.clone());
         }

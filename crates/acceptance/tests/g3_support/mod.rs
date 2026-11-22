@@ -97,7 +97,7 @@ impl Tasks {
         }));
         let aborted = lanes.clone();
         options.abort_lane = Some(Arc::new(move |lane: &str| {
-            aborted.probe(lane, |probe| probe.aborts += 1)
+            aborted.probe(lane, |probe| probe.aborts += 1);
         }));
         let steered = lanes.clone();
         options.steer = Some(Arc::new(move |lane: &str, message: &str| {

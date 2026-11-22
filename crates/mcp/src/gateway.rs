@@ -66,7 +66,7 @@ pub fn server_names_of(description: &str) -> Vec<String> {
     description
         .lines()
         .find_map(|line| line.strip_prefix("Servers: "))
-        .map(|names| {
+        .map_or_default(|names| {
             names
                 .split(',')
                 .map(str::trim)
@@ -74,7 +74,6 @@ pub fn server_names_of(description: &str) -> Vec<String> {
                 .map(String::from)
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 /// What the REPL learns about the gateway tool.
@@ -305,8 +304,7 @@ fn status_of(entry: &ServerEntry, connection: Option<&Arc<Connection>>) -> Strin
 /// Tools the REPL can reach: `"exposure": "hidden"` (per server or per tool) removes them.
 fn visible_tools(entry: &ServerEntry, connection: Option<&Arc<Connection>>) -> Vec<Value> {
     connection
-        .map(|c| c.tools())
-        .unwrap_or_default()
+        .map_or_default(|c| c.tools())
         .into_iter()
         .filter(|tool| tool_exposure(&entry.config, tool_name(tool)) != "hidden")
         .collect()
@@ -607,7 +605,7 @@ impl Gateway {
         if let Some(failure) = failure {
             return Err(failure);
         }
-        let on = only.map(|s| format!(" on server \"{s}\"")).unwrap_or_default();
+        let on = only.map_or_default(|s| format!(" on server \"{s}\""));
         Err(GatewayError::new(
             "tool_not_found",
             format!(
@@ -657,11 +655,8 @@ impl Gateway {
         let connected = list.iter().filter(|s| s["status"] == "connected").count();
         let mut lines = vec![format!("MCP: {connected}/{} servers connected", list.len())];
         for server in &list {
-            let count = server["toolCount"]
-                .as_u64()
-                .map(|n| format!(" ({n} tools)"))
-                .unwrap_or_default();
-            let error = server["error"].as_str().map(|e| format!(": {e}")).unwrap_or_default();
+            let count = server["toolCount"].as_u64().map_or_default(|n| format!(" ({n} tools)"));
+            let error = server["error"].as_str().map_or_default(|e| format!(": {e}"));
             lines.push(format!(
                 "{}: {}{count}{error}",
                 server["name"].as_str().unwrap_or_default(),
@@ -869,11 +864,7 @@ impl Gateway {
     pub fn command(&self, args: &str) -> Notice {
         let ui = Recorded::default();
         self.run_command(args, &ui);
-        ui.notices
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pop()
-            .unwrap_or_default()
+        jsrt::sync::lock(&ui.notices).pop().unwrap_or_default()
     }
 
     /// The `/mcp` handler: status, reload, or an action on a server; without arguments in a client with dialogs, a
@@ -911,8 +902,7 @@ impl Gateway {
             .servers
             .iter()
             .find(|s| s.entry.name == name)
-            .map(|s| status_of(&s.entry, s.connection.as_ref()))
-            .unwrap_or_default()
+            .map_or_default(|s| status_of(&s.entry, s.connection.as_ref()))
     }
 
     /// `/mcp` without arguments in a client with dialogs.

@@ -589,7 +589,7 @@ impl SchedulesModule {
             })?;
             match task {
                 Some(task) => {
-                    fired.push(json!({"schedule_id": id, "slot": slot, "task_id": task["id"], "skipped": skipped}))
+                    fired.push(json!({"schedule_id": id, "slot": slot, "task_id": task["id"], "skipped": skipped}));
                 }
                 None => failed.push(json!({"schedule_id": id, "slot": slot,
                     "error": failure.unwrap_or_else(|| "unknown failure".into())})),

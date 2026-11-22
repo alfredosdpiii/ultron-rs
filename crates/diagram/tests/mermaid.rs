@@ -269,7 +269,7 @@ fn diagram_png_is_drawn_at_twice_the_size_in_theme_colours() {
 
 #[test]
 fn diagram_font_fallback_prefers_common_families() {
-    let have = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+    let have = |names: &[&str]| names.iter().map(std::string::ToString::to_string).collect::<Vec<_>>();
     assert_eq!(
         pick_family(
             &have(&["Zilla", "noto sans", "DejaVu Sans"]),

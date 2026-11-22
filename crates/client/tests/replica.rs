@@ -191,7 +191,7 @@ fn client_replica_applies_consecutive_updates_and_tells_the_listener() {
         Box::new(move |member, value| {
             sink.lock()
                 .unwrap()
-                .push((member.to_string(), value["revision"].clone()))
+                .push((member.to_string(), value["revision"].clone()));
         }),
     );
     let updates =

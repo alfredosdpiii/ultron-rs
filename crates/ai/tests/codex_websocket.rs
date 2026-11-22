@@ -217,7 +217,7 @@ fn serve(mut stream: TcpStream, index: usize, script: Value, log: Arc<Log>) {
                         conn["closes"]
                             .as_array_mut()
                             .unwrap()
-                            .push(json!({"code": code, "reason": reason}))
+                            .push(json!({"code": code, "reason": reason}));
                     });
                     if !closed {
                         send(&mut stream, &Message::Close(code, String::new()));

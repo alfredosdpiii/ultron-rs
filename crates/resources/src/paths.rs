@@ -11,9 +11,7 @@ pub fn resolve_path(input: &str, base: &str, home: &str, trim: bool) -> String {
 
 /// `canonicalizePath`: realpath, or the input when it cannot be resolved.
 pub fn canonicalize(path: &str) -> String {
-    std::fs::canonicalize(Path::new(path))
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| path.to_string())
+    std::fs::canonicalize(Path::new(path)).map_or_else(|_| path.to_string(), |p| p.to_string_lossy().into_owned())
 }
 
 pub fn strip_bom(text: &str) -> &str {

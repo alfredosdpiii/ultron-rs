@@ -250,7 +250,7 @@ fn manage(action: &str, env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> 
             writeln!(out, "Enabled: {}", query("is-enabled")).map_err(io)?;
             writeln!(out, "Active: {}", query("is-active")).map_err(io)?;
             servers(env, &instance, out)?;
-            Ok(if installed { 0 } else { 1 })
+            Ok(i32::from(!installed))
         }
     }
 }

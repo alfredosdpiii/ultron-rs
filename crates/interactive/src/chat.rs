@@ -49,10 +49,7 @@ pub fn nudge_line(message: &Value) -> String {
 /// recalled memories quote file text that is gone.
 pub fn memory_line(message: &Value) -> String {
     let brief = message["details"]["digest"].is_string();
-    let scopes = message["details"]["scopes"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or_default();
+    let scopes = message["details"]["scopes"].as_array().map_or_default(Vec::as_slice);
     let count = |scope: &str| scopes.iter().filter(|s| *s == scope).count();
     let parts: Vec<String> = ["project", "global"]
         .into_iter()
@@ -82,22 +79,19 @@ pub fn schedule_line(message: &Value) -> String {
 
 /// What `AssistantMessageComponent` reads from an assistant message.
 pub fn assistant_view(message: &Value) -> AssistantView {
-    let content = message["content"]
-        .as_array()
-        .map(|blocks| {
-            blocks
-                .iter()
-                .filter_map(|b| match b["type"].as_str() {
-                    Some("text") => Some(AssistantBlock::Text(b["text"].as_str().unwrap_or("").to_string())),
-                    Some("thinking") => Some(AssistantBlock::Thinking(
-                        b["thinking"].as_str().unwrap_or("").to_string(),
-                    )),
-                    Some("toolCall") => Some(AssistantBlock::ToolCall),
-                    _ => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let content = message["content"].as_array().map_or_default(|blocks| {
+        blocks
+            .iter()
+            .filter_map(|b| match b["type"].as_str() {
+                Some("text") => Some(AssistantBlock::Text(b["text"].as_str().unwrap_or("").to_string())),
+                Some("thinking") => Some(AssistantBlock::Thinking(
+                    b["thinking"].as_str().unwrap_or("").to_string(),
+                )),
+                Some("toolCall") => Some(AssistantBlock::ToolCall),
+                _ => None,
+            })
+            .collect()
+    });
     AssistantView {
         content,
         stop_reason: message["stopReason"].as_str().unwrap_or("stop").to_string(),
@@ -107,23 +101,20 @@ pub fn assistant_view(message: &Value) -> AssistantView {
 
 fn tool_result_view(message: &Value) -> ToolResultView {
     let display = message["details"]["displayImages"].as_array().into_iter().flatten();
-    let content = message["content"]
-        .as_array()
-        .map(|blocks| {
-            blocks
-                .iter()
-                .chain(display)
-                .filter_map(|b| match b["type"].as_str() {
-                    Some("text") => Some(ToolContent::Text(b["text"].as_str().unwrap_or("").to_string())),
-                    Some("image") => Some(ToolContent::Image {
-                        data: b["data"].as_str().unwrap_or("").to_string(),
-                        mime_type: b["mimeType"].as_str().map(str::to_string),
-                    }),
-                    _ => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let content = message["content"].as_array().map_or_default(|blocks| {
+        blocks
+            .iter()
+            .chain(display)
+            .filter_map(|b| match b["type"].as_str() {
+                Some("text") => Some(ToolContent::Text(b["text"].as_str().unwrap_or("").to_string())),
+                Some("image") => Some(ToolContent::Image {
+                    data: b["data"].as_str().unwrap_or("").to_string(),
+                    mime_type: b["mimeType"].as_str().map(str::to_string),
+                }),
+                _ => None,
+            })
+            .collect()
+    });
     ToolResultView {
         content,
         is_error: message["isError"] == true,
@@ -989,7 +980,7 @@ impl ChatView {
     }
 
     pub fn render_status(&mut self, width: usize) -> Vec<String> {
-        self.indicator.as_mut().map(|i| i.render(width)).unwrap_or_default()
+        self.indicator.as_mut().map_or_default(|i| i.render(width))
     }
 }
 
@@ -1022,20 +1013,17 @@ fn truncated(text: String, width: usize) -> Vec<String> {
 
 /// `(name, id, arguments)` of each tool call in an assistant message.
 fn tool_calls(message: &Value) -> Vec<(String, String, Value)> {
-    message["content"]
-        .as_array()
-        .map(|blocks| {
-            blocks
-                .iter()
-                .filter(|b| b["type"] == "toolCall")
-                .map(|b| {
-                    (
-                        b["name"].as_str().unwrap_or("").to_string(),
-                        b["id"].as_str().unwrap_or("").to_string(),
-                        b["arguments"].clone(),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    message["content"].as_array().map_or_default(|blocks| {
+        blocks
+            .iter()
+            .filter(|b| b["type"] == "toolCall")
+            .map(|b| {
+                (
+                    b["name"].as_str().unwrap_or("").to_string(),
+                    b["id"].as_str().unwrap_or("").to_string(),
+                    b["arguments"].clone(),
+                )
+            })
+            .collect()
+    })
 }

@@ -8,7 +8,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::{ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How long [`RpcClient::stop`] waits for the agent to exit before killing it: a hang guard, not a grace period.
@@ -82,10 +82,7 @@ impl RpcClient {
                 if n == 0 {
                     break;
                 }
-                collected
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push_str(&String::from_utf8_lossy(&buffer[..n]));
+                jsrt::sync::lock(&collected).push_str(&String::from_utf8_lossy(&buffer[..n]));
             }
         });
         let (tx, lines) = channel();
@@ -113,7 +110,7 @@ impl RpcClient {
     }
 
     pub fn stderr(&self) -> String {
-        self.stderr.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        jsrt::sync::lock(&self.stderr).clone()
     }
 
     fn exit_error(&mut self) -> String {

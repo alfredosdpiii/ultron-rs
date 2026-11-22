@@ -233,7 +233,7 @@ fn across_restart_home(
 #[test]
 fn session_core_w17e_a_violating_child_reattached_after_a_restart_is_still_contract_failed() {
     let r = across_restart(
-        r#"role='fixer', contract={'checks': [{'run': 'grep -q fixed status.txt'}]}"#,
+        r"role='fixer', contract={'checks': [{'run': 'grep -q fixed status.txt'}]}",
         "wrong",
         "never",
     );
@@ -267,7 +267,7 @@ fn session_core_w17e_a_violating_child_reattached_after_a_restart_is_still_contr
 #[test]
 fn session_core_w17e_a_retry_hop_still_reruns_a_reattached_child_and_its_passing_result_is_verified() {
     let r = across_restart(
-        r#"contract={'checks': [{'run': 'grep fixed status.txt', 'expect': {'stdout_contains': 'fixed'}}], 'returns': {'type': 'object'}}, hop={'retry': 1}"#,
+        r"contract={'checks': [{'run': 'grep fixed status.txt', 'expect': {'stdout_contains': 'fixed'}}], 'returns': {'type': 'object'}}, hop={'retry': 1}",
         "wrong",
         "fixed",
     );
@@ -312,13 +312,13 @@ fn assert_clean_baseline(kept: &[Value]) {
     assert_eq!(kept.len(), 1, "{kept:?}");
     let baseline = &kept[0]["baseline"];
     assert!(hex(&baseline["commit"]) && hex(&baseline["tree"]), "{baseline}");
-    assert_eq!(baseline.as_object().map(|b| b.len()), Some(2), "{baseline}");
+    assert_eq!(baseline.as_object().map(serde_json::Map::len), Some(2), "{baseline}");
 }
 
 #[test]
 fn session_core_w18s_changed_files_within_after_a_restart_compares_with_the_kept_git_baseline() {
     let r = across_restart_in(
-        r#"contract={'checks': [{'changed_files_within': ['status.txt']}, {'no_new_dependencies': True}]}"#,
+        r"contract={'checks': [{'changed_files_within': ['status.txt']}, {'no_new_dependencies': True}]}",
         "fixed",
         "never",
         true,
@@ -346,7 +346,7 @@ fn session_core_w18s_changed_files_within_after_a_restart_compares_with_the_kept
 #[test]
 fn session_core_w18s_an_out_of_scope_edit_after_a_restart_is_still_contract_failed() {
     let r = across_restart_in(
-        r#"contract={'checks': [{'changed_files_within': ['docs/**']}]}"#,
+        r"contract={'checks': [{'changed_files_within': ['docs/**']}]}",
         "wrong",
         "never",
         true,
@@ -364,7 +364,7 @@ fn session_core_w18s_an_out_of_scope_edit_after_a_restart_is_still_contract_fail
 #[test]
 fn session_core_w18s_workspace_checks_after_a_restart_outside_git_still_fail_closed() {
     let r = across_restart(
-        r#"contract={'checks': [{'changed_files_within': ['status.txt']}]}"#,
+        r"contract={'checks': [{'changed_files_within': ['status.txt']}]}",
         "fixed",
         "never",
     );
@@ -448,7 +448,7 @@ fn session_core_w18s_a_kept_childs_workspace_checks_after_a_restart_use_the_kept
 #[test]
 fn session_core_w21c_workspace_checks_after_a_restart_cover_a_thousand_dirty_paths() {
     let r = across_restart_with(
-        r#"contract={'checks': [{'changed_files_within': ['status.txt']}]}"#,
+        r"contract={'checks': [{'changed_files_within': ['status.txt']}]}",
         "fixed",
         |cwd| {
             std::fs::create_dir_all(cwd.join("gen")).unwrap();

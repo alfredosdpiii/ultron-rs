@@ -198,10 +198,7 @@ pub fn collect_environment(host: &Host, env: &BTreeMap<String, String>) -> Value
 }
 
 fn sorted_keys(value: Option<&Value>) -> Value {
-    let mut names: Vec<&String> = value
-        .and_then(Value::as_object)
-        .map(|m| m.keys().collect())
-        .unwrap_or_default();
+    let mut names: Vec<&String> = value.and_then(Value::as_object).map_or_default(|m| m.keys().collect());
     jsrt::utf16::sort(&mut names);
     json!(names)
 }
@@ -448,9 +445,7 @@ pub struct BugReportFile {
 
 /// `JSON.stringify(value, null, 2)`.
 pub(crate) fn pretty(value: &impl serde::Serialize) -> String {
-    serde_json::to_value(value)
-        .map(|v| jsrt::json::stringify_pretty(&v))
-        .unwrap_or_default()
+    serde_json::to_value(value).map_or_default(|v| jsrt::json::stringify_pretty(&v))
 }
 
 /// `bugReportFiles`: the files shared by upload and zip export.

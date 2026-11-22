@@ -400,23 +400,23 @@ impl Markdown {
         for token in tokens {
             match token {
                 Token::Latex { raw } => {
-                    out += &lines(&crate::latex::render_latex_token(raw, false, !self.options.raw_latex))
+                    out += &lines(&crate::latex::render_latex_token(raw, false, !self.options.raw_latex));
                 }
                 Token::Escape { raw, text } => {
                     out += &lines(if self.options.preserve_backslash_escapes {
                         raw
                     } else {
                         text
-                    })
+                    });
                 }
                 Token::Text { tokens: Some(t), .. } if !t.is_empty() => out += &self.render_inline(t, Some(ctx)),
                 Token::Text { text, .. } => out += &lines(text),
                 Token::Paragraph { tokens } => out += &self.render_inline(tokens, Some(ctx)),
                 Token::Strong { tokens } => {
-                    out += &format!("{}{p}", (self.theme.bold)(&self.render_inline(tokens, Some(ctx))))
+                    out += &format!("{}{p}", (self.theme.bold)(&self.render_inline(tokens, Some(ctx))));
                 }
                 Token::Em { tokens } => {
-                    out += &format!("{}{p}", (self.theme.italic)(&self.render_inline(tokens, Some(ctx))))
+                    out += &format!("{}{p}", (self.theme.italic)(&self.render_inline(tokens, Some(ctx))));
                 }
                 Token::Codespan { text } => out += &format!("{}{p}", (self.theme.code)(text)),
                 Token::Link { href, text, tokens } => {
@@ -434,7 +434,7 @@ impl Markdown {
                     out += &format!(
                         "{}{p}",
                         (self.theme.strikethrough)(&self.render_inline(tokens, Some(ctx)))
-                    )
+                    );
                 }
                 Token::Html { raw } => out += &lines(raw),
                 Token::Other { text: Some(t), .. } | Token::Code { text: t, .. } => out += &lines(t),

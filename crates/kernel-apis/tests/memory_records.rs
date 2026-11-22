@@ -472,7 +472,7 @@ fn indexed(id: &str, globs: &[&str], scope: &str, tag: &str) -> kernel_apis::mem
             kind: "pitfall".into(),
             key: None,
             situation: format!("situation of {id}"),
-            path_globs: globs.iter().map(|g| g.to_string()).collect(),
+            path_globs: globs.iter().map(std::string::ToString::to_string).collect(),
             source: None,
         },
         scope: scope.into(),

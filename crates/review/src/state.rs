@@ -355,7 +355,7 @@ fn process_lock(path: &str) -> Arc<Mutex<()>> {
     LOCKS
         .get_or_init(Default::default)
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .entry(path.into())
         .or_default()
         .clone()
@@ -403,7 +403,7 @@ impl StateStore {
             make_private_dir(&parent).map_err(io)?;
         }
         let local = process_lock(&self.path);
-        let _local = local.lock().unwrap_or_else(|e| e.into_inner());
+        let _local = local.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let _lock = match take_lock(&format!("{}.lock", self.path), STATE_STALE_MS, 51, None) {
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 return Err(Error::Other(format!("Lock file is already being held: {}", self.path)));

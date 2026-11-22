@@ -332,7 +332,7 @@ pub fn run_claude_child(
             stopper.stop(signals::child::Stop {
                 group: true,
                 term_grace: Some(KILL_GRACE),
-            })
+            });
         });
     });
     let mut stats = StreamStats::default();

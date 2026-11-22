@@ -124,7 +124,7 @@ impl RpcEventTranslator {
                 let queues: Vec<(QueueKind, String)> = queues
                     .iter()
                     .filter(|item| item.item == "message")
-                    .map(|item| (item.kind, item.message.as_ref().map(message_text).unwrap_or_default()))
+                    .map(|item| (item.kind, item.message.as_ref().map_or_default(message_text)))
                     .collect();
                 vec![queue_update(&queues)]
             }
@@ -135,7 +135,7 @@ impl RpcEventTranslator {
                 let mut event = json!({"type": "compaction_end", "reason": reason, "aborted": status == Ended::Aborted,
                     "willRetry": false});
                 if status == Ended::Failed {
-                    event["errorMessage"] = error.map(|e| e.message).unwrap_or_default().into();
+                    event["errorMessage"] = error.map_or_default(|e| e.message).into();
                 }
                 vec![event]
             }

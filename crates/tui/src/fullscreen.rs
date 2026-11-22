@@ -982,13 +982,7 @@ impl FullscreenViewport {
         let top = rect.y as i64;
         let bottom = (self.rows as i64 - 1).min((rect.y + rect.height) as i64 - 1);
         self.drag_pointer = Some((ev.x, ev.y));
-        self.auto_direction = if ev.y <= top {
-            -1
-        } else if ev.y >= bottom {
-            1
-        } else {
-            0
-        };
+        self.auto_direction = if ev.y <= top { -1 } else { i64::from(ev.y >= bottom) };
         if self.auto_direction == 0 {
             self.stop_auto_scroll();
             return;

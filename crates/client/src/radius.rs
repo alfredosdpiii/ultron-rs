@@ -327,7 +327,7 @@ impl Cancellation {
         let (guard, _) = self
             .changed
             .wait_timeout_while(guard, duration, |cancelled| !*cancelled)
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         !*guard
     }
 }

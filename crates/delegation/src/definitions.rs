@@ -445,7 +445,7 @@ impl DefinitionRegistry {
     pub fn validation_error(&self, definition: &Definition, value: &Value, direction: &str) -> String {
         if direction == "input" && definition.id().ends_with("-reviewer") {
             let request = value.get("request").and_then(Value::as_str);
-            if !value.is_object() || !request.is_some_and(|r| !jsrt::string::trim(r).is_empty()) {
+            if !value.is_object() || request.is_none_or(|r| jsrt::string::trim(r).is_empty()) {
                 return format!("{} input.request must be nonempty", definition.id());
             }
         }

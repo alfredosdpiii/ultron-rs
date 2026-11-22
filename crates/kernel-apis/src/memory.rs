@@ -429,7 +429,7 @@ fn split_evidence(value: &Value) -> Result<(Value, Vec<Quote>)> {
         };
         let mut map = map.clone();
         if let Some(quote) = map.remove("quote") {
-            let text = quote.as_str().map(str::trim).unwrap_or_default();
+            let text = quote.as_str().map_or_default(str::trim);
             let path = map.get("ref").and_then(Value::as_str).and_then(quoted_path);
             let (Some(path), false, true) = (path, text.is_empty(), text.len() <= MAX_QUOTE_BYTES) else {
                 return Err(MemoryError::code(ErrorCode::InvalidInput));
@@ -1341,12 +1341,10 @@ impl MemoryService {
                     .map(|(index, item)| {
                         let label = item["evidenceClass"]
                             .as_str()
-                            .map(|class| format!("[{}] ", class_label(class)))
-                            .unwrap_or_default();
+                            .map_or_default(|class| format!("[{}] ", class_label(class)));
                         let stale = item["stale"]
                             .as_str()
-                            .map(|why| format!(" [stale: {why}]"))
-                            .unwrap_or_default();
+                            .map_or_default(|why| format!(" [stale: {why}]"));
                         format!("{}. {label}{}{stale}", index + 1, item["text"].as_str().unwrap_or(""))
                     })
                     .collect();
@@ -1822,7 +1820,7 @@ impl MemoryService {
             if !self.backend.supports("retain") {
                 return Err(MemoryError::code(ErrorCode::UnsupportedApi));
             }
-            let memory_id = memory_id.map(str::to_string).unwrap_or_else(jsrt::random::uuid_v4);
+            let memory_id = memory_id.map_or_else(jsrt::random::uuid_v4, str::to_string);
             self.update(
                 &id,
                 vec![
@@ -1886,7 +1884,7 @@ impl MemoryService {
             }
             let response_id = response["operation_id"].as_str();
             let ids: Vec<Value> = match response.get("operation_ids") {
-                None | Some(Value::Null) => response_id.map(|id| vec![Value::from(id)]).unwrap_or_default(),
+                None | Some(Value::Null) => response_id.map_or_default(|id| vec![Value::from(id)]),
                 Some(Value::Array(ids)) => ids.clone(),
                 Some(_) => Vec::new(),
             };

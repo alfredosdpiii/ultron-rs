@@ -326,7 +326,11 @@ impl Endpoint {
             ))),
             Some(Control::Subscribe { id, service, mode }) => self.subscribe(id, &service, &mode, publish),
             Some(Control::Unsubscribe { id }) => {
-                let removed = self.subscriptions.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+                let removed = self
+                    .subscriptions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&id);
                 let Some(states) = removed else {
                     return Err(ServiceError::internal("Service subscription was not found"));
                 };
@@ -362,7 +366,10 @@ impl Endpoint {
     }
 
     fn subscribe(&self, id: String, service_id: &str, mode: &str, publish: Publish) -> ServiceResult {
-        let mut subscriptions = self.subscriptions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut subscriptions = self
+            .subscriptions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if subscriptions.contains_key(&id) {
             return Err(ServiceError::internal("Service subscription ID is already active"));
         }
@@ -404,7 +411,7 @@ impl Endpoint {
         let all: Vec<Subscription> = self
             .subscriptions
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain()
             .map(|(_, v)| v)
             .collect();

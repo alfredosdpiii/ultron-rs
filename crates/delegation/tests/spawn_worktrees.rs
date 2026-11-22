@@ -132,7 +132,7 @@ fn delegation_spawn_worktrees_replay_typescript_scenarios() {
                         std::fs::write(file, action[2].as_str().unwrap()).unwrap();
                         continue;
                     }
-                    let repo = workspace.as_ref().map(|w| w.display().to_string()).unwrap_or_default();
+                    let repo = workspace.as_ref().map_or_default(|w| w.display().to_string());
                     let payload: Value = serde_json::from_str(&action[2].to_string().replace("<repo>", &repo)).unwrap();
                     let kind = action[1].as_str().unwrap();
                     calls.push(match run.host.handle(kind, payload, &run.lane_name) {

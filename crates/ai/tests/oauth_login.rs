@@ -136,8 +136,7 @@ impl AuthInteraction for Script {
         let param = |key: &str| {
             url.query_pairs()
                 .find(|(k, _)| k == key)
-                .map(|(_, v)| v.into_owned())
-                .unwrap_or_default()
+                .map_or_default(|(_, v)| v.into_owned())
         };
         recorded.state = param("state");
         recorded.redirect = param("redirect_uri");
@@ -200,15 +199,11 @@ async fn replay(case: &Value) {
         .unwrap()
         .iter()
         .map(|r| {
-            let headers: HeaderMap = r
-                .get(2)
-                .and_then(Value::as_object)
-                .map(|h| {
-                    h.iter()
-                        .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_owned()))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let headers: HeaderMap = r.get(2).and_then(Value::as_object).map_or_default(|h| {
+                h.iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_owned()))
+                    .collect()
+            });
             (
                 r[0].as_u64().unwrap() as u16,
                 r[1].as_str().unwrap().to_owned(),
@@ -233,8 +228,7 @@ async fn replay(case: &Value) {
         recorded: Mutex::default(),
         hits: case["hits"]
             .as_array()
-            .map(|h| h.iter().map(|p| p.as_str().unwrap().to_owned()).collect())
-            .unwrap_or_default(),
+            .map_or_default(|h| h.iter().map(|p| p.as_str().unwrap().to_owned()).collect()),
         port,
     };
     let mut ctx = LoginContext::new(&mock, &script, &env);

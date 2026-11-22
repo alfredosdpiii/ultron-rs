@@ -542,8 +542,7 @@ impl Core {
             .durable
             .chat
             .inbox(ROOT_CONVERSATION_ID)
-            .map(|items| !items.is_empty())
-            .unwrap_or(false);
+            .is_ok_and(|items| !items.is_empty());
         if !live["run"].is_null() || queued {
             self.spawn_waiter();
             return;
@@ -742,7 +741,7 @@ impl Core {
                     message,
                 });
             }
-            let prompt = self.run.as_ref().map(|r| r.prompt.clone()).unwrap_or(Value::Null);
+            let prompt = self.run.as_ref().map_or(Value::Null, |r| r.prompt.clone());
             if let Ok(message) = serde_json::from_value::<Message>(prompt) {
                 self.on_agent_event(AgentEvent::MessageStart {
                     message: message.clone(),
@@ -843,8 +842,7 @@ impl Core {
         let prompt = lock_session(&self.session)
             .state()
             .entry(&prompt_entry)
-            .map(|entry| entry["message"].clone())
-            .unwrap_or(Value::Null);
+            .map_or(Value::Null, |entry| entry["message"].clone());
         let cancelled = state["control"]["status"] == "cancel_requested";
         let resume_overflow = session_journal::run::Run::open_compaction(&lock_session(&self.session), operation_id)
             .filter(|open| open.reason == "overflow")
@@ -852,7 +850,9 @@ impl Core {
         journal.ledger_counts_turns();
         let id = jsrt::random::uuid_v7(now_ms());
         let source_tip = meta["sourceTipId"].as_str().map(str::to_string);
-        let unreported = journal.run().map(|r| r.unreported_calls()).unwrap_or_default();
+        let unreported = journal
+            .run()
+            .map_or_default(session_journal::run::Run::unreported_calls);
         let submission = self
             .durable
             .chat

@@ -15,7 +15,7 @@ fn event_text(request: &Value) -> Option<String> {
         .as_array()?
         .iter()
         .filter(|m| m["role"] == "user")
-        .map(|m| m.to_string())
+        .map(std::string::ToString::to_string)
         .find(|m| m.contains("<runtime_event kind=\\\"job_done\\\""))
 }
 

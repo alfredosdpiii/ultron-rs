@@ -51,8 +51,7 @@ impl RadiusOAuth {
     fn url(&self, path: &str) -> String {
         reqwest::Url::parse(&self.gateway)
             .and_then(|base| base.join(path))
-            .map(|u| u.to_string())
-            .unwrap_or_else(|_| format!("{}{path}", self.gateway))
+            .map_or_else(|_| format!("{}{path}", self.gateway), |u| u.to_string())
     }
 }
 
@@ -387,8 +386,7 @@ pub fn parse_authorization_input(input: &str) -> (Option<String>, Option<String>
             None => value,
         };
         let pairs: Vec<(String, String)> = reqwest::Url::parse(&format!("http://x/?{query}"))
-            .map(|u| u.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect())
-            .unwrap_or_default();
+            .map_or_default(|u| u.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect());
         return (query_value(&pairs, "code"), query_value(&pairs, "state"));
     }
     (Some(value.to_string()), None)

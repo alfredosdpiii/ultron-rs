@@ -54,9 +54,7 @@ pub struct WorkspaceDiff {
 fn signature(path: &Path) -> Option<String> {
     let meta = std::fs::symlink_metadata(path).ok()?;
     if meta.file_type().is_symlink() {
-        let target = std::fs::read_link(path)
-            .map(|t| t.display().to_string())
-            .unwrap_or_default();
+        let target = std::fs::read_link(path).map_or_default(|t| t.display().to_string());
         return Some(format!("l:{target}"));
     }
     if meta.is_dir() {
@@ -115,7 +113,7 @@ fn walk_files(root: &Path, ignore: &[&str], limit: usize) -> (Vec<String>, bool)
         let Ok(items) = std::fs::read_dir(&dir) else {
             continue;
         };
-        for item in items.filter_map(|i| i.ok()) {
+        for item in items.filter_map(std::result::Result::ok) {
             let name = item.file_name().to_string_lossy().into_owned();
             if ignore.contains(&name.as_str()) {
                 continue;

@@ -57,7 +57,12 @@ pub struct AbortSignal {
 impl AbortSignal {
     pub fn abort(&self) {
         self.aborted.store(true, Ordering::SeqCst);
-        if let Some(child) = self.child.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if let Some(child) = self
+            .child
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
             child.cancel();
         }
     }
@@ -283,14 +288,18 @@ fn walk_with_fd(
         return Vec::new();
     };
     {
-        let mut slot = signal.child.lock().unwrap_or_else(|e| e.into_inner());
+        let mut slot = signal.child.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if signal.is_aborted() {
             running.watched().cancel();
         }
         *slot = Some(running.watched().clone());
     }
     let output = running.finish();
-    signal.child.lock().unwrap_or_else(|e| e.into_inner()).take();
+    signal
+        .child
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
     if signal.is_aborted() || !output.success() || output.stdout.is_empty() {
         return Vec::new();
     }

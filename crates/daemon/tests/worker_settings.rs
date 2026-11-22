@@ -50,13 +50,11 @@ fn normalized(value: Value, root: &Path) -> Value {
 }
 
 fn env_of(case: &Value) -> HashMap<String, String> {
-    case.as_object()
-        .map(|m| {
-            m.iter()
-                .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
-                .collect()
-        })
-        .unwrap_or_default()
+    case.as_object().map_or_default(|m| {
+        m.iter()
+            .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
+            .collect()
+    })
 }
 
 /// Rust-only: a claude-code sub-agent model is kept (its tool lanes run on the Claude subscription), where
@@ -133,7 +131,7 @@ fn daemon_worker_settings_apply_matches_typescript() {
             match outcome {
                 Ok((applied, changes)) => {
                     assert_eq!(json!({"applied": applied.name()}), step["result"], "{label}");
-                    let live: Vec<String> = changes.iter().map(|c| c.describe()).collect();
+                    let live: Vec<String> = changes.iter().map(daemon::worker_settings::Change::describe).collect();
                     assert_eq!(json!(live), step["live"], "{label}");
                 }
                 Err(error) => {

@@ -262,10 +262,10 @@ impl Scheduler {
                 (Some(_), Some(limit)) => {
                     self.bell
                         .wait_timeout(state, limit.min(MAX_SLEEP))
-                        .unwrap_or_else(|e| e.into_inner())
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .0
                 }
-                _ => self.bell.wait(state).unwrap_or_else(|e| e.into_inner()),
+                _ => self.bell.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner),
             };
         }
     }
@@ -401,7 +401,7 @@ impl Deliver for HubDeliver {
             return Delivery::Gone;
         }
         match hub.session_call(&meta.id, fire_call(id, due)) {
-            Ok(answer) => Delivery::Done(answer.map(|a| a["schedules"].clone()).unwrap_or(Value::Null)),
+            Ok(answer) => Delivery::Done(answer.map_or(Value::Null, |a| a["schedules"].clone())),
             Err(ServiceError { code: Some(code), .. }) if code == protocol::names::SESSION_NOT_FOUND_CODE => {
                 Delivery::Gone
             }
@@ -439,7 +439,7 @@ impl kernel_apis::artifacts::KeyedDocuments for JournalValues {
         Ok(self
             .0
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .value(NAMESPACE, key)
             .cloned())
     }
@@ -447,7 +447,7 @@ impl kernel_apis::artifacts::KeyedDocuments for JournalValues {
     fn set(&self, key: &str, value: &Value) -> Result<(), String> {
         self.0
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .commit(&[session_journal::Write::set(NAMESPACE, key, value.clone())])
             .map(drop)
     }
@@ -456,7 +456,7 @@ impl kernel_apis::artifacts::KeyedDocuments for JournalValues {
         Ok(self
             .0
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .state()
             .scan_values(NAMESPACE, prefix)
             .into_iter()
@@ -481,9 +481,7 @@ pub fn in_journal<T>(
 ) -> Result<T, String> {
     let _owner = crate::owner::OwnerLock::acquire(path, Duration::from_millis(500)).map_err(|error| match error {
         crate::owner::OwnerError::InUse { pid } => crate::worker::session_in_use(
-            &session_journal::catalog::read_metadata(path)
-                .map(|m| m.id)
-                .unwrap_or_default(),
+            &session_journal::catalog::read_metadata(path).map_or_default(|m| m.id),
             pid,
         ),
         crate::owner::OwnerError::Io(error) => error.to_string(),

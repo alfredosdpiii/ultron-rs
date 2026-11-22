@@ -129,7 +129,7 @@ pub fn local_image(candidates: &[&str]) -> Result<String, String> {
     candidates
         .iter()
         .find(|image| image_present(image))
-        .map(|image| image.to_string())
+        .map(std::string::ToString::to_string)
         .ok_or_else(|| {
             format!(
                 "no local image among {} (images are never pulled), or no docker daemon",

@@ -209,26 +209,22 @@ fn object(value: Option<&Value>) -> Option<&Map<String, Value>> {
 }
 
 fn counts(value: Option<&Value>) -> IndexMap<String, f64> {
-    object(value)
-        .map(|m| {
-            jsrt::json::object_entries(m)
-                .into_iter()
-                .filter(|(_, v)| count(Some(v)) > 0.0)
-                .map(|(k, v)| (k.clone(), count(Some(v))))
-                .collect()
-        })
-        .unwrap_or_default()
+    object(value).map_or_default(|m| {
+        jsrt::json::object_entries(m)
+            .into_iter()
+            .filter(|(_, v)| count(Some(v)) > 0.0)
+            .map(|(k, v)| (k.clone(), count(Some(v))))
+            .collect()
+    })
 }
 
 fn strings(value: Option<&Value>) -> IndexMap<String, String> {
-    object(value)
-        .map(|m| {
-            jsrt::json::object_entries(m)
-                .into_iter()
-                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
-                .collect()
-        })
-        .unwrap_or_default()
+    object(value).map_or_default(|m| {
+        jsrt::json::object_entries(m)
+            .into_iter()
+            .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+            .collect()
+    })
 }
 
 /// `parseSessionStats`: None when `saved` is not a stats document of version 1. Unknown fields are dropped and

@@ -88,30 +88,24 @@ pub fn read_metadata(path: &Path) -> Option<Metadata> {
 
 /// The per-cwd directories under `root`.
 pub(crate) fn session_directories(root: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(root)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-                .map(|e| e.path())
-                .collect()
-        })
-        .unwrap_or_default()
+    std::fs::read_dir(root).map_or_default(|entries| {
+        entries
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .map(|e| e.path())
+            .collect()
+    })
 }
 
 /// The `.jsonl` files of one session directory.
 pub(crate) fn directory_files(directory: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(directory)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|e| {
-                    e.file_type().is_ok_and(|t| t.is_file()) && e.file_name().to_string_lossy().ends_with(".jsonl")
-                })
-                .map(|e| e.path())
-                .collect()
-        })
-        .unwrap_or_default()
+    std::fs::read_dir(directory).map_or_default(|entries| {
+        entries
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()) && e.file_name().to_string_lossy().ends_with(".jsonl"))
+            .map(|e| e.path())
+            .collect()
+    })
 }
 
 /// Every session file under `root` (`<root>/<dir>/<file>.jsonl`), in no particular order; headers are not read.

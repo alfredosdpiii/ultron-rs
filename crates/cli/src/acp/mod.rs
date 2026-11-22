@@ -560,7 +560,7 @@ impl Server {
     }
 
     fn drain(&mut self, index: usize) {
-        let bytes = std::mem::take(&mut *self.slots[index].capture.lock().unwrap_or_else(PoisonError::into_inner));
+        let bytes = std::mem::take(&mut *jsrt::sync::lock(&self.slots[index].capture));
         for line in String::from_utf8_lossy(&bytes).lines() {
             let Ok(line) = serde_json::from_str::<Value>(line) else {
                 continue;
@@ -657,10 +657,7 @@ pub fn run(
     let (tx, rx): (Sender<Input>, Receiver<Input>) = channel();
     let signal_tx = Mutex::new(tx.clone());
     crate::print_mode::exit_on_signal(move |code| {
-        let _ = signal_tx
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .send(Input::Signal(code));
+        let _ = jsrt::sync::lock(&signal_tx).send(Input::Signal(code));
     });
     let lines = tx.clone();
     std::thread::spawn(move || {

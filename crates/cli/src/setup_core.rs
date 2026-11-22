@@ -407,9 +407,7 @@ pub fn list_endpoint_models(base_url: &str, api_key: Option<&str>, fetch: &Fetch
     let key = api_key.map(jsrt::string::trim).filter(|k| !k.is_empty());
     let response = fetch(&FetchRequest {
         url: format!("{}/models", base_url.trim_end_matches('/')),
-        headers: key
-            .map(|k| vec![("authorization".to_string(), format!("Bearer {k}"))])
-            .unwrap_or_default(),
+        headers: key.map_or_default(|k| vec![("authorization".to_string(), format!("Bearer {k}"))]),
         timeout: Duration::from_secs(5),
     })
     .ok()?;
@@ -499,7 +497,7 @@ pub fn hindsight_docker_args(options: &HindsightDockerOptions) -> Vec<String> {
         "-p",
     ]
     .iter()
-    .map(|s| s.to_string())
+    .map(std::string::ToString::to_string)
     .collect();
     args.push(format!("{}:8888", options.port));
     args.push("-e".into());

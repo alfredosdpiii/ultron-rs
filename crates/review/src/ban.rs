@@ -242,7 +242,10 @@ impl Bans {
 
     /// The list as last read.
     pub fn get(&self) -> BanList {
-        self.current.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Read the list again (a fixed one stays as it is) and return it.
@@ -253,7 +256,7 @@ impl Bans {
         let Some(list) = load() else {
             return self.get();
         };
-        *self.current.lock().unwrap_or_else(|e| e.into_inner()) = list.clone();
+        *self.current.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = list.clone();
         list
     }
 }

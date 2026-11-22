@@ -197,5 +197,5 @@ pub fn run(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
     }
     write_journal(&journal_path, &journal)?;
     writeln!(out, "Copied {copied}, failed {failed} ({summary}).").map_err(io)?;
-    Ok(if failed > 0 { 1 } else { 0 })
+    Ok(i32::from(failed > 0))
 }

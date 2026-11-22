@@ -15,7 +15,7 @@ const END: &str = "\x1b[?25l\x1b[?2026l";
 fn plan(viewport: &[&str]) -> FramePlan {
     FramePlan {
         history: None,
-        viewport: viewport.iter().map(|s| s.to_string()).collect(),
+        viewport: viewport.iter().map(std::string::ToString::to_string).collect(),
     }
 }
 
@@ -23,7 +23,7 @@ fn history(id: u64, kind: HistoryKind, rows: &[&str], viewport: &[&str]) -> Fram
     FramePlan {
         history: Some(HistoryBatch {
             id,
-            rows: rows.iter().map(|s| s.to_string()).collect(),
+            rows: rows.iter().map(std::string::ToString::to_string).collect(),
             kind,
         }),
         ..plan(viewport)

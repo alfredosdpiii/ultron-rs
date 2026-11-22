@@ -168,16 +168,16 @@ async fn ai_codex_websocket_idle_socket_closes_after_five_minutes() {
 async fn ai_codex_websocket_use_restarts_the_idle_timer() {
     let transport = Sockets::default();
     call(&transport, "ttl-reuse").await;
-    tokio::time::advance(Duration::from_secs(4 * 60)).await;
+    tokio::time::advance(Duration::from_mins(4)).await;
     settle().await;
     call(&transport, "ttl-reuse").await;
     // The first timer would have fired here; it was cleared by the reuse.
-    tokio::time::advance(Duration::from_secs(2 * 60)).await;
+    tokio::time::advance(Duration::from_mins(2)).await;
     settle().await;
     assert_eq!(transport.log(0), ["send response.create", "send response.create"]);
     assert_eq!(transport.count(), 1);
     // Five minutes after the last use it goes.
-    tokio::time::advance(Duration::from_secs(3 * 60)).await;
+    tokio::time::advance(Duration::from_mins(3)).await;
     settle().await;
     assert_eq!(
         transport.log(0),

@@ -46,8 +46,7 @@ fn ledger_events(a: &p_session_support::Actor) -> Vec<Value> {
     a.writes()
         .into_iter()
         .rfind(|w| w["op"] == "set" && w["value"]["formatVersion"] == 1 && w["value"]["events"].is_array())
-        .map(|w| w["value"]["events"].as_array().unwrap().clone())
-        .unwrap_or_default()
+        .map_or_default(|w| w["value"]["events"].as_array().unwrap().clone())
 }
 
 fn compact_then_prompt(settings: Option<Value>, wait_for_activation: bool) -> (p_session_support::Actor, Vec<Value>) {

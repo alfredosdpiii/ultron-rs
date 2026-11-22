@@ -334,8 +334,7 @@ fn kernel_apis_goals_verify_state_follows_the_latest_round() {
             let key = jsrt::sync::lock(&self.inner.tasks)
                 .iter()
                 .find(|task| task["id"] == task_id)
-                .map(|task| task["key"].as_str().unwrap_or_default().to_string())
-                .unwrap_or_default();
+                .map_or_default(|task| task["key"].as_str().unwrap_or_default().to_string());
             if key.contains(":verify:1:") {
                 // Round 2 is admitted before round 1 is recorded.
                 while jsrt::sync::lock(&self.inner.tasks).len() < 2 {

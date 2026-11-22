@@ -87,9 +87,7 @@ fn block_to_content(server: &str, block: &Value, readable: bool, save: OutputSav
         } else {
             String::new()
         };
-        let description = str_field(block, "description")
-            .map(|d| format!(": {d}"))
-            .unwrap_or_default();
+        let description = str_field(block, "description").map_or_default(|d| format!(": {d}"));
         let title = block
             .get("title")
             .and_then(Value::as_str)

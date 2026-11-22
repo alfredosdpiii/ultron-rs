@@ -206,8 +206,7 @@ pub fn validate_verdict(payload: &Map<String, Value>, workspace: Option<&str>) -
 pub fn left_items(result: &Value) -> Vec<String> {
     result["verdict"]["left"]
         .as_array()
-        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
-        .unwrap_or_default()
+        .map_or_default(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
 }
 
 /// One-line tag for a completion event: `[passed, verified]`, `[failed, contradicted; ...]`, `[unverified]`.

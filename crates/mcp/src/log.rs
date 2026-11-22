@@ -24,8 +24,7 @@ pub fn format_log_message(server: &str, params: Option<&Value>, now_ms: i64) -> 
         .get("logger")
         .and_then(Value::as_str)
         .filter(|l| !l.is_empty())
-        .map(|l| format!(" {l}:"))
-        .unwrap_or_default();
+        .map_or_default(|l| format!(" {l}:"));
     let data = match message.get("data") {
         Some(Value::String(text)) => text.clone(),
         None => "undefined".into(),
@@ -51,7 +50,7 @@ impl ServerLog {
 
     pub fn write(&self, server: &str, params: Option<&Value>) {
         let line = format_log_message(server, params, jsrt::date::now_ms());
-        let mut size = self.size.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut size = jsrt::sync::lock(&self.size);
         let _ = self.append(&mut size, &line);
     }
 

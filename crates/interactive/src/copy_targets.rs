@@ -91,7 +91,7 @@ fn plain_inline(tokens: &[Token]) -> String {
             Token::Text { tokens: Some(t), .. } if !t.is_empty() => out.push_str(&plain_inline(t)),
             Token::Text { text, .. } => out.push_str(text),
             Token::Strong { tokens } | Token::Em { tokens } | Token::Del { tokens } | Token::Link { tokens, .. } => {
-                out.push_str(&plain_inline(tokens))
+                out.push_str(&plain_inline(tokens));
             }
             Token::Codespan { text } | Token::Escape { text, .. } => out.push_str(text),
             Token::Br => out.push('\n'),
@@ -451,8 +451,7 @@ pub fn first_line(source: &str) -> String {
     source
         .split('\n')
         .find(|l| !l.trim().is_empty())
-        .map(jsrt::string::flatten)
-        .unwrap_or_default()
+        .map_or_default(jsrt::string::flatten)
 }
 
 /// A user message with prompt text (`userMessageHasText`): a turn rewind can re-edit.

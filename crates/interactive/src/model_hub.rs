@@ -636,7 +636,7 @@ impl ModelHub {
     }
 
     fn first_key(&self, id: &str) -> String {
-        self.keys.get_keys(id).first().map(|k| key_glyph(k)).unwrap_or_default()
+        self.keys.get_keys(id).first().map_or_default(|k| key_glyph(k))
     }
 
     /// The hub at `width` x `height`.
@@ -731,13 +731,10 @@ impl ModelHub {
             right.push(String::new());
         }
         right.push(String::new());
-        let detail = self
-            .selected()
-            .map(|i| {
-                let reasoning = if i.model.reasoning { " · reasoning" } else { "" };
-                format!("{}{reasoning}", i.model.name)
-            })
-            .unwrap_or_default();
+        let detail = self.selected().map_or_default(|i| {
+            let reasoning = if i.model.reasoning { " · reasoning" } else { "" };
+            format!("{}{reasoning}", i.model.name)
+        });
         right.push(t.fg(Fg::Dim, &detail));
         self.layout = (sidebar, 3, list_rows, 1);
         let mut out = vec![top_border(&t, width, "Models")];

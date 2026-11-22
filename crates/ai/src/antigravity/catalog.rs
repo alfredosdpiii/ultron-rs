@@ -37,7 +37,7 @@ pub fn discover(path: &str, home: &Path) -> Vec<Model> {
     let Some(executable) = resolve_agy(path, Some(home)) else {
         return vec![];
     };
-    let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cache = jsrt::sync::lock(&CACHE);
     if let Some(hit) = cache
         .as_ref()
         .filter(|hit| hit.home == home && hit.executable == executable && Instant::now() < hit.expires)
@@ -63,8 +63,7 @@ pub fn discover(path: &str, home: &Path) -> Vec<Model> {
         .ok()
         .filter(|out| out.success() && !out.cut)
         .and_then(|out| String::from_utf8(out.stdout).ok())
-        .map(|tsv| parse(&tsv))
-        .unwrap_or_default();
+        .map_or_default(|tsv| parse(&tsv));
     let ttl = Duration::from_secs(if models.is_empty() { 15 } else { 300 });
     *cache = Some(Snapshot {
         executable,

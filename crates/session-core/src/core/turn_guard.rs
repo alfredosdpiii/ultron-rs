@@ -49,7 +49,7 @@ pub(super) struct TurnGuard {
 
 /// Whether an assistant message (as stored) says and calls nothing.
 pub fn is_empty_reply(message: &Value) -> bool {
-    let blocks = message["content"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let blocks = message["content"].as_array().map_or_default(Vec::as_slice);
     !blocks.iter().any(|block| {
         block["type"] == "toolCall"
             || (block["type"] == "text" && !block["text"].as_str().unwrap_or("").trim().is_empty())
@@ -220,8 +220,7 @@ impl Core {
             let report = contract.evaluate(None, &place, &runner);
             let failed = report["failed"]
                 .as_array()
-                .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
-                .unwrap_or_default();
+                .map_or_default(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect());
             let _ = tx.send(Input::TurnChecked { id, failed, findings });
         });
         self.report_activity();

@@ -69,8 +69,7 @@ impl Transport for FakeHttp {
         let body = request
             .body
             .as_deref()
-            .map(|b| serde_json::from_slice(b).unwrap())
-            .unwrap_or(Value::Null);
+            .map_or(Value::Null, |b| serde_json::from_slice(b).unwrap());
         self.seen.lock().unwrap().push(Seen {
             method: request.method.clone(),
             url: request.url.clone(),

@@ -157,7 +157,7 @@ mod tests {
     use super::*;
 
     fn sorted(items: &[&str]) -> Vec<String> {
-        let mut out: Vec<String> = items.iter().rev().map(|s| s.to_string()).collect();
+        let mut out: Vec<String> = items.iter().rev().map(std::string::ToString::to_string).collect();
         out.sort_by(|a, b| locale_compare(a, b));
         out
     }

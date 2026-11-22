@@ -744,8 +744,7 @@ async fn refresh_user(
         Err(mut fail) => {
             let reauth = fail.data.as_ref().is_some_and(|data| {
                 data.get("error_description")
-                    .map(|d| jsrt::value::string(Some(d)).to_lowercase().contains("reauth"))
-                    .unwrap_or(false)
+                    .is_some_and(|d| jsrt::value::string(Some(d)).to_lowercase().contains("reauth"))
             });
             if fail.message == "invalid_grant" && reauth {
                 fail.message = serde_json::to_string(fail.data.as_deref().unwrap_or(&Value::Null)).unwrap_or_default();

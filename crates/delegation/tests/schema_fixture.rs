@@ -71,7 +71,10 @@ fn delegation_schema_check_and_errors_match_typebox() {
     for case in fixture["check"].as_array().unwrap() {
         let (schema, value) = (&case["schema"], &case["value"]);
         assert_eq!(check(schema, value), case["check"], "check {schema} {value}");
-        let got: Vec<Value> = errors(schema, value).iter().map(|e| e.to_json()).collect();
+        let got: Vec<Value> = errors(schema, value)
+            .iter()
+            .map(jsonschema::SchemaError::to_json)
+            .collect();
         assert_eq!(Value::from(got), case["errors"], "errors {schema} {value}");
     }
 }

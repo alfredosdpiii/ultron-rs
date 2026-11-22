@@ -310,7 +310,7 @@ impl Router {
     fn agent_dir(&self) -> PathBuf {
         self.options.agent_dir.clone().unwrap_or_else(|| {
             let env = &self.options.env;
-            let home = env("HOME").map(PathBuf::from).unwrap_or_default();
+            let home = env("HOME").map_or_default(PathBuf::from);
             config::paths::agent_dir(|name| env(name), &home)
         })
     }
@@ -513,8 +513,7 @@ impl Router {
         {
             let until = self
                 .held_until()
-                .map(|u| format!(" until {}", jsrt::date::iso_string(u)))
-                .unwrap_or_default();
+                .map_or_default(|u| format!(" until {}", jsrt::date::iso_string(u)));
             message.error_message = Some(format!(
                 "{BOTH_EXHAUSTED}: the subscription is out of usage{until}, and the API answered: {error}"
             ));

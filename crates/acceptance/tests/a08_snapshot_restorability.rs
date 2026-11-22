@@ -33,7 +33,7 @@ fn value(kernel: &Kernel, code: &str) -> String {
 }
 
 fn evalue(result: &ExecutionResult) -> String {
-    result.error.as_ref().map(|e| e.evalue.clone()).unwrap_or_default()
+    result.error.as_ref().map_or_default(|e| e.evalue.clone())
 }
 
 /// Restorable plain data, with exact types that JSON alone would silently change.

@@ -302,18 +302,14 @@ fn command_output(command: &str, envs: &[(String, String)]) -> Option<String> {
 /// `executeCommand`: a `!command` value (the command without its `!`), cached for the process's lifetime.
 pub fn command_value(command: &str) -> Option<String> {
     let key = format!("!{command}");
-    if let Some(cached) = COMMAND_CACHE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    if let Some(cached) = jsrt::sync::lock(&COMMAND_CACHE)
         .as_ref()
         .and_then(|cache| cache.get(&key))
     {
         return cached.clone();
     }
     let value = command_output(command, &[]);
-    COMMAND_CACHE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    jsrt::sync::lock(&COMMAND_CACHE)
         .get_or_insert_with(Default::default)
         .insert(key, value.clone());
     value
@@ -321,7 +317,7 @@ pub fn command_value(command: &str) -> Option<String> {
 
 /// `clearConfigValueCache`: forget every cached `!command` result.
 pub fn clear_command_cache() {
-    *COMMAND_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    *jsrt::sync::lock(&COMMAND_CACHE) = None;
 }
 
 /// `resolveConfigValue`: a `!command`'s trimmed output (run once per process, failures included), or the template

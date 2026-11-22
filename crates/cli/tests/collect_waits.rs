@@ -81,8 +81,7 @@ fn scripted(routes: Vec<Route>) -> (u16, Arc<Mutex<Vec<Value>>>) {
                         m.iter()
                             .find(|m| m["role"] == "user" && !m.to_string().contains("[clock]"))
                     })
-                    .map(Value::to_string)
-                    .unwrap_or_default();
+                    .map_or_default(Value::to_string);
                 let route = routes
                     .iter()
                     .position(|r| r.marker.is_none_or(|m| first_user.contains(m)))

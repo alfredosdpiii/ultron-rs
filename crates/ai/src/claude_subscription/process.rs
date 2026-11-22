@@ -114,7 +114,7 @@ pub fn resolve_claude(command: Option<&[String]>, env: &Env) -> Option<Vec<Strin
         let prefixes: Vec<String> = home
             .into_iter()
             .flat_map(|home| HOME_PREFIXES.iter().map(move |p| format!("{home}/{p}")))
-            .chain(SYSTEM_PREFIXES.iter().map(|p| p.to_string()))
+            .chain(SYSTEM_PREFIXES.iter().map(std::string::ToString::to_string))
             .collect();
         jsrt::process::which(head, &prefixes.join(":"))
     })?;
@@ -305,9 +305,7 @@ fn private_temp(temp_root: &Path, prefix: &str) -> std::io::Result<PathBuf> {
 /// One private cwd for every request of this process when the shared one is refused (`process_workdir`):
 /// recreated at the same path after a prune, never adopted when someone else recreated it.
 pub fn process_workdir(temp_root: &Path) -> std::io::Result<PathBuf> {
-    let mut table = PROCESS_WORKDIRS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut table = jsrt::sync::lock(&PROCESS_WORKDIRS);
     if let Some(existing) = table.get(temp_root) {
         let _ = create_private(existing);
         if private_dir(existing) {
@@ -399,12 +397,7 @@ impl Handle {
 
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
-        if let Some(admission) = self
-            .admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-        {
+        if let Some(admission) = jsrt::sync::lock(&self.admission).as_ref() {
             admission.abort();
         }
         self.kill();
@@ -421,18 +414,12 @@ impl Handle {
     }
 
     fn watched(&self) -> Option<signals::child::Watched> {
-        self.child
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        jsrt::sync::lock(&self.child).clone()
     }
 
     /// The request's last `rate_limit_event`, whether the call succeeded or not.
     pub fn rate_limit_event(&self) -> Option<Value> {
-        self.rate_limit_event
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        jsrt::sync::lock(&self.rate_limit_event).clone()
     }
 }
 
@@ -477,7 +464,7 @@ impl Drop for Cleanup<'_> {
 }
 
 fn stderr_tail(lines: &Mutex<VecDeque<String>>) -> String {
-    let guard = lines.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let guard = jsrt::sync::lock(lines);
     let joined: String = guard
         .iter()
         .map(|l| l.trim())
@@ -522,10 +509,7 @@ struct SlotGuard;
 
 impl Drop for SlotGuard {
     fn drop(&mut self) {
-        let mut held = CONCURRENCY_POOL
-            .held
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut held = jsrt::sync::lock(&CONCURRENCY_POOL.held);
         *held = held.saturating_sub(1);
         CONCURRENCY_POOL.ready.notify_all();
     }
@@ -541,10 +525,7 @@ fn max_concurrent(env: &Env) -> usize {
 /// Wait for a free `claude -p` concurrency slot, respecting cancellation and timeout.
 fn acquire_slot(limit: usize, handle: &Handle, timeout: Duration) -> Result<SlotGuard, ClaudeError> {
     let deadline = Instant::now() + timeout;
-    let mut held = CONCURRENCY_POOL
-        .held
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut held = jsrt::sync::lock(&CONCURRENCY_POOL.held);
     loop {
         if handle.cancelled() {
             return Err(ClaudeError::Cancelled);
@@ -652,10 +633,7 @@ pub fn run(
         Admission::new(&config.upstream, timeout, queried, config.idle, &env).map_err(ClaudeError::Invalid)?;
     env.insert("ANTHROPIC_BASE_URL".into(), admission.url.clone());
     let warnings = admission.warnings.clone();
-    *handle
-        .admission
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(admission.abort_handle());
+    *jsrt::sync::lock(&handle.admission) = Some(admission.abort_handle());
     cleanup.admission = Some(admission);
     let settings = write(
         "settings.json",
@@ -709,7 +687,7 @@ pub fn run(
     let native_stderr: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::with_capacity(40)));
     let mut stdin = {
         use std::os::unix::process::CommandExt;
-        let mut child_slot = handle.child.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child_slot = jsrt::sync::lock(&handle.child);
         if handle.cancelled() {
             return Err(ClaudeError::Cancelled);
         }
@@ -732,7 +710,7 @@ pub fn run(
         cleanup.err_reader = Some(std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines() {
                 let Ok(line) = line else { break };
-                let mut guard = err_sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut guard = jsrt::sync::lock(&err_sink);
                 if guard.len() >= 40 {
                     guard.pop_front();
                 }
@@ -833,10 +811,7 @@ pub fn run(
             Some("rate_limit_event") => {
                 if let Some(info) = event.get("rate_limit_info").filter(|i| i.is_object()) {
                     signals.event = Some(info.clone());
-                    *handle
-                        .rate_limit_event
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(event.clone());
+                    *jsrt::sync::lock(&handle.rate_limit_event) = Some(event.clone());
                 }
             }
             Some("assistant") => {

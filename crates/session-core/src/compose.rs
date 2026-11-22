@@ -493,8 +493,7 @@ pub fn mcp_runtime_guide(config: &Config) -> resources::runtime_guide::RuntimeGu
     resources::runtime_guide::RuntimeGuideOptions {
         mcp_servers: tool
             .as_ref()
-            .map(|t| mcp::gateway::server_names_of(&t.description))
-            .unwrap_or_default(),
+            .map_or_default(|t| mcp::gateway::server_names_of(&t.description)),
         extension_tools: tool
             .into_iter()
             .map(|t| resources::runtime_guide::ExtensionToolSummary {
@@ -1451,8 +1450,7 @@ pub fn store_roots(agent_dir: &Path, home: &Path, session_root: Option<&Path>) -
     let paths = config::paths::AgentPaths::new(agent_dir);
     let mut projects: Vec<PathBuf> =
         std::fs::read_dir(home.join(config::paths::AGENT_CONFIG_DIR_NAME).join("projects"))
-            .map(|entries| entries.flatten().map(|entry| entry.path().join("sessions")).collect())
-            .unwrap_or_default();
+            .map_or_default(|entries| entries.flatten().map(|entry| entry.path().join("sessions")).collect());
     projects.sort();
     let mut roots: Vec<PathBuf> = Vec::new();
     for root in session_root

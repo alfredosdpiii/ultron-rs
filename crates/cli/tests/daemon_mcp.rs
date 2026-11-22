@@ -241,8 +241,7 @@ fn guide_names_mcp(args: &[&str]) -> bool {
     let system = requests
         .iter()
         .find(|r| r["system"].is_array() || r["system"].is_string())
-        .map(|r| r["system"].to_string())
-        .unwrap_or_default();
+        .map_or_default(|r| r["system"].to_string());
     let _ = Arc::strong_count(&provider.requests);
     system.contains("MCP servers (beta, issues)")
 }

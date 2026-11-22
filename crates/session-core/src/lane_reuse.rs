@@ -77,8 +77,7 @@ pub fn continue_lane(chat: &ChatHarness, conversation: ConversationId, run: &Lan
                 .commit(|tx| Ok(tx.entry(answer)?.and_then(|entry| entry.model)))
                 .map_err(|e| e.to_string())?
                 .and_then(|messages| messages.into_iter().next())
-                .map(|message| answer_text(&message))
-                .unwrap_or_default();
+                .map_or_default(|message| answer_text(&message));
             Ok(LaneReply {
                 text,
                 ..LaneReply::default()

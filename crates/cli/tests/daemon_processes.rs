@@ -252,27 +252,22 @@ fn cli_daemon_busy_worker_survives_a_killed_client_and_is_adopted() {
 /// The worker process serving `session_id` (its options argument names the session file).
 fn worker_pid(home: &Home, session_id: &str) -> Option<u32> {
     processes_mentioning(&home.root).into_iter().find(|pid| {
-        std::fs::read(format!("/proc/{pid}/cmdline"))
-            .map(|c| {
-                let text = String::from_utf8_lossy(&c).into_owned();
-                text.contains("session-worker") && text.contains(session_id)
-            })
-            .unwrap_or(false)
+        std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|c| {
+            let text = String::from_utf8_lossy(&c).into_owned();
+            text.contains("session-worker") && text.contains(session_id)
+        })
     })
 }
 
 fn transcript_roles(connection: &Connection, subscription: &str) -> Vec<String> {
-    connection
-        .state(subscription, "state")
-        .map(|s| {
-            s["snapshot"]["transcript"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|e| e["message"]["role"].as_str().unwrap_or_default().to_string())
-                .collect()
-        })
-        .unwrap_or_default()
+    connection.state(subscription, "state").map_or_default(|s| {
+        s["snapshot"]["transcript"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|e| e["message"]["role"].as_str().unwrap_or_default().to_string())
+            .collect()
+    })
 }
 
 #[test]

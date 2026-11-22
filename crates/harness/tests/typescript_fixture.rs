@@ -93,7 +93,9 @@ fn replay(name: &str, scenario: &Value) {
                 json!({ "ok": null })
             }
             "ready" => outcome(journal.ready(), |()| Value::Null),
-            "list" => outcome(journal.list(), |tasks| tasks.iter().map(|t| t.to_json()).collect()),
+            "list" => outcome(journal.list(), |tasks| {
+                tasks.iter().map(harness::task_store::Task::to_json).collect()
+            }),
             "count" => outcome(journal.list(), |tasks| json!(tasks.len())),
             "admit" => {
                 let parent = step.get("parentId").map(resolve);

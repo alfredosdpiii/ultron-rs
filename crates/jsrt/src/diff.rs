@@ -200,7 +200,7 @@ pub fn diff_lines(old: &str, new: &str) -> Vec<Change> {
         &line_tokens(old),
         &line_tokens(new),
         |a, b| a == b,
-        |tokens| tokens.concat(),
+        <[std::string::String]>::concat,
     )
 }
 

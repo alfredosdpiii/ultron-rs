@@ -231,7 +231,7 @@ fn tui_sgr_mouse_parses_like_omp() {
         match got {
             None => assert!(want.is_null(), "{data:?}"),
             Some(m) => {
-                assert_eq!(m.button as u64, want["button"].as_u64().unwrap(), "{data:?}");
+                assert_eq!(u64::from(m.button), want["button"].as_u64().unwrap(), "{data:?}");
                 assert_eq!(m.col, want["col"].as_i64().unwrap());
                 assert_eq!(m.row, want["row"].as_i64().unwrap());
                 assert_eq!(m.release, want["release"].as_bool().unwrap());

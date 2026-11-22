@@ -163,8 +163,8 @@ impl Fixture {
             cwd: Some(self.home.cwd()),
             env_clear: true,
             env,
-            program_args: program_args.iter().map(|a| a.to_string()).collect(),
-            args: args.iter().map(|a| a.to_string()).collect(),
+            program_args: program_args.iter().map(std::string::ToString::to_string).collect(),
+            args: args.iter().map(std::string::ToString::to_string).collect(),
             ..Default::default()
         })
         .unwrap()

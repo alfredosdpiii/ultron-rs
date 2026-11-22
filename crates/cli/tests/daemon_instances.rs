@@ -28,8 +28,7 @@ fn prompt(home: &Home, cwd: &Path, extra: &[&str], text: &str) -> Value {
 
 fn project_dirs(home: &Home) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(home.root.join(".ultron/projects"))
-        .map(|e| e.flatten().map(|e| e.path()).collect())
-        .unwrap_or_default();
+        .map_or_default(|e| e.flatten().map(|e| e.path()).collect());
     dirs.sort();
     dirs
 }

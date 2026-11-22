@@ -46,7 +46,7 @@ pub fn changelog_for_display(
             save: Some(current.to_string()),
         };
     };
-    let entries = content.map(parse).unwrap_or_default();
+    let entries = content.map_or_default(parse);
     let floor = loose_version(last);
     let new: Vec<&Entry> = entries.iter().filter(|e| e.version > floor).collect();
     if new.is_empty() {

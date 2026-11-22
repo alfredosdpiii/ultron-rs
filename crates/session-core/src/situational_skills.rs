@@ -44,7 +44,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, LazyLock, Mutex, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex};
 
 /// Skills added to one cell's result at most.
 pub const PER_CELL: usize = 1;
@@ -366,8 +366,7 @@ pub struct Rule {
 pub fn rules(settings: &Value) -> Vec<Rule> {
     let always: HashSet<&str> = settings["alwaysSkills"]
         .as_array()
-        .map(|names| names.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default();
+        .map_or_default(|names| names.iter().filter_map(Value::as_str).collect());
     let rule = |skill: &str, situation: &str, paths: &mut dyn Iterator<Item = &str>| {
         let paths: Vec<Glob> = paths.filter_map(|pattern| Glob::new(pattern).ok()).collect();
         (!skill.is_empty() && !paths.is_empty() && !always.contains(skill)).then(|| Rule {
@@ -458,10 +457,7 @@ impl SituationalSkills {
 
     /// Clear delivered skills for `lane` (called after context compaction so situational principles apply again).
     pub fn rearm(&self, lane: &str) {
-        self.given
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|(l, _)| l != lane);
+        jsrt::sync::lock(&self.given).retain(|(l, _)| l != lane);
     }
 
     /// What shipping asks, for commands that run in `cwd`.
@@ -473,7 +469,7 @@ impl SituationalSkills {
     /// `skill` for `lane` once, introduced by `head`: its `## part` section when it has one (the part to act on,
     /// with where the rest lives), else the skill whole when short or excerpted when long.
     fn give_part(&self, lane: &str, skill: &str, head: String, part: &str) -> Option<String> {
-        let mut given = self.given.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut given = jsrt::sync::lock(&self.given);
         if given.contains(&(lane.to_string(), skill.to_string())) {
             return None;
         }
@@ -481,8 +477,7 @@ impl SituationalSkills {
         given.insert((lane.to_string(), skill.to_string()));
         let dir = Path::new(&file)
             .parent()
-            .map(|dir| dir.display().to_string())
-            .unwrap_or_default();
+            .map_or_default(|dir| dir.display().to_string());
         Some(match section(text.trim(), part) {
             Some(body) => format!(
                 "{head}\n{body}\n\n[Paths are relative to {dir}. Pick the playbook now and read it before the next edit; \
@@ -494,7 +489,7 @@ impl SituationalSkills {
 
     /// `skill` for `lane` once, introduced by `head`; whole when short, excerpted when long.
     fn give(&self, lane: &str, skill: &str, head: String) -> Option<String> {
-        let mut given = self.given.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut given = jsrt::sync::lock(&self.given);
         if given.contains(&(lane.to_string(), skill.to_string())) {
             return None;
         }
@@ -506,7 +501,7 @@ impl SituationalSkills {
     /// [`MANY_FILES_SKILL`] once `lane` has written [`MANY_FILES`] files; it does not count toward [`PER_CELL`].
     pub fn many_files(&self, lane: &str, paths: &[String]) -> Option<String> {
         let count = {
-            let mut changed = self.changed.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut changed = jsrt::sync::lock(&self.changed);
             changed.extend(paths.iter().map(|path| (lane.to_string(), path.clone())));
             changed.iter().filter(|(l, _)| l == lane).count()
         };
@@ -572,11 +567,7 @@ impl CellObserver for SituationalSkills {
         if self.self_review == SelfReview::Off || !ships(&command) {
             return None;
         }
-        let first = !self
-            .given
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains(&(lane.to_string(), SHIP_SKILL.to_string()));
+        let first = !jsrt::sync::lock(&self.given).contains(&(lane.to_string(), SHIP_SKILL.to_string()));
         let ship_dir = ship_directory(typed, &command, &self.cwd);
         let head = format!(
             "{SHIP_SKILL} comes first: check what this change could break outside its diff, strip dead code and \
@@ -597,7 +588,7 @@ impl CellObserver for SituationalSkills {
             }
             let dir = push_directory(typed, &command, &self.cwd)?;
             let (described, tree) = stale_description(&dir)?;
-            let mut given = self.given.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut given = jsrt::sync::lock(&self.given);
             given
                 .insert((lane.to_string(), format!("description {tree}")))
                 .then(|| {

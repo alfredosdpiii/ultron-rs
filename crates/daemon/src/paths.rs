@@ -8,9 +8,9 @@ use std::path::Path;
 use std::time::Duration;
 
 const DEFAULT_SERVER_ID_FILE: &str = "default-server-id";
-const LOCK_STALE: Duration = Duration::from_millis(30_000);
+const LOCK_STALE: Duration = Duration::from_secs(30);
 const LOCK_RETRY: Duration = Duration::from_millis(25);
-const LOCK_WAIT: Duration = Duration::from_millis(30_000);
+const LOCK_WAIT: Duration = Duration::from_secs(30);
 const ACTIVATION_TIMEOUT: Duration = Duration::from_millis(10_000);
 
 /// `ensurePrivateServerDirectory`.

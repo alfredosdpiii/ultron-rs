@@ -95,9 +95,7 @@ impl MetaOAuth {
             let action = trusted_http_url(field(&json, "action_url"), false);
             return Err(format!(
                 "Meta did not issue an API key.{}",
-                action
-                    .map(|url| format!(" Complete setup at {url}"))
-                    .unwrap_or_default()
+                action.map_or_default(|url| format!(" Complete setup at {url}"))
             ));
         };
         Ok(OAuthCredential {

@@ -102,7 +102,7 @@ impl Experimental {
                 }
                 match &c.connect {
                     Some(TransportAddress::Radius(id)) => {
-                        put("connect", json!({"transport": "radius", "serverId": id}))
+                        put("connect", json!({"transport": "radius", "serverId": id}));
                     }
                     Some(TransportAddress::Unix(path)) => {
                         put(
@@ -581,7 +581,10 @@ pub fn run_server(command: &ServerCommand, env: &Env, out: &mut dyn Write) -> Re
     let server = start_foreground_server(&options).map_err(io)?;
     let stop = std::sync::Mutex::new(events.clone());
     signals::set_handler(Arc::new(move |_| {
-        let _ = stop.lock().unwrap_or_else(|e| e.into_inner()).send(ServerEvent::Stop);
+        let _ = stop
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .send(ServerEvent::Stop);
     }));
     let closed = server.clone();
     std::thread::spawn(move || {
@@ -628,10 +631,7 @@ pub fn pending_relay_status(statuses: Vec<RelayHostStatus>) -> Option<RelayHostS
 }
 
 fn route_from_explicit_path(path: &Path) -> Result<Route, String> {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let name = path.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     let Some(server_id) = protocol::sockets::server_id_of(&name) else {
         return Err("--connect path must end with <uuidv4-server-id>.sock".into());
     };
@@ -845,7 +845,7 @@ pub fn run_client(command: &ClientCommand, env: &Env, out: &mut dyn Write) -> Re
     let streamed = Arc::new(std::sync::Mutex::new(None::<String>));
     let streaming = streamed.clone();
     let on_event: client::runtime::EventListener = Arc::new(move |event: &Value| {
-        let mut current = streaming.lock().unwrap_or_else(|e| e.into_inner());
+        let mut current = streaming.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if event["type"] == "message_start" && current.is_some() {
             *current = Some(String::new());
         }
@@ -882,7 +882,10 @@ pub fn run_client(command: &ClientCommand, env: &Env, out: &mut dyn Write) -> Re
             writeln!(out, "{server_id}\t{session_id}\tattached").map_err(io)?;
         }
         ClientResult::Prompted { text, .. } => {
-            let partial = streamed.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let partial = streamed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             match partial {
                 None => writeln!(out, "{text}").map_err(io)?,
                 Some(partial) => match text.strip_prefix(partial.as_str()) {

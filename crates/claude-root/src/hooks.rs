@@ -29,7 +29,7 @@ pub const SESSION_HOOKS: [HookEvent; 3] = [HookEvent::SessionStart, HookEvent::U
 pub const HERDR_HOOKS: [HookEvent; 2] = [HookEvent::Notification, HookEvent::SessionEnd];
 
 /// How long a waiter may wait; Claude Code's hook timeout is set to match.
-pub const WAIT_EVENTS_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+pub const WAIT_EVENTS_TIMEOUT: Duration = Duration::from_hours(24);
 
 impl HookEvent {
     pub fn parse(command: &str) -> Option<HookEvent> {
@@ -159,7 +159,7 @@ pub fn run(
     out: &mut dyn std::io::Write,
     err: &mut dyn std::io::Write,
 ) -> i32 {
-    let event = args.first().map(String::as_str).unwrap_or("");
+    let event = args.first().map_or("", String::as_str);
     let mut socket = None;
     let mut index = 1;
     while index < args.len() {

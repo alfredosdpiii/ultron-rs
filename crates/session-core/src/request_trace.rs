@@ -21,7 +21,7 @@ use session_journal::context::{BRANCH_SUMMARY_PREFIX, COMPACTION_SUMMARY_PREFIX,
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 pub const TRACE_ENV: &str = "ULTRON_REQUEST_TRACE";
 
@@ -169,7 +169,7 @@ impl RequestTrace {
             .map(|m| serde_json::to_value(m).unwrap_or(Value::Null))
             .collect();
         let model_key = format!("{}/{}", model.provider, model.id);
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = jsrt::sync::lock(&self.state);
         let lane_state = state.lanes.entry((session.to_string(), lane.to_string())).or_default();
         let previous = (lane_state.requests > 0).then_some((lane_state.model.as_str(), lane_state.messages.as_slice()));
         let delta = delta(previous, &model_key, &messages);

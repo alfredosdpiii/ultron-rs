@@ -94,8 +94,7 @@ const HOME_USAGE: &str = "Usage: ultron-s [--new | --session <id> [--home] | --s
 pub fn is_home_command(argv0: &str) -> bool {
     let name = std::path::Path::new(argv0)
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_default(|n| n.to_string_lossy().into_owned());
     name.strip_suffix(".exe").unwrap_or(&name) == HOME_COMMAND
 }
 

@@ -423,12 +423,7 @@ fn run_mcp(case: &Value) -> Vec<String> {
         }
         for (key, want) in keys.iter().zip(&want) {
             received += 1;
-            let got = responses
-                .lock()
-                .unwrap()
-                .get(key)
-                .map(|m| root.deep(m))
-                .unwrap_or(Value::Null);
+            let got = responses.lock().unwrap().get(key).map_or(Value::Null, |m| root.deep(m));
             if text(&got) != text(want) {
                 diffs.push(format!(
                     "{name} step {index} id {key}:\n--- want\n{want}\n--- got\n{got}"
@@ -509,13 +504,11 @@ fn run_mcp(case: &Value) -> Vec<String> {
     if status.code() != case["code"].as_i64().map(|c| c as i32) {
         diffs.push(format!("{name} exit: {status}"));
     }
-    let left: String = std::fs::read_dir(root.path().join("r/ultron-claude"))
-        .map(|entries| {
-            entries
-                .map(|e| format!("{}\n", e.unwrap().file_name().to_string_lossy()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let left: String = std::fs::read_dir(root.path().join("r/ultron-claude")).map_or_default(|entries| {
+        entries
+            .map(|e| format!("{}\n", e.unwrap().file_name().to_string_lossy()))
+            .collect()
+    });
     if Some(left.as_str()) != case["registryLeft"].as_str() {
         diffs.push(format!("{name} registry left: {left:?}"));
     }

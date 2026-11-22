@@ -62,7 +62,7 @@ struct Shared {
 
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn wait_until(&self, what: &str, done: impl Fn(&State) -> bool) {
@@ -84,7 +84,7 @@ pub struct Bridge {
 fn send(stream: &Mutex<TcpStream>, message: &Message) -> bool {
     stream
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .write_all(&encode_message(message, None))
         .is_ok()
 }
@@ -175,7 +175,7 @@ impl Bridge {
         for client in clients {
             let _ = client
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .shutdown(Shutdown::Both);
         }
     }
@@ -199,8 +199,7 @@ fn serve(mut stream: TcpStream, shared: &Arc<Shared>) {
         head.split("\r\n")
             .filter_map(|line| line.split_once(':'))
             .find(|(k, _)| k.trim().eq_ignore_ascii_case(name))
-            .map(|(_, v)| v.trim().to_string())
-            .unwrap_or_default()
+            .map_or_default(|(_, v)| v.trim().to_string())
     };
     let path = head.split(' ').nth(1).unwrap_or_default().to_string();
     let protocol = header("sec-websocket-protocol");
@@ -229,7 +228,10 @@ fn serve(mut stream: TcpStream, shared: &Arc<Shared>) {
         state.waiting += 1;
         shared.changed.notify_all();
         while state.hold {
-            state = shared.changed.wait(state).unwrap_or_else(|e| e.into_inner());
+            state = shared
+                .changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         state.waiting -= 1;
         let refuse = !state.hosts.contains_key(&server_id);
@@ -314,7 +316,7 @@ fn host_loop(
                             send(&client, &Message::Close(Some(1000), String::new()));
                             let _ = client
                                 .lock()
-                                .unwrap_or_else(|e| e.into_inner())
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .shutdown(Shutdown::Both);
                         }
                     }

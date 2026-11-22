@@ -137,8 +137,10 @@ fn cli_auth_for_radius_providers_matches_typescript() {
             .ok()
             .and_then(|t| serde_json::from_str::<Value>(&t).ok())
             .and_then(|auth| auth.get("gw").cloned())
-            .map(|gw| json!({"type": gw["type"], "access": gw["access"], "refresh": gw["refresh"]}))
-            .unwrap_or(Value::Null);
+            .map_or(
+                Value::Null,
+                |gw| json!({"type": gw["type"], "access": gw["access"], "refresh": gw["refresh"]}),
+            );
         assert_eq!(stored, case["stored"], "{name}: auth.json");
     }
 }

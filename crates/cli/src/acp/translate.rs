@@ -341,7 +341,7 @@ pub fn replay(messages: &[Value]) -> Vec<Value> {
                     for block in blocks {
                         match block["type"].as_str() {
                             Some("text") => {
-                                updates.push(chunk("user_message_chunk", block["text"].as_str().unwrap_or_default()))
+                                updates.push(chunk("user_message_chunk", block["text"].as_str().unwrap_or_default()));
                             }
                             Some("image") => updates.push(json!({"sessionUpdate": "user_message_chunk",
                                 "content": {"type": "image", "data": block["data"], "mimeType": block["mimeType"]}})),

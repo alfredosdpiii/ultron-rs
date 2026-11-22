@@ -72,9 +72,7 @@ pub fn build_params(
     } else {
         resolve_google_function_calling_mode(&tools, options.tool_choice.as_deref(), strict)?
     };
-    let system = initial_system_message(&context.messages)
-        .map(system_message_text)
-        .unwrap_or_default();
+    let system = initial_system_message(&context.messages).map_or_default(system_message_text);
     if !system.is_empty() {
         config.insert("systemInstruction".into(), system.into());
     }

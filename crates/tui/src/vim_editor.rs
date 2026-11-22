@@ -122,7 +122,7 @@ impl VimEditor {
             return false;
         }
         let printable = decode_printable_key(data)
-            .or_else(|| (!data.is_empty() && !data.chars().any(|c| c.is_control())).then(|| data.to_string()));
+            .or_else(|| (!data.is_empty() && !data.chars().any(char::is_control)).then(|| data.to_string()));
         if self.state.mode == VimMode::Replace {
             if matches!(canonical.as_deref(), Some("backspace" | "shift+backspace")) {
                 self.replace_backspace(ed);

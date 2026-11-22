@@ -86,26 +86,19 @@ impl Prepared {
     fn from_record(json: Value) -> Self {
         let text = |key: &str| json.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
         let strings = |key: &str| -> Vec<String> {
-            json.get(key)
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|item| item.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-        let toolchain = json
-            .get("toolchain")
-            .and_then(Value::as_array)
-            .map(|items| {
+            json.get(key).and_then(Value::as_array).map_or_default(|items| {
                 items
                     .iter()
-                    .filter_map(|item| serde_json::from_value::<ToolchainEntry>(item.clone()).ok())
+                    .filter_map(|item| item.as_str().map(String::from))
                     .collect()
             })
-            .unwrap_or_default();
+        };
+        let toolchain = json.get("toolchain").and_then(Value::as_array).map_or_default(|items| {
+            items
+                .iter()
+                .filter_map(|item| serde_json::from_value::<ToolchainEntry>(item.clone()).ok())
+                .collect()
+        });
         Prepared {
             dir: text("dir"),
             hash: text("hash"),
@@ -219,22 +212,19 @@ fn pick(entries: Option<&Value>, request: &str) -> Option<(String, String)> {
         .split(|c: char| c == ',' || c == '<' || jsrt::string::is_space(c))
         .next()
         .unwrap_or(stripped);
-    let mut candidates: Vec<(String, String)> = entries
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter(|entry| entry.get("installed") != Some(&Value::Bool(false)))
-                .filter_map(|entry| {
-                    let version = entry.get("version")?.as_str()?;
-                    let path = entry.get("install_path").and_then(Value::as_str);
-                    let matches = version == wanted || version.starts_with(&format!("{wanted}."));
-                    (matches && path.is_some_and(exists))
-                        .then(|| (version.to_string(), path.unwrap_or_default().to_string()))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut candidates: Vec<(String, String)> = entries.and_then(Value::as_array).map_or_default(|items| {
+        items
+            .iter()
+            .filter(|entry| entry.get("installed") != Some(&Value::Bool(false)))
+            .filter_map(|entry| {
+                let version = entry.get("version")?.as_str()?;
+                let path = entry.get("install_path").and_then(Value::as_str);
+                let matches = version == wanted || version.starts_with(&format!("{wanted}."));
+                (matches && path.is_some_and(exists))
+                    .then(|| (version.to_string(), path.unwrap_or_default().to_string()))
+            })
+            .collect()
+    });
     candidates.sort_by(|a, b| compare_numeric(&b.0, &a.0));
     candidates.into_iter().next()
 }
@@ -243,7 +233,7 @@ fn pick(entries: Option<&Value>, request: &str) -> Option<(String, String)> {
 /// with a `lib` beside it).
 fn system_or_managed(binary: &str, env: &HashMap<String, String>) -> Option<(String, &'static str)> {
     let system = Regex::new(r"^/(usr|bin|sbin|lib)(/|$)").expect("static pattern");
-    let path = env.get("PATH").map(String::as_str).unwrap_or("");
+    let path = env.get("PATH").map_or("", String::as_str);
     for dir in path.split(':') {
         let candidate = jsrt::path::join(&[dir, binary]);
         if !exists(&candidate) {
@@ -487,7 +477,7 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
                             "--python".into(),
                             interpreter.clone(),
                         ];
-                        argv.extend(args.iter().map(|arg| arg.to_string()));
+                        argv.extend(args.iter().map(std::string::ToString::to_string));
                         run(argv, repo_dir, &[])
                     };
                     let poetry = |project: &str| {
@@ -583,7 +573,7 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
                                         failure_output(&result)
                                     )),
                                     None => {
-                                        failures.push(format!("uv pip install -e . failed: {}", failure_output(&result)))
+                                        failures.push(format!("uv pip install -e . failed: {}", failure_output(&result)));
                                     }
                                 }
                             }
@@ -676,7 +666,7 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
                     _ => &["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
                 };
                 let line = argv.join(" ");
-                let result = run(argv.iter().map(|arg| arg.to_string()).collect(), &dir, &[]);
+                let result = run(argv.iter().map(std::string::ToString::to_string).collect(), &dir, &[]);
                 if result.code == 0 {
                     prepared.push(format!("node: {line} ({lock})"));
                 } else {

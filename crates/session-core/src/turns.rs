@@ -227,8 +227,7 @@ impl Bridge {
                 .calls
                 .iter()
                 .find(|(each, _)| *each == id)
-                .map(|(_, name)| name.clone())
-                .unwrap_or_default();
+                .map_or_default(|(_, name)| name.clone());
             round.done.insert(id, Reported { name, result, is_error });
         }
         *sync::lock(&self.round) = round;

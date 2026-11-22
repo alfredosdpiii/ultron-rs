@@ -159,8 +159,7 @@ pub fn goal_status_text(goal: Option<&Value>) -> String {
     let reason = goal["reason"]
         .as_str()
         .filter(|r| !r.is_empty())
-        .map(|r| format!(": {r}"))
-        .unwrap_or_default();
+        .map_or_default(|r| format!(": {r}"));
     let stuck = int_of(goal, "stuck");
     let mut lines = vec![
         format!(

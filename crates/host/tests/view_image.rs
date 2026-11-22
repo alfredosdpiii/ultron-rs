@@ -37,8 +37,7 @@ fn without_size(description: &str) -> String {
     let (head, tail) = description.split_once(", ").unwrap();
     let rest = tail
         .split_once(' ')
-        .map(|(_, unit)| unit.split_once(' ').map_or("", |(_, r)| r))
-        .unwrap_or("");
+        .map_or("", |(_, unit)| unit.split_once(' ').map_or("", |(_, r)| r));
     format!("{head}, <size> {rest}")
 }
 

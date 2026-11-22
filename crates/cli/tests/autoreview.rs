@@ -326,7 +326,7 @@ impl World {
 }
 
 fn sort_by_json(items: &mut [Value]) {
-    items.sort_by_key(|item| item.to_string());
+    items.sort_by_key(std::string::ToString::to_string);
 }
 
 /// Every duration (a key `ms` or ending in `Ms`) zeroed.
@@ -643,7 +643,7 @@ fn assert_case(world: &World, recorded: &Value, name: &str) -> (Value, String) {
         );
     }
     assert_eq!(
-        code as i64,
+        i64::from(code),
         expected["code"].as_i64().unwrap(),
         "{name}: exit code; stderr {stderr:?}"
     );
@@ -1013,7 +1013,7 @@ fn cli_autoreview_custom_provider_models_resolve() {
         "--dry-run",
     ]
     .iter()
-    .map(|a| a.to_string())
+    .map(std::string::ToString::to_string)
     .collect();
     let args = world.args(&json!(args));
     // World::run's environment, with the custom provider's key instead of GROQ_API_KEY.

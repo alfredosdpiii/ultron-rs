@@ -16,7 +16,7 @@ use durable::ConversationId;
 use harness::chat::CellCall;
 use harness::chat::gate::{GateRun, RequestGate, ToolBlock};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use crate::session_stats::SessionStats;
 
@@ -102,15 +102,11 @@ impl BudgetGate {
     }
 
     fn state(&self, run: &LaneRun) -> Option<FinalAnswer> {
-        self.finals
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(run)
-            .copied()
+        jsrt::sync::lock(&self.finals).get(run).copied()
     }
 
     fn set(&self, run: &LaneRun, state: FinalAnswer) {
-        let mut finals = self.finals.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut finals = jsrt::sync::lock(&self.finals);
         finals.retain(|key, _| key.lane != run.lane || key == run);
         finals.insert(run.clone(), state);
     }

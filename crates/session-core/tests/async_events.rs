@@ -348,7 +348,7 @@ fn session_core_async_events_turn_budget_cost_cap_and_chain_cap_turn_reinvocatio
     let refused = setup(|options| {
         options.refuse = Some(Arc::new(|_: &str| {
             Some("Usage turn limit reached for root turn:user-1".into())
-        }))
+        }));
     });
     refused.dispatcher.publish(event("job-a"));
     refused.dispatcher.drain();

@@ -375,7 +375,7 @@ fn map_frames() -> Vec<Value> {
                 "id": format!("frame-{i:08}"),
                 "status": if i < 77 { "complete" } else if i < 80 { "incomplete" } else { "running" },
                 "task": "Classify the sentiment of each review",
-                "spent": {"calls": if i < 88 { 1 } else { 0 }, "tokens": if i < 88 { 400 } else { 0 }},
+                "spent": {"calls": i32::from(i < 88), "tokens": if i < 88 { 400 } else { 0 }},
                 "startedAt": NOW - 12_000.0,
                 "taskId": if i < 88 { json!(format!("ultron-task-f{i}")) } else { Value::Null },
                 "kind": "map", "batch": 99, "callerTaskId": null, "lane": null,
@@ -559,7 +559,7 @@ fn interactive_rlm_graph_nested_frames_orphan_frame_tasks_and_cycles() {
         "task:ultron-task-lost",
     ]
     .iter()
-    .map(|s| s.to_string())
+    .map(std::string::ToString::to_string)
     .collect();
     assert_eq!(keys, want);
 }
@@ -1241,7 +1241,7 @@ fn pane(width: usize, state: &RlmPaneState, height: usize, snapshot: &RlmSnapsho
         width,
         height,
         &DagRenderOptions {
-            hints: HINTS.iter().map(|s| s.to_string()).collect(),
+            hints: HINTS.iter().map(std::string::ToString::to_string).collect(),
             ..DagRenderOptions::new(NOW)
         },
     );
@@ -1284,7 +1284,12 @@ fn interactive_rlm_pane_work_runs_live_or_from_the_running_turn() {
 
 #[test]
 fn interactive_rlm_pane_waves_are_topological_levels_cycles_cut() {
-    let n = |k: &str, d: &[&str]| (k.to_string(), d.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    let n = |k: &str, d: &[&str]| {
+        (
+            k.to_string(),
+            d.iter().map(std::string::ToString::to_string).collect::<Vec<_>>(),
+        )
+    };
     assert_eq!(
         compute_waves(&[
             n("a", &[]),
@@ -1526,7 +1531,7 @@ fn interactive_rlm_pane_scrolls_keeps_selection_in_view_and_switches_runs() {
             44,
             24,
             &DagRenderOptions {
-                hints: HINTS.iter().map(|s| s.to_string()).collect(),
+                hints: HINTS.iter().map(std::string::ToString::to_string).collect(),
                 ..DagRenderOptions::new(NOW)
             },
         );
@@ -1718,7 +1723,12 @@ fn interactive_rlm_pane_component_keys_and_render() {
 
 #[test]
 fn interactive_rlm_waves_cut_a_cycle_where_it_is_entered() {
-    let n = |k: &str, d: &[&str]| (k.to_string(), d.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    let n = |k: &str, d: &[&str]| {
+        (
+            k.to_string(),
+            d.iter().map(std::string::ToString::to_string).collect::<Vec<_>>(),
+        )
+    };
     assert_eq!(
         compute_waves(&[n("x", &["y"]), n("y", &["x"]), n("z", &["x"])]),
         [vec!["y"], vec!["x"], vec!["z"]]

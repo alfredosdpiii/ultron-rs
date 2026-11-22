@@ -24,7 +24,7 @@ fn kitty_line(id: u32, columns: u32, rows: u32, width_px: u32, height_px: u32) -
 }
 
 fn rows(v: &[&str]) -> Vec<String> {
-    v.iter().map(|s| s.to_string()).collect()
+    v.iter().map(std::string::ToString::to_string).collect()
 }
 
 fn kitty_screen() -> AltScreen {

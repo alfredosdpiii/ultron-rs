@@ -199,8 +199,7 @@ pub async fn load_radius_gateway_config(
     }
     let url = reqwest::Url::parse(gateway)
         .and_then(|base| base.join("/v1/config"))
-        .map(|u| u.to_string())
-        .unwrap_or_else(|_| format!("{gateway}/v1/config"));
+        .map_or_else(|_| format!("{gateway}/v1/config"), |u| u.to_string());
     let response = fetch(
         transport,
         HttpRequest {
@@ -275,8 +274,7 @@ pub async fn refresh_remote_catalog(
         .collect();
     let url = reqwest::Url::parse(catalog_base_url)
         .and_then(|base| base.join(&format!("/api/models/providers/{encoded}")))
-        .map(|u| u.to_string())
-        .unwrap_or_default();
+        .map_or_default(|u| u.to_string());
     let request = HttpRequest {
         method: "GET".into(),
         url,

@@ -42,7 +42,7 @@ impl JudgeModule {
 
     /// The backend and model of `receipt` when this module's seat issued it for a settled verdict.
     pub fn issued(&self, receipt: &str) -> Option<(String, String)> {
-        let issued = self.issued.lock().unwrap_or_else(|e| e.into_inner());
+        let issued = self.issued.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         issued
             .iter()
             .find(|(id, _, _)| id == receipt)
@@ -52,7 +52,7 @@ impl JudgeModule {
     /// The seat for the settings now: the same one while they are unchanged.
     fn seat(&self) -> Result<Arc<Seat>, String> {
         let settings = (self.settings)();
-        let mut slot = self.seat.lock().unwrap_or_else(|e| e.into_inner());
+        let mut slot = self.seat.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(seat) = slot.as_ref().filter(|s| *s.settings() == settings) {
             return Ok(seat.clone());
         }
@@ -119,7 +119,7 @@ impl JudgeModule {
         }
         let verdict = self.seat()?.decide_expecting(state, &questions, kind, expect, signal);
         if let Some(receipt) = verdict.answered_by().filter(|_| verdict.settled()) {
-            let mut issued = self.issued.lock().unwrap_or_else(|e| e.into_inner());
+            let mut issued = self.issued.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if issued.len() == MAX_ISSUED {
                 issued.pop_front();
             }

@@ -183,12 +183,14 @@ fn is_valid_file(path: &str) -> bool {
 fn well_known_location(env: Option<&ProviderEnv>) -> String {
     let dir = provider_env_value("CLOUDSDK_CONFIG", env)
         .filter(|d| !d.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(provider_env_value("HOME", env).unwrap_or_default())
-                .join(".config")
-                .join("gcloud")
-        });
+        .map_or_else(
+            || {
+                PathBuf::from(provider_env_value("HOME", env).unwrap_or_default())
+                    .join(".config")
+                    .join("gcloud")
+            },
+            PathBuf::from,
+        );
     js_join(&dir.join("certificate_config.json"))
 }
 

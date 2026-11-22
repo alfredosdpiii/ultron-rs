@@ -23,7 +23,7 @@ fn main() {
         }
         std::process::exit(0);
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let home = std::env::var_os("HOME").map_or_default(PathBuf::from);
     let source = match cli::assets::source(&|k| std::env::var(k).ok(), &home) {
         Ok(source) => source,
         Err(message) => {

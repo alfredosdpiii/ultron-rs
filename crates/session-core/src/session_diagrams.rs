@@ -35,7 +35,10 @@ pub fn module(config: &Config, session_id: &str, images: Arc<ViewImages>) -> Dia
                     .and_then(Value::as_str)
                     .map(str::to_string),
                 colorfgbg: var("COLORFGBG"),
-                terminal: terminal.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+                terminal: terminal
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
                 custom_dir: config::paths::AgentPaths::new(&agent_dir).custom_themes_dir(),
             }
         }),

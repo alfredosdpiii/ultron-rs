@@ -324,7 +324,7 @@ impl Seat {
     }
 
     fn spent(&self) -> std::sync::MutexGuard<'_, Spent> {
-        self.spent.lock().unwrap_or_else(|e| e.into_inner())
+        self.spent.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// The threshold of `kind` for `backend`: `judge.thresholds.<kind>.<backend>`, else `judge.thresholds.<backend>`,

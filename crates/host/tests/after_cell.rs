@@ -209,7 +209,7 @@ fn host_after_cell_leaves_out_files_changed_by_work_outside_the_cells() {
                 go.recv().unwrap();
                 std::fs::write(root.join(".loki/loki.json"), "{\n}\n").unwrap();
                 std::fs::remove_file(root.join(".loki/stale.txt")).unwrap();
-            })
+            });
         })
     };
     start.recv().unwrap();
@@ -390,7 +390,7 @@ impl StandIn {
     }
 
     fn json(&mut self, blocking: &[&str], advisory: &[&str], not_checked: &[&str], file: &str) -> Option<String> {
-        let lines = |list: &[&str]| list.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        let lines = |list: &[&str]| list.iter().map(std::string::ToString::to_string).collect::<Vec<_>>();
         let warnings = lines(advisory).into_iter().chain(lines(not_checked)).collect();
         self.run(Ok(Report::new(lines(blocking), warnings)), file)
     }

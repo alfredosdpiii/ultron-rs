@@ -585,7 +585,7 @@ impl Decoder {
         let mut out = Vec::new();
         for value in wire {
             validate_wire_op(value)?;
-            let op = value.as_array().map(Vec::as_slice).unwrap_or_default();
+            let op = value.as_array().map_or_default(Vec::as_slice);
             let verb = op[0].as_str().unwrap_or_default();
             if verb == "#" {
                 let id = non_negative_int(&op[1]).unwrap_or(usize::MAX);

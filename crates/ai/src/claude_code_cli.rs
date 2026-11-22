@@ -140,7 +140,7 @@ pub fn resolve_claude_cli(env: &Env) -> Result<String, String> {
     let key = format!(
         "{}\0{}",
         configured.as_deref().unwrap_or_default(),
-        env.get("PATH").map(String::as_str).unwrap_or_default()
+        env.get("PATH").map_or_default(String::as_str)
     );
     if let Some(found) = jsrt::sync::lock(&RESOLVED_CLI).get(&key) {
         return Ok(found.clone());
@@ -149,8 +149,7 @@ pub fn resolve_claude_cli(env: &Env) -> Result<String, String> {
         Some(path) => is_executable(Path::new(path)).then(|| path.clone()),
         None => env
             .get("PATH")
-            .map(String::as_str)
-            .unwrap_or_default()
+            .map_or_default(String::as_str)
             .split(':')
             .filter(|dir| !dir.is_empty())
             .map(|dir| Path::new(dir).join("claude"))
@@ -223,7 +222,7 @@ pub fn parse_help_flags(help: &str) -> Vec<String> {
         if boundary
             && chars.get(i) == Some(&'-')
             && chars.get(i + 1) == Some(&'-')
-            && chars.get(i + 2).is_some_and(|c| c.is_ascii_alphabetic())
+            && chars.get(i + 2).is_some_and(char::is_ascii_alphabetic)
         {
             let mut j = i + 3;
             while chars.get(j).is_some_and(|c| c.is_ascii_alphanumeric() || *c == '-') {
@@ -336,10 +335,7 @@ fn probe_cli(bin: &str, env: &Env, cwd: &Path) -> Result<ClaudeCliCapabilities, 
 
 /// `ensureClaudeCli`: probe once per CLI and config dir; a failure is retried after a short delay.
 pub async fn ensure_claude_cli(bin: &str, env: &Env, cwd: &Path) -> Result<ClaudeCliCapabilities, String> {
-    let key = format!(
-        "{bin}\0{}",
-        env.get("CLAUDE_CONFIG_DIR").map(String::as_str).unwrap_or_default()
-    );
+    let key = format!("{bin}\0{}", env.get("CLAUDE_CONFIG_DIR").map_or_default(String::as_str));
     if let Some(entry) = jsrt::sync::lock(&PROBES).get(&key)
         && (entry.result.is_ok() || entry.at.elapsed() < PROBE_FAILURE_TTL)
     {
@@ -368,9 +364,7 @@ pub fn empty_work_dir() -> Result<PathBuf, String> {
         return Ok(dir.clone());
     }
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
-    let user = std::fs::metadata("/proc/self")
-        .map(|m| m.uid().to_string())
-        .unwrap_or_else(|_| "user".into());
+    let user = std::fs::metadata("/proc/self").map_or_else(|_| "user".into(), |m| m.uid().to_string());
     let dir = std::env::temp_dir().join(format!("ultron-claude-code-{user}"));
     std::fs::DirBuilder::new()
         .recursive(true)
@@ -715,9 +709,7 @@ pub fn render_claude_code_prompt(messages: &[Message], images: bool) -> Vec<Valu
 
 /// What the provider sends (`ClaudeCodePayload`), exposed to `onPayload`.
 fn payload(model: &Model, context: &TranscriptContext, options: &ClaudeCodeOptions) -> Value {
-    let system = current_system_message(&context.messages)
-        .map(|m| system_message_text(&m))
-        .unwrap_or_default();
+    let system = current_system_message(&context.messages).map_or_default(|m| system_message_text(&m));
     let mut payload = Map::new();
     payload.insert("model".into(), json!(model.id));
     payload.insert("system".into(), json!(system));
@@ -856,7 +848,7 @@ fn plan_request(
         "--disable-slash-commands",
     ]
     .iter()
-    .map(|s| s.to_string())
+    .map(std::string::ToString::to_string)
     .collect();
     if let Some(id) = resume_id {
         args.push(format!("--resume={id}"));
@@ -1040,10 +1032,7 @@ fn classify_failure(result: &Value, rate_limit: Option<&RateLimitInfo>) -> Failu
     Failure::Error {
         message: format!(
             "Claude Code CLI error{}: {text}",
-            status
-                .filter(|s| *s != 0)
-                .map(|s| format!(" ({s})"))
-                .unwrap_or_default()
+            status.filter(|s| *s != 0).map_or_default(|s| format!(" ({s})"))
         ),
         usage_limit: false,
     }

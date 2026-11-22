@@ -125,7 +125,7 @@ fn claude_root_keep_children_default_to_the_subscription_model() {
 
 #[test]
 fn claude_root_server_learns_the_roots_model_from_root_model_or_a_subagents_child_model() {
-    let strings = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+    let strings = |args: &[&str]| args.iter().map(std::string::ToString::to_string).collect::<Vec<_>>();
     let dir = tempfile::tempdir().unwrap();
     let resolve_args = |args: &[&str]| {
         let parsed = parse_mcp_args(&strings(args)).unwrap();
@@ -155,7 +155,7 @@ fn mcp_args(claude_args: &[&str], var: &dyn Fn(&str) -> Option<String>) -> Vec<S
     // No hooks: no `--wake` after the model flags.
     let options = LauncherOptions {
         hooks: false,
-        claude_args: claude_args.iter().map(|a| a.to_string()).collect(),
+        claude_args: claude_args.iter().map(std::string::ToString::to_string).collect(),
         ..LauncherOptions::default()
     };
     let self_cmd = SelfCommand {
@@ -190,7 +190,7 @@ fn claude_root_launcher_tells_the_server_the_roots_model_unless_it_is_the_defaul
     let none = |_: &str| None;
     let base = ["mcp", "--no-instructions", "--socket", "/run/s.sock"];
     let with = |model: &str| {
-        let mut args: Vec<String> = base.iter().map(|a| a.to_string()).collect();
+        let mut args: Vec<String> = base.iter().map(std::string::ToString::to_string).collect();
         args.extend(["--root-model".to_string(), model.to_string()]);
         args
     };

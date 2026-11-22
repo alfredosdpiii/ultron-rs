@@ -106,7 +106,7 @@ fn review_github_token_reaches_gh_only_through_the_environment() {
     let registered = Arc::new(Mutex::new(Vec::new()));
     let sink = registered.clone();
     let tokens = TokenStore::new(hub.clone()).with_secret_sink(Arc::new(move |token: &str| {
-        sink.lock().expect("sink").push(token.to_string())
+        sink.lock().expect("sink").push(token.to_string());
     }));
     let env = |pairs: &[(&str, &str)]| {
         pairs
@@ -213,7 +213,7 @@ fn review_github_state_writes_are_atomic_and_serialized() {
                     .update_pull(&format!("k{}", index % 4), |pull, _| {
                         pull.attempts.insert(format!("sha{index}"), 1);
                     })
-                    .expect("update")
+                    .expect("update");
             })
         })
         .collect();
@@ -297,7 +297,7 @@ fn review_github_only_one_daemon_holds_an_agent_directory() {
             assert_eq!(
                 message,
                 format!("another ultron autoreview is already running for {autoreview}")
-            )
+            );
         }
         other => panic!("expected DaemonRunning, got {:?}", other.map(|_| ())),
     }

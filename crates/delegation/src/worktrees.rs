@@ -26,7 +26,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 /// Branches of subagent worktrees: `ultron/<session>/<name>`.
@@ -273,7 +273,7 @@ static IDENTITIES: LazyLock<Mutex<HashMap<PathBuf, Identity>>> = LazyLock::new(M
 
 /// Author/committer for Ultron's commits: the repository's configured identity, else "Ultron".
 pub(crate) fn identity_env(cwd: &Path) -> Result<Identity> {
-    if let Some(cached) = IDENTITIES.lock().unwrap_or_else(PoisonError::into_inner).get(cwd) {
+    if let Some(cached) = jsrt::sync::lock(&IDENTITIES).get(cwd) {
         return Ok(cached.clone());
     }
     let name = git(cwd, &["config", "user.name"])?;
@@ -287,10 +287,7 @@ pub(crate) fn identity_env(cwd: &Path) -> Result<Identity> {
         env.push(("GIT_AUTHOR_EMAIL", "ultron@localhost".to_string()));
         env.push(("GIT_COMMITTER_EMAIL", "ultron@localhost".to_string()));
     }
-    IDENTITIES
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(cwd.to_path_buf(), env.clone());
+    jsrt::sync::lock(&IDENTITIES).insert(cwd.to_path_buf(), env.clone());
     Ok(env)
 }
 
@@ -465,15 +462,13 @@ pub fn list_records(cwd: &Path) -> Vec<WorktreeRecord> {
 
 fn read_records(common_dir: &Path) -> Vec<WorktreeRecord> {
     let dir = records_dir(common_dir);
-    let mut names: Vec<String> = std::fs::read_dir(&dir)
-        .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|n| n.ends_with(".json"))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut names: Vec<String> = std::fs::read_dir(&dir).map_or_default(|entries| {
+        entries
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".json"))
+            .collect()
+    });
     names.sort();
     names
         .iter()
@@ -604,14 +599,12 @@ fn ignored_entries(top: &Path) -> Result<Vec<String>> {
 }
 
 fn sorted_entries(dir: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(dir)
-        .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut names: Vec<String> = std::fs::read_dir(dir).map_or_default(|entries| {
+        entries
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect()
+    });
     names.sort();
     names
 }
@@ -716,7 +709,7 @@ fn apply_setup(top: &Path, worktree: &Path, setup: &WorktreeSetup) -> Result<(Ve
     let mut copied = Vec::new();
     for path in &copies {
         let (from, to) = (top.join(path), worktree.join(path));
-        let source = std::fs::metadata(&from).ok().filter(|m| m.is_file());
+        let source = std::fs::metadata(&from).ok().filter(std::fs::Metadata::is_file);
         let Some(source) = source else {
             if setup.copy.is_some() {
                 return Err(WorktreeError::new(format!(
@@ -756,7 +749,7 @@ static CREATING: LazyLock<Mutex<()>> = LazyLock::new(Mutex::default);
 
 pub fn create_child_worktree(options: &CreateWorktreeOptions<'_>) -> Result<WorktreeRecord> {
     let info = repo_info(options.cwd)?;
-    let _serial = CREATING.lock().unwrap_or_else(PoisonError::into_inner);
+    let _serial = jsrt::sync::lock(&CREATING);
     create_in(&info, options)
 }
 
@@ -880,7 +873,7 @@ pub fn run_setup_command(record: &WorktreeRecord, signal: Option<&Signal>) -> Re
                 if n == 0 {
                     break;
                 }
-                let mut out = output.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut out = jsrt::sync::lock(&output);
                 out.push_str(&String::from_utf8_lossy(&chunk[..n]));
                 let excess = out.chars().count().saturating_sub(4000);
                 if excess > 0 {
@@ -896,7 +889,7 @@ pub fn run_setup_command(record: &WorktreeRecord, signal: Option<&Signal>) -> Re
     drop(sh);
     let (code, timed_out) = match ran {
         Err(error) => {
-            *output.lock().unwrap_or_else(PoisonError::into_inner) = error.to_string();
+            *jsrt::sync::lock(&output) = error.to_string();
             (None, false)
         }
         Ok(out) => {
@@ -908,7 +901,7 @@ pub fn run_setup_command(record: &WorktreeRecord, signal: Option<&Signal>) -> Re
         return Err(WorktreeError::new(reason));
     }
     if code != Some(0) {
-        let output = output.lock().unwrap_or_else(PoisonError::into_inner).trim().to_string();
+        let output = jsrt::sync::lock(&output).trim().to_string();
         let tail: String = {
             let chars: Vec<char> = output.chars().collect();
             chars[chars.len().saturating_sub(1500)..].iter().collect()
@@ -1347,7 +1340,7 @@ fn parse_merge_tree(stdout: &str) -> MergeTree {
             .iter()
             .skip(index + 1)
             .take(count)
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         let kind = parts.get(index + 1 + count).copied().unwrap_or("").to_string();
         let text = parts.get(index + 2 + count).copied().unwrap_or("").trim().to_string();
@@ -1555,7 +1548,7 @@ pub fn remove_child_worktree(record: &WorktreeRecord, delete_branch: bool) {
         git_dir
             .iter()
             .cloned()
-            .chain(args.iter().map(|s| s.to_string()))
+            .chain(args.iter().map(std::string::ToString::to_string))
             .collect()
     };
     let run = |args: Vec<String>| {

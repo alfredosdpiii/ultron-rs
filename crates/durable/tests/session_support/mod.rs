@@ -98,11 +98,11 @@ impl Controlled {
     }
 
     fn control(&self) -> MutexGuard<'_, Control> {
-        self.0.control.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.0.control.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn inner(&self) -> MutexGuard<'_, Box<dyn Storage + Send>> {
-        self.0.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.0.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn open_check(&self) -> Result<()> {

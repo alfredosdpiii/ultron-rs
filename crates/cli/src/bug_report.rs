@@ -47,11 +47,7 @@ pub fn gateway_host(gateway: &str) -> String {
 /// The host details `collectEnvironment` reads (`os.release()`, `os.version()` from the kernel). The Rust build runs
 /// no Node: the runtime names the build.
 fn host() -> telemetry::bug_report::Host {
-    let read = |path: &str| {
-        std::fs::read_to_string(path)
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default()
-    };
+    let read = |path: &str| std::fs::read_to_string(path).map_or_default(|s| s.trim().to_string());
     let (platform, arch) = (jsrt::process::platform(), jsrt::process::arch());
     telemetry::bug_report::Host {
         version: config::version().to_string(),
@@ -187,7 +183,8 @@ fn environment_source(env: &Env, provider: &str) -> Option<String> {
         ai::claude_code::PROVIDER => {
             ai::claude_code::configured(&source).then(|| ai::claude_code::AUTH_SOURCE.to_string())
         }
-        _ => ai::env::find_env_keys_in(provider, &source).and_then(|keys| keys.first().map(|key| key.to_string())),
+        _ => ai::env::find_env_keys_in(provider, &source)
+            .and_then(|keys| keys.first().map(std::string::ToString::to_string)),
     }
 }
 
@@ -494,7 +491,7 @@ impl Reporter {
             Ok(bundle) => bundle,
             Err(error) => return answer(BugReportOutcome::Failed(format!("Failed to build bug report: {error}"))),
         };
-        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some(bundle.clone());
+        *self.last.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(bundle.clone());
         if !request.upload {
             return answer(export_and_record(&*op, env, &bundle));
         }
@@ -524,7 +521,11 @@ impl Reporter {
         env: &Env,
         op: &dyn Fn(Op) -> Result<Option<Value>, String>,
     ) -> interactive::lane::BugReportOutcome {
-        let last = self.last.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let last = self
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         match last {
             Some(bundle) => export_and_record(op, env, &bundle),
             None => interactive::lane::BugReportOutcome::Failed("Failed to write bug report: no report".into()),

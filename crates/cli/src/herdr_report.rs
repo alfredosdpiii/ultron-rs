@@ -17,7 +17,7 @@ use crate::args::Args;
 use herdr::{BlockKind, Metadata, Reporter, Session, State};
 use interactive::lane::{ModelInfo, SessionOpened};
 use serde_json::Value;
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Mutex, OnceLock};
 
 pub const DISPLAY_AGENT: &str = "Ultron";
 
@@ -147,7 +147,7 @@ impl TuiReport {
     }
 
     fn track(&self) -> std::sync::MutexGuard<'_, Track> {
-        self.track.lock().unwrap_or_else(PoisonError::into_inner)
+        jsrt::sync::lock(&self.track)
     }
 
     /// The next opened session is a new one (`/new`, `/clear`), not a resumed one.
@@ -320,7 +320,7 @@ impl RpcReport {
     }
 
     pub fn event(&self, event: &Value) {
-        let mut text = self.final_text.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut text = jsrt::sync::lock(&self.final_text);
         match event["type"].as_str() {
             Some("run_start") => {
                 text.clear();

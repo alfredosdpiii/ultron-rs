@@ -118,15 +118,25 @@ impl Default for FileWriter {
 
 impl FileWriter {
     fn send(&self, write: FileOp) {
-        if let Some(tx) = self.tx.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if let Some(tx) = self
+            .tx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
             let _ = tx.send(write);
         }
     }
 
     /// Wait until everything sent so far is on disk; later sends are dropped.
     pub fn finish(&self) {
-        self.tx.lock().unwrap_or_else(|e| e.into_inner()).take();
-        if let Some(thread) = self.thread.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        self.tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(thread) = self
+            .thread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             let _ = thread.join();
         }
     }

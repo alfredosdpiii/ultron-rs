@@ -224,8 +224,7 @@ fn is_explicit_pasted_path(p: &str) -> bool {
 fn extension(p: &str) -> String {
     Path::new(p)
         .extension()
-        .map(|e| e.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default()
+        .map_or_default(|e| e.to_string_lossy().to_ascii_lowercase())
 }
 
 pub fn is_image_path(p: &str) -> bool {
@@ -693,7 +692,7 @@ fn card(chip: &Chip) -> Vec<String> {
     let sgr = attachment_sgr(kind, n);
     let (caption, interior): (String, Vec<String>) = match chip {
         Chip::Image { image, .. } => {
-            let caption = image.dims.map(|(w, h)| format!("{w}x{h}")).unwrap_or_default();
+            let caption = image.dims.map_or_default(|(w, h)| format!("{w}x{h}"));
             let pad = INNER_COLS - visible_width(icon);
             let icon_row = format!("{}{icon}{}", " ".repeat(pad / 2), " ".repeat(pad - pad / 2));
             let blank = " ".repeat(INNER_COLS);

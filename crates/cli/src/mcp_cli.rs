@@ -575,7 +575,7 @@ fn connect(entry: &ServerEntry, env: &Env) -> Connection {
         request_timeout: Some(Duration::from_secs_f64((timeout * 1000.0).max(0.0) / 1000.0)),
         roots: Some(vec![json!({
             "uri": file_url(&env.cwd),
-            "name": env.cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            "name": env.cwd.file_name().map_or_default(|n| n.to_string_lossy().into_owned()),
         })]),
         ..ClientOptions::default()
     });
@@ -649,12 +649,7 @@ fn describe_transport(config: &Map<String, Value>) -> String {
     if let Some(url) = config.get("url").and_then(Value::as_str) {
         return url.to_string();
     }
-    let mut parts = vec![
-        config
-            .get("command")
-            .map(|v| jsrt::value::string(Some(v)))
-            .unwrap_or_default(),
-    ];
+    let mut parts = vec![config.get("command").map_or_default(|v| jsrt::value::string(Some(v)))];
     parts.extend(
         config
             .get("args")

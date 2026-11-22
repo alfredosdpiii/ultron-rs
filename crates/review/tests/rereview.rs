@@ -47,7 +47,7 @@ fn mention(context: &Context, at: &str) {
             "alice",
             &format!("@{BOT} answered, please look again"),
             at,
-        ))
+        ));
     });
 }
 

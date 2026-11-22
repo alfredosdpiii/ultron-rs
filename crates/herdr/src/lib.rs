@@ -641,7 +641,7 @@ fn run(shared: Arc<Shared>, mut transport: Box<dyn Transport>) {
                             .wake
                             .wait_timeout(q, left)
                             .unwrap_or_else(PoisonError::into_inner)
-                            .0
+                            .0;
                     }
                 }
             }

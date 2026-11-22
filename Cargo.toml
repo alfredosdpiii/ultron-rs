@@ -21,6 +21,13 @@ todo = "warn"
 unimplemented = "warn"
 redundant_clone = "warn"
 allow_attributes_without_reason = "warn"
+map_unwrap_or = "warn"
+redundant_closure_for_method_calls = "warn"
+needless_raw_string_hashes = "warn"
+semicolon_if_nothing_returned = "warn"
+cast_lossless = "warn"
+duration_suboptimal_units = "warn"
+bool_to_int_with_if = "warn"
 
 # Line tables are enough for panics and backtraces; full debug info made each of the ~600 test binaries ~250 MB, which
 # was most of a test build's link time and of the target directory.

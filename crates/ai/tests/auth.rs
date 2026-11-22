@@ -91,14 +91,11 @@ fn file_store() -> (tempfile::TempDir, FileCredentialStore) {
 }
 
 fn string_map(value: &Value) -> CredentialEnv {
-    value
-        .as_object()
-        .map(|m| {
-            m.iter()
-                .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_owned()))
-                .collect()
-        })
-        .unwrap_or_default()
+    value.as_object().map_or_default(|m| {
+        m.iter()
+            .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_owned()))
+            .collect()
+    })
 }
 
 fn comparable(message: &str) -> String {

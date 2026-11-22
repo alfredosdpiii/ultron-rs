@@ -750,7 +750,7 @@ fn review_daemon_log_lines_mask_a_token() {
     let secrets = Arc::new(Mutex::new(Vec::<String>::new()));
     let register = secrets.clone();
     let tokens = TokenStore::new(context.hub.clone()).with_secret_sink(Arc::new(move |secret: &str| {
-        register.lock().expect("secrets").push(secret.into())
+        register.lock().expect("secrets").push(secret.into());
     }));
     tokens.env(&context.account).expect("token");
     let written = Arc::new(Mutex::new(Vec::<String>::new()));

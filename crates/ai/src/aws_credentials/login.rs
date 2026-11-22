@@ -19,10 +19,10 @@ const MAX_ATTEMPTS: usize = 3;
 
 /// `getTokenFilePath`.
 pub fn login_token_path(login_session: &str, input: &super::ChainInput<'_>) -> PathBuf {
-    let directory = input
-        .var("AWS_LOGIN_CACHE_DIRECTORY")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir(input.env).join(".aws").join("login").join("cache"));
+    let directory = input.var("AWS_LOGIN_CACHE_DIRECTORY").map_or_else(
+        || home_dir(input.env).join(".aws").join("login").join("cache"),
+        PathBuf::from,
+    );
     directory.join(format!("{}.json", jsrt::hash::sha256_hex(login_session)))
 }
 
@@ -226,7 +226,7 @@ async fn create_token(
         let text = thrown(&name, &message);
         return Err(if name == "AccessDeniedException" {
             Failure::AccessDenied {
-                error: parsed.get("error").map(js_string).unwrap_or_else(|| "undefined".into()),
+                error: parsed.get("error").map_or_else(|| "undefined".into(), js_string),
                 text,
             }
         } else {
@@ -276,7 +276,7 @@ async fn create_token(
 fn dpop(path: &PathBuf, method: &str, endpoint: &str, now_ms: i64) -> Result<String> {
     let token = load_token(path)?;
     let fail = |message: String| CredentialError::stop(format!("Failed to generate Dpop proof: {message}"));
-    let pem = token.get("dpopKey").map(js_string).unwrap_or_default();
+    let pem = token.get("dpopKey").map_or_default(js_string);
     let (private, public) = parse_sec1_pem(&pem).map_err(fail)?;
     let rng = SystemRandom::new();
     let key = EcdsaKeyPair::from_private_key_and_public_key(&ECDSA_P256_SHA256_FIXED_SIGNING, &private, &public, &rng)

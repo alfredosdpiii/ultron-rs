@@ -698,8 +698,10 @@ fn acceptance_a47_handles_never_render_content_and_views_search_lines_chunks_reo
     let digest = shown
         .strip_prefix("ContextHandle(label='data.log', chars=")
         .and_then(|rest| rest.split_once(", digest='sha256:"))
-        .map(|(sizes, rest)| (sizes.to_string(), rest.to_string()))
-        .unwrap_or_else(|| panic!("{shown}"));
+        .map_or_else(
+            || panic!("{shown}"),
+            |(sizes, rest)| (sizes.to_string(), rest.to_string()),
+        );
     assert!(digest.0.contains(", size="), "{shown}");
     assert_eq!(digest.1.len(), 12 + "'…)".len(), "{shown}");
     assert!(

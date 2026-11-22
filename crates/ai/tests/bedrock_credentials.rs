@@ -145,8 +145,7 @@ fn serve(stream: &mut TcpStream, recorded: &Mutex<Recorded>, arrived: &Condvar, 
             .split("Credential=")
             .nth(1)
             .and_then(|rest| rest.split('/').next())
-            .map(|c| json!(c))
-            .unwrap_or(Value::Null);
+            .map_or(Value::Null, |c| json!(c));
         recorded.lock().unwrap().bedrock = Some(json!({
             "credential": credential,
             "sessionToken": headers.get("x-amz-security-token").map_or(Value::Null, |t| json!(t)),

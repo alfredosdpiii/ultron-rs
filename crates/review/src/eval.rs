@@ -563,16 +563,16 @@ pub fn planted() -> Vec<Planted> {
             result["findings"][0]["note"] = json!("not verified (budget)");
         }),
         with("remove-path", &|result| {
-            result["findings"][0]["replacement"] = json!("@pytest.mark.skip(reason='flaky')")
+            result["findings"][0]["replacement"] = json!("@pytest.mark.skip(reason='flaky')");
         }),
         with("fail-once", &|result| {
-            result["static"]["stages"][0]["files"] = json!([])
+            result["static"]["stages"][0]["files"] = json!([]);
         }),
         with("conventions", &|result| {
-            result["findings"][0]["severity"] = json!("minor")
+            result["findings"][0]["severity"] = json!("minor");
         }),
         with("run-twice", &|result| {
-            result["tests"]["runs"][1]["status"] = json!("passed")
+            result["tests"]["runs"][1]["status"] = json!("passed");
         }),
     ]
 }

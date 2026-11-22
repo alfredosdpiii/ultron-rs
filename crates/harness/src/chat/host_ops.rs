@@ -20,7 +20,7 @@ const POLL: Duration = Duration::from_millis(20);
 
 /// How long `rlm.ask` waits for an answer when the call gives no `timeout_ms`: a kept child that stops making
 /// progress must not hold the caller's cell forever (a DeepSWE run sat 67 minutes in one ask).
-pub(crate) const ASK_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+pub(crate) const ASK_TIMEOUT: Duration = Duration::from_mins(20);
 
 type OpResult = Result<Value, String>;
 
@@ -189,7 +189,7 @@ impl HostOps {
             "rlm_child_id": child_id(task),
             "name": input.name,
             "session_dir": "",
-            "model": input.model.map(|model| format!("{}/{}", model.provider, model.model_id)).unwrap_or_default(),
+            "model": input.model.map_or_default(|model| format!("{}/{}", model.provider, model.model_id)),
             "timeout_ms": input.timeout_ms.unwrap_or(0),
             "parent_branch_anchor": "",
             "worktree": Value::Null,
@@ -423,7 +423,7 @@ impl HostOps {
                             .and_then(|model| model.into_iter().next()))
                     })
                     .map_err(error)?
-                    .map(|message| {
+                    .map_or_default(|message| {
                         message["content"]
                             .as_array()
                             .into_iter()
@@ -431,8 +431,7 @@ impl HostOps {
                             .filter_map(|block| block["text"].as_str().map(str::to_owned))
                             .collect::<Vec<_>>()
                             .join("\n")
-                    })
-                    .unwrap_or_default();
+                    });
                 Ok(json!({ "id": child_id(id), "status": "succeeded", "value": text }))
             }
             _ => Ok(json!({

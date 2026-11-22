@@ -338,7 +338,7 @@ fn acceptance_a25_migrate_ignores_other_commands_prints_usage_and_rejects_bad_ar
         package: root.path().to_path_buf(),
     };
     let run = |args: &[&str]| {
-        let argv: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        let argv: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = cli::migrate::run(&argv, &env, &mut out, &mut err);
         (code, text(&out), text(&err))

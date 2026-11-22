@@ -59,8 +59,7 @@ impl HintsModule {
             for (lane, entry) in saved {
                 let muted: Vec<Value> = entry["muted"]
                     .as_array()
-                    .map(|items| items.iter().filter(|tag| tag.is_string()).cloned().collect())
-                    .unwrap_or_default();
+                    .map_or_default(|items| items.iter().filter(|tag| tag.is_string()).cloned().collect());
                 let fired = entry
                     .get("fired")
                     .filter(|fired| fired.is_object())
@@ -86,13 +85,12 @@ impl HintsModule {
             .as_ref()
             .and_then(|lanes| lanes.get(lane))
             .and_then(|entry| entry["muted"].as_array())
-            .map(|items| {
+            .map_or_default(|items| {
                 items
                     .iter()
                     .filter_map(|tag| tag.as_str().map(str::to_string))
                     .collect()
             })
-            .unwrap_or_default()
     }
 
     pub fn handle(&self, kind: &str, payload: &Map<String, Value>, lane: &str) -> Result<Value, String> {
@@ -107,15 +105,12 @@ impl HintsModule {
         let entry = lanes
             .entry(lane.to_string())
             .or_insert_with(|| json!({"muted": [], "fired": {}}));
-        let mut muted: Vec<String> = entry["muted"]
-            .as_array()
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|tag| tag.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let mut muted: Vec<String> = entry["muted"].as_array().map_or_default(|items| {
+            items
+                .iter()
+                .filter_map(|tag| tag.as_str().map(str::to_string))
+                .collect()
+        });
         match kind {
             "hints.mute" => {
                 muted.extend(requested);

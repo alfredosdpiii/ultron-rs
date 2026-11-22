@@ -529,8 +529,7 @@ fn select_client_auth_method(information: &Value, supported: &[String]) -> &'sta
 fn string_list(value: &Value) -> Vec<String> {
     value
         .as_array()
-        .map(|items| items.iter().filter_map(Value::as_str).map(String::from).collect())
-        .unwrap_or_default()
+        .map_or_default(|items| items.iter().filter_map(Value::as_str).map(String::from).collect())
 }
 
 /// A token endpoint request (`tokenRequest`): OAuth errors are read from the body before the status.
@@ -561,9 +560,7 @@ fn token_request(
         ("Accept", "application/json".to_string()),
         ("content-type", "application/x-www-form-urlencoded".to_string()),
     ];
-    let supported = metadata
-        .map(|m| string_list(&m["token_endpoint_auth_methods_supported"]))
-        .unwrap_or_default();
+    let supported = metadata.map_or_default(|m| string_list(&m["token_endpoint_auth_methods_supported"]));
     let client_id = client["client_id"].as_str().unwrap_or_default();
     match select_client_auth_method(client, &supported) {
         "client_secret_basic" => {

@@ -254,7 +254,7 @@ impl RunJournal {
     }
 
     pub fn compaction_retry(&mut self, session: &mut Session) {
-        self.apply(session, |run, s| run.compaction_retry(s));
+        self.apply(session, session_journal::run::Run::compaction_retry);
     }
 
     pub fn compaction_usage(&mut self, session: &mut Session, usage: &Value) {

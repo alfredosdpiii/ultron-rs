@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use inference::{Frames, Inference, ModelSettings};
@@ -28,7 +28,7 @@ use kernel::{HostHandler, Kernel, KernelOptions, LimitOverrides, Signal};
 use serde_json::{Map, Value};
 
 /// The engine's session files (frame traces of earlier runs) are kept this long.
-pub const SESSION_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+pub const SESSION_RETENTION: Duration = Duration::from_hours(168);
 
 /// Resolves a `provider/model` reference to the model and its API key.
 pub type ModelResolver = Arc<dyn Fn(&str) -> Result<(ai::Model, Option<String>), String> + Send + Sync>;
@@ -234,7 +234,7 @@ impl Router {
     }
 
     fn frames(&self, model: &str) -> Result<Arc<Frames>, String> {
-        let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut routes = jsrt::sync::lock(&self.routes);
         if let Some(frames) = routes.get(model) {
             return Ok(frames.clone());
         }

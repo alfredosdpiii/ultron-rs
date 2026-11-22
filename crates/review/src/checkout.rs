@@ -217,14 +217,14 @@ impl Checkout {
         if missing.is_empty() {
             return;
         }
-        let _serial = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut args = vec!["-C", &self.dir, "fetch", "--quiet", "--no-tags", "origin"];
         args.extend(missing);
         self.git.run(&args, &self.env, FETCH_TIMEOUT_MS);
     }
 
     pub fn cleanup(&self) {
-        let _serial = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         self.git.run(
             &["-C", &self.dir, "worktree", "remove", "--force", &self.work_dir],
             &self.env,
@@ -259,7 +259,7 @@ impl CheckoutManager {
     fn lock(&self, dir: &str) -> Arc<Mutex<()>> {
         self.locks
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(dir.into())
             .or_default()
             .clone()
@@ -284,7 +284,7 @@ impl CheckoutManager {
         ]);
         let lock = self.lock(&dir);
         let merge_base = {
-            let _serial = lock.lock().unwrap_or_else(|e| e.into_inner());
+            let _serial = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if !Path::new(&dir).join("HEAD").exists() {
                 make_private_dir(&parent(&dir)).map_err(|e| Error::Other(e.to_string()))?;
                 let temporary = format!("{dir}.{}.{}.tmp", std::process::id(), random_hex(3));

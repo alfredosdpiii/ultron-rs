@@ -140,8 +140,7 @@ fn session_file(home: &Home, id: &str) -> PathBuf {
     daemon::catalog::list(&home.sessions())
         .into_iter()
         .find(|m| m.id == id)
-        .map(|m| m.path)
-        .unwrap_or_else(|| panic!("no session {id}"))
+        .map_or_else(|| panic!("no session {id}"), |m| m.path)
 }
 
 #[test]

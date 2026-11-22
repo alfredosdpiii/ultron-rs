@@ -171,8 +171,7 @@ fn cli_auth_for_builtin_and_models_json_providers_matches_typescript() {
         assert_eq!(*stubs.requests.lock().unwrap(), expected, "{name}: requests");
         let stored = std::fs::read_to_string(agent.join("auth.json"))
             .ok()
-            .map(|t| serde_json::from_str::<Value>(&t).unwrap())
-            .unwrap_or(Value::Null);
+            .map_or(Value::Null, |t| serde_json::from_str::<Value>(&t).unwrap());
         assert_eq!(
             jsrt::json::normalize_numbers(times(stored, started)),
             jsrt::json::normalize_numbers(case["stored"].clone()),

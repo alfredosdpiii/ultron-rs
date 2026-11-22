@@ -154,7 +154,7 @@ fn cli_tui_login_two_logins_are_kept_apart() {
     while codes.len() < 2 {
         match rx.recv_timeout(guard).expect("the logins' next step within 120 s") {
             LaneEvent::Login(id, LoginStep::Prompt(LoginPrompt::Select { .. })) => {
-                slot.reply(id, Some("device-code".into()))
+                slot.reply(id, Some("device-code".into()));
             }
             LaneEvent::Login(id, LoginStep::Event(LoginEvent::DeviceCode { .. })) => {
                 codes.insert(id);

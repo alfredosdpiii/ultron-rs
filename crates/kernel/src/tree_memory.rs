@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 /// The memory cap of the probe scope (64 MiB), read back from its `memory.max`.
@@ -75,9 +75,7 @@ pub fn tree_memory_backend(
     if cap_mb == 0 || !cfg!(target_os = "linux") {
         return TreeMemoryBackend::Off;
     }
-    let choice = requested
-        .map(|text| jsrt::string::trim(text).to_lowercase())
-        .unwrap_or_default();
+    let choice = requested.map_or_default(|text| jsrt::string::trim(text).to_lowercase());
     match choice.as_str() {
         "off" => TreeMemoryBackend::Off,
         "watchdog" => TreeMemoryBackend::Watchdog,
@@ -95,7 +93,7 @@ pub fn cgroup_scope_available(program: &OsStr) -> bool {
     if !cfg!(target_os = "linux") {
         return false;
     }
-    let mut probes = PROBES.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut probes = jsrt::sync::lock(&PROBES);
     if let Some(known) = probes.get(program) {
         return *known;
     }
@@ -259,11 +257,7 @@ pub fn proportional_bytes(rollup: &str) -> Option<u64> {
 
 /// `processMemoryBytes`: one process's proportional memory in bytes; 0 when it is gone or a kernel thread.
 pub fn process_memory_bytes(pid: i32) -> u64 {
-    let status = || {
-        std::fs::read_to_string(format!("/proc/{pid}/status"))
-            .map(|text| private_rss_bytes(&text))
-            .unwrap_or(0)
-    };
+    let status = || std::fs::read_to_string(format!("/proc/{pid}/status")).map_or(0, |text| private_rss_bytes(&text));
     match std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")) {
         Err(_) => status(),
         Ok(rollup) => match proportional_bytes(&rollup) {

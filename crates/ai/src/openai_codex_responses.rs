@@ -404,8 +404,7 @@ pub fn parse_error_response(status: u16, raw: &str, now: i64) -> (String, Option
             .into_iter()
             .find(|v| jsrt::value::truthy(*v))
             .flatten()
-            .map(|v| jsrt::value::string(Some(v)))
-            .unwrap_or_default();
+            .map_or_default(|v| jsrt::value::string(Some(v)));
         let lower = code.to_lowercase();
         if lower.contains("usage_limit_reached")
             || lower.contains("usage_not_included")

@@ -320,7 +320,7 @@ pub fn convert_responses_messages(
             }
             Message::User(user) => match &user.content {
                 UserMessageContent::Text(text) => {
-                    messages.push(json!({"role": "user", "content": [{"type": "input_text", "text": text}]}))
+                    messages.push(json!({"role": "user", "content": [{"type": "input_text", "text": text}]}));
                 }
                 UserMessageContent::Blocks(blocks) => {
                     if blocks.is_empty() {
@@ -875,7 +875,7 @@ impl ResponsesRun<'_, '_> {
                 self.output.response_id = event
                     .pointer("/response/id")
                     .and_then(Value::as_str)
-                    .map(str::to_string)
+                    .map(str::to_string);
             }
             "response.output_item.added" => {
                 self.create_slot(output_index, &event["item"], grammar);
@@ -981,16 +981,13 @@ impl ResponsesRun<'_, '_> {
                 let Some((kind, position)) = slot else { return Ok(()) };
                 let item_type = str_field(item, "type").unwrap_or_default();
                 let texts = |key: &str, sep: &str| -> String {
-                    item.get(key)
-                        .and_then(Value::as_array)
-                        .map(|parts| {
-                            parts
-                                .iter()
-                                .map(|p| js_str(p.get("text")))
-                                .collect::<Vec<_>>()
-                                .join(sep)
-                        })
-                        .unwrap_or_default()
+                    item.get(key).and_then(Value::as_array).map_or_default(|parts| {
+                        parts
+                            .iter()
+                            .map(|p| js_str(p.get("text")))
+                            .collect::<Vec<_>>()
+                            .join(sep)
+                    })
                 };
                 match (item_type, kind) {
                     ("reasoning", SlotKind::Thinking) => {
@@ -1016,22 +1013,18 @@ impl ResponsesRun<'_, '_> {
                         });
                     }
                     ("message", SlotKind::Text) => {
-                        let text = item
-                            .get("content")
-                            .and_then(Value::as_array)
-                            .map(|parts| {
-                                parts
-                                    .iter()
-                                    .map(|p| {
-                                        if str_field(p, "type") == Some("output_text") {
-                                            js_str(p.get("text"))
-                                        } else {
-                                            js_str(p.get("refusal"))
-                                        }
-                                    })
-                                    .collect::<String>()
-                            })
-                            .unwrap_or_default();
+                        let text = item.get("content").and_then(Value::as_array).map_or_default(|parts| {
+                            parts
+                                .iter()
+                                .map(|p| {
+                                    if str_field(p, "type") == Some("output_text") {
+                                        js_str(p.get("text"))
+                                    } else {
+                                        js_str(p.get("refusal"))
+                                    }
+                                })
+                                .collect::<String>()
+                        });
                         let mut signature = Map::new();
                         signature.insert("v".into(), json!(1));
                         if let Some(id) = item.get("id").filter(|i| !i.is_null()) {

@@ -440,7 +440,7 @@ fn line_box(line: &Line) -> (f64, f64, f64, f64) {
 
 /// The most common colour of `pixmap` inside `area` (pixel units), if the area covers any pixel.
 fn backdrop(pixmap: &tiny_skia::Pixmap, area: (f64, f64, f64, f64)) -> Option<Rgb> {
-    let (width, height) = (pixmap.width() as i64, pixmap.height() as i64);
+    let (width, height) = (i64::from(pixmap.width()), i64::from(pixmap.height()));
     let x0 = (area.0.floor() as i64).max(0);
     let y0 = (area.1.floor() as i64).max(0);
     let x1 = (area.2.ceil() as i64).min(width);
@@ -464,8 +464,7 @@ fn view_transform(svg: &str, scale: f64) -> Affine {
     let root = svg.find("<svg").map(|open| &svg[open..tag_end(svg, open)]);
     let numbers = |name: &str| -> Vec<f64> {
         root.and_then(|tag| attribute(tag, name))
-            .map(|v| v.split([' ', ',']).filter_map(|s| s.trim().parse().ok()).collect())
-            .unwrap_or_default()
+            .map_or_default(|v| v.split([' ', ',']).filter_map(|s| s.trim().parse().ok()).collect())
     };
     let (width, height) = (numbers("width"), numbers("height"));
     match numbers("viewBox").as_slice() {

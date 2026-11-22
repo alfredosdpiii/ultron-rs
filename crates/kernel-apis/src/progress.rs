@@ -390,9 +390,8 @@ impl ProgressModule {
             if let Some(result) = result {
                 out["result_status"] = result["status"].clone();
             }
-            let with = result
-                .map(|result| format!(" with result {}", result["status"].as_str().unwrap_or("")))
-                .unwrap_or_default();
+            let with =
+                result.map_or_default(|result| format!(" with result {}", result["status"].as_str().unwrap_or("")));
             out["reasons"] = json!([
                 format!("Task is {task_state}{with}"),
                 "A terminal state is not verification; only a passing verifier can verify completion",
@@ -417,7 +416,7 @@ impl ProgressModule {
                 ),
             };
             out["reasons"] = json!([reason]);
-            out["receipts"] = json!(last.map(|last| vec![last["id"].clone()]).unwrap_or_default());
+            out["receipts"] = json!(last.map_or_default(|last| vec![last["id"].clone()]));
             return out;
         }
         let novel: Vec<&Value> = recent
@@ -473,7 +472,7 @@ impl ProgressModule {
         let evidence = evidence_list(payload.get("evidence"))?;
         let metrics = metrics_field(payload.get("metrics"))?;
         let (task, _) = Self::find_task(request.host, &task_id)?;
-        if task["id"] != caller.map(Value::from).unwrap_or(Value::Null) && task["parentId"].as_str() != caller {
+        if task["id"] != caller.map_or(Value::Null, Value::from) && task["parentId"].as_str() != caller {
             return Err("Caller may only report progress for itself or its direct children".into());
         }
         self.enqueue(|state| {
@@ -564,8 +563,7 @@ impl ProgressModule {
             let error = result["error"]
                 .as_str()
                 .filter(|e| !e.is_empty())
-                .map(|e| format!(": {e}"))
-                .unwrap_or_default();
+                .map_or_default(|e| format!(": {e}"));
             claim["decision"] = "unverified".into();
             claim["reason"] = format!("Verifier {status}{error}").into();
             return claim;

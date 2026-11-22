@@ -187,7 +187,7 @@ fn run_on<W: Write>(
                 terminal.out.write_all(data.as_bytes())?;
                 terminal.out.flush()
             };
-            paint_loop_with(app, events, &mut write, size, None, &mut terminal.keyboard)?
+            paint_loop_with(app, events, &mut write, size, None, &mut terminal.keyboard)?;
         }
         Some(tty) => {
             let result = paint_loop_with(

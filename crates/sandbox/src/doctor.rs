@@ -55,10 +55,7 @@ pub fn self_check(policy: &Policy, mechanism: Option<Mechanism>, scratch_parent:
     let host_tmp = std::env::temp_dir().join(format!("ultron-sandbox-host-{}", jsrt::random::random_hex(6)));
     let _ = std::fs::write(&host_tmp, "host\n");
     let listener = std::net::TcpListener::bind("127.0.0.1:0");
-    let port = listener
-        .as_ref()
-        .map(|l| l.local_addr().map(|a| a.port()).unwrap_or(0))
-        .unwrap_or(0);
+    let port = listener.as_ref().map_or(0, |l| l.local_addr().map_or(0, |a| a.port()));
 
     let mut policy = policy.clone();
     policy.cwd = project.clone();

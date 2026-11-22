@@ -18,8 +18,7 @@ impl Transport for Recorder {
     fn send(&self, request: HttpRequest, _: usize, _: Duration, _: &Signal) -> Result<HttpResponse, TransportError> {
         let body = request
             .body
-            .map(|body| serde_json::from_slice(&body).unwrap())
-            .unwrap_or(Value::Null);
+            .map_or(Value::Null, |body| serde_json::from_slice(&body).unwrap());
         self.sent.lock().unwrap().push((request.method, request.url, body));
         let (status, body) = self.answers.lock().unwrap().remove(0);
         Ok(HttpResponse {

@@ -180,7 +180,7 @@ fn cli_self_update_package_commands_and_targets_are_not_supported() {
         latest_version_url: format!("http://127.0.0.1:{port}/ultron-agent/latest"),
     };
     let run = |args: &[&str]| {
-        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let args: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = cli::update_cli::run_update_with(&args, &run_env, &mut out, &mut err, &endpoints);
         (code, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())
@@ -250,7 +250,7 @@ fn cli_self_update_points_the_binary_at_the_release_download() {
         let endpoints = cli::update_cli::Endpoints {
             latest_version_url: format!("http://127.0.0.1:{port}/ultron-agent/latest"),
         };
-        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let args: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
         let code = cli::update_cli::run_update_with(&args, &run_env, &mut out, &mut err, &endpoints);
         assert_eq!(code, Some(1), "{args:?}");
         assert_eq!(String::from_utf8(out).unwrap(), "");

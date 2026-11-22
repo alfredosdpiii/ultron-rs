@@ -116,8 +116,7 @@ pub fn parse_options(argument: &str) -> Result<WorkerOptions, String> {
         metadata: metadata.clone(),
         plugin_manifest_paths: options["pluginManifestPaths"]
             .as_array()
-            .map(|p| p.iter().filter_map(Value::as_str).map(str::to_string).collect())
-            .unwrap_or_default(),
+            .map_or_default(|p| p.iter().filter_map(Value::as_str).map(str::to_string).collect()),
         session_dir: options["sessionDir"].as_str().unwrap_or_default().to_string(),
         session: ModelFlags {
             provider: text("provider"),
@@ -163,7 +162,7 @@ impl Shared {
     fn lifecycle(&self) -> Arc<Lifecycle> {
         self.lifecycle
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .expect("the lifecycle is set before commands are read")
     }
@@ -173,7 +172,7 @@ impl Shared {
         let owner = self
             .lifecycle
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .and_then(|l| l.owner());
         let to = to.map(str::to_string).or(owner).unwrap_or_else(|| "server".into());
@@ -192,7 +191,7 @@ impl Shared {
             || self
                 .lifecycle
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_ref()
                 .is_some_and(|l| l.busy());
         json!({"type": "worker_status", "token": self.token, "sessionKey": self.session_key, "nonce": nonce,
@@ -207,7 +206,12 @@ impl Shared {
 
     /// `holdActivity`: detached work is active (held as an operation) or no longer.
     fn activity(&self, active: bool) {
-        let Some(lifecycle) = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        let Some(lifecycle) = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        else {
             return;
         };
         if active {
@@ -219,7 +223,11 @@ impl Shared {
 
     /// A run started or ended (it holds retirement while it runs), or a stuck run moved again.
     fn progress_changed(&self, change: Change) {
-        let lifecycle = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let lifecycle = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         match (&change, &lifecycle) {
             (Change::Started(run), Some(lifecycle)) => lifecycle.operation_started("run", "main", run),
             (Change::Ended(run), Some(lifecycle)) => lifecycle.operation_stopped("run", "main", run),
@@ -230,7 +238,7 @@ impl Shared {
 
     fn remove_subscriptions(&self, matches: impl Fn(&Value) -> bool) {
         let removed: Vec<Arc<Endpoint>> = {
-            let mut endpoints = self.endpoints.lock().unwrap_or_else(|e| e.into_inner());
+            let mut endpoints = self.endpoints.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let keys: Vec<String> = endpoints
                 .iter()
                 .filter(|(_, (scope, _))| matches(scope))
@@ -258,7 +266,10 @@ impl Shared {
     }
 
     fn exit_with(&self, code: i32, hand_over: bool) -> ! {
-        let first = !std::mem::replace(&mut *self.closing.lock().unwrap_or_else(|e| e.into_inner()), true);
+        let first = !std::mem::replace(
+            &mut *self.closing.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+            true,
+        );
         if first {
             self.remove_subscriptions(|_| true);
             let (done, wait) = mpsc::channel();
@@ -270,7 +281,10 @@ impl Shared {
             if self.core.send(input).is_ok() {
                 let _ = wait.recv_timeout(Duration::from_secs(10));
             }
-            self._lock.lock().unwrap_or_else(|e| e.into_inner()).take();
+            self._lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
             std::process::exit(code);
         }
         loop {
@@ -419,7 +433,10 @@ fn services(
             }
             let message = typed.to_string();
             let images = request(&args)["images"].as_array().cloned().unwrap_or_default();
-            let lifecycle = prompt_lifecycle.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let lifecycle = prompt_lifecycle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let marker = format!("prompt-{}", jsrt::random::uuid_v4());
             if let Some(lifecycle) = &lifecycle {
                 lifecycle.operation_started("run", "main", &marker);
@@ -769,7 +786,10 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
                 names.replace(json!({"name": event["name"]}));
             } else if let Some(lane) = sink_lane.get() {
                 let ended = event["runId"].clone();
-                let reduction = lane.lock().unwrap_or_else(|e| e.into_inner()).publish(event);
+                let reduction = lane
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .publish(event);
                 if reduction.is_some()
                     && let Some(core) = sink_core.get()
                 {
@@ -778,7 +798,9 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
                         Op::LaneSnapshot,
                         Box::new(move |result| {
                             if let Ok(Some(fresh)) = result {
-                                lane.lock().unwrap_or_else(|e| e.into_inner()).rebase(fresh, &ended);
+                                lane.lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .rebase(fresh, &ended);
                             }
                         }),
                     ));
@@ -812,7 +834,7 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
         shared: shared_slot.clone(),
     };
     let provider = Arc::new(services(
-        &lane.lock().unwrap_or_else(|e| e.into_inner()),
+        &lane.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
         models_state,
         name_state,
         core.clone(),
@@ -870,10 +892,13 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
             }
         }),
     );
-    *shared.lifecycle.lock().unwrap_or_else(|e| e.into_inner()) = Some(lifecycle.clone());
-    *lifecycle_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(lifecycle);
+    *shared
+        .lifecycle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(lifecycle.clone());
+    *lifecycle_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(lifecycle);
     let discovery_grace = lifecycle_delay(DISCOVERY_GRACE_ENV, DEFAULT_DISCOVERY_GRACE_MS)?;
-    *shared.ready.lock().unwrap_or_else(|e| e.into_inner()) = true;
+    *shared.ready.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
     if shared.send(shared.worker_ready(), None).is_err() {
         shared.close_and_exit(1);
     }
@@ -938,7 +963,7 @@ fn handle_input(shared: &Arc<Shared>, message: &Value, discovery_grace: Duration
 }
 
 fn announce(shared: &Arc<Shared>, lifecycle: &Arc<Lifecycle>, from: &str, grace: Duration) {
-    if !*shared.ready.lock().unwrap_or_else(|e| e.into_inner()) || lifecycle.retiring() {
+    if !*shared.ready.lock().unwrap_or_else(std::sync::PoisonError::into_inner) || lifecycle.retiring() {
         return;
     }
     if let Some(owner) = lifecycle.owner()
@@ -1012,14 +1037,22 @@ fn operation(shared: &Arc<Shared>, lifecycle: &Arc<Lifecycle>, request: Value) {
     let long = call
         .as_ref()
         .is_some_and(|c| LONG_OPERATIONS.contains(&(c.service_id.as_str(), c.member.as_str())));
-    let jobs = shared.jobs.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let jobs = shared
+        .jobs
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     let shared = shared.clone();
     let request_id = request["requestId"].as_str().unwrap_or_default().to_string();
     if let Some(call) = &call {
-        shared.active.lock().unwrap_or_else(|e| e.into_inner()).insert(
-            request_id.clone(),
-            (scope.clone(), call.service_id.clone(), call.member.clone()),
-        );
+        shared
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                request_id.clone(),
+                (scope.clone(), call.service_id.clone(), call.member.clone()),
+            );
     }
     let execute = move || {
         let result: ServiceResult = match (hold, call) {
@@ -1029,7 +1062,7 @@ fn operation(shared: &Arc<Shared>, lifecycle: &Arc<Lifecycle>, request: Value) {
                 let endpoint = shared
                     .endpoints
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .entry(scope_key(&scope))
                     .or_insert_with(|| (scope.clone(), Arc::new(Endpoint::new(shared.provider.clone()))))
                     .1
@@ -1070,7 +1103,7 @@ fn operation(shared: &Arc<Shared>, lifecycle: &Arc<Lifecycle>, request: Value) {
         shared
             .active
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&request_id);
         let event = json!({"type": "operation_response", "token": shared.token, "sessionKey": shared.session_key,
             "response": std::mem::take(&mut response)});
@@ -1092,7 +1125,7 @@ fn cancel_requests(shared: &Arc<Shared>, matches: impl Fn(&str, &Value) -> bool)
     let bash = shared
         .active
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
         .any(|(id, (scope, service, member))| {
             matches(id, scope) && service == protocol::names::SESSION_CONTROL && member == "bash"

@@ -410,7 +410,7 @@ impl Install {
             env_clear: true,
             env: base_env(self, env),
             model: Some(MODEL.into()),
-            args: args.iter().map(|a| a.to_string()).collect(),
+            args: args.iter().map(std::string::ToString::to_string).collect(),
             ..Default::default()
         };
         cli::rpc::client::RpcClient::start(&options).expect("start ultron --mode rpc")

@@ -621,11 +621,10 @@ impl CodeSkills {
         let restored = entries
             .iter_mut()
             .find(|item| item["version"] == superseded && item["state"] == "superseded")
-            .map(|previous| {
+            .map_or(Value::Null, |previous| {
                 change(previous, "active");
                 previous["version"].clone()
-            })
-            .unwrap_or(Value::Null);
+            });
         history["active"] = restored.clone();
         self.write_history(&history)?;
         self.publish(&history)?;
@@ -675,8 +674,7 @@ impl CodeSkills {
             let activated = record["history"]
                 .as_array()
                 .and_then(|changes| changes.iter().rev().find(|change| change["state"] == "active"))
-                .map(|change| change["at"].clone())
-                .unwrap_or_else(|| record["createdAt"].clone());
+                .map_or_else(|| record["createdAt"].clone(), |change| change["at"].clone());
             skills.push(object(vec![
                 ("name", name.into()),
                 ("kind", record["kind"].clone()),
@@ -710,8 +708,7 @@ impl CodeSkills {
         for (index, skill) in skills.iter().enumerate() {
             let signatures: Vec<&str> = skill["functions"]
                 .as_array()
-                .map(|functions| functions.iter().filter_map(|f| f["signature"].as_str()).collect())
-                .unwrap_or_default();
+                .map_or_default(|functions| functions.iter().filter_map(|f| f["signature"].as_str()).collect());
             let signatures = signatures.join("; ");
             let summary = one_line(nonempty_str(&skill["doc"]), 160);
             let policy = if skill["kind"] == "policy" {

@@ -89,7 +89,7 @@ pub fn secret_tool_keyring(agent_dir: &Path, var: &dyn Fn(&str) -> Option<String
         command: var("PATH").and_then(|path| jsrt::process::which("secret-tool", &path)),
         attributes: ["application", "ultron", "purpose", "rlm-snapshot-key", "profile"]
             .iter()
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .chain([profile.display().to_string()])
             .collect(),
         timeout: Duration::from_secs(5),
@@ -149,7 +149,7 @@ impl SnapshotKeyring for SecretToolKeyring {
     fn store(&self, hex: &str) -> bool {
         let args: Vec<String> = ["store", "--label=Ultron RLM snapshot signing key"]
             .iter()
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .chain(self.attributes.iter().cloned())
             .collect();
         self.run(&args, Some(hex)).is_some_and(|run| run.code == Some(0))

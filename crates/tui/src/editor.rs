@@ -1331,7 +1331,10 @@ impl Editor {
             self.set_cursor_col(self.cursor_col + text.len());
             return;
         }
-        let mut tail: Vec<String> = parts[1..parts.len() - 1].iter().map(|s| s.to_string()).collect();
+        let mut tail: Vec<String> = parts[1..parts.len() - 1]
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         tail.push(format!("{last}{after}"));
         let at = self.cursor_line + 1;
         self.lines.splice(at..at, tail);

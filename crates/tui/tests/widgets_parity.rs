@@ -172,10 +172,7 @@ fn tui_settings_list_renders_and_cycles_like_ts() {
                 id: s(&i["id"]).into(),
                 label: s(&i["label"]).into(),
                 current_value: s(&i["currentValue"]).into(),
-                values: i["values"]
-                    .as_array()
-                    .map(|_| strings(&i["values"]))
-                    .unwrap_or_default(),
+                values: i["values"].as_array().map_or_default(|_| strings(&i["values"])),
                 description: opt_s(&i["description"]),
             })
             .collect::<Vec<_>>()
@@ -218,7 +215,7 @@ fn tui_settings_list_renders_and_cycles_like_ts() {
         for (k, key) in script["keys"].as_array().unwrap().iter().enumerate() {
             match list.handle_input(s(&f["keys"][s(key)])) {
                 Some(tui::SettingsEvent::Changed { id, value }) => {
-                    events.push(serde_json::json!(["changed", id, value]))
+                    events.push(serde_json::json!(["changed", id, value]));
                 }
                 Some(tui::SettingsEvent::Cancelled) => events.push(serde_json::json!(["cancelled"])),
                 None => {}

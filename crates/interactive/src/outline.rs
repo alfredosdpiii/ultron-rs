@@ -167,7 +167,7 @@ pub fn outline_rule(
     color: Fg,
     caption: Option<&str>,
 ) -> String {
-    let label = caption.map(|c| format!(" {c} ")).unwrap_or_default();
+    let label = caption.map_or_default(|c| format!(" {c} "));
     let fill = (inner_width + 2).saturating_sub(visible_width(&label));
     format!(
         "{}{}{}",
@@ -226,7 +226,7 @@ pub fn compose_outline_column(
     style: &OutlineStyle,
 ) -> ComposedColumn {
     let inner = column_width.saturating_sub(4).max(10);
-    let mut lines: Vec<String> = header.map(<[String]>::to_vec).unwrap_or_default();
+    let mut lines: Vec<String> = header.map_or_default(<[String]>::to_vec);
     let mut selection = None;
     let target = selected.and_then(|s| targets.get(s));
     let mut index = from;

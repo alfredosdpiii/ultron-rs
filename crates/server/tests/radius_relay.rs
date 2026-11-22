@@ -168,7 +168,7 @@ fn run_host(scenario: &Value) -> Outcome {
         accept: accept(server.clone(), scenario["refuse"] == true),
         auth,
         on_status: Some(Arc::new(move |status: &RelayHostStatus| {
-            recorded_statuses.lock().unwrap().push(status.clone())
+            recorded_statuses.lock().unwrap().push(status.clone());
         })),
         delays: RetryDelays::default(),
         sleep: Some(sleep),

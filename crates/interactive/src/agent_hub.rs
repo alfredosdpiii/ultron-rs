@@ -251,7 +251,7 @@ pub fn project_agent_tree(refs: &[AgentView], rank: Option<&RankFn<'_>>) -> Tree
             if expanded {
                 let mut order = cur;
                 let parent_rank = rank_of(cur);
-                for &child in children.get(&refs[cur].id).map(Vec::as_slice).unwrap_or(&[]) {
+                for &child in children.get(&refs[cur].id).map_or(&[][..], Vec::as_slice) {
                     let child_rank = rank_of(child);
                     if let (Some(pr), Some(cr)) = (parent_rank, child_rank)
                         && cr < 0
@@ -309,7 +309,7 @@ pub fn project_agent_tree(refs: &[AgentView], rank: Option<&RankFn<'_>>) -> Tree
             }
         }
     };
-    for &root in children.get(MAIN_AGENT_ID).map(Vec::as_slice).unwrap_or(&[]) {
+    for &root in children.get(MAIN_AGENT_ID).map_or(&[][..], Vec::as_slice) {
         visit(root, 0, &mut rows);
     }
     for i in 0..refs.len() {
@@ -1035,7 +1035,7 @@ impl AgentHub {
     }
 
     fn first_key(&self, id: &str) -> String {
-        self.keys.get_keys(id).first().map(|k| key_glyph(k)).unwrap_or_default()
+        self.keys.get_keys(id).first().map_or_default(|k| key_glyph(k))
     }
 
     fn footer(&self) -> String {
@@ -1094,17 +1094,13 @@ impl AgentHub {
             fields.push(t.fg(Fg::Warning, &format!("✉ {}", r.unread)));
         }
         let left = fields.join("  ");
-        let right = r
-            .model
-            .as_deref()
-            .map(|m| {
-                let model = t.fg(Fg::Muted, &sanitize_single_line(m));
-                match r.thinking.as_deref().filter(|l| *l != "off" && *l != "inherit") {
-                    Some(level) => format!("{model} {}", t.thinking_border(level, level)),
-                    None => model,
-                }
-            })
-            .unwrap_or_default();
+        let right = r.model.as_deref().map_or_default(|m| {
+            let model = t.fg(Fg::Muted, &sanitize_single_line(m));
+            match r.thinking.as_deref().filter(|l| *l != "off" && *l != "inherit") {
+                Some(level) => format!("{model} {}", t.thinking_border(level, level)),
+                None => model,
+            }
+        });
         let (lw, rw) = (visible_width(&left), visible_width(&right));
         let mut lines = vec![if rw > 0 && lw + 2 + rw <= width {
             format!("{left}{}{right}", " ".repeat(width - lw - rw))
@@ -1188,15 +1184,12 @@ impl AgentHub {
         let Some(v) = self.viewer.as_mut() else {
             return Vec::new();
         };
-        let status = row
-            .as_ref()
-            .map(|r| {
-                format!(
-                    " {}",
-                    t.fg(r.status.color(), &format!("{} {}", r.status.glyph(), r.status.name()))
-                )
-            })
-            .unwrap_or_default();
+        let status = row.as_ref().map_or_default(|r| {
+            format!(
+                " {}",
+                t.fg(r.status.color(), &format!("{} {}", r.status.glyph(), r.status.name()))
+            )
+        });
         let header = vec![format!(
             "{}{status}",
             bold(&format!("Agent Hub · {}", sanitize_single_line(&v.id)))

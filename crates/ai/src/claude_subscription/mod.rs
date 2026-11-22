@@ -174,8 +174,7 @@ pub fn prepare(
         .take_while(|m| matches!(m, Message::System(_)))
         .count();
     let system = crate::transcript::current_system_message(&context.messages[..leading])
-        .map(|s| system_message_text(&s))
-        .unwrap_or_default();
+        .map_or_default(|s| system_message_text(&s));
     let tools = current_tools(&context.messages);
     let reasoning = match options.reasoning.as_deref() {
         Some(level) => Reasoning {

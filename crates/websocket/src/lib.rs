@@ -130,14 +130,14 @@ impl MessageDecoder {
         }
         let (len, mut at) = match b[1] & 0x7f {
             126 if b.len() < 4 => return Ok(None),
-            126 => (u16::from_be_bytes([b[2], b[3]]) as u64, 4),
+            126 => (u64::from(u16::from_be_bytes([b[2], b[3]])), 4),
             127 if b.len() < 10 => return Ok(None),
             127 => {
                 let mut bytes = [0u8; 8];
                 bytes.copy_from_slice(&b[2..10]);
                 (u64::from_be_bytes(bytes), 10)
             }
-            len => (len as u64, 2),
+            len => (u64::from(len), 2),
         };
         let control = opcode >= 0x8;
         if control && (len > 125 || !fin) {

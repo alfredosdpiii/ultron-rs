@@ -389,8 +389,7 @@ impl SkillRuns {
                 segment
                     .writes
                     .as_ref()
-                    .map(|globs| format!("; change only files matching {}", json!(globs)))
-                    .unwrap_or_default()
+                    .map_or_default(|globs| format!("; change only files matching {}", json!(globs)))
             ));
         }
         let task = request.host.spawn(

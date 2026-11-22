@@ -259,10 +259,7 @@ impl Connection {
     }
 
     pub fn challenge(&self) -> Option<Challenge> {
-        self.challenge
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        jsrt::sync::lock(&self.challenge).clone()
     }
 
     pub fn state(&self) -> ServerState {
@@ -433,7 +430,7 @@ impl Connection {
             request_timeout: Some(self.timeout()),
             roots: Some(vec![json!({
                 "uri": file_url(cwd),
-                "name": cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                "name": cwd.file_name().map_or_default(|n| n.to_string_lossy().into_owned()),
             })]),
             ..ClientOptions::default()
         });

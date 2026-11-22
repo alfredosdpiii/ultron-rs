@@ -58,7 +58,7 @@ pub struct UsageLimits {
 pub fn limits_from_env(var: &dyn Fn(&str) -> Option<String>, settings: &Value) -> UsageLimits {
     let unlimited = |raw: &str| ["none", "off", "unlimited"].contains(&raw.to_lowercase().as_str());
     let integer = |name: &str, fallback: Option<u64>, minimum: u64| -> Option<u64> {
-        let text = var(name).map(|t| t.trim().to_string()).unwrap_or_default();
+        let text = var(name).map_or_default(|t| t.trim().to_string());
         if text.is_empty() {
             return fallback;
         }
@@ -506,11 +506,7 @@ fn validate_document(value: &Value) -> Result<(), String> {
         }
         if let Some(imported) = root.get("imported") {
             let imported = object(imported)?;
-            if !imported
-                .get("source")
-                .and_then(Value::as_str)
-                .is_some_and(|s| !s.is_empty())
-            {
+            if imported.get("source").and_then(Value::as_str).is_none_or(str::is_empty) {
                 return Err(invalid("import"));
             }
             finite_integer(imported.get("entries").unwrap_or(&Value::Null), "import entries", 0.0)?;
@@ -1202,8 +1198,7 @@ impl UsageLedger {
             let mut changed = false;
             let ids: Vec<String> = state.document["roots"]
                 .as_object()
-                .map(|roots| roots.keys().cloned().collect())
-                .unwrap_or_default();
+                .map_or_default(|roots| roots.keys().cloned().collect());
             for root_id in ids {
                 let abandoned: Vec<Value> = reservations_of(&state.document["roots"][&root_id])
                     .iter()
@@ -1250,8 +1245,7 @@ impl UsageLedger {
     fn fold(&self, document: &mut Value) -> bool {
         let roots: Vec<Value> = document["roots"]
             .as_object()
-            .map(|roots| roots.values().cloned().collect())
-            .unwrap_or_default();
+            .map_or_default(|roots| roots.values().cloned().collect());
         if roots.len() <= self.detailed_roots {
             return false;
         }

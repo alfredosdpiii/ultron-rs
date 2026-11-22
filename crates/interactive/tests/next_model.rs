@@ -53,8 +53,7 @@ fn interactive_next_model_matches_typescript() {
         };
         let enabled: Vec<String> = case["enabled"]
             .as_array()
-            .map(|a| a.iter().map(|p| p.as_str().unwrap().to_string()).collect())
-            .unwrap_or_default();
+            .map_or_default(|a| a.iter().map(|p| p.as_str().unwrap().to_string()).collect());
         let direction = case["direction"].as_i64().unwrap() as isize;
         let actual = match next_model(list, &current, direction, &enabled) {
             Ok(model) => (Some(format!("{}/{}", model.provider, model.id)), None),

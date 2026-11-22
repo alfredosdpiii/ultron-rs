@@ -195,7 +195,7 @@ pub fn normalize_links(markdown: &str, version: (u64, u64, u64)) -> String {
 /// defines reference links, so lexing each entry (with the blank line that joins it to the next) gives the same tokens
 /// as lexing the joined document.
 pub fn changelog_tokens(content: Option<&str>) -> Vec<Token> {
-    let mut entries = content.map(parse).unwrap_or_default();
+    let mut entries = content.map_or_default(parse);
     if entries.is_empty() {
         return markdown_tokens("No changelog entries found.");
     }

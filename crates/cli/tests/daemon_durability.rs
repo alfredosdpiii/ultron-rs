@@ -809,7 +809,7 @@ fn tool_result_text(body: &Value) -> String {
         .flatten()
         .flat_map(|m| m["content"].as_array().cloned().unwrap_or_default())
         .rfind(|c| c["type"] == "tool_result")
-        .map(|c| match &c["content"] {
+        .map_or_default(|c| match &c["content"] {
             Value::String(text) => text.clone(),
             blocks => blocks
                 .as_array()
@@ -818,7 +818,6 @@ fn tool_result_text(body: &Value) -> String {
                 .filter_map(|b| b["text"].as_str())
                 .collect(),
         })
-        .unwrap_or_default()
 }
 
 /// Kill point: during the model call. The restarted worker's generation resends the pinned request (the same body)

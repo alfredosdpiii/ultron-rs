@@ -25,7 +25,7 @@ impl Transport for ExitsAfterInitialized {
             std::thread::spawn(move || {
                 sink(Incoming::Message(
                     json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-                ))
+                ));
             });
         } else if message["method"] == "notifications/initialized" {
             sink(Incoming::Closed);

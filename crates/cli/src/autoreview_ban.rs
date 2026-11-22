@@ -61,7 +61,7 @@ pub fn change(env: &Env, login: &str, account: Option<&str>, add: bool) -> Resul
     if !valid_login(&login) {
         return Err(Refused::Usage(format!("not a GitHub login: {login:?}")));
     }
-    let key = account.map(str::trim).unwrap_or(ALL);
+    let key = account.map_or(ALL, str::trim);
     if !valid_account_key(key) {
         return Err(Refused::Usage(format!(
             "--account takes a login, host/login or *, not {key:?}"

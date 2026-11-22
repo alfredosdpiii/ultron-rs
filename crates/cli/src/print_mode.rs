@@ -271,7 +271,10 @@ pub fn run_prompt(
         interrupt: Some(interrupt.clone()),
         reconnect: Some(Arc::new(move || {
             let started = start()?;
-            restarted.lock().unwrap_or_else(|e| e.into_inner()).extend(started.stop);
+            restarted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend(started.stop);
             Ok(started.route)
         })),
     };
@@ -289,8 +292,7 @@ pub fn run_prompt(
                 .ok()
                 .flatten()
                 .map(|m| m.path)
-                .map(|path| route_notices(&path, offset))
-                .unwrap_or_default()
+                .map_or_default(|path| route_notices(&path, offset))
         }
         _ => Vec::new(),
     };
@@ -307,7 +309,11 @@ pub fn run_prompt(
         );
         connection.disconnect();
     }
-    for stop in servers.lock().unwrap_or_else(|e| e.into_inner()).drain(..) {
+    for stop in servers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .drain(..)
+    {
         stop();
     }
     if interrupt.load(Ordering::SeqCst) {

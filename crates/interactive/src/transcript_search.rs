@@ -209,11 +209,7 @@ impl SearchIndex {
         let query = normalize_query(query);
         let changed = source_changed || self.query.as_deref() != Some(&query);
         if changed {
-            self.matches = self
-                .corpus
-                .as_ref()
-                .map(|c| find_matches(c, &query))
-                .unwrap_or_default();
+            self.matches = self.corpus.as_ref().map_or_default(|c| find_matches(c, &query));
             self.query = Some(query);
         }
         (&self.matches, changed)

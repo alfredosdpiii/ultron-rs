@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 const TRIALS: usize = 2;
 const PASS_THRESHOLD: usize = 2;
 /// The hang guard of one trial (the TS runner's `promptAndWait` timeout).
-const TRIAL_GUARD: Duration = Duration::from_secs(10 * 60);
+const TRIAL_GUARD: Duration = Duration::from_mins(10);
 
 /// The deterministic data set: the TS generator's arithmetic is JavaScript's (doubles), so the same values come out.
 fn dataset() -> (String, i64) {

@@ -12,7 +12,7 @@ fn main() {
         let started = Instant::now();
         let report = loop {
             let report = guard.diagnose(&path, &text, Duration::from_secs(4));
-            if !matches!(report, Report::Starting { .. }) || started.elapsed() > Duration::from_secs(900) {
+            if !matches!(report, Report::Starting { .. }) || started.elapsed() > Duration::from_mins(15) {
                 break report;
             }
             std::thread::sleep(Duration::from_millis(500));

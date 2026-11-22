@@ -144,7 +144,7 @@ fn ai_env_api_key_reports_vertex_adc_when_credentials_exist() {
     let env: HashMap<&str, &str> = [("GOOGLE_CLOUD_PROJECT", "p"), ("GOOGLE_CLOUD_LOCATION", "l")]
         .into_iter()
         .collect();
-    let lookup = |name: &str| env.get(name).map(|v| v.to_string());
+    let lookup = |name: &str| env.get(name).map(std::string::ToString::to_string);
     let exists = |path: &std::path::Path| {
         path == std::path::Path::new("/home/u/.config/gcloud/application_default_credentials.json")
     };

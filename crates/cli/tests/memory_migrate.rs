@@ -83,7 +83,7 @@ fn env_for(home: &Path, vars: Vec<(&'static str, String)>) -> cli::Env {
 }
 
 fn run(args: &[&str], env: &cli::Env) -> (i32, String, String) {
-    let argv: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    let argv: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let code = cli::run(&argv, env, &mut out, &mut err);
     (code, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())

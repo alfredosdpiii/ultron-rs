@@ -446,8 +446,7 @@ pub fn comment_text(finding: &EngineFinding) -> String {
     };
     let middle = sentence(evidence);
     let rated = non_empty(&finding.level_reason)
-        .map(|reason| format!("Rated {}: {}", finding.level(), sentence(reason)))
-        .unwrap_or_default();
+        .map_or_default(|reason| format!("Rated {}: {}", finding.level(), sentence(reason)));
     [head, middle, rated, fix, certainty(finding)]
         .into_iter()
         .filter(|part| !part.is_empty())
@@ -633,11 +632,10 @@ pub fn rank_findings(result: &EngineResult) -> Vec<usize> {
     };
     let tier = |finding: &EngineFinding| {
         let level = finding.level();
-        if level != "nit" && (at_or_above(level, "high") || finding.strength.as_deref().unwrap_or("diff") != "diff") {
-            0
-        } else {
-            1
-        }
+        i32::from(
+            !(level != "nit"
+                && (at_or_above(level, "high") || finding.strength.as_deref().unwrap_or("diff") != "diff")),
+        )
     };
     let mut ranked: Vec<usize> = (0..result.findings.len())
         .filter(|index| confirmed(&result.findings[*index]))
@@ -667,8 +665,7 @@ fn capitalized(text: &str) -> String {
     let mut chars = text.chars();
     chars
         .next()
-        .map(|first| format!("{}{}", first.to_uppercase(), chars.as_str()))
-        .unwrap_or_default()
+        .map_or_default(|first| format!("{}{}", first.to_uppercase(), chars.as_str()))
 }
 
 pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
@@ -774,9 +771,7 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
         result.removed
     );
     let first = if !assurance.is_empty() {
-        let lead = since
-            .map(|sha| format!("Re-review of the changes since `{sha}`. "))
-            .unwrap_or_default();
+        let lead = since.map_or_default(|sha| format!("Re-review of the changes since `{sha}`. "));
         format!("{lead}{}", assurance.join(" "))
     } else {
         let what = match since {

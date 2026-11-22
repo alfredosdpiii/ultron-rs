@@ -324,12 +324,7 @@ pub fn validate_server_config(name: &str, raw: &Value) -> Result<Map<String, Val
             return Err(format!("server \"{name}\": {error}"));
         }
         if let Some(auth) = value.get("auth") {
-            if !auth
-                .get("provider")
-                .and_then(Value::as_str)
-                .is_some_and(|p| !p.is_empty())
-                || !auth.is_object()
-            {
+            if auth.get("provider").and_then(Value::as_str).is_none_or(str::is_empty) || !auth.is_object() {
                 return Err(format!("server \"{name}\": auth.provider must be a provider name"));
             }
             if url.scheme() != "https" && !is_loopback(&url) {

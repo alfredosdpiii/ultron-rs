@@ -21,7 +21,7 @@ fn host_a_cell_cannot_write_the_profiles_protected_paths() {
     let records: Arc<Mutex<Vec<Value>>> = Arc::default();
     let sink = records.clone();
     hooks.on_record(Arc::new(move |record: &GuardRecord| {
-        sink.lock().unwrap().push(record.to_json())
+        sink.lock().unwrap().push(record.to_json());
     }));
     let protected = ["settings.json", "auth.json", "skills", "skill-proposals"].map(|name| agent.join(name));
     hooks.protect(protected.to_vec(), &home);

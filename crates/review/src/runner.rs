@@ -40,7 +40,7 @@ pub trait Runner: Send + Sync {
 }
 
 pub fn argv(parts: &[&str]) -> Vec<String> {
-    parts.iter().map(|part| part.to_string()).collect()
+    parts.iter().map(std::string::ToString::to_string).collect()
 }
 
 /// Real processes: pagers, prompts, update notices and colour off; `input` on stdin; a deadline and an output cap.

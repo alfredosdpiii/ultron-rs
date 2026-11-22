@@ -113,7 +113,7 @@ impl Ledger {
         for id in self.chain(node) {
             let pool = self.pool(id, kind);
             if let Some(limit) = pool.limit {
-                let left = limit as i128 - pool.spent as i128 - pool.held as i128;
+                let left = i128::from(limit) - i128::from(pool.spent) - i128::from(pool.held);
                 remaining = Some(remaining.map_or(left, |r| r.min(left)));
             }
         }
@@ -151,12 +151,12 @@ impl Ledger {
         }
         let ceiling = MAX_TRANCHE.min(if model_max > 0 { model_max } else { MAX_TRANCHE });
         let tranche = match self.available(node, Kind::Tokens) {
-            Some(left) => (ceiling as i128)
-                .min((left / 4) as i128)
-                .min(left as i128 - estimate as i128),
-            None => ceiling as i128,
+            Some(left) => i128::from(ceiling)
+                .min(i128::from(left / 4))
+                .min(i128::from(left) - i128::from(estimate)),
+            None => i128::from(ceiling),
         };
-        if tranche < MIN_TRANCHE as i128 || !self.hold(node, Kind::Tokens, estimate + tranche as u64) {
+        if tranche < i128::from(MIN_TRANCHE) || !self.hold(node, Kind::Tokens, estimate + tranche as u64) {
             self.release(node, Kind::Calls, 1);
             return None;
         }

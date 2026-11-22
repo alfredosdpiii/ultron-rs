@@ -157,7 +157,7 @@ fn mcp_gateway_a_profile_without_mcp_servers_registers_no_gateway_tool() {
 fn mcp_gateway_open_browser_uses_the_platform_launcher_as_typescript() {
     use config::browser::browser_command;
     let url = "https://example.com/a?b=1&c=2";
-    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    let s = |v: &[&str]| v.iter().map(std::string::ToString::to_string).collect::<Vec<_>>();
     assert_eq!(browser_command("darwin", url), ("open".to_string(), s(&[url])));
     assert_eq!(
         browser_command("win32", url),

@@ -68,7 +68,10 @@ impl PngConverter {
         let _ = std::thread::Builder::new().name("png-convert".into()).spawn(move || {
             while let Ok((key, data, mime)) = queue.recv() {
                 let png = convert_to_png(&data, &mime).map(|(png, _)| png);
-                shared.lock().unwrap_or_else(|e| e.into_inner()).insert(key, png);
+                shared
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(key, png);
                 done.store(true, Ordering::SeqCst);
             }
         });
@@ -84,7 +87,12 @@ impl PngConverter {
     /// while it is pending (the first call asks for it).
     pub fn get(&mut self, data: &str, mime: &str) -> Option<Option<String>> {
         let key = image_key(data, mime);
-        if let Some(result) = self.results.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        if let Some(result) = self
+            .results
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+        {
             return Some(result.clone());
         }
         if self.requested.insert(key) {

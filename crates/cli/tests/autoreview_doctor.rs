@@ -78,7 +78,7 @@ fn run(base: &Path, args: &[&str], settings: Value, respond: Respond) -> Run {
         runner: Some(runner.clone()),
         engine: None,
     };
-    let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+    let args: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let code = run_command_with(&args, &env, &overrides, &mut out, &mut err);
     let calls = runner.calls.lock().unwrap().clone();

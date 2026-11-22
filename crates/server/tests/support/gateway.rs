@@ -89,8 +89,7 @@ impl Gateway {
             head.split("\r\n")
                 .filter_map(|line| line.split_once(':'))
                 .find(|(k, _)| k.trim().eq_ignore_ascii_case(name))
-                .map(|(_, v)| v.trim().to_string())
-                .unwrap_or_default()
+                .map_or_default(|(_, v)| v.trim().to_string())
         };
         let record = Arc::new(Mutex::new(SocketRecord {
             path,

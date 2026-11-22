@@ -137,7 +137,7 @@ fn run_case(case: &Value) -> Vec<String> {
     };
     let guide_args: Vec<String> = ["guide", "--for", "claude", "--cwd", "<T>/w", "-nc"]
         .iter()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .chain(extra.iter().cloned())
         .collect();
     let root = Root::new();
@@ -159,7 +159,7 @@ fn run_case(case: &Value) -> Vec<String> {
     }
     let print_args: Vec<String> = ["claude", "--print-config", "-nc"]
         .iter()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .chain(extra.iter().cloned())
         .collect();
     let root = Root::new();

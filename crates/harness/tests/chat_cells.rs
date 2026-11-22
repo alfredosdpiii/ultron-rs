@@ -190,8 +190,7 @@ fn harness_chat_cells_let_context_derivation_answer_a_faulted_cell_and_continue_
                     .messages
                     .iter()
                     .find(|message| matches!(message, ai::Message::ToolResult(_)))
-                    .map(|message| text(&js(message)))
-                    .unwrap_or_else(|| "none".into());
+                    .map_or_else(|| "none".into(), |message| text(&js(message)));
                 sink.lock().unwrap().push(result);
                 Ok(text_message(DONE))
             }),

@@ -49,14 +49,14 @@ fn kernel_ops_table_covers_every_python_client_request() {
             problems.push(format!("{name} ({sites}) is not in kernel::ops::OPS"));
             continue;
         };
-        let payload: BTreeSet<String> = op.payload.iter().map(|key| key.to_string()).collect();
+        let payload: BTreeSet<String> = op.payload.iter().map(std::string::ToString::to_string).collect();
         let extra: Vec<String> = names(&sent["payload"]).difference(&payload).cloned().collect();
         if !extra.is_empty() {
             problems.push(format!(
                 "{name} ({sites}) sends payload keys outside its row: {extra:?}"
             ));
         }
-        let reply: BTreeSet<String> = op.reply.iter().map(|key| key.to_string()).collect();
+        let reply: BTreeSet<String> = op.reply.iter().map(std::string::ToString::to_string).collect();
         let extra: Vec<String> = names(&sent["reply"]).difference(&reply).cloned().collect();
         if !extra.is_empty() {
             problems.push(format!("{name} ({sites}) reads reply keys outside its row: {extra:?}"));

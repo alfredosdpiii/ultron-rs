@@ -45,7 +45,7 @@ fn decide(env: &cli::Env, args: &[&str], typed: &str) -> (i32, String, String) {
 }
 
 fn decide_with(env: &cli::Env, args: &[&str], terminal: &mut dyn std::io::BufRead) -> (i32, String, String) {
-    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    let args: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let code = cli::skills_cli::run_with(&args, env, Some(terminal), &mut out, &mut err)
         .unwrap()

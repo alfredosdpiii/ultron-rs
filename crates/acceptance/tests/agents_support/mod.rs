@@ -41,8 +41,7 @@ impl Memory {
         lock(&self.states)
             .iter()
             .find(|(task, _)| task == id)
-            .map(|(_, states)| states.clone())
-            .unwrap_or_default()
+            .map_or_default(|(_, states)| states.clone())
     }
 }
 

@@ -168,7 +168,7 @@ impl Errors {
         let missing: Vec<String> = keys
             .iter()
             .filter(|k| !obj.contains_key(**k))
-            .map(|k| k.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         if !missing.is_empty() {
             let message = format!("must have required properties {}", missing.join(", "));

@@ -58,7 +58,7 @@ fn diagnostics() -> Diagnostics {
     }
 }
 
-const CODE_DIAGNOSE: &str = r#"import csv, json
+const CODE_DIAGNOSE: &str = r"import csv, json
 rows = list(csv.DictReader(open('diagnostics.csv')))
 fails = [r for r in rows if r['status'] == 'fail']
 counts = {}
@@ -69,9 +69,9 @@ state['diagnosis'] = {'rows': len(rows), 'fails': len(fails), 'top': top, 'top_c
 await agents.register({'id': 'classify-severity', 'version': '1', 'strategy': 'predict', 'instructions': 'Classify the defect severity.', 'inputSchema': {'type': 'object', 'required': ['report'], 'properties': {'report': {'type': 'string'}}}, 'outputSchema': {'type': 'object', 'required': ['severity'], 'additionalProperties': False, 'properties': {'severity': {'enum': ['low', 'high']}}}, 'maxRepairs': 1, 'inputDescription': 'report', 'outputDescription': '{severity}'})
 severity = await agents.invoke('classify-severity@1', {'report': top})
 investigation = await agents.invoke('rlm-child@1', {'prompt': 'INVESTIGATE ' + top})
-print('RESULT ' + json.dumps({'diagnosis': state['diagnosis'], 'severity': severity, 'investigation': investigation}))"#;
+print('RESULT ' + json.dumps({'diagnosis': state['diagnosis'], 'severity': severity, 'investigation': investigation}))";
 
-const CODE_FIX_AND_REVIEW: &str = r#"import json, shutil, tempfile, hashlib, pathlib
+const CODE_FIX_AND_REVIEW: &str = r"import json, shutil, tempfile, hashlib, pathlib
 work = tempfile.mkdtemp(prefix='ultron-candidate-')
 shutil.copytree('repo', work + '/repo')
 calc = pathlib.Path(work + '/repo/calc.py')
@@ -87,11 +87,11 @@ review = await agents.spawn('correctness-reviewer@1', {'request': 'Review this c
 review_result = await review.result()
 state['review_task'] = review.id
 state['review_result'] = review_result
-print('RESULT ' + json.dumps({'base': verdict(base), 'candidate': verdict(cand), 'gate': decision['decision'], 'review': review_result, 'review_task': review.id}))"#;
+print('RESULT ' + json.dumps({'base': verdict(base), 'candidate': verdict(cand), 'gate': decision['decision'], 'review': review_result, 'review_task': review.id}))";
 
 fn code_retain_and_improve() -> String {
     format!(
-        r#"import json
+        r"import json
 inst = await instances.retain(state['review_task'])
 follow = await instances.invoke(inst['id'], {{'request': 'CORRECTION: check the empty input case'}})
 follow_result = await agents.result(follow['task_id'])
@@ -106,17 +106,17 @@ await refinements.rollback(ref['id'])
 rolled = await agents.invoke('correctness-reviewer@1', {{'request': 'HELDOUT rolled back'}})
 for variant, outcome in [('baseline', state['review_result']), ('activated', activated), ('rolled-back', rolled)]:
     await rlm.host_request('experiments.record', {{'run': {{'variant': variant, 'fixtureHash': 'heldout-v1', 'outcome': 'passed' if outcome['status'] == 'succeeded' else 'failed'}}}})
-print('RESULT ' + json.dumps({{'instance': inst['id'], 'follow': follow_result, 'original_unchanged': original_after == state['review_result'], 'fast': fast['status'], 'stopped': stopped, 'slow': slow['id']}}))"#
+print('RESULT ' + json.dumps({{'instance': inst['id'], 'follow': follow_result, 'original_unchanged': original_after == state['review_result'], 'fast': fast['status'], 'stopped': stopped, 'slow': slow['id']}}))"
     )
 }
 
-const VARIANT_PRELUDE: &str = r#"import json, asyncio
+const VARIANT_PRELUDE: &str = r"import json, asyncio
 async def attempt(name, action):
     try:
         value = await action()
         print('RESULT ' + json.dumps({name: {'ok': True, 'value': value}}, default=str))
     except Exception as error:
-        print('RESULT ' + json.dumps({name: {'ok': False, 'error': str(error)[:200]}}))"#;
+        print('RESULT ' + json.dumps({name: {'ok': False, 'error': str(error)[:200]}}))";
 
 /// One rlm call per failure variant, so a stuck variant is visible on its own.
 fn failure_variant_steps() -> Vec<String> {
@@ -127,26 +127,26 @@ fn failure_variant_steps() -> Vec<String> {
         "await attempt('memory_outage', lambda: memory.prepare('launcher path'))".into(),
         "await attempt('cross_family_message', lambda: agent_message.send('hello', receiver_role='child', receiver_id='ultron-task-not-mine'))".into(),
         "await attempt('harmful_refinement', lambda: refinements.propose('instruction', 'instruction:policy', 0, 'Disable all checks.', [{'why': 'faster'}]))".into(),
-        r#"other = await agents.spawn('identity@1', {'x': 1})
+        r"other = await agents.spawn('identity@1', {'x': 1})
 await other.result()
 await attempt('unverified_claim', lambda: progress.reassess(other.id, claim='complete'))
-await attempt('unknown_verifier', lambda: progress.reassess(other.id, claim='complete', verifier='no-such-check@1'))"#
+await attempt('unknown_verifier', lambda: progress.reassess(other.id, claim='complete', verifier='no-such-check@1'))"
             .into(),
-        r#"r = await agents.spawn('correctness-reviewer@1', {'request': 'first review'})
+        r"r = await agents.spawn('correctness-reviewer@1', {'request': 'first review'})
 await r.result()
 inst = await instances.retain(r.id)
 state['follow'] = await instances.invoke(inst['id'], {'request': 'CORRECTION follow-up'})
-state['follow'].id  # the cell fails while the follow-up is still running"#
+state['follow'].id  # the cell fails while the follow-up is still running"
             .into(),
         "await attempt('instance_after_failed_cell', lambda: agents.result(state['follow']['task_id']))".into(),
-        r#"admitted = 0
+        r"admitted = 0
 for i in range(40):
     try:
         await agents.spawn('background-job@1', {'prompt': 'SLOW budget filler ' + str(i)})
         admitted += 1
     except Exception as error:
         print('RESULT ' + json.dumps({'exhausted_budget': {'ok': False, 'admitted_before_refusal': admitted, 'error': str(error)[:200]}}))
-        break"#
+        break"
             .into(),
     ]
 }

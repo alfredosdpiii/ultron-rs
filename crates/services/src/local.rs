@@ -272,7 +272,7 @@ fn proposal(value: &Value) -> Result<Value, String> {
     )?;
     let (kind, target) = identity(&map["kind"], &map["target"])?;
     let base = &map["baseVersion"];
-    if !jsrt::number::safe_integer(base).is_some_and(|version| version >= 0) {
+    if jsrt::number::safe_integer(base).is_none_or(|version| version < 0) {
         return Err("baseVersion must be a nonnegative safe integer".into());
     }
     let content = &map["content"];
@@ -284,10 +284,7 @@ fn proposal(value: &Value) -> Result<Value, String> {
         return Err("Evidence must be JSON text, an object, or an array".into());
     }
     let scope = map.get("scope").cloned().unwrap_or_else(|| json!("session"));
-    if !scope
-        .as_str()
-        .is_some_and(|scope| !jsrt::string::trim(scope).is_empty())
-    {
+    if scope.as_str().is_none_or(|scope| jsrt::string::trim(scope).is_empty()) {
         return Err("Scope must be a nonempty string".into());
     }
     Ok(json!({
@@ -473,11 +470,11 @@ fn experiment(value: &Value) -> Result<(), String> {
     if !map.get("variant").is_some_and(Value::is_string)
         || !map.get("fixtureHash").is_some_and(Value::is_string)
         || !outcome.is_some_and(|o| ["passed", "failed", "incomplete"].contains(&o))
-        || !map.get("id").and_then(Value::as_str).is_some_and(|id| !id.is_empty())
-        || !map
+        || map.get("id").and_then(Value::as_str).is_none_or(str::is_empty)
+        || map
             .get("recordedAt")
             .and_then(Value::as_str)
-            .is_some_and(|at| jsrt::date::parse_date(at).is_some())
+            .is_none_or(|at| jsrt::date::parse_date(at).is_none())
     {
         return Err(INVALID.into());
     }
@@ -758,7 +755,7 @@ pub fn instruction_hook(services: Arc<LocalServices>, branch: Option<BranchSourc
     Arc::new(move |definition: &str| {
         let branch = branch.as_ref().map(|source| source());
         let current = services.current("instruction", &format!("instruction:{definition}"), branch.as_ref())?;
-        Ok(current.map(|record| vec![refinement_view(&record)]).unwrap_or_default())
+        Ok(current.map_or_default(|record| vec![refinement_view(&record)]))
     })
 }
 

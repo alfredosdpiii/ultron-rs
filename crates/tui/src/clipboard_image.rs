@@ -134,7 +134,7 @@ fn via_wl_paste(run: &mut RunTool<'_>) -> ImageRead {
 /// `readClipboardImageViaXclip`.
 fn via_xclip(run: &mut RunTool<'_>) -> ImageRead {
     let targets = run("xclip", &["-selection", "clipboard", "-t", "TARGETS", "-o"]);
-    let preferred = preferred_image_type(&targets.as_deref().map(lines).unwrap_or_default());
+    let preferred = preferred_image_type(&targets.as_deref().map_or_default(lines));
     if targets.is_some() && preferred.is_none() {
         return ImageRead::NoImage;
     }

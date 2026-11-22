@@ -251,18 +251,15 @@ impl SkillsModule {
         let skills: Vec<Skill> = sources.iter().map(parse_skill).collect();
         let at = (self.now)();
         let outcome = self.mutate(|document| {
-            let previous: Vec<(String, String)> = document["catalog"]
-                .as_array()
-                .map(|entries| {
-                    entries
-                        .iter()
-                        .map(|entry| {
-                            let text = |key: &str| entry[key].as_str().unwrap_or_default().to_string();
-                            (text("name"), text("version"))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+            let previous: Vec<(String, String)> = document["catalog"].as_array().map_or_default(|entries| {
+                entries
+                    .iter()
+                    .map(|entry| {
+                        let text = |key: &str| entry[key].as_str().unwrap_or_default().to_string();
+                        (text("name"), text("version"))
+                    })
+                    .collect()
+            });
             let generation = document["generation"].as_i64().unwrap_or(0) + 1;
             let lookup = |list: &[(String, String)], name: &str| {
                 list.iter()
@@ -528,8 +525,7 @@ impl SkillsModule {
         let name = payload
             .get("name")
             .and_then(Value::as_str)
-            .map(|name| jsrt::utf16::head(name, 64).to_string())
-            .unwrap_or_default();
+            .map_or_default(|name| jsrt::utf16::head(name, 64).to_string());
         let base = vec![
             ("id", Value::from(jsrt::random::uuid_v4())),
             ("at", Value::from((self.now)())),

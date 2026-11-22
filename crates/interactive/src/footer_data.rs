@@ -89,12 +89,12 @@ impl FooterBranch {
         let _ = std::thread::Builder::new().name("footer-branch".into()).spawn(move || {
             let paths = config::git::find_git_paths(&cwd);
             let set = |next: Option<String>| {
-                let mut current = shared.lock().unwrap_or_else(|e| e.into_inner());
+                let mut current = shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let changed = *current != next;
                 *current = next;
                 changed
             };
-            let files = paths.as_ref().map(watched).unwrap_or_default();
+            let files = paths.as_ref().map_or_default(watched);
             let mut last = stamp(&files);
             set(read_branch(paths.as_ref(), path_var.as_deref()));
             on_change();
@@ -122,7 +122,10 @@ impl FooterBranch {
 
     /// The latest branch (`None` outside a repository or before the first read).
     pub fn branch(&self) -> Option<String> {
-        self.branch.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.branch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 

@@ -585,8 +585,7 @@ fn from_slot(slot: Option<&Value>, code: &str, message: &str) -> CellResult {
     let output = slot
         .and_then(|slot| slot["output"].as_str())
         .filter(|text| !text.is_empty())
-        .map(|text| vec![json!({ "type": "text", "text": text })])
-        .unwrap_or_default();
+        .map_or_default(|text| vec![json!({ "type": "text", "text": text })]);
     CellResult {
         output: Some(output),
         is_error: true,

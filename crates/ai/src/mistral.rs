@@ -798,8 +798,7 @@ impl Run<'_, '_, MistralStream> {
                 .state
                 .tools
                 .get_mut(&key)
-                .map(|(i, p)| (*i, p))
-                .unwrap_or_else(|| unreachable!());
+                .map_or_else(|| unreachable!(), |(i, p)| (*i, p));
             partial_args.push_str(&args_delta);
             let arguments = parse_streaming_json(partial_args);
             if let AssistantContent::ToolCall(block) = &mut self.output.content[index] {

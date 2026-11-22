@@ -56,7 +56,7 @@ impl CallbackServer {
             address,
             pending: Arc::default(),
             closed: Arc::default(),
-            timeout: Duration::from_secs(5 * 60),
+            timeout: Duration::from_mins(5),
         };
         let (pending, closed, path, base) = (
             server.pending.clone(),

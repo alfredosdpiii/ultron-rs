@@ -128,8 +128,7 @@ fn normalize_optional_nulls(value: &mut Value, schema: &Value) {
     };
     let required: Vec<&str> = schema["required"]
         .as_array()
-        .map(|r| r.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default();
+        .map_or_default(|r| r.iter().filter_map(Value::as_str).collect());
     for (key, property) in properties {
         let Some(item) = object.get_mut(key) else { continue };
         if item.is_null()

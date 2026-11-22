@@ -227,7 +227,7 @@ fn kernel_sandbox_contains_direct_writes_and_reads_of_a_cell() {
         let kernel = sandboxed(&tree, mechanism);
         let host_tmp = PathBuf::from(format!("/tmp/kernel-sandbox-{}-{name}.txt", std::process::id()));
         let code = format!(
-            r#"import os
+            r"import os
 def attempt(path, text='x'):
     try:
         with open(path, 'w') as handle:
@@ -253,7 +253,7 @@ results = {{
     'secret_env': os.environ.get('SECRET_TOKEN'),
     'home_env': os.environ.get('HOME'),
 }}
-results"#,
+results",
             outside = tree.outside.join("direct.txt").display().to_string(),
             host_tmp = host_tmp.display().to_string(),
         );

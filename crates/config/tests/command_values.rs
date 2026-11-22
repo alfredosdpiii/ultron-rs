@@ -86,7 +86,7 @@ fn config_stored_command_keys_resolve_like_the_typescript_store() {
 #[test]
 fn config_values_resolve_uncached_like_typescript() {
     let env: HashMap<&str, &str> = [("A", "x"), ("B", "y"), ("EMPTY", "")].into_iter().collect();
-    let lookup = |name: &str| env.get(name).map(|v| v.to_string());
+    let lookup = |name: &str| env.get(name).map(std::string::ToString::to_string);
     let resolve = |value: &str| resolve_uncached(value, &lookup, &[]);
     assert_eq!(resolve("literal").as_deref(), Some("literal"));
     assert_eq!(resolve("$A").as_deref(), Some("x"));

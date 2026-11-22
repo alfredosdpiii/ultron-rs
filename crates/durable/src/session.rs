@@ -178,7 +178,7 @@ impl Line {
             turn = self
                 .advanced
                 .wait(turn)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         drop(turn);
         LineGuard {
@@ -443,7 +443,7 @@ impl Session {
             .inner
             .ended
             .wait_while(status, |status| status.end.is_none())
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         status.end.clone().expect("ended")
     }
 

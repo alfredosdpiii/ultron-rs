@@ -65,9 +65,9 @@ pub fn palette_from_theme(json: &theme::ThemeJson, name: &str) -> Result<Diagram
     let colors: HashMap<String, String> = theme::resolved_css_colors(json, name)?.into_iter().collect();
     let color = |token: &str| colors.get(token).cloned().unwrap_or_default();
     let text = color(Fg::Text.name());
-    let dark = theme::hex_to_rgb(&text)
-        .map(|(r, g, b)| theme::theme_for_rgb(r, g, b) == theme::TerminalTheme::Light)
-        .unwrap_or(!theme::is_light_theme(name));
+    let dark = theme::hex_to_rgb(&text).map_or(!theme::is_light_theme(name), |(r, g, b)| {
+        theme::theme_for_rgb(r, g, b) == theme::TerminalTheme::Light
+    });
     let export = theme::theme_export_colors(json);
     let page = export.page_bg.unwrap_or_else(|| defaults(dark).page.to_string());
     let mut vars = vec![

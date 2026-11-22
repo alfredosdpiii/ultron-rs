@@ -38,7 +38,7 @@ impl Transport for Fake {
             std::thread::spawn(move || {
                 sink(Incoming::Message(
                     json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-                ))
+                ));
             });
         } else {
             let _ = self.sent.lock().unwrap().send(message.clone());

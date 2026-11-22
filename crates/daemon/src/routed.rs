@@ -72,7 +72,11 @@ impl Conn {
                 return false;
             }
         };
-        let written = self.stream.lock().unwrap_or_else(|e| e.into_inner()).write_all(&frame);
+        let written = self
+            .stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .write_all(&frame);
         if written.is_err() {
             self.close();
             return false;
@@ -85,16 +89,18 @@ impl Conn {
         let _ = self
             .stream
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .shutdown(std::net::Shutdown::Both);
     }
 
     fn active(&self) -> MutexGuard<'_, HashMap<String, Active>> {
-        self.active.lock().unwrap_or_else(|e| e.into_inner())
+        self.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn subscriptions(&self) -> MutexGuard<'_, HashMap<String, Subscription>> {
-        self.subscriptions.lock().unwrap_or_else(|e| e.into_inner())
+        self.subscriptions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Deliver one plain update to a subscription: buffered until its response, encoded after.
@@ -178,9 +184,7 @@ impl Hub {
         log_path: PathBuf,
         on_connections: Box<dyn Fn(usize) + Send + Sync>,
     ) -> Arc<Hub> {
-        let cwd = std::env::current_dir()
-            .map(|d| d.display().to_string())
-            .unwrap_or_default();
+        let cwd = std::env::current_dir().map_or_default(|d| d.display().to_string());
         let mut sessions = catalog::list(&session_dir);
         sessions.sort_by(|a, b| a.id.cmp(&b.id).then(a.created_at.cmp(&b.created_at)));
         let sessions: Vec<Value> = sessions.iter().map(|m| m.summary(&server_id)).collect();
@@ -204,7 +208,7 @@ impl Hub {
     }
 
     fn router(&self) -> MutexGuard<'_, Router> {
-        self.router.lock().unwrap_or_else(|e| e.into_inner())
+        self.router.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn list(&self) -> Vec<Meta> {
@@ -227,7 +231,7 @@ impl Hub {
     pub fn refresh(&self) {
         let sessions = self.summaries();
         let revision = {
-            let mut revision = self.revision.lock().unwrap_or_else(|e| e.into_inner());
+            let mut revision = self.revision.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             *revision += 1;
             *revision
         };
@@ -417,7 +421,12 @@ impl Hub {
     fn reattach(&self, session_id: &str, path: &PathBuf, conns: Vec<u64>) {
         let back = self.manager.wait_restart(path, RESTART_WAIT).is_some();
         for id in conns {
-            let conn = self.conns.lock().unwrap_or_else(|e| e.into_inner()).get(&id).cloned();
+            let conn = self
+                .conns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&id)
+                .cloned();
             if let Some(conn) = conn.filter(|_| back) {
                 let _ = self.serialized(|| {
                     if self.router().routes.reconnecting(id, session_id) {
@@ -439,14 +448,14 @@ impl Hub {
         let conn = self
             .conns
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&conn_id)
             .cloned();
         if let Some(conn) = conn {
             let ended: Vec<String> = conn
                 .session_subscriptions
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .drain()
                 .collect();
             let mut subscriptions = conn.subscriptions();
@@ -489,7 +498,7 @@ impl Hub {
     }
 
     fn serialized<T>(&self, operation: impl FnOnce() -> T) -> T {
-        let _guard = self.mutations.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = self.mutations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         operation()
     }
 
@@ -657,9 +666,11 @@ impl Hub {
                     hub.resolve(id)?;
                     let paths: Vec<String> = request["packagePaths"]
                         .as_array()
-                        .map(|p| p.iter().filter_map(Value::as_str).map(str::to_string).collect())
-                        .unwrap_or_default();
-                    *conn.prepared_plugins.lock().unwrap_or_else(|e| e.into_inner()) = Some(paths);
+                        .map_or_default(|p| p.iter().filter_map(Value::as_str).map(str::to_string).collect());
+                    *conn
+                        .prepared_plugins
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(paths);
                     Ok(Some(presentation_facet_data()))
                 })
             })
@@ -669,7 +680,7 @@ impl Hub {
                     if conn
                         .prepared_plugins
                         .lock()
-                        .unwrap_or_else(|e| e.into_inner())
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .is_none()
                     {
                         return Err(ServiceError::internal("No Session plugin selection is prepared"));
@@ -689,7 +700,11 @@ impl Hub {
     }
 
     fn connection_count_changed(&self) {
-        let count = self.conns.lock().unwrap_or_else(|e| e.into_inner()).len();
+        let count = self
+            .conns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
         (self.on_connections)(count);
     }
 
@@ -724,7 +739,7 @@ impl Hub {
         });
         self.conns
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(conn.id, conn.clone());
         self.connection_count_changed();
         self.read_loop(&conn, stream);
@@ -735,14 +750,22 @@ impl Hub {
             let id = conn.id;
             std::thread::spawn(move || hub.release(id, attachment, false));
         }
-        if let Some(endpoint) = conn.services.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        if let Some(endpoint) = conn
+            .services
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             endpoint.dispose();
         }
         let operations: Vec<String> = conn.active().drain().filter_map(|(_, a)| a.operation).collect();
         for operation in operations {
             self.manager.cancel_operation(&operation);
         }
-        self.conns.lock().unwrap_or_else(|e| e.into_inner()).remove(&conn.id);
+        self.conns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&conn.id);
         self.connection_count_changed();
     }
 
@@ -790,7 +813,7 @@ impl Hub {
                             return self.fail(conn, "version", message);
                         }
                         let provider = Arc::new(self.server_services(conn));
-                        *conn.services.lock().unwrap_or_else(|e| e.into_inner()) =
+                        *conn.services.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
                             Some(Arc::new(Endpoint::new(provider)));
                         if !conn.send(&ServerMessage::Hello {
                             version: PROTOCOL_VERSION,
@@ -910,12 +933,16 @@ impl Hub {
                 {
                     conn.subscriptions().remove(sub);
                 }
-                respond(&conn, &id, subscription.as_deref(), result, &hub)
+                respond(&conn, &id, subscription.as_deref(), result, &hub);
             }
         };
         match target {
             RpcTarget::Server { .. } => {
-                let endpoint = conn.services.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let endpoint = conn
+                    .services
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
                 let result = match endpoint {
                     Some(endpoint) => endpoint.invoke(&parsed, conn.publisher()),
                     None => Err(ServiceError::internal("Server services are not attached")),
@@ -946,7 +973,7 @@ impl Hub {
                 if let Some(sub) = &subscription {
                     conn.session_subscriptions
                         .lock()
-                        .unwrap_or_else(|e| e.into_inner())
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .insert(sub.clone());
                 }
                 let operation =
@@ -974,7 +1001,7 @@ impl Hub {
         let conns: Vec<Arc<Conn>> = self
             .conns
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .cloned()
             .collect();

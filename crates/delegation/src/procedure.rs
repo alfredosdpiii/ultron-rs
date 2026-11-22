@@ -292,7 +292,7 @@ fn parse_segment(value: &Value, index: usize) -> Result<Segment, String> {
         None => DEFAULT_MAX_ITERS,
         Some(value) => value
             .as_u64()
-            .filter(|n| (1..=MAX_ITERS as u64).contains(n))
+            .filter(|n| (1..=u64::from(MAX_ITERS)).contains(n))
             .ok_or_else(|| format!("{at}.max_iters must be an integer from 1 to {MAX_ITERS}"))?
             as u32,
     };
@@ -480,7 +480,7 @@ pub fn coverage(name: &str, version: &str, current: Option<&Procedure>, runs: &[
         outcomes.insert(outcome, count.into());
     }
     let segments: Vec<Value> = current
-        .map(|procedure| {
+        .map_or_default(|procedure| {
             procedure
                 .segments
                 .iter()
@@ -503,8 +503,7 @@ pub fn coverage(name: &str, version: &str, current: Option<&Procedure>, runs: &[
                     })
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     let never_passed: Vec<Value> = segments
         .iter()
         .filter(|segment| segment["passed"] == 0)

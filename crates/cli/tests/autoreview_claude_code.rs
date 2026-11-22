@@ -168,7 +168,7 @@ impl World {
                 serde_json::from_str(&line).unwrap()
             })
             .collect();
-        requests.sort_by_key(|r| r.to_string());
+        requests.sort_by_key(std::string::ToString::to_string);
         requests
     }
 }
@@ -197,7 +197,7 @@ fn shown(stdout: &str, work: &str) -> Value {
                 json["timing"][key]
                     .as_array_mut()
                     .unwrap()
-                    .sort_by_key(|v| v.to_string());
+                    .sort_by_key(std::string::ToString::to_string);
             }
             json
         }
@@ -231,7 +231,7 @@ fn assert_case(world: &World, name: &str) {
     let work = world.work.display().to_string();
     let stderr = stderr_lines(&stderr, &work);
     assert_eq!(
-        code as i64,
+        i64::from(code),
         expected["code"].as_i64().unwrap(),
         "{name}: exit; stderr {stderr:?}"
     );

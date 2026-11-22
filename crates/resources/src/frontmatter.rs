@@ -52,7 +52,7 @@ pub fn string_field<'a>(frontmatter: &'a Yaml, key: &str) -> Option<&'a str> {
 /// A YAML value as JSON (keys as text; aliases and bad values become null).
 pub fn to_json(value: &Yaml) -> Value {
     match value {
-        Yaml::Real(text) => text.parse::<f64>().map(Value::from).unwrap_or(Value::Null),
+        Yaml::Real(text) => text.parse::<f64>().map_or(Value::Null, Value::from),
         Yaml::Integer(number) => Value::from(*number),
         Yaml::String(text) => Value::String(text.clone()),
         Yaml::Boolean(flag) => Value::Bool(*flag),

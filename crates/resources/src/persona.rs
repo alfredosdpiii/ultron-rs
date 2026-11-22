@@ -118,7 +118,7 @@ impl Chain {
     /// An assistant message ended (a transcript message as stored): its tool calls count, and its text, when it has
     /// any, is the turn's final text so far.
     pub fn assistant_message(&mut self, message: &Value) {
-        let blocks = message["content"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let blocks = message["content"].as_array().map_or_default(Vec::as_slice);
         self.tool_calls += blocks.iter().filter(|b| b["type"] == "toolCall").count();
         let text = blocks
             .iter()

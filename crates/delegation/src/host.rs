@@ -508,19 +508,14 @@ impl Delegation {
     /// stopped by the budget gate) fails with the limit text rather than whatever the stopped run left behind.
     /// `reason(task_id)` is that text while the child's root is spent.
     pub fn set_limit_reason(&self, reason: LimitReason) {
-        *self.inner.limit_reason.lock().unwrap_or_else(PoisonError::into_inner) = Some(reason);
+        *jsrt::sync::lock(&self.inner.limit_reason) = Some(reason);
     }
 
     fn with_limit_reason(&self, id: &str, result: Value) -> Value {
         if result["status"] != "failed" {
             return result;
         }
-        let hook = self
-            .inner
-            .limit_reason
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
+        let hook = jsrt::sync::lock(&self.inner.limit_reason).clone();
         match hook.and_then(|reason| reason(id)) {
             Some(reason) if result["error"] != reason.as_str() => {
                 let mut result = result;
@@ -534,27 +529,22 @@ impl Delegation {
     /// Lets `rlm.spawn(fork=True)` start a child on its caller's conversation: `hook` names where (the conversation
     /// so far, before the call still running), which the runner receives as [`ChildRun::fork_at`].
     pub fn set_fork_point(&self, hook: crate::fork::ForkPointHook) {
-        *self.inner.fork_point.lock().unwrap_or_else(PoisonError::into_inner) = Some(hook);
+        *jsrt::sync::lock(&self.inner.fork_point) = Some(hook);
     }
 
     /// Where `rlm.progress` reads a running child's transcript (none: it reports levels from no activity).
     pub fn set_transcripts(&self, hook: crate::progress::TranscriptHook) {
-        *self.inner.transcripts.lock().unwrap_or_else(PoisonError::into_inner) = Some(hook);
+        *jsrt::sync::lock(&self.inner.transcripts) = Some(hook);
     }
 
     /// Read the model of spawns that name none from `source` at each spawn (TS `childModel` as a function: a
     /// changed setting applies to the next subagent); by default they name none.
     pub fn set_child_model(&self, source: ChildModelSource) {
-        *self.inner.child_model.lock().unwrap_or_else(PoisonError::into_inner) = source;
+        *jsrt::sync::lock(&self.inner.child_model) = source;
     }
 
     fn child_model(&self) -> Option<String> {
-        let source = self
-            .inner
-            .child_model
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
+        let source = jsrt::sync::lock(&self.inner.child_model).clone();
         source()
     }
 
@@ -571,26 +561,26 @@ impl Delegation {
     /// `rootSpawn`: this host's root is itself a subagent, `level` levels deep, that may create `allowance` more
     /// levels (`None`: unlimited). Nesting limits and children's levels count from it.
     pub fn set_root_spawn(&self, level: u32, allowance: Option<i64>) {
-        let mut root = self.inner.root.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut root = jsrt::sync::lock(&self.inner.root);
         root.level = level;
         root.allowance = allowance;
     }
 
     /// `rootFinish`: the root's own `rlm.finish` goes to `finish` (its parent's host) instead of being refused.
     pub fn set_root_finish(&self, finish: RootFinish) {
-        self.inner.root.lock().unwrap_or_else(PoisonError::into_inner).finish = Some(finish);
+        jsrt::sync::lock(&self.inner.root).finish = Some(finish);
     }
 
     /// Who sees each subagent's end (`onTaskEnd(publicRecord(task), info)`): its terminal journal record (id, key,
     /// definition, state, result, parentId?). Observers never affect the result.
     pub fn on_task_end(&self, observer: TaskEndObserver) {
-        *self.inner.on_task_end.lock().unwrap_or_else(PoisonError::into_inner) = Some(observer);
+        *jsrt::sync::lock(&self.inner.on_task_end) = Some(observer);
     }
 
     /// Tell `observer` of each subagent `rlm.spawn` admits, on the spawning request's thread before the child starts
     /// (an external root charges the child's work to the turn that spawned it).
     pub fn on_spawn(&self, observer: SpawnObserver) {
-        *self.inner.on_spawn.lock().unwrap_or_else(PoisonError::into_inner) = Some(observer);
+        *jsrt::sync::lock(&self.inner.on_spawn) = Some(observer);
     }
 
     /// `merged(task, status)`: keep how a child's merge ended and tell the observer.
@@ -867,7 +857,7 @@ impl Delegation {
         let Some(target) = target else {
             return Err("rlm.merge needs a working directory, and this session has none".into());
         };
-        let _serial = self.inner.merging.lock().unwrap_or_else(PoisonError::into_inner);
+        let _serial = jsrt::sync::lock(&self.inner.merging);
         Ok(self.merge_children(
             &children,
             &target,
@@ -1076,7 +1066,7 @@ impl Delegation {
     fn spawn(&self, payload: &Map<String, Value>, parent: Option<&str>, lane: &str) -> Result<Value, String> {
         jsrt::payload::fields(payload, &["prompt", "kwargs"])?;
         let limit = self.inner.spawn_depth;
-        let root = self.inner.root.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let root = jsrt::sync::lock(&self.inner.root).clone();
         let (depth, allowance) = {
             let state = sync::lock(&self.inner.state);
             let children: Vec<String> = state.line(parent).into_iter().filter(|id| state.is_child(id)).collect();
@@ -1124,12 +1114,7 @@ impl Delegation {
         let contract = SpawnContract::parse(kwargs)?.map(Arc::new);
         let context = SpawnContext::of(kwargs.get("context"), kwargs.get("fork"))?;
         let fork = context == SpawnContext::Fork;
-        let fork_hook = self
-            .inner
-            .fork_point
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
+        let fork_hook = jsrt::sync::lock(&self.inner.fork_point).clone();
         if fork && fork_hook.is_none() {
             return Err("rlm.spawn fork=True is not available when subagents run as external processes".into());
         }
@@ -1303,7 +1288,7 @@ impl Delegation {
                 state
                     .workspace_of(Some(&task_id), None)
                     .map(|dir| dir.display().to_string()),
-                inherited.map(wt::worktree_env).unwrap_or_default(),
+                inherited.map_or_default(wt::worktree_env),
                 match note {
                     Some(note) => format!("{prompt}\n\n{note}"),
                     None => prompt,
@@ -1333,12 +1318,7 @@ impl Delegation {
                 task.lane_name = Some(lane_name);
             }
         }
-        let observer = self
-            .inner
-            .on_spawn
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
+        let observer = jsrt::sync::lock(&self.inner.on_spawn).clone();
         if let Some(observer) = observer {
             observer(&task_id, parent, lane);
         }
@@ -1516,7 +1496,7 @@ impl Delegation {
                 task.before.clone(),
                 task.git_baseline.clone(),
                 state.workspace_of(Some(id), self.inner.workspace.as_deref()),
-                state.worktree_of(Some(id)).map(wt::worktree_env).unwrap_or_default(),
+                state.worktree_of(Some(id)).map_or_default(wt::worktree_env),
             )
         };
         let diff = match (&before, &baseline, &workspace) {
@@ -1618,8 +1598,7 @@ impl Delegation {
                 let declared: Vec<String> = verdict
                     .as_ref()
                     .and_then(|v| v["changed_files"].as_array())
-                    .map(|files| files.iter().filter_map(|f| f.as_str().map(String::from)).collect())
-                    .unwrap_or_default();
+                    .map_or_default(|files| files.iter().filter_map(|f| f.as_str().map(String::from)).collect());
                 let diff = diff_snapshots(before, after)?;
                 let mut check = check_files(&declared, &before.root, before, after, &diff, &explained, &concurrent);
                 if verdict.is_none() {
@@ -1684,15 +1663,13 @@ impl Delegation {
             (before.root.clone(), before.clone(), explained)
         };
         let after = snapshot_workspace(&root);
-        diff_snapshots(&before, &after)
-            .map(|diff| {
-                diff.changed
-                    .into_iter()
-                    .filter(|path| !explained.contains(path))
-                    .take(100)
-                    .collect()
-            })
-            .unwrap_or_default()
+        diff_snapshots(&before, &after).map_or_default(|diff| {
+            diff.changed
+                .into_iter()
+                .filter(|path| !explained.contains(path))
+                .take(100)
+                .collect()
+        })
     }
 
     /// Other started tasks whose runs overlapped this one in the same working directory, outside its own line
@@ -1795,21 +1772,11 @@ impl Delegation {
                 Err(error) => return Err(error),
             };
             if let Some(event) = &event {
-                let _ = self
-                    .inner
-                    .events
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .send(event.clone());
+                let _ = jsrt::sync::lock(&self.inner.events).send(event.clone());
             }
             event
         };
-        let observer = self
-            .inner
-            .on_task_end
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
+        let observer = jsrt::sync::lock(&self.inner.on_task_end).clone();
         if let (Some(observer), Some(record)) = (observer, &ended) {
             observer(record);
         }
@@ -2001,12 +1968,7 @@ impl Delegation {
                 })
                 .collect()
         };
-        let hook = self
-            .inner
-            .transcripts
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
+        let hook = jsrt::sync::lock(&self.inner.transcripts).clone();
         let now = (self.inner.now)();
         running
             .into_iter()
@@ -2176,13 +2138,7 @@ impl Delegation {
 
     fn finish_request(&self, mut payload: Map<String, Value>, parent: Option<&str>) -> Result<Value, String> {
         if parent.is_none() {
-            let finish = self
-                .inner
-                .root
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .finish
-                .clone();
+            let finish = jsrt::sync::lock(&self.inner.root).finish.clone();
             if let Some(finish) = finish {
                 return finish(payload);
             }
@@ -2214,8 +2170,7 @@ impl Delegation {
             let problems = task
                 .contract
                 .as_ref()
-                .map(|contract| contract.returns_problems(&verdict["outputs"]))
-                .unwrap_or_default();
+                .map_or_default(|contract| contract.returns_problems(&verdict["outputs"]));
             if problems.is_empty() {
                 Ok(verdict)
             } else {

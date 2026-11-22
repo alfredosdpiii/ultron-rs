@@ -168,7 +168,7 @@ impl GitWatcher {
                 while jobs.try_next().is_some() {}
                 let next = probe.probe();
                 let changed = {
-                    let mut cur = shared.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut cur = shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     let changed = *cur != next;
                     *cur = next;
                     changed
@@ -190,7 +190,10 @@ impl GitWatcher {
 
     /// The latest snapshot (cheap clone; never waits on git).
     pub fn snapshot(&self) -> GitSnapshot {
-        self.snapshot.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Stop after the in-flight refresh.

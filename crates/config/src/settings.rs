@@ -247,7 +247,7 @@ pub struct SettingsManager {
 impl SettingsManager {
     /// `SettingsManager.create(cwd, agentDir, { projectTrusted })`.
     pub fn create(cwd: &Path, agent_dir: &Path, project_trusted: bool) -> Self {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        let home = std::env::var_os("HOME").map_or_default(PathBuf::from);
         let base = std::env::current_dir().unwrap_or_default();
         let cwd = resolve(&cwd.to_string_lossy(), &base, &home);
         let agent_dir = resolve(&agent_dir.to_string_lossy(), &base, &home);

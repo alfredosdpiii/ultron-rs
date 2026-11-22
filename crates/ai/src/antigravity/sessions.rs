@@ -17,10 +17,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot};
 
 /// Idle eviction for live `agy` processes (30 min); evicted sessions can still reattach via ACP `session/load`.
-const IDLE: Duration = Duration::from_secs(1800);
+const IDLE: Duration = Duration::from_mins(30);
 const MAX_LIVE: usize = 8;
 /// Archived (process-stopped) sessions kept for ACP `session/load` reattachment.
-const ARCHIVE_TTL: Duration = Duration::from_secs(24 * 3600);
+const ARCHIVE_TTL: Duration = Duration::from_hours(24);
 const MAX_ARCHIVED: usize = 32;
 
 type Outcome = io::Result<(Vec<AssistantContent>, Usage)>;
@@ -537,7 +537,7 @@ fn tool_result(result: &ToolResultMessage, trailing: &[Message]) -> Value {
                     match block {
                         UserContent::Text(text) => content.push(json!({"type": "text", "text": text.text})),
                         UserContent::Image(image) => {
-                            content.push(json!({"type": "image", "data": image.data, "mimeType": image.mime_type}))
+                            content.push(json!({"type": "image", "data": image.data, "mimeType": image.mime_type}));
                         }
                     }
                 }

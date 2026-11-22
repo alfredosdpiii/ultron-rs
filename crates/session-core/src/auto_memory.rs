@@ -35,7 +35,7 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use protocol::custom_types::RECALLED_MEMORY;
@@ -83,7 +83,7 @@ pub struct AutoMemory {
 
 /// How long a session stays quiet before its tail is distilled without waiting for it to close: a durable session may
 /// stay open for days, and most never compact.
-pub const IDLE_RETAIN: Duration = Duration::from_secs(10 * 60);
+pub const IDLE_RETAIN: Duration = Duration::from_mins(10);
 
 impl AutoMemory {
     /// From the merged `settings` (`memory.autoRecall`, `memory.autoRetain`: a boolean decides) and whether the
@@ -101,18 +101,13 @@ impl AutoMemory {
 
     /// Whether recall runs now (on, and not paused after a failure).
     pub fn recall_ready(&self) -> bool {
-        self.recall
-            && self
-                .paused_until
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .is_none_or(|until| Instant::now() >= until)
+        self.recall && jsrt::sync::lock(&self.paused_until).is_none_or(|until| Instant::now() >= until)
     }
 
     /// Whether to keep the tail now: once per quiet stretch, when the session has been quiet ([`IDLE_RETAIN`]) since
     /// it was last `active` (as of `now`).
     pub fn idle_due(&self, active: bool, now: Instant) -> bool {
-        let mut quiet = self.quiet.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut quiet = jsrt::sync::lock(&self.quiet);
         match *quiet {
             _ if active || !self.retain => *quiet = (None, false),
             (None, _) => *quiet = (Some(now), false),
@@ -127,11 +122,11 @@ impl AutoMemory {
 
     /// A failed or slow recall: the [`PAUSE_AFTER`]th in a row pauses recall.
     fn pause(&self) {
-        let mut failures = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut failures = jsrt::sync::lock(&self.failures);
         *failures += 1;
         if *failures >= PAUSE_AFTER {
             *failures = 0;
-            *self.paused_until.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now() + PAUSE);
+            *jsrt::sync::lock(&self.paused_until) = Some(Instant::now() + PAUSE);
         }
     }
 
@@ -165,7 +160,7 @@ impl AutoMemory {
         });
         match rx.recv_timeout(RECALL_TIMEOUT) {
             Ok(Ok((found, briefs))) => {
-                *self.failures.lock().unwrap_or_else(PoisonError::into_inner) = 0;
+                *jsrt::sync::lock(&self.failures) = 0;
                 Recalled {
                     found: found
                         .into_iter()
@@ -981,7 +976,7 @@ mod tests {
             through: through.into(),
             source: SOURCE.into(),
             context: "Session tail.".into(),
-            recalled_ids: recalled_ids.iter().map(|id| id.to_string()).collect(),
+            recalled_ids: recalled_ids.iter().map(std::string::ToString::to_string).collect(),
             recalled_text: "- (project) Tests run under nice. [fact 42]".into(),
         }
     }

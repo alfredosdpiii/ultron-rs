@@ -324,7 +324,11 @@ pub fn install_services(app: &mut App, path_var: Option<String>) -> std::io::Res
     if qol.notifications {
         let out: Arc<Mutex<Vec<String>>> = app.side_writes();
         let sink = ProcessSink::new(
-            move |data: &str| out.lock().unwrap_or_else(|e| e.into_inner()).push(data.to_string()),
+            move |data: &str| {
+                out.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(data.to_string());
+            },
             path_var,
         );
         let service = NotificationService::spawn(Notifier::detect(), sink)?;

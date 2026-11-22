@@ -31,7 +31,7 @@ impl LoginSlot {
     /// already ended ignores it.
     pub fn reply(&self, id: u64, answer: Option<String>) {
         let sender = {
-            let mut logins = self.logins.lock().unwrap_or_else(|e| e.into_inner());
+            let mut logins = self.logins.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(login) = logins.get_mut(&id) else {
                 return;
             };
@@ -47,12 +47,20 @@ impl LoginSlot {
 
     fn start(&self, id: u64, signal: AbortSignal) {
         let login = Login { signal, reply: None };
-        self.logins.lock().unwrap_or_else(|e| e.into_inner()).insert(id, login);
+        self.logins
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, login);
     }
 
     /// Login `id` waits for an answer on `sender`; false when it is no longer running.
     fn prompting(&self, id: u64, sender: tokio::sync::oneshot::Sender<Option<String>>) -> bool {
-        match self.logins.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&id) {
+        match self
+            .logins
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(&id)
+        {
             Some(login) => {
                 login.reply = Some(sender);
                 true
@@ -62,12 +70,18 @@ impl LoginSlot {
     }
 
     fn end(&self, id: u64) {
-        self.logins.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        self.logins
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id);
     }
 
     /// Whether login `id` is still running (tests).
     pub fn running(&self, id: u64) -> bool {
-        self.logins.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&id)
+        self.logins
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&id)
     }
 }
 
@@ -99,7 +113,7 @@ pub fn open_browser(env: &Env, url: &str) {
         (env.var)("PATH"),
         Some(env.home.display().to_string()),
         config::browser::opener_vars(&*env.var),
-    )(url)
+    )(url);
 }
 
 type Send = Arc<dyn Fn(LaneEvent) + std::marker::Send + Sync>;

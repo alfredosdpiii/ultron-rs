@@ -47,18 +47,13 @@ pub fn last_assistant_text(manager: &SessionManager) -> Option<String> {
         str_of(m, "role") == Some("assistant")
             && !(str_of(m, "stopReason") == Some("aborted") && m["content"].as_array().is_none_or(Vec::is_empty))
     })?;
-    Some(
-        last["content"]
-            .as_array()
-            .map(|blocks| {
-                blocks
-                    .iter()
-                    .filter(|b| b["type"] == "text")
-                    .filter_map(|b| b["text"].as_str())
-                    .collect()
-            })
-            .unwrap_or_default(),
-    )
+    Some(last["content"].as_array().map_or_default(|blocks| {
+        blocks
+            .iter()
+            .filter(|b| b["type"] == "text")
+            .filter_map(|b| b["text"].as_str())
+            .collect()
+    }))
 }
 
 /// `get_fork_messages`: every user message entry (any branch) with its text, when it has text.
@@ -103,7 +98,7 @@ pub fn stats(manager: &SessionManager, session_file: Option<&str>, session_id: &
         match str_of(entry, "type") {
             Some("usage") => totals.add(&entry["usage"]),
             Some("branch_summary" | "compaction") if entry.get("usage").is_some_and(|u| !u.is_null()) => {
-                totals.add(&entry["usage"])
+                totals.add(&entry["usage"]);
             }
             _ => {}
         }

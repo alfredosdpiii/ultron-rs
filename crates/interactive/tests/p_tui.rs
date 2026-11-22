@@ -918,7 +918,7 @@ fn controller(
     custom: Option<&std::path::Path>,
 ) -> interactive::theme_setup::ThemeController {
     let registry = theme::registry::ThemeRegistry::new(
-        custom.map(std::path::Path::to_path_buf).unwrap_or_default(),
+        custom.map_or_default(std::path::Path::to_path_buf),
         ColorMode::Truecolor,
     );
     interactive::theme_setup::ThemeController::new(registry, setting.map(str::to_string), colorfgbg)

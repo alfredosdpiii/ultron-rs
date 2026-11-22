@@ -120,7 +120,7 @@ pub fn tool_flag_warnings(parsed: &Args) -> Vec<String> {
             Some(tools) => BUILTINS
                 .iter()
                 .filter(|name| tools.iter().any(|t| t == *name))
-                .map(|name| name.to_string())
+                .map(std::string::ToString::to_string)
                 .collect(),
         }
     };
@@ -239,14 +239,13 @@ pub fn tool_env_warnings(env: &Env) -> Vec<String> {
     let native: Vec<&str> = configured
         .and_then(|c| c.get("native"))
         .and_then(serde_json::Value::as_array)
-        .map(|names| {
+        .map_or_default(|names| {
             names
                 .iter()
                 .filter_map(serde_json::Value::as_str)
                 .filter(|name| !name.trim().is_empty())
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     if !native.is_empty() {
         warnings.push(format!(
             "The extensionTools.native setting ({}) is ignored: {extension_tools}",
@@ -273,7 +272,7 @@ mod tests {
 
     #[test]
     fn cli_startup_offline_flag_or_env_sets_offline_for_the_run_and_its_workers() {
-        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let args = |a: &[&str]| a.iter().map(std::string::ToString::to_string).collect::<Vec<_>>();
         let plain = offline_env(&args(&["-p", "x"]), &env_with(&[]));
         assert_eq!((plain.var)(config::env::OFFLINE_ENV), None);
         assert!(worker_env(&plain).is_empty());
@@ -306,7 +305,8 @@ mod tests {
 
     #[test]
     fn cli_startup_tool_flags_map_onto_the_rlm_only_tool_list() {
-        let parse = |a: &[&str]| crate::args::parse_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let parse =
+            |a: &[&str]| crate::args::parse_args(&a.iter().map(std::string::ToString::to_string).collect::<Vec<_>>());
         assert!(tool_flag_warnings(&parse(&["x"])).is_empty());
         assert!(tool_flag_warnings(&parse(&["--no-builtin-tools"])).is_empty());
         assert!(tool_flag_warnings(&parse(&["--tools", "rlm"])).is_empty());

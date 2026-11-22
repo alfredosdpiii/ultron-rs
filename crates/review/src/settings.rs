@@ -417,7 +417,7 @@ pub fn resolve_config(settings: &AutoreviewSettings, fallbacks: &ModelFallbacks,
         ack_lines: settings
             .ack_lines
             .clone()
-            .unwrap_or_else(|| DEFAULT_ACK_LINES.iter().map(|line| line.to_string()).collect()),
+            .unwrap_or_else(|| DEFAULT_ACK_LINES.iter().map(std::string::ToString::to_string).collect()),
         ack_art: resolve_ack_art(settings.ack_art.as_ref(), logo),
         signature: settings.signature.unwrap_or(true),
         learn: settings.learn.unwrap_or(true),
@@ -588,17 +588,13 @@ pub fn saved(global: &Map<String, Value>) -> Map<String, Value> {
     put("pollSeconds", count("pollSeconds"));
     put("concurrency", count("concurrency"));
     put("model", model("model"));
-    let finder_models: Vec<Value> = c
-        .get("finderModels")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| config::settings::model_ref(Some(item)))
-                .map(Value::from)
-                .collect()
-        })
-        .unwrap_or_default();
+    let finder_models: Vec<Value> = c.get("finderModels").and_then(Value::as_array).map_or_default(|items| {
+        items
+            .iter()
+            .filter_map(|item| config::settings::model_ref(Some(item)))
+            .map(Value::from)
+            .collect()
+    });
     put(
         "finderModels",
         (!finder_models.is_empty()).then_some(Value::Array(finder_models)),

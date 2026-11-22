@@ -146,7 +146,7 @@ fn provider(base: &Path, fd: PathBuf) -> CombinedAutocompleteProvider {
 
 fn editor(provider: Box<dyn AutocompleteProvider>) -> Editor {
     let keys = KeybindingsManager::new(tui_keybindings(), Vec::new(), KeyContext::default());
-    let mut e = Editor::new(keys, Box::new(|s| s.to_string()), 0);
+    let mut e = Editor::new(keys, Box::new(std::string::ToString::to_string), 0);
     e.set_autocomplete_provider(provider);
     e
 }

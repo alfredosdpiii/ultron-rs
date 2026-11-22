@@ -130,7 +130,7 @@ fn non_zero(pairs: &[(&str, f64)]) -> String {
 }
 
 fn entries(value: &Value) -> Vec<(&String, &Value)> {
-    value.as_object().map(jsrt::json::object_entries).unwrap_or_default()
+    value.as_object().map_or_default(jsrt::json::object_entries)
 }
 
 fn apis_line(apis: &Value) -> String {

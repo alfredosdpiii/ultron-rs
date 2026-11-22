@@ -190,7 +190,12 @@ impl ControlServer {
         if self.closed.swap(true, Ordering::SeqCst) {
             return;
         }
-        for stream in self.connections.lock().unwrap_or_else(|p| p.into_inner()).drain(..) {
+        for stream in self
+            .connections
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+        {
             let _ = stream.shutdown(std::net::Shutdown::Both);
         }
         if let Some(registry) = &self.registry {
@@ -208,7 +213,7 @@ impl Drop for ControlServer {
 }
 
 fn write_line(stream: &Mutex<UnixStream>, value: &Value) {
-    let mut stream = stream.lock().unwrap_or_else(|p| p.into_inner());
+    let mut stream = stream.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let _ = stream.write_all(format!("{value}\n").as_bytes());
 }
 
@@ -228,7 +233,10 @@ pub fn listen(socket: &Path, handle: ControlHandler) -> Result<ControlServer, St
             }
             let Ok(stream) = stream else { continue };
             if let Ok(clone) = stream.try_clone() {
-                conns.lock().unwrap_or_else(|p| p.into_inner()).push(clone);
+                conns
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(clone);
             }
             let handle = handle.clone();
             std::thread::spawn(move || serve_connection(stream, handle));
@@ -259,7 +267,7 @@ fn serve_connection(stream: UnixStream, handle: ControlHandler) {
         if line.len() > MAX_CONTROL_LINE {
             let _ = writer
                 .lock()
-                .unwrap_or_else(|p| p.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .shutdown(std::net::Shutdown::Both);
             return;
         }

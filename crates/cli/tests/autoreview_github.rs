@@ -32,7 +32,7 @@ fn env_for(dir: &Path) -> cli::Env {
 }
 
 fn run(env: &cli::Env, overrides: &Overrides, args: &[&str]) -> (i32, String, String) {
-    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    let args: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let code = run_command_with(&args, env, overrides, &mut out, &mut err);
     (code, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())

@@ -55,14 +55,18 @@ struct Screen {
 impl Screen {
     fn start(env: &Env) -> std::io::Result<Screen> {
         let (sender, events) = mpsc::channel();
-        *INPUT_SINK.lock().unwrap_or_else(|e| e.into_inner()) = Some(sender.clone());
+        *INPUT_SINK.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sender.clone());
         INPUT_PAUSED.store(false, std::sync::atomic::Ordering::SeqCst);
         INPUT_PUMP.call_once(|| {
             let (tx, rx) = mpsc::channel();
             interactive::run::spawn_gated_input(tx, Arc::clone(&INPUT_PAUSED));
             std::thread::spawn(move || {
                 let send = |ev: Ev| {
-                    if let Some(sink) = INPUT_SINK.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                    if let Some(sink) = INPUT_SINK
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_ref()
+                    {
                         let _ = sink.send(ev);
                     }
                 };

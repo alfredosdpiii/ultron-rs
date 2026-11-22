@@ -127,7 +127,7 @@ impl LiveInstall {
             env.push((kernel::env::PYTHON_ENV.into(), python));
         }
         let mut all = vec!["--session-dir".to_string(), self.sessions().display().to_string()];
-        all.extend(args.iter().map(|a| a.to_string()));
+        all.extend(args.iter().map(std::string::ToString::to_string));
         let options = RpcClientOptions {
             program: env!("CARGO_BIN_EXE_ultron-acceptance").into(),
             cwd: Some(self.project()),
@@ -203,7 +203,7 @@ fn keys(value: &Value) -> Vec<String> {
                         if text.len() >= 8
                             && (lower.contains("key") || lower.contains("token") || lower.contains("auth")) =>
                     {
-                        out.push(text.clone())
+                        out.push(text.clone());
                     }
                     _ => out.extend(keys(value)),
                 }

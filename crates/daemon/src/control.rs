@@ -29,7 +29,7 @@ impl LineWriter {
         let line = encode_control_line(message)?;
         self.0
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .write_all(line.as_bytes())
     }
 
@@ -37,7 +37,7 @@ impl LineWriter {
         let _ = self
             .0
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .shutdown(std::net::Shutdown::Both);
     }
 

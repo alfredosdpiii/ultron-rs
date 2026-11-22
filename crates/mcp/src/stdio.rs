@@ -120,7 +120,10 @@ impl StdioTransport {
             if left.is_zero() {
                 return false;
             }
-            guard = condvar.wait_timeout(guard, left).unwrap_or_else(|p| p.into_inner()).0;
+            guard = condvar
+                .wait_timeout(guard, left)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
         }
         true
     }

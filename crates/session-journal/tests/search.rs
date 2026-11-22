@@ -161,7 +161,9 @@ fn session_journal_grep_searches_the_main_branch_of_a_cwd_newest_first() {
 #[test]
 fn session_journal_grep_scopes_by_cwd_branch_role_session_and_time() {
     let store = store();
-    let terms = |terms: &[&str]| Matcher::terms(&terms.iter().map(|t| t.to_string()).collect::<Vec<_>>()).unwrap();
+    let terms = |terms: &[&str]| {
+        Matcher::terms(&terms.iter().map(std::string::ToString::to_string).collect::<Vec<_>>()).unwrap()
+    };
     let sessions = |found: search::Found| found.hits.into_iter().map(|h| h.session).collect::<Vec<_>>();
 
     let mut every_cwd = query(terms(&["retry", "fix"]));
@@ -321,7 +323,7 @@ fn session_journal_search_reads_pi_named_tips_and_never_writes() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), torn, "the file is untouched");
     assert_eq!(
         std::fs::metadata(&path).unwrap().modified().unwrap(),
-        UNIX_EPOCH + Duration::from_secs(3_000)
+        UNIX_EPOCH + Duration::from_mins(50)
     );
 }
 

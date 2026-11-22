@@ -79,7 +79,7 @@ fn cli_watch_once_plain_draws_the_session_over_its_socket() {
     };
     let args: Vec<String> = ["--once", "--plain", "--width", "80", "--socket"]
         .iter()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .chain([socket.display().to_string()])
         .collect();
     let mut out = Vec::new();

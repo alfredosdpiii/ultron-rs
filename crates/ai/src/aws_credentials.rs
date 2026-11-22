@@ -304,7 +304,7 @@ fn expand_home(path: &str, env: Option<&ProviderEnv>) -> PathBuf {
 }
 
 fn read_ini(path: &Path) -> Profiles {
-    std::fs::read_to_string(path).map(|t| parse_ini(&t)).unwrap_or_default()
+    std::fs::read_to_string(path).map_or_default(|t| parse_ini(&t))
 }
 
 /// `loadSharedConfigFiles`: the config file (through `getConfigData`) and the credentials file.
@@ -1014,7 +1014,7 @@ async fn sso_session_token(input: &ChainInput<'_>, profile_name: &str) -> std::r
     };
     let last = last_refresh_attempts()
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(session_name)
         .copied()
         .unwrap_or(0);
@@ -1028,7 +1028,7 @@ async fn sso_session_token(input: &ChainInput<'_>, profile_name: &str) -> std::r
     }
     last_refresh_attempts()
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(session_name.clone(), input.now_ms);
     match refresh_sso_token(input, &region, &token).await {
         Some((new_token, expires_in, refresh_token)) => {
@@ -1338,9 +1338,10 @@ async fn from_instance_metadata(input: &ChainInput<'_>) -> Result<AwsCredentials
             }
         }
     };
-    let base = reqwest::Url::parse(&endpoint)
-        .map(|url| url.origin().ascii_serialization())
-        .unwrap_or_else(|_| endpoint.trim_end_matches('/').to_string());
+    let base = reqwest::Url::parse(&endpoint).map_or_else(
+        |_| endpoint.trim_end_matches('/').to_string(),
+        |url| url.origin().ascii_serialization(),
+    );
     let mut token_headers = HeaderMap::new();
     token_headers.insert("x-aws-ec2-metadata-token-ttl-seconds".into(), "21600".into());
     let token = match metadata_get(input, "PUT", format!("{base}/latest/api/token"), token_headers).await {

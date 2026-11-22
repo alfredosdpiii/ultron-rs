@@ -31,7 +31,7 @@ fn no_env(_: &str) -> Option<String> {
 }
 
 fn strings(items: &[&str]) -> Vec<String> {
-    items.iter().map(|s| s.to_string()).collect()
+    items.iter().map(std::string::ToString::to_string).collect()
 }
 
 /// `HELP` of ultron-claude-launcher.test.ts (a `claude --help` excerpt).
@@ -60,7 +60,7 @@ fn build(
     var: &dyn Fn(&str) -> Option<String>,
     skip: Vec<String>,
 ) -> claude_root::launcher::ClaudeLaunch {
-    let flags: BTreeSet<String> = flags.iter().map(|f| f.to_string()).collect();
+    let flags: BTreeSet<String> = flags.iter().map(std::string::ToString::to_string).collect();
     let self_cmd = SelfCommand {
         command: "node".into(),
         args: strings(&["cli.js"]),

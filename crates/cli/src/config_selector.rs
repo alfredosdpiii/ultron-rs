@@ -188,8 +188,7 @@ fn target(entry: &str) -> &str {
 fn strings(value: Option<&Value>) -> Vec<String> {
     value
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
-        .unwrap_or_default()
+        .map_or_default(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
 }
 
 fn to_value(list: Vec<String>) -> Value {

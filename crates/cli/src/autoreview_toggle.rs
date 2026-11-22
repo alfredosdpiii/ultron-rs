@@ -71,8 +71,7 @@ pub fn autoreview(request: AutoreviewRequest, env: &Env, platform: &str, run: Ru
             let accounts: Vec<&str> = saved
                 .get("accounts")
                 .and_then(Value::as_array)
-                .map(|accounts| accounts.iter().filter_map(Value::as_str).collect())
-                .unwrap_or_default();
+                .map_or_default(|accounts| accounts.iter().filter_map(Value::as_str).collect());
             let reviewing_as = if accounts.is_empty() {
                 "every logged-in gh account".to_string()
             } else {

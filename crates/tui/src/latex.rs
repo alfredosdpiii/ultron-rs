@@ -973,7 +973,7 @@ impl<'a> Parser<'a> {
             for row in split_rows(&body) {
                 let cells: Vec<&str> = row.split('&').collect();
                 let source = if aligned_at {
-                    cells.chunks(2).map(|c| c.concat()).collect::<Vec<_>>().join(" ")
+                    cells.chunks(2).map(<[&str]>::concat).collect::<Vec<_>>().join(" ")
                 } else {
                     cells.concat()
                 };

@@ -135,8 +135,10 @@ fn after(argv: &[String], from: usize, fragment: &str) -> usize {
     let words: Vec<&str> = fragment.split(' ').collect();
     (from..=argv.len().saturating_sub(words.len()))
         .find(|&at| argv[at..at + words.len()].iter().zip(&words).all(|(a, b)| a == b))
-        .map(|at| at + words.len())
-        .unwrap_or_else(|| panic!("`{fragment}` not found after word {from} of {}", argv.join(" ")))
+        .map_or_else(
+            || panic!("`{fragment}` not found after word {from} of {}", argv.join(" ")),
+            |at| at + words.len(),
+        )
 }
 
 /// `fragments` occur in `argv` in this order: later mounts cover earlier ones, so the order is the policy.

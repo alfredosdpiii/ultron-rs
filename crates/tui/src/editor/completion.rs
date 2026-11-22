@@ -70,7 +70,7 @@ impl Worker {
                     if reply.send((id, answer)).is_err() {
                         return;
                     }
-                    let wake = waker.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    let wake = waker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
                     if let Some(wake) = wake {
                         wake();
                     }
@@ -313,7 +313,11 @@ impl Editor {
     /// Runs on the worker thread whenever a background answer is ready; the owner then calls `poll_autocomplete`
     /// (typically by waking its event loop).
     pub fn set_autocomplete_waker(&mut self, waker: impl Fn() + Send + Sync + 'static) {
-        *self.worker.waker.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(waker));
+        *self
+            .worker
+            .waker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(waker));
     }
 
     /// Whether a request's answer is still being computed off the UI thread.

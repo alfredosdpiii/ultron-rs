@@ -233,7 +233,7 @@ fn mcp_oauth_sign_in_refresh_and_sign_out_match_typescript() {
             "providerToken" => *provider_token.lock().unwrap() = expected["token"].as_str().unwrap().into(),
             "serverLog" => {
                 got["log"] =
-                    serde_json::from_str(&http.get(format!("{origin}/__log")).send().unwrap().text().unwrap()).unwrap()
+                    serde_json::from_str(&http.get(format!("{origin}/__log")).send().unwrap().text().unwrap()).unwrap();
             }
             "shutdown" => gateway.close(),
             other => panic!("unknown op {other}"),

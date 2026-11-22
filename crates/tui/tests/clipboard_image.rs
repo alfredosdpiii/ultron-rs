@@ -289,7 +289,7 @@ fn tui_clipboard_image_wsl_powershell_fallback() {
     let text_only: &[(&str, &[u8])] = &[("wl-paste --list-types", b"text/plain\n")];
     let calls = |extra: &[&str]| -> Vec<String> {
         let mut c = vec!["wl-paste --list-types".to_string()];
-        c.extend(extra.iter().map(|s| s.to_string()));
+        c.extend(extra.iter().map(std::string::ToString::to_string));
         c
     };
     let wslpath = "wslpath -w <file>";

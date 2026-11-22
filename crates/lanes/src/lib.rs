@@ -79,7 +79,7 @@ impl PoolLimits {
         PoolLimits {
             max_live,
             max_pinned: Some(max_live / 2),
-            idle_ttl: Duration::from_secs(30 * 60),
+            idle_ttl: Duration::from_mins(30),
             snapshot_path,
             now: None,
         }
@@ -222,13 +222,7 @@ struct CellHandler {
 
 impl HostHandler for CellHandler {
     fn handle(&self, kind: &str, payload: Map<String, Value>, signal: &Signal) -> Result<Value, String> {
-        let observer = self
-            .lanes
-            .inner
-            .observer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
+        let observer = jsrt::sync::lock(&self.lanes.inner.observer).clone();
         if let Some(observer) = observer {
             observer(kind);
         }
@@ -281,7 +275,7 @@ impl Lanes {
     }
 
     fn pool(&self) -> MutexGuard<'_, KernelPool<LaneKernel>> {
-        self.inner.pool.lock().unwrap_or_else(PoisonError::into_inner)
+        jsrt::sync::lock(&self.inner.pool)
     }
 
     /// Lease `lane`'s kernel, starting a new one (which restores the lane's snapshot) when it has none live. Idle
@@ -370,24 +364,19 @@ impl Lanes {
 
     /// Every host request a cell makes is shown to `observer` first.
     pub fn observe_requests(&self, observer: RequestObserver) {
-        *self.inner.observer.lock().unwrap_or_else(PoisonError::into_inner) = Some(observer);
+        *jsrt::sync::lock(&self.inner.observer) = Some(observer);
     }
 
     /// `rlm.pool` reports, inspected or asked by a cell, are completed by `extra`.
     pub fn extend_pool_stats(&self, extra: PoolExtra) {
-        *self.inner.pool_extra.lock().unwrap_or_else(PoisonError::into_inner) = Some(extra);
+        *jsrt::sync::lock(&self.inner.pool_extra) = Some(extra);
     }
 
     /// `rlm.pool`: live kernels, their leases, pins and idle time, and how many evictions happened, plus what
     /// [`Lanes::extend_pool_stats`] adds.
     pub fn pool_stats(&self) -> Value {
         let mut stats = self.kernel_pool_stats();
-        let extra = self
-            .inner
-            .pool_extra
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
+        let extra = jsrt::sync::lock(&self.inner.pool_extra).clone();
         if let Some(extra) = extra {
             extra(&mut stats);
         }
@@ -773,12 +762,7 @@ impl Lanes {
         };
         self.inner.changed.notify_all();
         if let Some(event) = event {
-            let _ = self
-                .inner
-                .events
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .send(event);
+            let _ = jsrt::sync::lock(&self.inner.events).send(event);
         }
     }
 

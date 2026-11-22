@@ -66,8 +66,7 @@ impl ThemeRegistry {
             });
         }
         let mut files: Vec<String> = std::fs::read_dir(&self.custom_dir)
-            .map(|dir| dir.flatten().filter_map(|e| e.file_name().into_string().ok()).collect())
-            .unwrap_or_default();
+            .map_or_default(|dir| dir.flatten().filter_map(|e| e.file_name().into_string().ok()).collect());
         files.sort();
         for file in files.iter().filter(|f| f.ends_with(".json")) {
             let path = self.custom_dir.join(file);

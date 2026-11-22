@@ -131,14 +131,11 @@ fn delegation_a_typed_task_whose_end_is_refused_settles_its_usage() {
         )
         .unwrap_err();
     let ledger = usage.document().unwrap();
-    let open: Vec<&Value> = ledger["roots"]
-        .as_object()
-        .map(|roots| {
-            roots
-                .values()
-                .flat_map(|root| root["reservations"].as_array().into_iter().flatten())
-                .collect()
-        })
-        .unwrap_or_default();
+    let open: Vec<&Value> = ledger["roots"].as_object().map_or_default(|roots| {
+        roots
+            .values()
+            .flat_map(|root| root["reservations"].as_array().into_iter().flatten())
+            .collect()
+    });
     assert!(open.is_empty(), "open reservations: {ledger}");
 }

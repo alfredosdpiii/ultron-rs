@@ -15,7 +15,7 @@ pub const DEFAULT_SKILL_NUDGE: u64 = 8;
 
 /// `nudgeThreshold`: unset or off is 0 (disabled), `on` is `enabled`, a whole number is itself.
 fn nudge_threshold(value: Option<&str>, enabled: u64) -> u64 {
-    let raw = value.map(|v| v.trim().to_lowercase()).unwrap_or_default();
+    let raw = value.map_or_default(|v| v.trim().to_lowercase());
     if raw.is_empty() || ["off", "false", "no"].contains(&raw.as_str()) {
         return 0;
     }

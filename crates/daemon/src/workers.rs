@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
-const WORKER_STARTUP_TIMEOUT: Duration = Duration::from_millis(15_000);
+const WORKER_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 /// What each megabyte of the session file adds to [`WORKER_STARTUP_TIMEOUT`]: opening replays the whole journal (a
 /// 98 MB one took about 15 s on an idle disk, and every restart timed out on a busy one).
 const WORKER_STARTUP_PER_MB: Duration = Duration::from_millis(250);
@@ -161,14 +161,14 @@ pub struct Terminated {
 impl Terminated {
     fn resolve(&self, error: Option<String>) {
         {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.is_some() {
                 return;
             }
             *state = Some(error.clone());
         }
         self.changed.notify_all();
-        let listeners = std::mem::take(&mut *self.listeners.lock().unwrap_or_else(|e| e.into_inner()));
+        let listeners = std::mem::take(&mut *self.listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         for listener in listeners {
             listener(error.clone());
         }
@@ -176,23 +176,34 @@ impl Terminated {
 
     /// Run `listener` once it resolves (now, if it already has).
     pub fn on_resolve(&self, listener: Box<dyn FnOnce(Option<String>) + Send>) {
-        let state = self.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         match state {
             Some(error) => listener(error),
-            None => self.listeners.lock().unwrap_or_else(|e| e.into_inner()).push(listener),
+            None => self
+                .listeners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(listener),
         }
     }
 
     pub fn is_resolved(&self) -> bool {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
     }
 
     fn wait(&self, timeout: Duration) -> bool {
-        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (state, _) = self
             .changed
             .wait_timeout_while(state, timeout, |s| s.is_none())
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.is_some()
     }
 }
@@ -615,7 +626,7 @@ impl Manager {
             inner = self
                 .changed
                 .wait_timeout(inner, deadline - now)
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .0;
         }
     }
@@ -676,7 +687,7 @@ impl Manager {
     fn model_for(&self, path: &PathBuf) -> WorkerModel {
         self.session_models
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(path)
             .cloned()
             .unwrap_or_else(|| self.model.clone())
@@ -732,7 +743,10 @@ impl Manager {
             ));
         }
         {
-            let mut models = self.session_models.lock().unwrap_or_else(|e| e.into_inner());
+            let mut models = self
+                .session_models
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match options {
                 Some(options) => models.insert(meta.path.clone(), self.model.with_session_options(options)),
                 None => models.remove(&meta.path),

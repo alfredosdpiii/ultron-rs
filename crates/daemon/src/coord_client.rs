@@ -96,8 +96,7 @@ impl CoordinatorConnection {
         }
         let peers = registered["peers"]
             .as_array()
-            .map(|p| p.iter().filter_map(Value::as_str).map(str::to_string).collect())
-            .unwrap_or_default();
+            .map_or_default(|p| p.iter().filter_map(Value::as_str).map(str::to_string).collect());
         let connection = Arc::new(CoordinatorConnection {
             server_connection_id,
             control_path: control_path.to_path_buf(),
@@ -135,7 +134,7 @@ impl CoordinatorConnection {
     }
 
     fn peers(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
-        self.peer_ids.lock().unwrap_or_else(|e| e.into_inner())
+        self.peer_ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn peer_snapshot(&self) -> HashSet<String> {
@@ -143,24 +142,24 @@ impl CoordinatorConnection {
     }
 
     fn mark_lost(&self) {
-        if *self.closed.lock().unwrap_or_else(|e| e.into_inner()) {
+        if *self.closed.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
             return;
         }
         let (lost, changed) = &self.lost;
-        *lost.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        *lost.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         changed.notify_all();
     }
 
     pub fn was_lost(&self) -> bool {
-        *self.lost.0.lock().unwrap_or_else(|e| e.into_inner())
+        *self.lost.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Block until the coordinator connection is lost (not merely closed by this server).
     pub fn wait_lost(&self) {
         let (lost, changed) = &self.lost;
-        let mut guard = lost.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = lost.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         while !*guard {
-            guard = changed.wait(guard).unwrap_or_else(|e| e.into_inner());
+            guard = changed.wait(guard).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 
@@ -173,7 +172,7 @@ impl CoordinatorConnection {
     }
 
     pub fn close(&self) {
-        *self.closed.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        *self.closed.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         self.writer.shutdown();
     }
 }

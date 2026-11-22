@@ -46,7 +46,7 @@ pub static INBOX: LazyLock<Doc> = LazyLock::new(|| {
             conversation(DocumentHistory::Latest, DocumentFork::Initial),
             |_| json!({ "items": [] }),
         )
-        .checkpoint_when(|_, value, _, _| Ok(value["items"].as_array().is_none_or(|items| items.is_empty()))),
+        .checkpoint_when(|_, value, _, _| Ok(value["items"].as_array().is_none_or(std::vec::Vec::is_empty))),
     )
 });
 

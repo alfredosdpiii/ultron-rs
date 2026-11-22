@@ -293,7 +293,7 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
                         .split(',')
                         .map(|name| model(name.trim().to_string()))
                         .collect::<Result<_, _>>()?,
-                )
+                );
             }
             "--plan-model" => parsed.plan_model = Some(model(value()?)?),
             "--plan-thinking" => parsed.plan_thinking = Some(thinking(value()?)?),
@@ -536,8 +536,7 @@ pub fn offline_json(
     let findings: Vec<Value> = result
         .get("findings")
         .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
+        .map_or_default(Vec::as_slice)
         .iter()
         .enumerate()
         .map(|(index, finding)| {
@@ -635,8 +634,7 @@ pub fn offline_json(
     let assurance: Vec<String> = result
         .get("assurance")
         .and_then(Value::as_array)
-        .map(|items| items.iter().map(js_text).collect())
-        .unwrap_or_default();
+        .map_or_default(|items| items.iter().map(js_text).collect());
     let program = match result.get("program") {
         None | Some(Value::Null) => Value::Null,
         Some(program) => {
@@ -1051,7 +1049,7 @@ fn labels_command(
         std::fs::read_to_string(&path).map_err(|error| Failure::Error(format!("{}: {error}", path.display())))?;
     let labels: Labels =
         serde_json::from_str(&text).map_err(|error| Failure::Error(format!("{}: {error}", path.display())))?;
-    let base = path.parent().map(PathBuf::from).unwrap_or_default();
+    let base = path.parent().map_or_default(PathBuf::from);
     let mut cases = Vec::new();
     for case in labels.cases {
         let file = base.join(&case.record);
@@ -1654,22 +1652,19 @@ fn doctor(
             .map(|root| review::local::expand_path(root, &home))
             .collect();
         let checkout = review::local::find_checkout(&*runner, &roots, &target);
-        let environments = checkout
-            .as_deref()
-            .map(|dir| {
-                let listed = runner.run(
-                    &[python.clone(), script.clone(), "environments".into(), dir.into()],
-                    &review::runner::RunOptions {
-                        timeout_ms: Some(60_000),
-                        ..Default::default()
-                    },
-                );
-                match serde_json::from_str::<Value>(&last_line(&listed.stdout)) {
-                    Ok(Value::Array(items)) => items,
-                    _ => Vec::new(),
-                }
-            })
-            .unwrap_or_default();
+        let environments = checkout.as_deref().map_or_default(|dir| {
+            let listed = runner.run(
+                &[python.clone(), script.clone(), "environments".into(), dir.into()],
+                &review::runner::RunOptions {
+                    timeout_ms: Some(60_000),
+                    ..Default::default()
+                },
+            );
+            match serde_json::from_str::<Value>(&last_line(&listed.stdout)) {
+                Ok(Value::Array(items)) => items,
+                _ => Vec::new(),
+            }
+        });
         lent = Some((repo.clone(), checkout, environments));
     }
     let lent_lines: Vec<String> = match &lent {
@@ -1766,15 +1761,13 @@ fn doctor(
         lines.extend(prepared_lines);
         writeln!(out, "{}", lines.join("\n")).map_err(io)?;
     }
-    Ok(if ok { 0 } else { 1 })
+    Ok(i32::from(!ok))
 }
 
 /// The environment `prepareEnvironment` reads: PATH, where mise, uv and the toolchains are looked for (the
 /// processes it runs inherit the rest).
 fn prepare_vars(env: &Env) -> HashMap<String, String> {
-    (env.var)("PATH")
-        .map(|path| HashMap::from([("PATH".to_string(), path)]))
-        .unwrap_or_default()
+    (env.var)("PATH").map_or_default(|path| HashMap::from([("PATH".to_string(), path)]))
 }
 
 /// `prepareEnvironment` of `repo_dir` as the command line runs it: log lines to stderr.
@@ -1851,7 +1844,7 @@ fn prepare_command(
         ));
         writeln!(out, "{}", lines.join("\n")).map_err(io)?;
     }
-    Ok(if prepared.failures.is_empty() { 0 } else { 1 })
+    Ok(i32::from(!prepared.failures.is_empty()))
 }
 
 /// The doctor's lines about the prepared environment of the lent checkout: none without `--repo`.
@@ -1955,7 +1948,7 @@ fn reviewer_deps(
         runner: runner.clone(),
         tokens: Arc::new(
             review::accounts::TokenStore::new(runner.clone()).with_secret_sink(Arc::new(|token: &str| {
-                known_secrets().register_secret_values(&[Value::from(token)])
+                known_secrets().register_secret_values(&[Value::from(token)]);
             })),
         ),
         engine,
@@ -2068,11 +2061,7 @@ fn review_pull_request(
     } else {
         writeln!(out, "{}", outcome_text(&review::github::pull_key(&pull), &outcome)).map_err(io)?;
     }
-    Ok(if matches!(outcome.kind(), "posted" | "dry-run") {
-        0
-    } else {
-        1
-    })
+    Ok(i32::from(!matches!(outcome.kind(), "posted" | "dry-run")))
 }
 
 /// `once` (one poll cycle, then exit) and `run` (poll and review until SIGINT/SIGTERM): the daemon over every
@@ -2119,7 +2108,7 @@ fn daemon_command(
         }
         recorded
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(Value::Object(entry));
     });
     let daemon = review::daemon::Daemon::new(review::daemon::DaemonDeps {
@@ -2144,7 +2133,10 @@ fn daemon_command(
         daemon.once();
         lock.release();
         if parsed.json {
-            let reviews = outcomes.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let reviews = outcomes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             writeln!(out, "{}", jsrt::json::stringify(&json!({"reviews": reviews}))).map_err(io)?;
         }
         return Ok(0);

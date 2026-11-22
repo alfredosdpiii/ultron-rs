@@ -254,7 +254,7 @@ static INTERNED: LazyLock<Mutex<HashMap<String, &'static Model>>> = LazyLock::ne
 
 /// [`model`] with a `'static` lifetime for the built-in catalog lookup; each distinct valid id is built once.
 pub fn interned(id: &str) -> Option<&'static Model> {
-    let mut table = INTERNED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut table = jsrt::sync::lock(&INTERNED);
     if let Some(found) = table.get(id) {
         return Some(found);
     }

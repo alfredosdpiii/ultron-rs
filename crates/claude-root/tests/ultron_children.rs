@@ -111,7 +111,7 @@ impl Server {
         ]
         .iter()
         .chain(args)
-        .map(|a| a.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
         let (running, handlers) = start(&argv, &claude_root::Ctx { env: root.env(extra) }).unwrap();
         let (input, stdin) = std::io::pipe().unwrap();
@@ -327,7 +327,7 @@ fn claude_root_ultron_children_get_the_context_reminder() {
 fn wait_events(socket: &str) -> (i32, String) {
     let args: Vec<String> = ["wait-events", "--socket", socket]
         .iter()
-        .map(|a| a.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let code = claude_root::hooks::run(&args, &mut std::io::empty(), true, &|_| None, &mut out, &mut err);
@@ -384,8 +384,7 @@ fn first_user(body: &Value) -> String {
     body["messages"]
         .as_array()
         .and_then(|m| m.iter().find(|m| m["role"] == "user"))
-        .map(Value::to_string)
-        .unwrap_or_default()
+        .map_or_default(Value::to_string)
 }
 
 /// A cell that starts `rlm.collect([h])`, writes `gate` once the request is out, and prints what it returned.

@@ -92,19 +92,16 @@ impl Context {
 }
 
 fn joined(value: &Value) -> String {
-    value
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .map(|item| match item {
-                    Value::String(text) => text.clone(),
-                    other => jsrt::value::string(Some(other)),
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .unwrap_or_default()
+    value.as_array().map_or_default(|items| {
+        items
+            .iter()
+            .map(|item| match item {
+                Value::String(text) => text.clone(),
+                other => jsrt::value::string(Some(other)),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
 }
 
 /// typebox's `en_US` locale.

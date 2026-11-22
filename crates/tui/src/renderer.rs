@@ -75,12 +75,12 @@ impl Renderer {
             }
         }
 
-        if (self.previous_lines.is_empty() && !width_changed && !height_changed)
+        if self.previous_lines.is_empty()
             || width_changed
             || height_changed
             || (self.clear_on_shrink && lines.len() < self.max_lines_rendered)
         {
-            let clear = !(self.previous_lines.is_empty() && !width_changed && !height_changed);
+            let clear = !self.previous_lines.is_empty() || width_changed || height_changed;
             self.full_render(&mut out, lines, clear, cursor, width, height);
             return Ok(out);
         }

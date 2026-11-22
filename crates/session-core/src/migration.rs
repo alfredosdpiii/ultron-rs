@@ -602,7 +602,7 @@ struct PiClock {
 
 impl Clock for PiClock {
     fn now(&mut self) -> i64 {
-        *self.time.lock().unwrap_or_else(PoisonError::into_inner)
+        *jsrt::sync::lock(&self.time)
     }
     fn uuidv7(&mut self, at: i64) -> String {
         SystemClock.uuidv7(at)
@@ -669,7 +669,7 @@ pub fn import_pi_session_with(
 
     let now = jsrt::date::now_ms();
     let time = Arc::new(Mutex::new(parse_timestamp(header.get("timestamp"), now)));
-    let set_time = |at: i64| *time.lock().unwrap_or_else(PoisonError::into_inner) = at;
+    let set_time = |at: i64| *jsrt::sync::lock(&time) = at;
     let clock: SharedClock = Arc::new(Mutex::new(PiClock { time: time.clone() }));
     let repo = SessionRepo::new(sessions_root, clock);
     if let Some(existing) = repo.list(None).into_iter().find(|m| m.id == session_id) {
@@ -692,7 +692,7 @@ pub fn import_pi_session_with(
     let mut written = || -> Result<ImportResult, String> {
         let mut preserved: Vec<(String, usize)> = Vec::new();
         let mut imported = 0;
-        let mut at = *time.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut at = *jsrt::sync::lock(&time);
         for entry in tree.insertion_order(&split) {
             let id = id_of(&entry).to_string();
             let copied = copy_of.get(&id);
@@ -745,7 +745,7 @@ pub fn import_pi_session_with(
                 })
                 .collect();
             ledger.import_history(&usage_root, "pi", &calls)?;
-            let document = captured.lock().unwrap_or_else(PoisonError::into_inner).take();
+            let document = jsrt::sync::lock(&captured).take();
             if let Some(document) = document {
                 commit(
                     &mut session,

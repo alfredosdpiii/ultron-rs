@@ -607,7 +607,7 @@ impl ScheduleModule {
                 if s.active()
                     && s.next_due == Some(due)
                     && due <= self.now()
-                    && !s.until.is_some_and(|until| self.now() > until) =>
+                    && s.until.is_none_or(|until| self.now() <= until) =>
             {
                 match &s.operation {
                     Some(Operation::Pr(w)) => Some(self.github.poll(w)),

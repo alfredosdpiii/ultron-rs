@@ -769,7 +769,7 @@ impl Agents {
                 }
                 let id = prior["id"].as_str().unwrap_or_default().to_string();
                 Self::adopt(&mut state, prior);
-                let record = state.task(&id).map(|t| t.record.clone()).unwrap_or(Value::Null);
+                let record = state.task(&id).map_or(Value::Null, |t| t.record.clone());
                 return Ok((id, record));
             }
         }
@@ -1844,7 +1844,7 @@ impl Agents {
     }
 
     fn record(&self, id: &str) -> Value {
-        self.state().task(id).map(|t| t.record.clone()).unwrap_or(Value::Null)
+        self.state().task(id).map_or(Value::Null, |t| t.record.clone())
     }
 
     /// The result of a task this request admitted (or found by its key): awaited when live, else as stored.

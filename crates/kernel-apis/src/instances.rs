@@ -132,7 +132,7 @@ impl ApiModule for InstancesModule {
         let current = self.load(&mut state)?;
         let host = request.host;
         let caller = request.caller_task;
-        let now = self.now.as_ref().map(|now| now()).unwrap_or_else(|| host.now());
+        let now = self.now.as_ref().map_or_else(|| host.now(), |now| now());
         let payload = request.payload;
         match request.kind {
             "instances.retain" => {
@@ -196,8 +196,7 @@ impl ApiModule for InstancesModule {
                 let last = instance["invocations"]
                     .as_array()
                     .and_then(|items| items.last())
-                    .map(|item| item["task_id"].clone())
-                    .unwrap_or_else(|| instance["task_id"].clone());
+                    .map_or_else(|| instance["task_id"].clone(), |item| item["task_id"].clone());
                 let last_state = host
                     .tasks()?
                     .into_iter()

@@ -60,7 +60,7 @@ pub fn validate_refinement_content(kind: &str, content: &Value) -> Result<bool, 
             if !field(front, "name").is_some_and(|name| !name.is_empty() && kebab(name)) {
                 return Err("Skill frontmatter needs a kebab-case name".into());
             }
-            if !field(front, "description").is_some_and(|description| !description.is_empty()) {
+            if field(front, "description").is_none_or(str::is_empty) {
                 return Err("Skill frontmatter needs a description".into());
             }
             if jsrt::string::trim(body).is_empty() {

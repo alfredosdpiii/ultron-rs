@@ -70,10 +70,7 @@ fn get(url: &str) -> (u16, String) {
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
     let status = response.split_whitespace().nth(1).unwrap().parse().unwrap();
-    let body = response
-        .split_once("\r\n\r\n")
-        .map(|(_, b)| b.to_string())
-        .unwrap_or_default();
+    let body = response.split_once("\r\n\r\n").map_or_default(|(_, b)| b.to_string());
     (status, body)
 }
 

@@ -277,8 +277,7 @@ impl PromptMode {
             always_skills: settings
                 .get("alwaysSkills")
                 .and_then(Value::as_array)
-                .map(|names| names.iter().filter_map(Value::as_str).map(str::to_string).collect())
-                .unwrap_or_default(),
+                .map_or_default(|names| names.iter().filter_map(Value::as_str).map(str::to_string).collect()),
             persona: resources::persona::enabled(settings),
             ..PromptMode::default()
         }
@@ -567,8 +566,7 @@ fn initial_choice(flags: &ModelFlags, env: &Env, continuing: bool) -> Option<Mod
         None => all
             .get("enabledModels")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
-            .unwrap_or_default(),
+            .map_or_default(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()),
     };
     let (default_provider, default_model) = (text(settings.default_provider()), text(settings.default_model()));
     let choice = |model: Model, thinking: Option<String>| ModelChoice {
@@ -589,12 +587,11 @@ fn initial_choice(flags: &ModelFlags, env: &Env, continuing: bool) -> Option<Mod
     let levels = all
         .get("modelThinkingLevels")
         .and_then(Value::as_object)
-        .map(|m| {
+        .map_or_default(|m| {
             m.iter()
                 .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     let initial = ai::model_resolver::InitialSettings {
         default_provider,
         default_model_id: default_model,
@@ -885,7 +882,7 @@ impl Provider {
         let transport = match &self.live_transport {
             Some(live) => {
                 let idle = ai::http::http_idle_timeout(settings.settings().get("httpIdleTimeoutMs"));
-                let mut current = live.current.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut current = jsrt::sync::lock(&live.current);
                 if current.0 != idle {
                     *current = (idle, Arc::new(process_transport().with_idle_timeout(idle)));
                 }
@@ -1002,7 +999,7 @@ async fn until_aborted<T>(work: impl Future<Output = T>, signal: &AbortSignal) -
 
 /// How long a cell may run before its tool call returns with the cell still running (detached). Cells that park
 /// on a host-side wait detach at once; in a lane nothing wakes, others run as long as they need, as in TypeScript.
-const CELL_BUDGET: Duration = Duration::from_secs(24 * 60 * 60);
+const CELL_BUDGET: Duration = Duration::from_hours(24);
 
 /// How long a woken lane's cell holds its tool call by default before it continues in the background: short, so
 /// the user can always keep chatting (anything a cell waits on, `bash` included, yields with it).
@@ -1012,7 +1009,7 @@ const DEFAULT_CELL_YIELD_AFTER: Duration = Duration::from_secs(10);
 /// ends and its end arrives as a `cell_done` event. `0`, `off`, a negative or a non-finite number keep the cell in its
 /// tool call until it ends; an unreadable value is the default.
 pub fn cell_yield_after(raw: Option<&str>) -> Option<Duration> {
-    let raw = raw.map(|raw| raw.trim().to_lowercase()).unwrap_or_default();
+    let raw = raw.map_or_default(|raw| raw.trim().to_lowercase());
     if raw.is_empty() {
         return Some(DEFAULT_CELL_YIELD_AFTER);
     }
@@ -1170,7 +1167,7 @@ impl Rlm {
     async fn run_cell(&self, args: Value, signal: &AbortSignal) -> Result<AgentToolResult, String> {
         let note = Mutex::new(None);
         let result = self.run_routed_cell(args, signal, &note).await;
-        let Some(note) = note.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() else {
+        let Some(note) = jsrt::sync::lock(&note).take() else {
             return result;
         };
         match result {
@@ -1213,7 +1210,7 @@ impl Rlm {
                 .and_then(|started| started);
             let started = match started {
                 Ok(started) => {
-                    *note.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = started.note.clone();
+                    *jsrt::sync::lock(note) = started.note.clone();
                     Ok(started.cell)
                 }
                 Err(error) => Err(error),

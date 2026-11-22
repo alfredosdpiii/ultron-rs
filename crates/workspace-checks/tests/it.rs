@@ -214,3 +214,34 @@ fn no_non_exempt_inline_comments_in_src() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// Production code in `crates/*/src` (everything before `#[cfg(test)]`) must not call `.unwrap()`.
+#[test]
+fn no_unwrap_in_prod_src() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut files = Vec::new();
+    for entry in fs::read_dir(&crates).unwrap() {
+        rust_files(&entry.unwrap().path().join("src"), &mut files);
+    }
+    let mut hits = Vec::new();
+    for file in files {
+        let text = fs::read_to_string(&file).unwrap();
+        let prod = text.split("\n#[cfg(test)]").next().unwrap_or(&text);
+        let rel = file.strip_prefix(&crates).unwrap_or(&file).display();
+        for (idx, line) in prod.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("///") || trimmed.starts_with("//!") {
+                continue;
+            }
+            if line.contains(".unwrap()") {
+                hits.push(format!("crates/{rel}:{}: {}", idx + 1, trimmed));
+            }
+        }
+    }
+    hits.sort();
+    assert!(
+        hits.is_empty(),
+        "production .unwrap() calls found:\n{}",
+        hits.join("\n")
+    );
+}

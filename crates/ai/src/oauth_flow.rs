@@ -27,11 +27,10 @@ fn render_page(title: &str, heading: &str, message: &str, details: Option<&str>)
     let message = escape_html(message);
     let details = details
         .filter(|d| !d.is_empty())
-        .map(|d| format!("<div class=\"details\">{}</div>", escape_html(d)))
-        .unwrap_or_default();
+        .map_or_default(|d| format!("<div class=\"details\">{}</div>", escape_html(d)));
     let logo = LOGO_SVG;
     format!(
-        r##"<!doctype html>
+        r#"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -104,7 +103,7 @@ fn render_page(title: &str, heading: &str, message: &str, details: Option<&str>)
     {details}
   </main>
 </body>
-</html>"##
+</html>"#
     )
 }
 

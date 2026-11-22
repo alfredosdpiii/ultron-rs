@@ -86,7 +86,7 @@ impl Cancel {
             .0
             .changed
             .wait_while(state, |state| state.reason.is_none())
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.reason.clone().expect("cancelled")
     }
 
@@ -97,7 +97,7 @@ impl Cancel {
             .0
             .changed
             .wait_timeout_while(state, timeout, |state| state.reason.is_none())
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.reason.clone()
     }
 
@@ -235,7 +235,7 @@ impl<T: Clone + Send + 'static> Slot<T> {
                 .0
                 .1
                 .wait_while(slot, |slot| slot.is_none())
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             slot.clone().expect("settled")
         };
         if let Some((signal, id)) = registration {

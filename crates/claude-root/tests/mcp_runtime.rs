@@ -95,7 +95,7 @@ struct Server {
 
 impl Server {
     fn start(args: &[&str], env: RunEnv) -> Server {
-        let argv: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        let argv: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
         let (running, handlers) = start(&argv, &claude_root::Ctx { env }).unwrap();
         let (input, stdin) = std::io::pipe().unwrap();
         let (stdout, output) = std::io::pipe().unwrap();
@@ -239,7 +239,7 @@ fn claude_root_mcp_child_server_spawns_count_from_its_level_and_allowance() {
             allowance,
         ]
         .iter()
-        .map(|a| a.to_string())
+        .map(std::string::ToString::to_string)
         .collect()
     };
     let start = |level, allowance, env: RunEnv| {
@@ -501,7 +501,7 @@ fn claude_root_mcp_signal_shutdown_unregisters_and_closes_the_runtime() {
     );
     assert_eq!(server.cell("x = 41\nprint(x + 1)"), "42");
     let registry = root.path("r/ultron-claude");
-    let registered = || std::fs::read_dir(&registry).map(|d| d.count()).unwrap_or(0);
+    let registered = || std::fs::read_dir(&registry).map_or(0, std::iter::Iterator::count);
     assert_eq!(registered(), 1);
     // What the SIGTERM/SIGINT/SIGHUP handler runs before it exits (no signal is sent here).
     server.running.shutdown();
@@ -653,7 +653,7 @@ fn claude_root_mcp_keep_going_hooks_continue_working_runs_and_survive_a_restart(
         json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "Part 1 done."}]}}),
     ];
     let write = |lines: &[Value]| {
-        std::fs::write(&transcript, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap()
+        std::fs::write(&transcript, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
     };
     write(&lines);
     let env = root.env(&[("CLAUDE_CODE_SESSION_ID", "c-keep")]);

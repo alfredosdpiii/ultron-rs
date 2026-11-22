@@ -21,8 +21,7 @@ fn footer_of(result: &Value) -> String {
         other => other
             .as_array()
             .and_then(|b| b.last())
-            .map(|b| b["text"].as_str().unwrap_or_default().to_string())
-            .unwrap_or_default(),
+            .map_or_default(|b| b["text"].as_str().unwrap_or_default().to_string()),
     };
     text.rsplit('\n').next().unwrap_or_default().to_string()
 }

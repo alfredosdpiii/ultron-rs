@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub const COORDINATOR_PROTOCOL_VERSION: i64 = 4;
-const EMPTY_STARTUP_GRACE: Duration = Duration::from_millis(30_000);
+const EMPTY_STARTUP_GRACE: Duration = Duration::from_secs(30);
 const EMPTY_SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
 
 struct ServerPeer {

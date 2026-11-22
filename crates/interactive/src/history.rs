@@ -49,7 +49,7 @@ fn read_tail(path: &Path) -> std::io::Result<String> {
     file.read_to_end(&mut bytes)?;
     let mut text = String::from_utf8_lossy(&bytes).into_owned();
     if start > 0 {
-        text = text.split_once('\n').map(|x| x.1.to_string()).unwrap_or_default();
+        text = text.split_once('\n').map_or_default(|x| x.1.to_string());
     }
     Ok(text)
 }

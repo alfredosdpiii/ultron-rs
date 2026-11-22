@@ -19,7 +19,7 @@
 use crate::durable_apis::DurableApis;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Sends a shared-world request to the parent server: `(name, kind, payload)`; `name` is the requesting subagent's,
 /// `None` for this server's own root (the parent knows it by its token).
@@ -56,10 +56,7 @@ impl SharedWorld {
     /// Remember the name of the subagent an `rlm.spawn` answered with.
     pub fn spawned(&self, answer: &Value) {
         if let (Some(id), Some(name)) = (answer["rlm_child_id"].as_str(), answer["name"].as_str()) {
-            self.names
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(id.to_string(), name.to_string());
+            jsrt::sync::lock(&self.names).insert(id.to_string(), name.to_string());
         }
     }
 
@@ -68,9 +65,7 @@ impl SharedWorld {
         let Some(lanes::lane_names::LaneOwner::Child(id)) = lanes::lane_names::parse_lane(lane) else {
             return lane.to_string();
         };
-        self.names
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        jsrt::sync::lock(&self.names)
             .get(id)
             .cloned()
             .unwrap_or_else(|| format!("subagent-{id}"))

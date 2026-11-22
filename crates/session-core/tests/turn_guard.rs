@@ -166,7 +166,10 @@ fn session_core_turn_end_checks_setting_is_a_list_of_commands() {
     assert_eq!(parse(json!(null)).unwrap().len(), 0);
     let checks = parse(json!(["cargo fmt --check", {"run": "scripts/test.sh", "timeout_ms": 300000}])).unwrap();
     assert_eq!(
-        checks.iter().map(|c| c.label()).collect::<Vec<_>>(),
+        checks
+            .iter()
+            .map(delegation::spawn_contract::HostCheck::label)
+            .collect::<Vec<_>>(),
         ["run \"cargo fmt --check\"", "run \"scripts/test.sh\""]
     );
     assert_eq!(

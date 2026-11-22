@@ -352,7 +352,7 @@ impl Shared {
 
     /// Attach to session `id` (replacing the current one): its services subscribed, its transcript followed.
     fn attach(&self, id: &str) -> Result<(), String> {
-        let _attaching = self.attaching.lock().unwrap_or_else(|e| e.into_inner());
+        let _attaching = self.attaching.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let connection = {
             let mut state = self.lock();
             self.unsubscribe(&mut state);
@@ -372,13 +372,21 @@ impl Shared {
             .wait_attachment(|a| a.is_some_and(|a| a.session_id == id))
             .map_err(crate::lost::message)?;
         self.subscribe(&connection, id)?;
-        let kept = self.kept_op.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let kept = self
+            .kept_op
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         if let Some(op) = kept {
             let _ = connection
                 .session_target()
                 .and_then(|session| connection.call(session, protocol::names::SESSION_OPS, "op", json!([op])));
         }
-        let reconnector = self.radius.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let reconnector = self
+            .radius
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         if let Some(reconnector) = reconnector {
             reconnector.attachment_changed(Some(id));
         }
@@ -445,7 +453,7 @@ impl Shared {
         drop(
             self.changed
                 .wait_timeout(state, SUPERVISE)
-                .unwrap_or_else(|e| e.into_inner()),
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
     }
 
@@ -486,7 +494,7 @@ impl Shared {
             drop(
                 self.changed
                     .wait_timeout(state, SUPERVISE)
-                    .unwrap_or_else(|e| e.into_inner()),
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
             );
         }
     }
@@ -594,7 +602,11 @@ impl Shared {
         }
         self.changed.notify_all();
         (self.events)(radius_connection_event(ConnectionState::Disconnected));
-        let reconnector = self.radius.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let reconnector = self
+            .radius
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         if let Some(reconnector) = reconnector {
             reconnector.connection_state_changed(ConnectionState::Disconnected);
         }
@@ -616,12 +628,16 @@ impl Shared {
         });
         let session = Some(self.lock().session_id.clone()).filter(|id| !id.is_empty());
         let reconnector = RadiusClientReconnect::new(client, session, reattach, None);
-        *self.radius.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(reconnector));
+        *self.radius.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(reconnector));
     }
 
     /// Stop a Radius route's reconnector (`dispose()`).
     fn stop_radius_reconnector(&self) {
-        let reconnector = self.radius.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let reconnector = self
+            .radius
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         if let Some(reconnector) = reconnector {
             reconnector.dispose();
         }
@@ -899,7 +915,11 @@ impl SessionLink {
     /// the terminal's appearance the TUI detected.
     pub fn keep_op(&self, op: impl Into<Value>) -> CallResult {
         let op = op.into();
-        *self.shared.kept_op.lock().unwrap_or_else(|e| e.into_inner()) = Some(op.clone());
+        *self
+            .shared
+            .kept_op
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(op.clone());
         self.op(op)
     }
 

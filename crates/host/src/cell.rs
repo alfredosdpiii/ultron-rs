@@ -65,11 +65,7 @@ pub fn cell_output(result: &ExecutionResult, format: &CellFormat<'_>) -> Result<
             .as_ref()
             .map_or("Execution failed", |error| error.evalue.as_str());
         let summary = format!("{ename}: {evalue}");
-        let traceback = result
-            .error
-            .as_ref()
-            .map(|error| error.traceback.join("\n"))
-            .unwrap_or_default();
+        let traceback = result.error.as_ref().map_or_default(|error| error.traceback.join("\n"));
         let failure = if traceback.is_empty() {
             summary
         } else if traceback.ends_with(&summary) {

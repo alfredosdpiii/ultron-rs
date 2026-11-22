@@ -58,9 +58,7 @@ fn route(setup: &Setup, answer: fn(&str) -> String) {
                         rlm_call("delegate", "c1")
                     });
                 }
-                Ok(text_message(&answer(
-                    users.last().map(String::as_str).unwrap_or_default(),
-                )))
+                Ok(text_message(&answer(users.last().map_or_default(String::as_str))))
             })
         })
         .collect();
@@ -248,7 +246,7 @@ fn harness_chat_swarm_ask_returns_a_timeout_when_a_kept_child_never_answers() {
                         rlm_call("delegate", "c1")
                     });
                 }
-                let last = users.last().map(String::as_str).unwrap_or_default();
+                let last = users.last().map_or_default(String::as_str);
                 if last == "Stuck?" {
                     return Err(signal.wait());
                 }

@@ -69,10 +69,7 @@ fn sanitize(name: &str) -> String {
 /// `~/.ultron/projects/<sanitized basename>-<first 12 hex of sha256(root)>`.
 pub fn project_dir(home: &Path, root: &Path) -> PathBuf {
     let hex = &jsrt::hash::sha256_hex(root.as_os_str().as_encoded_bytes())[..12];
-    let name = root
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let name = root.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     ultron_home(home)
         .join("projects")
         .join(format!("{}-{hex}", sanitize(&name)))
@@ -167,10 +164,7 @@ fn read_records(dir: &Path, kind: &'static str, out: &mut Vec<Running>) {
     let mut names: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
     names.sort();
     for path in names {
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let name = path.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
         if !(name.starts_with("generation-") && name.ends_with(".json")) {
             continue;
         }
@@ -212,8 +206,7 @@ pub fn running(home: &Path, explicit: Option<&Path>) -> Vec<Running> {
     }
     read_records(&ultron_home(home).join("server"), "durable", &mut out);
     let mut projects: Vec<PathBuf> = std::fs::read_dir(ultron_home(home).join("projects"))
-        .map(|entries| entries.flatten().map(|e| e.path()).collect())
-        .unwrap_or_default();
+        .map_or_default(|entries| entries.flatten().map(|e| e.path()).collect());
     projects.sort();
     for dir in projects {
         read_records(&dir, "project", &mut out);

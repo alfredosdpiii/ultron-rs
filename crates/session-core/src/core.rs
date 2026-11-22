@@ -943,7 +943,7 @@ impl Core {
         let resume = open_operation.filter(|_| durable_records);
         let sessions_dir = session_root.join(session_journal::catalog::session_directory_name(&metadata.cwd));
         let trace = |label: &str| {
-            crate::startup_trace::trace_startup((env.var)(crate::startup_trace::TRACE_ENV).as_deref(), label)
+            crate::startup_trace::trace_startup((env.var)(crate::startup_trace::TRACE_ENV).as_deref(), label);
         };
         trace("worker.harness");
         let mut runtime = Runtime::new(&env, &mode, sessions_dir, services)?;
@@ -2069,7 +2069,7 @@ impl Core {
                     .config
                     .terminal_theme
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = Some(theme);
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(theme);
                 Ok(None)
             }
             Op::AbortRetry => {

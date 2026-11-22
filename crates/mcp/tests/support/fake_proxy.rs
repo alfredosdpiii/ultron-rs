@@ -110,7 +110,7 @@ fn serve(mut stream: TcpStream, tx: &mpsc::Sender<String>, auth_required: bool) 
     match method {
         "CONNECT" => respond(&mut stream, "403 Forbidden", "text/plain", ""),
         "POST" if line.contains("/mcp ") && auth_required && !authorized => {
-            respond(&mut stream, "401 Unauthorized", "text/plain", "")
+            respond(&mut stream, "401 Unauthorized", "text/plain", "");
         }
         "POST" if line.contains("/mcp ") => {
             let result = match message["method"].as_str() {

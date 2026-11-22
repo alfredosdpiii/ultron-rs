@@ -210,7 +210,7 @@ fn acceptance_a56_a_child_lane_sees_only_its_own_jobs_and_plain_bash_still_block
     assert_eq!(ok(&child, "await rlm.jobs()"), "[]");
     let refused = exec(&child, &format!("await rlm.job('{id}')"));
     assert_eq!(refused.status, Status::Error);
-    let evalue = refused.error.map(|e| e.evalue).unwrap_or_default();
+    let evalue = refused.error.map_or_default(|e| e.evalue);
     assert!(evalue.contains(&format!("Unknown shell job {id}")), "{evalue}");
     assert_eq!(ok(&main, &format!("(await rlm.job('{id}')).ok")), "True");
     // The child's own job is its own; the root lane sees every job.

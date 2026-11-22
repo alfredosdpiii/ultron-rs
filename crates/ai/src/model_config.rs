@@ -19,7 +19,7 @@ pub struct ModelConfig {
 impl ModelConfig {
     /// `ModelConfig.load`, expanding `~` against `$HOME`.
     pub fn load(models_json_path: Option<&str>) -> Self {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        let home = std::env::var_os("HOME").map_or_default(PathBuf::from);
         Self::load_with_home(models_json_path, &home)
     }
 

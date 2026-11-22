@@ -91,8 +91,7 @@ impl Transport for FakeTransport {
         let body = request
             .body
             .as_ref()
-            .map(|b| serde_json::from_slice(b).unwrap())
-            .unwrap_or(Value::Null);
+            .map_or(Value::Null, |b| serde_json::from_slice(b).unwrap());
         self.sent.lock().unwrap().push(Sent {
             url: request.url.clone(),
             headers: request.headers.clone(),

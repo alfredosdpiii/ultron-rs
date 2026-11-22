@@ -27,7 +27,7 @@ impl TraceStore for MemoryTraceStore {
     fn read(&self, key: &str) -> Option<Value> {
         self.documents
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(key)
             .cloned()
     }
@@ -35,7 +35,7 @@ impl TraceStore for MemoryTraceStore {
     fn write(&self, key: &str, document: &Value) -> Result<(), String> {
         self.documents
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(key.to_string(), document.clone());
         Ok(())
     }

@@ -206,8 +206,7 @@ impl KeybindingsManager {
         self.keys_by_id
             .iter()
             .find(|(id, _)| *id == keybinding)
-            .map(|(_, k)| k.clone())
-            .unwrap_or_default()
+            .map_or_default(|(_, k)| k.clone())
     }
 
     pub fn set_user_bindings(&mut self, user: UserBindings) {

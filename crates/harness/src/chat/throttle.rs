@@ -38,7 +38,7 @@ impl<T: Send + 'static> Throttle<T> {
                 loop {
                     let mut guard = lock(state);
                     while guard.pending.is_none() && !guard.stopped {
-                        guard = changed.wait(guard).unwrap_or_else(|poisoned| poisoned.into_inner());
+                        guard = changed.wait(guard).unwrap_or_else(std::sync::PoisonError::into_inner);
                     }
                     if guard.stopped {
                         return;
@@ -51,7 +51,7 @@ impl<T: Send + 'static> Throttle<T> {
                         }
                         guard = changed
                             .wait_timeout(guard, deadline - now)
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .0;
                     }
                     if guard.stopped {

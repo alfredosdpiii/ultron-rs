@@ -17,7 +17,7 @@ fn st(v: &Value) -> String {
 }
 
 fn list(v: &Value) -> Vec<Token> {
-    v.as_array().map(|a| a.iter().map(token).collect()).unwrap_or_default()
+    v.as_array().map_or_default(|a| a.iter().map(token).collect())
 }
 
 fn token(t: &Value) -> Token {

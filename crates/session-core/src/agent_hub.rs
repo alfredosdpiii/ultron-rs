@@ -168,7 +168,7 @@ impl TaskHost for SessionTasks<'_> {
     }
 
     fn unpin_lane(&self, lane: &str, holder: &str) {
-        self.host.unpin_lane(lane, holder)
+        self.host.unpin_lane(lane, holder);
     }
 }
 

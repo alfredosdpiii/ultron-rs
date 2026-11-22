@@ -564,7 +564,7 @@ pub fn run(
         code.store(exit, Ordering::SeqCst);
         let _ = end
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .send(Input::Event(Event::Signal(exit)));
     });
     let reader = std::thread::spawn(move || {

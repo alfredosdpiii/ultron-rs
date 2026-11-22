@@ -83,8 +83,7 @@ fn response_failure(model: &Model, url: &str, status: u16, body: &str) -> Failur
     let code_suffix = code
         .as_ref()
         .filter(|c| !c.is_empty())
-        .map(|c| format!(" ({c})"))
-        .unwrap_or_default();
+        .map_or_default(|c| format!(" ({c})"));
     let text = format!("{status} {status_text}: {}{code_suffix}", message.unwrap_or(body));
     let mut details = Map::new();
     details.insert("version".into(), json!(1));

@@ -192,11 +192,11 @@ fn protocol_message_decoder_scripts_match_typescript() {
                 (Some("client"), "end") => client.end().map(|()| Vec::new()),
                 (Some("client"), _) => client
                     .push(&unhex(op))
-                    .map(|ms| ms.iter().map(|m| m.to_value()).collect()),
+                    .map(|ms| ms.iter().map(protocol::ClientMessage::to_value).collect()),
                 (_, "end") => server.end().map(|()| Vec::new()),
                 _ => server
                     .push(&unhex(op))
-                    .map(|ms| ms.iter().map(|m| m.to_value()).collect()),
+                    .map(|ms| ms.iter().map(protocol::ServerMessage::to_value).collect()),
             };
             match expected(result) {
                 Ok(Json::Null) => assert_eq!(actual, Ok(Vec::new()), "{script}"),

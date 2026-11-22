@@ -87,7 +87,7 @@ pub fn validate_json_schema(value: &Value, path: &str) -> Result<(), String> {
             },
             "required" => string_array(item, &at)?,
             "enum" => {
-                if !item.as_array().is_some_and(|items| !items.is_empty()) {
+                if item.as_array().is_none_or(std::vec::Vec::is_empty) {
                     return Err(failure(&at, "must be a nonempty JSON array"));
                 }
             }

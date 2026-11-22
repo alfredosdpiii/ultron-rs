@@ -18,7 +18,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const AUTHORIZE_URL: &str = "https://openrouter.ai/auth";
 const TOKEN_URL: &str = "https://openrouter.ai/api/v1/auth/keys";
-const LOGIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const LOGIN_TIMEOUT: Duration = Duration::from_mins(5);
 const TOKEN_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 const CANCELLED: &str = "Login cancelled";
 /// `Number.MAX_SAFE_INTEGER`: the key never expires.
@@ -99,7 +99,7 @@ async fn exchange(
         Err(_) => Map::new(),
     };
     if !response.ok() {
-        let detail = error_detail(&body).map(|d| format!(": {d}")).unwrap_or_default();
+        let detail = error_detail(&body).map_or_default(|d| format!(": {d}"));
         return Err(format!(
             "OpenRouter OAuth key exchange failed (HTTP {}){detail}",
             response.status
@@ -172,7 +172,8 @@ impl CallbackServer {
         let shared = state.clone();
         let base = url.clone();
         tokio::spawn(async move {
-            let lock = |s: &Arc<Mutex<CallbackState>>| s.lock().unwrap_or_else(|e| e.into_inner()).settled;
+            let lock =
+                |s: &Arc<Mutex<CallbackState>>| s.lock().unwrap_or_else(std::sync::PoisonError::into_inner).settled;
             loop {
                 let accepted = tokio::select! {
                     accepted = listener.accept() => accepted,
@@ -191,13 +192,11 @@ impl CallbackServer {
                 let mut parts = head.split_whitespace();
                 let (method, target) = (parts.next().unwrap_or("GET"), parts.next().unwrap_or("/"));
                 let url = reqwest::Url::parse(&base).and_then(|b| b.join(target));
-                let expected = reqwest::Url::parse(&base)
-                    .map(|b| b.path().to_string())
-                    .unwrap_or_default();
+                let expected = reqwest::Url::parse(&base).map_or_default(|b| b.path().to_string());
                 let (status, html) = match url {
                     Ok(url) if method == "GET" && url.path() == expected => {
                         let param = |key: &str| url.query_pairs().find(|(k, _)| k == key).map(|(_, v)| v.into_owned());
-                        let claimed = shared.lock().unwrap_or_else(|e| e.into_inner()).claimed;
+                        let claimed = shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner).claimed;
                         if claimed || lock(&shared) {
                             (
                                 409,
@@ -207,19 +206,19 @@ impl CallbackServer {
                             let description = param("error_description").unwrap_or(error);
                             shared
                                 .lock()
-                                .unwrap_or_else(|e| e.into_inner())
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .finish(Err(format!("OpenRouter authorization failed: {description}")));
                             (
                                 400,
                                 oauth_error_html("OpenRouter authorization was denied.", Some(&description)),
                             )
                         } else if let Some(code) = param("code") {
-                            shared.lock().unwrap_or_else(|e| e.into_inner()).claimed = true;
+                            shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner).claimed = true;
                             match exchange(transport.as_ref(), &code, &verifier, signal.as_ref()).await {
                                 Ok(credential) => {
                                     shared
                                         .lock()
-                                        .unwrap_or_else(|e| e.into_inner())
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                                         .finish(Ok(Some(credential)));
                                     (
                                         200,
@@ -228,7 +227,10 @@ impl CallbackServer {
                                 }
                                 Err(error) => {
                                     let page = oauth_error_html("OpenRouter key exchange failed.", Some(&error));
-                                    shared.lock().unwrap_or_else(|e| e.into_inner()).finish(Err(error));
+                                    shared
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                        .finish(Err(error));
                                     (502, page)
                                 }
                             }
@@ -311,7 +313,7 @@ impl OpenRouterOAuth {
             ..
         } = server;
         let cancel_wait = || {
-            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if !state.claimed {
                 state.finish(Ok(None));
             }

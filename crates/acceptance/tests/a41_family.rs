@@ -93,7 +93,7 @@ fn host_of(specs: &[Spec], live: &[&str]) -> FakeHost {
                 task
             })
             .collect(),
-        live: live.iter().map(|s| s.to_string()).collect(),
+        live: live.iter().map(std::string::ToString::to_string).collect(),
         steered: Mutex::default(),
     }
 }

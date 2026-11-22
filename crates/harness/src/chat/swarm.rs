@@ -190,14 +190,10 @@ pub fn send(tx: &mut Tx<'_>, from: &str, to: &str, text: &str, now: u64) -> Resu
     let message = json!({ "id": id, "from": from, "text": text, "at": now, "read": false });
     d(doc.push(&path(&["boxes", to]), vec![message]))?;
     let messages = d(doc.get(&path(&["boxes", to])))?.unwrap_or(json!([]));
-    let count = messages.as_array().map_or(0, Vec::len);
-    if count > MAX_MAIL {
-        let drop = messages
-            .as_array()
-            .unwrap()
-            .iter()
-            .position(|message| message["read"] == true)
-            .unwrap_or(0);
+    if let Some(items) = messages.as_array()
+        && items.len() > MAX_MAIL
+    {
+        let drop = items.iter().position(|message| message["read"] == true).unwrap_or(0);
         d(doc.splice(&path(&["boxes", to]), drop, 1, Vec::new()))?;
     }
     Ok(id)

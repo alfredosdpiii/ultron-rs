@@ -211,10 +211,7 @@ impl ChildContext {
         let tokens = i64::try_from(tokens).unwrap_or(i64::MAX);
         let threshold = i64::try_from(threshold).unwrap_or(i64::MAX);
         let declined = context.before_compaction(&lane, "threshold", tokens, Some(threshold), 0);
-        let captured = sync::lock(&self.capture)
-            .take()
-            .map(|(_, writes)| writes)
-            .unwrap_or_default();
+        let captured = sync::lock(&self.capture).take().map_or_default(|(_, writes)| writes);
         if declined == Ok(true) { captured } else { Vec::new() }
     }
 

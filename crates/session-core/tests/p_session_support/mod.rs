@@ -67,7 +67,7 @@ impl Log<Value> {
     pub fn wait_count(&self, kind: &str, n: usize) {
         self.wait(&format!("{n} {kind}"), |events| {
             (of_kind(events, kind).len() >= n).then_some(())
-        })
+        });
     }
 
     /// Waits until an event of `kind` was emitted (a hang guard, never a pass condition); the latest.

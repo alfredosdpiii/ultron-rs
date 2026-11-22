@@ -220,7 +220,7 @@ static ENV_CERTAIN: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r#"\benv!\(\s*"([A-Za-z_][A-Za-z0-9_]*)""#,
         r#"\bos\.environ(?:\.get)?\s*[\[(]\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]"#,
         r#"\bos\.getenv\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]"#,
-        r#"\bprocess\.env\.([A-Za-z_][A-Za-z0-9_]*)"#,
+        r"\bprocess\.env\.([A-Za-z_][A-Za-z0-9_]*)",
         r#"\bprocess\.env\[\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]"#,
     ]
     .iter()

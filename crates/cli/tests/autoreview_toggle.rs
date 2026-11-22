@@ -148,7 +148,7 @@ fn cli_autoreview_toggle_reports_a_missing_gh_a_failed_start_and_no_service() {
     );
     let failing = |command: &str, _: &[&str]| {
         Ok(Ran {
-            code: if command == "systemctl" { 1 } else { 0 },
+            code: i32::from(command == "systemctl"),
             stdout: String::new(),
             stderr: "Failed to connect to bus\n".into(),
         })

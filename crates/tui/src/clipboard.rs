@@ -80,8 +80,7 @@ pub(crate) fn wsl_temp_file(extension: &str) -> std::path::PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default();
+        .map_or_default(|d| d.as_nanos());
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     std::env::temp_dir().join(format!("pi-wsl-clip-{}-{nanos}-{n}.{extension}", std::process::id()))
 }

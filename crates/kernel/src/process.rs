@@ -57,7 +57,7 @@ pub(crate) fn descendant_pids(root: i32) -> Vec<i32> {
     let mut result = Vec::new();
     let mut queue = std::collections::VecDeque::from([root]);
     while let Some(parent) = queue.pop_front() {
-        for &child in children.get(&parent).map(Vec::as_slice).unwrap_or_default() {
+        for &child in children.get(&parent).map_or_default(Vec::as_slice) {
             result.push(child);
             queue.push_back(child);
         }

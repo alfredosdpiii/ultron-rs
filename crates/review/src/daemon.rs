@@ -841,7 +841,11 @@ impl Daemon {
                 continue;
             }
             while inner.events == seen {
-                inner = self.shared.changed.wait(inner).unwrap_or_else(|e| e.into_inner());
+                inner = self
+                    .shared
+                    .changed
+                    .wait(inner)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
         }
         self.record();
@@ -863,7 +867,11 @@ impl Daemon {
                 shared.wake(&mut inner);
             });
             while inner.events == seen && !inner.stopped {
-                inner = self.shared.changed.wait(inner).unwrap_or_else(|e| e.into_inner());
+                inner = self
+                    .shared
+                    .changed
+                    .wait(inner)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
             return;
         }
@@ -877,7 +885,7 @@ impl Daemon {
                 .shared
                 .changed
                 .wait_timeout(inner, left)
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .0;
         }
     }
@@ -901,7 +909,11 @@ impl Daemon {
         }
         let mut inner = self.shared.lock();
         while !(inner.preparing.is_empty() && inner.running.is_empty()) {
-            inner = self.shared.changed.wait(inner).unwrap_or_else(|e| e.into_inner());
+            inner = self
+                .shared
+                .changed
+                .wait(inner)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         drop(inner);
         self.record();

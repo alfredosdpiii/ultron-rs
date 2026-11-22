@@ -82,9 +82,7 @@ static WEBSOCKET_STATE: LazyLock<Mutex<WebSocketState>> = LazyLock::new(Mutex::d
 static CLOCK_OFFSET_MS: AtomicI64 = AtomicI64::new(0);
 
 fn state() -> std::sync::MutexGuard<'static, WebSocketState> {
-    WEBSOCKET_STATE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    jsrt::sync::lock(&WEBSOCKET_STATE)
 }
 
 /// `Date.now()` for the connection age limit.
@@ -131,8 +129,7 @@ pub fn close_openai_codex_websocket_sessions(session_id: Option<&str>) {
             Some(id) => state
                 .cache
                 .remove(id)
-                .map(|accounts| accounts.into_values().collect())
-                .unwrap_or_default(),
+                .map_or_default(|accounts| accounts.into_values().collect()),
             None => state
                 .cache
                 .drain()

@@ -7,7 +7,7 @@ use tui::markdown_tokens;
 /// What `/changelog` shows, as one document: the entries oldest first, links pinned, or Pi's empty notice. The
 /// oracle `changelog_tokens` must agree with when the document is lexed whole.
 fn changelog_markdown(content: Option<&str>) -> String {
-    let mut entries = content.map(parse).unwrap_or_default();
+    let mut entries = content.map_or_default(parse);
     if entries.is_empty() {
         return "No changelog entries found.".into();
     }

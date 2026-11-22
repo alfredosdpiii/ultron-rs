@@ -159,7 +159,10 @@ fn judge(run: &mut Run) -> Result<Vec<Measured>, String> {
                 }
                 names
             }
-            None => config::keys::JUDGE_BACKENDS.iter().map(|b| b.to_string()).collect(),
+            None => config::keys::JUDGE_BACKENDS
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
         };
         let mut settings = crate::judge_cli::settings(run.env);
         settings.budget_usd = run.options.budget;

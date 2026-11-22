@@ -182,14 +182,11 @@ fn ai_model_resolver_initial_model_matches_typescript() {
             default_provider: opt(&s["defaultProvider"]).map(str::to_string),
             default_model_id: opt(&s["defaultModelId"]).map(str::to_string),
             default_thinking_level: opt(&s["defaultThinkingLevel"]).map(str::to_string),
-            model_thinking_levels: s["modelThinkingLevels"]
-                .as_object()
-                .map(|m| {
-                    m.iter()
-                        .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
-                        .collect()
-                })
-                .unwrap_or_default(),
+            model_thinking_levels: s["modelThinkingLevels"].as_object().map_or_default(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
+                    .collect()
+            }),
         };
         let available: Vec<Model> = list.iter().filter(|m| has_auth(&m.provider)).cloned().collect();
         let (model, thinking) = find_initial_model(

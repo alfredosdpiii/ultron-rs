@@ -115,7 +115,7 @@ fn kitty_header(line: &str) -> Option<(Vec<u32>, usize)> {
 }
 
 fn kitty_ids(line: &str) -> Vec<u32> {
-    kitty_header(line).map(|(ids, _)| ids).unwrap_or_default()
+    kitty_header(line).map_or_default(|(ids, _)| ids)
 }
 
 /// `getKittyImageReservedRows`: the rows an image line at `index` keeps (its `r=`, through the blank rows after it,

@@ -55,12 +55,7 @@ impl Delegation {
                     None => false,
                 }
             })?;
-            let saved = self
-                .inner
-                .workspace
-                .as_deref()
-                .map(wt::list_records)
-                .unwrap_or_default();
+            let saved = self.inner.workspace.as_deref().map_or_default(wt::list_records);
             for record in records {
                 let id = record["id"].as_str().unwrap_or_default().to_string();
                 if id.is_empty() || state.task(&id).is_some() {

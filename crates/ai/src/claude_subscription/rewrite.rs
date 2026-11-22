@@ -127,7 +127,7 @@ fn pin(payload: &[u8], queried: &[Value]) -> Option<Vec<u8>> {
             .take_while(|(sent, host)| plain(sent) == plain(host))
             .count();
         let rest = &content[prefix..];
-        if !rest.first().is_some_and(|b| kind(b) == Some("tool_result")) {
+        if rest.first().is_none_or(|b| kind(b) != Some("tool_result")) {
             stable.extend((0..prefix).map(|j| (next, j)));
         }
     }
@@ -303,7 +303,7 @@ pub fn restore_queried_turn(payload: &[u8], queried: Option<&[Value]>) -> Result
     let mut unique = std::collections::HashSet::new();
     if result_ids
         .iter()
-        .any(|id| !id.as_str().is_some_and(|s| !s.is_empty()) || !unique.insert(id.as_str()))
+        .any(|id| id.as_str().is_none_or(str::is_empty) || !unique.insert(id.as_str()))
     {
         return Err(QueriedTurnMismatch);
     }

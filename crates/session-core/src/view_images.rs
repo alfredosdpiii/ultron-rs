@@ -203,7 +203,7 @@ pub const OFFLOADED_IMAGE_TEXT: &str =
 
 /// `contextImageBudget`: `ULTRON_CONTEXT_IMAGES`, default 8; 0 disables the budget.
 pub fn context_image_budget(value: Option<&str>) -> usize {
-    let raw = value.map(jsrt::string::trim).unwrap_or_default();
+    let raw = value.map_or_default(jsrt::string::trim);
     if raw.is_empty() {
         return DEFAULT_CONTEXT_IMAGES;
     }

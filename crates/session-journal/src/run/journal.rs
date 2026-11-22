@@ -217,8 +217,7 @@ impl Run {
         let content = session
             .state()
             .entry(&assistant_entry_id)
-            .map(|entry| entry["message"]["content"].clone())
-            .unwrap_or(Value::Null);
+            .map_or(Value::Null, |entry| entry["message"]["content"].clone());
         let calls = batch["calls"]
             .as_array()
             .into_iter()
@@ -248,9 +247,7 @@ impl Run {
             .or_else(|| text(&context["triggerEntryId"]))
             .or_else(|| text(&resume_after["triggerEntryId"]))
             .unwrap_or(prompt);
-        let preparations = text(&state["task"]["taskId"])
-            .map(|task| vec![format!("{operation_id}:{task}")])
-            .unwrap_or_default();
+        let preparations = text(&state["task"]["taskId"]).map_or_default(|task| vec![format!("{operation_id}:{task}")]);
         Ok(Run {
             operation_id: operation_id.to_string(),
             config,
@@ -577,17 +574,14 @@ impl Run {
         let tip = session.branch_tip(MAIN_LANE).flatten();
         let id = self.response_entry_id.clone();
         let usage_row = Write::usage(&self.usage_id, message["usage"].clone(), Some(&id));
-        let calls: Vec<(usize, String)> = message["content"]
-            .as_array()
-            .map(|content| {
-                content
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, c)| c["type"] == "toolCall")
-                    .map(|(i, c)| (i, c["id"].as_str().unwrap_or("").to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let calls: Vec<(usize, String)> = message["content"].as_array().map_or_default(|content| {
+            content
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c["type"] == "toolCall")
+                .map(|(i, c)| (i, c["id"].as_str().unwrap_or("").to_string()))
+                .collect()
+        });
         self.latest_assistant = Some(id.clone());
         self.assistant_entry_id = id.clone();
         let mut writes = Vec::new();

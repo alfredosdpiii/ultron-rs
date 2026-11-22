@@ -418,7 +418,7 @@ fn frame_group_node(key: &str, frames: &[&RlmFrame]) -> GraphNode {
         .take(3)
         .collect();
     for f in &troubled {
-        let reason = f.reason.as_ref().map(|r| format!(" ({r})")).unwrap_or_default();
+        let reason = f.reason.as_ref().map_or_default(|r| format!(" ({r})"));
         details.push(d(&f.status, format!("{}{reason}", f.id)));
     }
     if is_map {
@@ -790,7 +790,7 @@ pub fn build_rlm_graph(snapshot: &RlmSnapshot) -> GraphNode {
                 "nodes",
                 group_tasks
                     .iter()
-                    .map(|t| t.workflow.as_ref().map(|w| w.node.clone()).unwrap_or_default())
+                    .map(|t| t.workflow.as_ref().map_or_default(|w| w.node.clone()))
                     .collect::<Vec<_>>()
                     .join(", "),
             ),
@@ -1508,7 +1508,7 @@ pub fn budget_gauges(snapshot: &RlmSnapshot, _graph: &GraphNode) -> Vec<Gauge> {
     let running = |fs: &Vec<&RlmFrame>| fs.iter().any(|f| f.status == "running");
     let newest = |fs: &Vec<&RlmFrame>| max_defined(fs.iter().map(|f| f.started_at)).unwrap_or(0.0);
     candidates.sort_by(|l, r| {
-        (running(r) as i32 - running(l) as i32)
+        (i32::from(running(r)) - i32::from(running(l)))
             .cmp(&0)
             .then_with(|| newest(r).partial_cmp(&newest(l)).unwrap_or(std::cmp::Ordering::Equal))
     });
@@ -1793,7 +1793,7 @@ pub fn render_rlm_footer(snapshot: &RlmSnapshot, width: usize, o: &RlmViewOption
     let totals = graph_totals(&graph);
     let mut parts = Vec::new();
     let time = node_elapsed(&graph, snapshot.now);
-    parts.push(format!("turn{}", time.map(|t| format!(" {t}")).unwrap_or_default()));
+    parts.push(format!("turn{}", time.map_or_default(|t| format!(" {t}"))));
     if let Some(cell) = totals.cell_key.as_deref().and_then(|k| find(&graph, k)) {
         let index = graph
             .children
@@ -1862,8 +1862,7 @@ pub fn render_rlm_footer(snapshot: &RlmSnapshot, width: usize, o: &RlmViewOption
     let hint = o
         .focus_key
         .as_ref()
-        .map(|k| style.fg(Fg::Dim, &format!(" · {k} graph")))
-        .unwrap_or_default();
+        .map_or_default(|k| style.fg(Fg::Dim, &format!(" · {k} graph")));
     let bound = width.max(1);
     if !hint.is_empty() && visible_width(&summary) + visible_width(&hint) <= bound {
         return Some(format!("{summary}{hint}"));
@@ -1905,8 +1904,7 @@ pub fn render_rlm_dock(snapshot: &RlmSnapshot, width: usize, o: &RlmViewOptions,
     let hint = o
         .focus_key
         .as_ref()
-        .map(|k| style.fg(Fg::Dim, &format!("  {k} focus")))
-        .unwrap_or_default();
+        .map_or_default(|k| style.fg(Fg::Dim, &format!("  {k} focus")));
     let mut lines = vec![truncate_to_width(
         &header_line(&graph, snapshot, style, spinner, &hint),
         bound,

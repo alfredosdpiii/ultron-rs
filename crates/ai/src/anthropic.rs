@@ -146,7 +146,7 @@ fn to_claude_code_name(name: &str) -> String {
     CLAUDE_CODE_TOOLS
         .iter()
         .find(|t| t.eq_ignore_ascii_case(name))
-        .map_or_else(|| name.to_string(), |t| t.to_string())
+        .map_or_else(|| name.to_string(), std::string::ToString::to_string)
 }
 
 fn from_claude_code_name(name: &str, tools: &[Tool]) -> String {
@@ -595,7 +595,7 @@ fn build_params(
     let cache_control = cache_control(model, &options.base);
     let compat = Compat::of(model);
     let initial = initial_system_message(&context.messages);
-    let initial_text = initial.map(system_message_text).unwrap_or_default();
+    let initial_text = initial.map_or_default(system_message_text);
     let normalize = |id: &str, _: &AssistantMessage| normalize_tool_call_id(id);
     let transformed = transform_messages(&context.messages, model, Some(&normalize), now);
     let conversation = if initial.is_some() {

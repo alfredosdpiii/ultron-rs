@@ -72,7 +72,7 @@ pub fn parse_auth_status(stdout: &str, stderr: &str) -> Vec<Account> {
     if let Some(parsed) = parsed.filter(|value| !value.is_null()) {
         let mut failed = false;
         let hosts = parsed.get("hosts").filter(|hosts| !hosts.is_null());
-        'hosts: for (host, list) in hosts.map(entries).unwrap_or_default() {
+        'hosts: for (host, list) in hosts.map_or_default(entries) {
             let Value::Array(list) = list else { continue };
             for entry in list {
                 if entry.is_null() {
@@ -165,7 +165,12 @@ impl TokenStore {
 
     pub fn env(&self, account: &Account) -> Result<Env, Error> {
         let key = account_key(account);
-        let known = self.tokens.lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned();
+        let known = self
+            .tokens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .cloned();
         let token = match known {
             Some(token) => token,
             None => {
@@ -193,7 +198,7 @@ impl TokenStore {
                 }
                 self.tokens
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .insert(key, token.clone());
                 token
             }
@@ -205,7 +210,7 @@ impl TokenStore {
     pub fn forget(&self, account: &Account) {
         self.tokens
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&account_key(account));
     }
 }

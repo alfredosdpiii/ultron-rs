@@ -709,7 +709,7 @@ fn cli_composition_sandbox_doctor_reports_isolation() {
     let output = run(&sandbox, &["sandbox", "doctor"]);
     let report: Value = serde_json::from_str(&stdout(&output)).unwrap();
     assert_eq!(report["mode"], "auto");
-    assert_eq!(output.status.code(), Some(if report["ok"] == true { 0 } else { 1 }));
+    assert_eq!(output.status.code(), Some(i32::from(report["ok"] != true)));
     if !report["mechanism"].is_null() {
         // The self-check tried the escapes: the project is writable, the home and the system are not.
         assert_eq!(report["selfCheck"]["project"], "writable", "{report:#}");

@@ -278,14 +278,12 @@ pub fn from_disk(paths: &crate::settings::AutoreviewPaths, repo: Option<&str>) -
     let register = build(&fates, &records, library, &proofs);
     let db = std::path::Path::new(&paths.knowledge);
     let proposals = if db.exists() {
-        knowledge::Store::open(db)
-            .map(|store| {
-                repos
-                    .iter()
-                    .flat_map(|repo| loki_proposals(&store.credited_rules(repo).unwrap_or_default()))
-                    .collect()
-            })
-            .unwrap_or_default()
+        knowledge::Store::open(db).map_or_default(|store| {
+            repos
+                .iter()
+                .flat_map(|repo| loki_proposals(&store.credited_rules(repo).unwrap_or_default()))
+                .collect()
+        })
     } else {
         Vec::new()
     };

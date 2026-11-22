@@ -979,8 +979,7 @@ impl ExternalUser {
             client_secret: json
                 .get("client_secret")
                 .filter(|v| jsrt::value::truthy(Some(v)))
-                .map(|v| jsrt::value::string(Some(v)))
-                .unwrap_or_default(),
+                .map_or_default(|v| jsrt::value::string(Some(v))),
             refresh_token: plain("refresh_token"),
         }
     }

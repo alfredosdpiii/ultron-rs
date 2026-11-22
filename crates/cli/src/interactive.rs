@@ -386,7 +386,7 @@ fn link_thread(
                 .unwrap_or("No persona reply")
                 .to_string(),
             Err(error) => format!("Error: {error}"),
-        }))
+        }));
     };
     open(&link, &mut name);
     let mut last_recovery: Option<std::time::Instant> = None;
@@ -457,7 +457,7 @@ fn link_thread(
                     if let Some(notice) = reply.as_ref().and_then(|r| r["keepGoing"].as_str()) {
                         send(LaneEvent::Status(notice.to_string()));
                     }
-                    report_name(&link, &mut name)
+                    report_name(&link, &mut name);
                 }
                 Err(error) => send(LaneEvent::Error(error)),
             },
@@ -835,7 +835,7 @@ fn link_thread(
             }
             Command::Lane(LaneCommand::Share { theme }) => {
                 let cancel = jsrt::sync::lock(&cancels.share).clone();
-                share_session(&link, &send, &cancel, theme.as_deref(), &catalog_env)
+                share_session(&link, &send, &cancel, theme.as_deref(), &catalog_env);
             }
             Command::Lane(LaneCommand::BugReportSummary(hint)) => {
                 let op = Op::BugSummary { hint };
@@ -1166,9 +1166,7 @@ fn write_debug_log(
             daemon::session_control::platform(),
             std::process::id()
         ),
-        cwd: std::env::current_dir()
-            .map(|d| d.display().to_string())
-            .unwrap_or_default(),
+        cwd: std::env::current_dir().map_or_default(|d| d.display().to_string()),
         server_id: Some(server_id),
         transport: Some(link.remote_route().map_or("unix", |r| r.transport()).into()),
         socket_path: match link.remote_route() {
@@ -1531,14 +1529,16 @@ fn export_session(link: &Link, output: Option<&str>, theme: Option<&str>, env: &
     let stem = described["sessionFile"]
         .as_str()
         .and_then(|f| std::path::Path::new(f).file_name())
-        .map(|n| {
-            let name = n.to_string_lossy();
-            match name.rfind('.') {
-                Some(dot) if dot > 0 => name[..dot].to_string(),
-                _ => name.into_owned(),
-            }
-        })
-        .unwrap_or_else(|| session_id.clone());
+        .map_or_else(
+            || session_id.clone(),
+            |n| {
+                let name = n.to_string_lossy();
+                match name.rfind('.') {
+                    Some(dot) if dot > 0 => name[..dot].to_string(),
+                    _ => name.into_owned(),
+                }
+            },
+        );
     if let Some(path) = output.filter(|p| p.ends_with(".jsonl")) {
         let path = config::paths::normalize(&cwd.join(path));
         let lines: Vec<String> = std::iter::once(&header).chain(&entries).map(Value::to_string).collect();
@@ -1587,7 +1587,7 @@ pub fn pick_session(
     }
     let _ = writeln!(out, "Available sessions:");
     for (i, s) in sessions.iter().enumerate() {
-        let name = s.name.as_deref().map(|n| format!("  {n}")).unwrap_or_default();
+        let name = s.name.as_deref().map_or_default(|n| format!("  {n}"));
         let _ = writeln!(out, "  {}. {}{name}", i + 1, s.metadata.id);
     }
     let _ = write!(out, "Select a session number: ");
@@ -1795,8 +1795,14 @@ fn run_tui(
             if is_worker_restart(&event) {
                 let _ = commands.send(Command::WorkerStopped);
             }
-            let (recovery, reopen) = recovery_events(&event, &mut lane_open.lock().unwrap_or_else(|e| e.into_inner()));
-            let shown = stream.lock().unwrap_or_else(|e| e.into_inner()).events(&event);
+            let (recovery, reopen) = recovery_events(
+                &event,
+                &mut lane_open.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            let shown = stream
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .events(&event);
             for lane_event in shown.into_iter().chain(recovery) {
                 let _ = ui.send(UiEvent::Lane(lane_event));
             }
@@ -1830,7 +1836,7 @@ fn run_tui(
                 reporter,
                 herdr,
                 cancels,
-            )
+            );
         });
     }
     let (lane_tx, lane_rx) = mpsc::channel::<LaneCommand>();
@@ -1838,15 +1844,14 @@ fn run_tui(
         let (commands, env, ui) = (command_tx.clone(), env.clone(), ui_tx.clone());
         std::thread::spawn(move || route(handle, lane_rx, commands, env, ui, cancels))
     };
-    let model = model.map(|m| catalog_info(&m)).unwrap_or_default();
+    let model = model.map_or_default(|m| catalog_info(&m));
     let hide_thinking = settings.settings().get("hideThinkingBlock") == Some(&Value::Bool(true));
     let enabled_models: Vec<String> = parsed.models.clone().unwrap_or_else(|| {
         settings
             .settings()
             .get("enabledModels")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
-            .unwrap_or_default()
+            .map_or_default(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
     });
     let highlight = interactive::rlm_highlight::rlm_highlighter(&theme);
     let options = AppOptions {
@@ -1876,7 +1881,10 @@ fn run_tui(
     let (code, end) = (signalled, std::sync::Mutex::new(ui_tx.clone()));
     crate::print_mode::exit_on_signal(move |exit| {
         code.store(exit, std::sync::atomic::Ordering::SeqCst);
-        let _ = end.lock().unwrap_or_else(|e| e.into_inner()).send(UiEvent::InputClosed);
+        let _ = end
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .send(UiEvent::InputClosed);
     });
     app.set_hide_thinking(hide_thinking);
     app.set_enabled_models(enabled_models);

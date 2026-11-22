@@ -239,9 +239,7 @@ pub fn relations(
     let unread_oids: Vec<String> = unread.iter().map(|(_, oid)| oid.clone()).collect();
     let mut read = Vec::with_capacity(unread.len());
     for ((path, oid), body) in unread.iter().zip(read_blobs(repo_dir, &unread_oids)?) {
-        let proposed = String::from_utf8(body)
-            .map(|text| crate::relations::propose(path, &text))
-            .unwrap_or_default();
+        let proposed = String::from_utf8(body).map_or_default(|text| crate::relations::propose(path, &text));
         read.push((oid.clone(), proposed));
     }
     store.record_relations(tree, &files, &read, RELATIONS_VERSION)?;

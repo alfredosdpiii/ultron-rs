@@ -97,19 +97,15 @@ fn assert_text(actual: &str, expected: &str, what: &str) {
 fn strings(value: &Value) -> Vec<String> {
     value
         .as_array()
-        .map(|a| a.iter().map(|v| v.as_str().unwrap().to_string()).collect())
-        .unwrap_or_default()
+        .map_or_default(|a| a.iter().map(|v| v.as_str().unwrap().to_string()).collect())
 }
 
 fn pairs(value: &Value) -> Vec<(String, String)> {
-    value
-        .as_object()
-        .map(|o| {
-            o.iter()
-                .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
-                .collect()
-        })
-        .unwrap_or_default()
+    value.as_object().map_or_default(|o| {
+        o.iter()
+            .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
+            .collect()
+    })
 }
 
 #[test]
@@ -224,8 +220,7 @@ fn resources_system_prompts_match_typescript() {
         options.tool_snippets = pairs(&input["toolSnippets"]);
         options.tool_guidelines = input["toolGuidelines"]
             .as_object()
-            .map(|o| o.iter().map(|(k, v)| (k.clone(), strings(v))).collect())
-            .unwrap_or_default();
+            .map_or_default(|o| o.iter().map(|(k, v)| (k.clone(), strings(v))).collect());
         options.prompt_guidelines = strings(&input["promptGuidelines"]);
         options.custom_prompt = input["customPrompt"].as_str().map(String::from);
         options.append_system_prompt = input["appendSystemPrompt"].as_str().unwrap_or("").to_string();
@@ -285,17 +280,14 @@ fn resources_runtime_guide_matches_typescript() {
             delivery,
             external_root: o["externalRoot"] == json!(true),
             hints: o["hints"] == json!(true),
-            extension_tools: o["extensionTools"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .map(|t| ExtensionToolSummary {
-                            name: t["name"].as_str().unwrap().to_string(),
-                            description: t["description"].as_str().unwrap().to_string(),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
+            extension_tools: o["extensionTools"].as_array().map_or_default(|a| {
+                a.iter()
+                    .map(|t| ExtensionToolSummary {
+                        name: t["name"].as_str().unwrap().to_string(),
+                        description: t["description"].as_str().unwrap().to_string(),
+                    })
+                    .collect()
+            }),
             mcp_servers: strings(&o["mcpServers"]),
             native_extension_tools: strings(&o["nativeExtensionTools"]),
             // The TS guide never names the Rust-only APIs (its host does not serve them).

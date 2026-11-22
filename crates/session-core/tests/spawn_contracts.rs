@@ -167,7 +167,7 @@ fn checks_of(result: &Value) -> Vec<(Value, Value)> {
 
 #[test]
 fn session_core_spawn_contract_all_checks_pass_is_verified_with_evidence() {
-    let options = r#"role='fixer', contract={'checks': [{'run': 'cat src/a.txt; echo; echo FOUND', 'expect': {'stdout_contains': 'FOUND'}}, {'run': 'test -f src/a.txt', 'expect': 'exit 0'}, {'changed_files_within': ['src/**']}, {'no_new_dependencies': True}, {'files_exist': ['src/a.txt']}], 'returns': {'type': 'object'}}"#;
+    let options = r"role='fixer', contract={'checks': [{'run': 'cat src/a.txt; echo; echo FOUND', 'expect': {'stdout_contains': 'FOUND'}}, {'run': 'test -f src/a.txt', 'expect': 'exit 0'}, {'changed_files_within': ['src/**']}, {'no_new_dependencies': True}, {'files_exist': ['src/a.txt']}], 'returns': {'type': 'object'}}";
     let r = run(
         "CHILD: write src/a.txt",
         options,
@@ -221,7 +221,7 @@ fn session_core_spawn_contract_all_checks_pass_is_verified_with_evidence() {
 #[test]
 fn session_core_spawn_contract_a_broken_check_is_contract_failed() {
     let options =
-        r#"contract={'checks': [{'run': 'grep -q fixed status.txt'}, {'files_exist': ['status.txt', 'missing.md']}]}"#;
+        r"contract={'checks': [{'run': 'grep -q fixed status.txt'}, {'files_exist': ['status.txt', 'missing.md']}]}";
     let r = run(
         "CHILD: fix status",
         options,
@@ -256,7 +256,7 @@ fn session_core_spawn_contract_a_broken_check_is_contract_failed() {
 
 #[test]
 fn session_core_spawn_contract_retry_hop_reruns_once_with_the_failure_in_the_brief() {
-    let options = r#"contract={'checks': [{'run': 'grep fixed status.txt', 'expect': {'stdout_contains': 'fixed'}}]}, hop={'retry': 1}"#;
+    let options = r"contract={'checks': [{'run': 'grep fixed status.txt', 'expect': {'stdout_contains': 'fixed'}}]}, hop={'retry': 1}";
     let r = run("CHILD: fix status", options, false, |brief, has_results| {
         let body = match brief.contains("[Contract] Attempt 1") {
             true => "Path('status.txt').write_text('fixed\\n')",
@@ -301,7 +301,7 @@ fn session_core_spawn_contract_retry_hop_reruns_once_with_the_failure_in_the_bri
 
 #[test]
 fn session_core_spawn_contract_retry_hop_runs_only_as_often_as_asked() {
-    let options = r#"contract={'checks': [{'run': 'exit 3', 'expect': {'exit': 0}}]}, hop={'retry': 1}"#;
+    let options = r"contract={'checks': [{'run': 'exit 3', 'expect': {'exit': 0}}]}, hop={'retry': 1}";
     let r = run(
         "CHILD: never passes",
         options,
@@ -332,7 +332,7 @@ fn session_core_spawn_contract_retry_hop_runs_only_as_often_as_asked() {
 
 #[test]
 fn session_core_spawn_contract_review_hop_spawns_the_reviewer() {
-    let options = r#"contract={'checks': [{'run': 'grep -q fixed status.txt'}]}, hop={'review': 'REVIEW-BRIEF: check the status fix'}"#;
+    let options = r"contract={'checks': [{'run': 'grep -q fixed status.txt'}]}, hop={'review': 'REVIEW-BRIEF: check the status fix'}";
     let r = run("CHILD: fix status", options, true, |brief, has_results| {
         if brief.starts_with("REVIEW-BRIEF") {
             return text("review: status.txt still says wrong");
@@ -384,7 +384,7 @@ fn session_core_spawn_contract_review_hop_spawns_the_reviewer() {
 
 #[test]
 fn session_core_spawn_contract_changed_files_within_catches_an_out_of_scope_edit() {
-    let options = r#"contract={'checks': [{'changed_files_within': ['src/**']}]}"#;
+    let options = r"contract={'checks': [{'changed_files_within': ['src/**']}]}";
     let r = run("CHILD: edit src", options, false, |_, has_results| match has_results {
         false => tool(
             "toolu_c",
@@ -411,7 +411,7 @@ fn session_core_spawn_contract_changed_files_within_catches_an_out_of_scope_edit
 
 #[test]
 fn session_core_spawn_contract_no_new_dependencies_catches_manifest_changes() {
-    let options = r#"contract={'checks': [{'no_new_dependencies': True}]}"#;
+    let options = r"contract={'checks': [{'no_new_dependencies': True}]}";
     let r = run("CHILD: add a dep", options, false, |_, has_results| match has_results {
         false => tool(
             "toolu_c",
@@ -435,7 +435,7 @@ fn session_core_spawn_contract_no_new_dependencies_catches_manifest_changes() {
 fn session_core_spawn_contract_returns_shape_rejects_a_finish_that_misses_it() {
     // The child's first finish misses `outputs.count`: rejected with the schema problem, it fixes it, and the
     // contract (only `returns`) is verified.
-    let options = r#"contract={'returns': {'type': 'object', 'required': ['count'], 'properties': {'count': {'type': 'integer'}}}}"#;
+    let options = r"contract={'returns': {'type': 'object', 'required': ['count'], 'properties': {'count': {'type': 'integer'}}}}";
     let cell = "try:\n    await rlm.finish('passed', 'counted', evidence=['data.txt:1 counted'], outputs={})\nexcept Exception as e:\n    print('REJECTED', str(e).splitlines()[1])\nprint(await rlm.finish('passed', 'counted', evidence=['data.txt:1 counted'], outputs={'count': 3}))";
     let r = run(
         "CHILD: count",
@@ -583,7 +583,7 @@ fn session_core_spawn_contract_help_documents_the_options_and_keep_takes_them() 
 fn session_core_spawn_contract_run_checks_run_under_the_session_sandbox() {
     // With `sandbox.mode: required` a check cannot write outside the writable paths (the home is read-only), or,
     // where no sandbox works here, it is refused: either way the check fails, where an unsandboxed one passes.
-    let options = r#"contract={'checks': [{'run': 'touch ../outside-the-project.txt'}]}"#;
+    let options = r"contract={'checks': [{'run': 'touch ../outside-the-project.txt'}]}";
     let child = |_: &str, has_results: bool| match has_results {
         false => tool(
             "toolu_c",
@@ -615,7 +615,7 @@ fn session_core_spawn_contract_run_checks_run_under_the_session_sandbox() {
 #[test]
 fn session_core_spawn_contract_a_retried_child_needs_a_verdict_of_its_own() {
     // The retry fixes the file but ends without rlm.finish: the first attempt's verdict does not carry over.
-    let options = r#"contract={'checks': [{'run': 'grep -q fixed status.txt'}]}, hop={'retry': 1}"#;
+    let options = r"contract={'checks': [{'run': 'grep -q fixed status.txt'}]}, hop={'retry': 1}";
     let r = run("CHILD: fix status", options, false, |brief, has_results| {
         match (brief.contains("[Contract] Attempt 1"), has_results) {
             (true, false) => tool(

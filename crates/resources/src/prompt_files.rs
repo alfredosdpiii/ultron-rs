@@ -66,7 +66,5 @@ pub fn load_prompt_files(
 }
 
 fn process_cwd() -> String {
-    std::env::current_dir()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "/".to_string())
+    std::env::current_dir().map_or_else(|_| "/".to_string(), |p| p.to_string_lossy().into_owned())
 }

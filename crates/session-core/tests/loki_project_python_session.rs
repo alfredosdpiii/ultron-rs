@@ -90,7 +90,7 @@ fn finding(missing: &str) -> (String, bool) {
     w.close();
     let result = tool_results(requests.last().unwrap())
         .iter()
-        .map(|v| v.to_string())
+        .map(std::string::ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
     assert!(result.contains("WROTE"), "{result}");

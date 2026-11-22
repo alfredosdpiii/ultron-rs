@@ -214,9 +214,8 @@ pub fn claude_code_notes(directory: &Path) -> Result<Vec<Note>, String> {
         }
         let stem = path
             .file_stem()
-            .map(|stem| stem.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let name = yaml_text(&front, "name").map(str::to_string).unwrap_or(stem);
+            .map_or_default(|stem| stem.to_string_lossy().into_owned());
+        let name = yaml_text(&front, "name").map_or(stem, str::to_string);
         let kind = match yaml_text(&front["metadata"], "type").or_else(|| yaml_text(&front, "type")) {
             Some("feedback") => "preference",
             Some("user" | "project") => "fact",

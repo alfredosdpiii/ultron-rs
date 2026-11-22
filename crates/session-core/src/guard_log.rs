@@ -31,7 +31,7 @@ fn target(value: Option<&str>) -> Option<PathBuf> {
 static APPENDING: Mutex<()> = Mutex::new(());
 
 fn append(target: &Path, line: &str) {
-    let _held = APPENDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _held = jsrt::sync::lock(&APPENDING);
     if let Some(parent) = target.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -44,7 +44,7 @@ fn append(target: &Path, line: &str) {
 pub fn loki_log(value: Option<&str>) -> Option<OnRecord> {
     let target = target(value)?;
     Some(Arc::new(move |record: &GuardRecord| {
-        append(&target, &log_line(jsrt::date::now_ms() as u64, record))
+        append(&target, &log_line(jsrt::date::now_ms() as u64, record));
     }))
 }
 

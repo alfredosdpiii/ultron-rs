@@ -151,12 +151,15 @@ pub(crate) fn ensure_provider_session_id(runtime: &TaskRuntime) -> Result<String
     let slot = created.clone();
     runtime.commit(&runtime.ctx(), move |tx, _| {
         let provider = tx.doc(&PROVIDER, owner(conversation_id))?;
-        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = get(&provider, &["sessionId"])?
+        *slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = get(&provider, &["sessionId"])?
             .and_then(|id| id.as_str().map(str::to_owned))
             .unwrap_or_default();
         Ok(None)
     })?;
-    let id = created.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+    let id = created
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     Ok(id)
 }
 

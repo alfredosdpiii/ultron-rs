@@ -52,11 +52,7 @@ fn value(kernel: &Kernel, code: &str) -> String {
 }
 
 fn evalue(result: &ExecutionResult) -> String {
-    result
-        .error
-        .as_ref()
-        .map(|error| error.evalue.clone())
-        .unwrap_or_default()
+    result.error.as_ref().map_or_default(|error| error.evalue.clone())
 }
 
 const KEY: [u8; 32] = [7; 32];

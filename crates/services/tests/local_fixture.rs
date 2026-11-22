@@ -143,7 +143,7 @@ fn services_local_refinements_and_experiments_match_native_local_services() {
                     let at = format!("{name} / step {index} {kind} {}", jsrt::json::stringify(&args[1]));
                     match (&step.get("ok"), &step.get("error"), outcome) {
                         (Some(want), _, Ok(got)) => {
-                            assert_eq!(jsrt::json::stringify(&got), jsrt::json::stringify(want), "{at}")
+                            assert_eq!(jsrt::json::stringify(&got), jsrt::json::stringify(want), "{at}");
                         }
                         (_, Some(want), Err(got)) => assert_eq!(got, want.as_str().unwrap(), "{at}"),
                         (want, error, got) => panic!("{at}: want {want:?} / {error:?}, got {got:?}"),

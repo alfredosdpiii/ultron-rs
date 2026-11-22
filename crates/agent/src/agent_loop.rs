@@ -23,8 +23,8 @@ pub(crate) struct Emit<'a>(Mutex<&'a mut (dyn FnMut(AgentEvent) + Send)>);
 
 impl Emit<'_> {
     fn emit(&self, event: AgentEvent) {
-        let mut sink = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        (*sink)(event)
+        let mut sink = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        (*sink)(event);
     }
 }
 
@@ -56,7 +56,7 @@ pub async fn agent_loop(
 }
 
 fn poll_messages(source: &mut Option<crate::types::MessageSource>) -> Vec<AgentMessage> {
-    source.as_mut().map(|get| get()).unwrap_or_default()
+    source.as_mut().map_or_default(|get| get())
 }
 
 async fn run_loop(
@@ -520,7 +520,7 @@ async fn execute_prepared(
             tool_name: call.name.clone(),
             args: call.arguments.clone(),
             partial_result: partial,
-        })
+        });
     };
     match tool.execute(&call.id, args.clone(), signal, &on_update).await {
         Ok(result) => (result, false),

@@ -121,7 +121,7 @@ impl VTerm {
     pub fn all_lines(&self) -> Vec<String> {
         let mut out = self.scrollback.clone();
         out.extend(self.screen_lines());
-        while out.last().is_some_and(|l| l.is_empty()) {
+        while out.last().is_some_and(std::string::String::is_empty) {
             out.pop();
         }
         out

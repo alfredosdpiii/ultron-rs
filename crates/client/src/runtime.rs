@@ -68,7 +68,7 @@ fn is_base(ops: &[Op]) -> bool {
 }
 
 fn wire_ops(member: &Json) -> &[Json] {
-    member["ops"].as_array().map(Vec::as_slice).unwrap_or_default()
+    member["ops"].as_array().map_or_default(Vec::as_slice)
 }
 
 impl Replica {
@@ -162,7 +162,7 @@ impl Replica {
             listener: None,
             errors: Vec::new(),
         };
-        let instances = snapshot["instances"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let instances = snapshot["instances"].as_array().map_or_default(Vec::as_slice);
         let mut decoded = Vec::new();
         for instance in instances {
             decoded.push(replica.decode_instance(instance)?);
@@ -375,7 +375,7 @@ impl Connection {
             };
             let (lock, changed) = &*shared;
             lock.lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .closed
                 .get_or_insert(reason);
             changed.notify_all();
@@ -392,7 +392,7 @@ impl Connection {
             encode_client_message(message, DEFAULT_MAX_FRAME_LENGTH).map_err(|e| CallError::Disconnected(e.0))?;
         self.writer
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .write_all(&frame)
             .map_err(|e| CallError::Disconnected(e.to_string()))
     }
@@ -463,7 +463,7 @@ impl Connection {
         }
         self.writer
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .write_all(&frames)
             .map_err(|e| CallError::Disconnected(e.to_string()))?;
         Ok(ids)
@@ -471,7 +471,7 @@ impl Connection {
 
     pub fn wait(&self, id: &str) -> Result<Option<Json>, CallError> {
         let (lock, changed) = &*self.shared;
-        let mut shared = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shared = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
             if let Some(result) = shared.responses.remove(id) {
                 return result.map_err(CallError::Server);
@@ -479,7 +479,7 @@ impl Connection {
             if let Some(reason) = &shared.closed {
                 return Err(CallError::Disconnected(reason.clone()));
             }
-            shared = changed.wait(shared).unwrap_or_else(|e| e.into_inner());
+            shared = changed.wait(shared).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 
@@ -487,7 +487,7 @@ impl Connection {
     pub fn wait_for(&self, id: &str, timeout: Duration) -> Option<Result<Option<Json>, CallError>> {
         let deadline = Instant::now() + timeout;
         let (lock, changed) = &*self.shared;
-        let mut shared = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shared = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
             if let Some(result) = shared.responses.remove(id) {
                 return Some(result.map_err(CallError::Server));
@@ -501,7 +501,7 @@ impl Connection {
             }
             shared = changed
                 .wait_timeout(shared, deadline - now)
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .0;
         }
     }
@@ -580,8 +580,7 @@ impl Connection {
         self.lock()
             .replicas
             .get_mut(subscription)
-            .map(|r| std::mem::take(&mut r.errors))
-            .unwrap_or_default()
+            .map_or_default(|r| std::mem::take(&mut r.errors))
     }
 
     pub fn listen(&self, subscription: &str, listener: UpdateListener) {
@@ -598,7 +597,7 @@ impl Connection {
 
     pub fn wait_attachment(&self, done: impl Fn(Option<&SessionTarget>) -> bool) -> Result<(), CallError> {
         let (lock, changed) = &*self.shared;
-        let mut shared = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shared = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
             if done(shared.attachment.as_ref()) {
                 return Ok(());
@@ -606,31 +605,34 @@ impl Connection {
             if let Some(reason) = &shared.closed {
                 return Err(CallError::Disconnected(reason.clone()));
             }
-            shared = changed.wait(shared).unwrap_or_else(|e| e.into_inner());
+            shared = changed.wait(shared).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 
     /// Blocks until the connection closed or its attachment is no longer `seen`, or `timeout` passed.
     pub fn wait_attachment_change(&self, seen: Option<&SessionTarget>, timeout: Duration) {
         let (lock, changed) = &*self.shared;
-        let shared = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let shared = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         drop(
             changed
                 .wait_timeout_while(shared, timeout, |shared| {
                     shared.closed.is_none() && shared.attachment.as_ref() == seen
                 })
-                .unwrap_or_else(|e| e.into_inner()),
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
     }
 
     pub fn disconnect(&self) {
-        self.writer.lock().unwrap_or_else(|e| e.into_inner()).shutdown();
+        self.writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .shutdown();
     }
 }
 
 fn dispatch(shared: &Arc<(Mutex<Shared>, Condvar)>, message: ServerMessage) {
     let (lock, changed) = &**shared;
-    let mut state = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if state.closed.is_some() {
         return;
     }
@@ -1034,8 +1036,7 @@ fn operation(
     let directory = &started[0].0;
     let sessions = connection
         .state(directory, "state")
-        .map(|s| s["sessions"].as_array().cloned().unwrap_or_default())
-        .unwrap_or_default();
+        .map_or_default(|s| s["sessions"].as_array().cloned().unwrap_or_default());
     let management =
         |member: &str, args: Json| connection.call(server.clone(), protocol::names::SESSION_MANAGEMENT, member, args);
 
@@ -1220,7 +1221,7 @@ fn operation(
         let mut final_run = operation.clone();
         if response["error"].is_null() {
             follow_event_runs(connection, &session, &received, &mut |e| {
-                absorb(e, &mut completed, &mut ended)
+                absorb(e, &mut completed, &mut ended);
             });
             if let Some(index) = ended.iter().position(|r| *r == operation)
                 && let Some(last) = ended[index + 1..].last()

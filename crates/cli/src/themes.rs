@@ -70,9 +70,8 @@ pub fn load_paths(paths: &[String], mode: ColorMode) -> LoadedThemes {
         if !path.exists() {
             loaded.diagnostics.push(("warning".into(), path.display().to_string()));
         } else if path.is_dir() {
-            let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(path)
-                .map(|dir| dir.flatten().map(|e| e.path()).collect())
-                .unwrap_or_default();
+            let mut files: Vec<std::path::PathBuf> =
+                std::fs::read_dir(path).map_or_default(|dir| dir.flatten().map(|e| e.path()).collect());
             files.sort();
             for file in files {
                 if file.is_file() && file.extension().is_some_and(|e| e == "json") {

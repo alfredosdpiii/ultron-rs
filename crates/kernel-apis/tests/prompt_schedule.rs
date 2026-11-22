@@ -449,7 +449,7 @@ impl WatchFixture {
         std::fs::write(
             &script,
             format!("#!{}\n", kernel::env::python(|name| std::env::var(name).ok()))
-                + r#"import json, pathlib, sys, socket
+                + r"import json, pathlib, sys, socket
 root = pathlib.Path(__file__).parent
 if (root / 'barrier').exists():
     with socket.socket(socket.AF_UNIX) as s:
@@ -472,7 +472,7 @@ elif args[:4] == ['api', '--hostname', 'github.com', 'graphql']:
     print((root / ('page' + suffix)).read_text())
 else:
     raise AssertionError(args)
-"#,
+",
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();

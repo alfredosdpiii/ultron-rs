@@ -96,14 +96,11 @@ fn run_cell(cell: &Value, recorded_model: &Value) -> (Value, Vec<Value>) {
         transport.clone(),
         cwd.join("context"),
     );
-    let env: HashMap<String, String> = cell["env"]
-        .as_object()
-        .map(|env| {
-            env.iter()
-                .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let env: HashMap<String, String> = cell["env"].as_object().map_or_default(|env| {
+        env.iter()
+            .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
+            .collect()
+    });
     let settings = settings_of(cell);
     let handler = Frames::new(inference, env, move || settings.clone());
     let mut options = KernelOptions::new(&cwd, runtime());

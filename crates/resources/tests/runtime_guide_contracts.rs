@@ -71,7 +71,7 @@ fn resources_runtime_guide_points_at_diagram_mermaid_only_with_the_rust_apis() {
         },
     )
     .unwrap();
-    let line = r#"- `await diagram.mermaid(text)` renders Mermaid to an SVG and PNG in your theme and shows the user the PNG; you get its path (`help(diagram)`)."#;
+    let line = r"- `await diagram.mermaid(text)` renders Mermaid to an SVG and PNG in your theme and shows the user the PNG; you get its path (`help(diagram)`).";
     assert!(rust.ends_with(&format!("\n{line}")), "{rust}");
     assert!(!plain.contains("diagram"));
     assert_eq!(rust.matches("diagram.mermaid").count(), 1);

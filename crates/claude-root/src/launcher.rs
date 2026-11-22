@@ -302,7 +302,7 @@ fn require_claude(var: &dyn Fn(&str) -> Option<String>) -> Result<(String, BTree
     if !missing.is_empty() {
         return Err(format!(
             "{claude}{} lacks {}; update Claude Code (`claude update`).",
-            version.map(|v| format!(" {v}")).unwrap_or_default(),
+            version.map_or_default(|v| format!(" {v}")),
             missing.join(", ")
         ));
     }

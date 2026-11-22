@@ -32,7 +32,7 @@ pub fn kernel_environment<K: AsRef<OsStr>, V: AsRef<OsStr>>(source: impl IntoIte
     let allowed: HashSet<String> = source
         .iter()
         .find(|(name, _)| name.as_ref() == crate::env::RLM_ENV_ALLOW_ENV)
-        .map(|(_, value)| {
+        .map_or_default(|(_, value)| {
             value
                 .as_ref()
                 .to_string_lossy()
@@ -40,8 +40,7 @@ pub fn kernel_environment<K: AsRef<OsStr>, V: AsRef<OsStr>>(source: impl IntoIte
                 .map(|name| jsrt::string::trim(name).to_string())
                 .filter(|name| !name.is_empty())
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     source
         .into_iter()
         .filter(|(name, _)| {

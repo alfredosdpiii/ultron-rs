@@ -208,8 +208,10 @@ fn tui_autocomplete_combined_provider_suggestions_match_ts() {
         let force = c["force"].as_bool().expect("force");
         let got = p
             .get_suggestions(std::slice::from_ref(&text), 0, text.len(), force)
-            .map(|s| json!({"items": s.items.iter().map(item_json).collect::<Vec<_>>(), "prefix": s.prefix}))
-            .unwrap_or(Value::Null);
+            .map_or(
+                Value::Null,
+                |s| json!({"items": s.items.iter().map(item_json).collect::<Vec<_>>(), "prefix": s.prefix}),
+            );
         let got: Value = serde_json::from_str(&got.to_string().replace(&base, "<base>")).expect("json");
         if got != c["result"] {
             failures.push(format!("{text:?} force={force}\n got {got}\nwant {}", c["result"]));

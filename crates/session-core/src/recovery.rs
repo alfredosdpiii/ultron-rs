@@ -189,8 +189,7 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
             let content = session
                 .state()
                 .entry(assistant)
-                .map(|e| e["message"]["content"].clone())
-                .unwrap_or(Value::Null);
+                .map_or(Value::Null, |e| e["message"]["content"].clone());
             for call in batch["calls"].as_array().into_iter().flatten() {
                 let result_id = call["resultEntryId"].as_str().unwrap_or_default().to_string();
                 let block = &content[call["sourceIndex"].as_u64().unwrap_or(0) as usize];

@@ -308,7 +308,7 @@ impl TempDir {
         static N: AtomicU64 = AtomicU64::new(0);
         loop {
             let n = N.fetch_add(1, Ordering::SeqCst);
-            let seed = std::process::id() as u64 * 7919 + n * 104_729 + Instant::now().elapsed().as_nanos() as u64;
+            let seed = u64::from(std::process::id()) * 7919 + n * 104_729 + Instant::now().elapsed().as_nanos() as u64;
             let suffix: String = (0..6)
                 .map(|k| {
                     // Digits only: the session selector searches the session's cwd, so random letters could make

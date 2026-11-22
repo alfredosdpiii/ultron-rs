@@ -698,16 +698,13 @@ fn run_check(check: &HostCheck, place: &CheckPlace<'_>, runner: &CheckRunner) ->
 
 /// What a retried child's brief gains: the failed checks of its previous attempt.
 pub fn retry_note(report: &Value, attempt: u32) -> String {
-    let failed: Vec<String> = report["failed"]
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(|f| format!("- {f}"))
-                .collect()
-        })
-        .unwrap_or_default();
+    let failed: Vec<String> = report["failed"].as_array().map_or_default(|items| {
+        items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|f| format!("- {f}"))
+            .collect()
+    });
     format!(
         "[Contract] Attempt {attempt} did not pass the host's contract checks:\n{}\nFix these in your working directory, then call rlm.finish again; the host re-runs every check when you end.",
         failed.join("\n")
@@ -721,26 +718,20 @@ pub fn review_brief(brief: &str, name: &str, id: &str, result: &Value, report: &
         .map(String::from)
         .or_else(|| result["value"].as_str().map(String::from))
         .unwrap_or_default();
-    let failed: Vec<String> = report["failed"]
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(|f| format!("- {f}"))
-                .collect()
-        })
-        .unwrap_or_default();
-    let changed = result["verdict"]["changed_files"]
-        .as_array()
-        .map(|files| {
-            files
-                .iter()
-                .filter_map(Value::as_str)
-                .map(String::from)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let failed: Vec<String> = report["failed"].as_array().map_or_default(|items| {
+        items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|f| format!("- {f}"))
+            .collect()
+    });
+    let changed = result["verdict"]["changed_files"].as_array().map_or_default(|files| {
+        files
+            .iter()
+            .filter_map(Value::as_str)
+            .map(String::from)
+            .collect::<Vec<_>>()
+    });
     format!(
         "{brief}\n\n[Contract review] Subagent \"{name}\" ({id}) ended; its contract failed the host's checks:\n{}\nIts summary: {}\nFiles it declared changed: {}",
         failed.join("\n"),
@@ -847,8 +838,7 @@ fn contract_result(
     if failed {
         let names: Vec<&str> = report["failed"]
             .as_array()
-            .map(|f| f.iter().filter_map(Value::as_str).collect())
-            .unwrap_or_default();
+            .map_or_default(|f| f.iter().filter_map(Value::as_str).collect());
         let mut error = format!("Contract failed: {}", names.join("; "));
         if let Some(reviewer) = report["hop"]["review"]["rlm_child_id"].as_str() {
             error.push_str(&format!(" (reviewer {reviewer} spawned)"));

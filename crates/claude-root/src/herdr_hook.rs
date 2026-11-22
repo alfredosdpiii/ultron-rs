@@ -11,7 +11,7 @@ use crate::hooks::HookEvent;
 use herdr::{Metadata, Reporter, Session, State};
 use serde_json::{Map, Value, json};
 use session_core::RunEnv;
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 
 pub const DISPLAY_AGENT: &str = "Ultron (Claude)";
 
@@ -60,7 +60,7 @@ impl HerdrHook {
 
     fn with(&self, start: bool, f: impl FnOnce(&Reporter)) {
         let Some(pane) = &self.pane else { return };
-        let mut reporter = self.reporter.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut reporter = jsrt::sync::lock(&self.reporter);
         if reporter.is_none() && start {
             *reporter = Some(Reporter::start(pane, herdr::AGENT));
         }
@@ -97,7 +97,7 @@ impl HerdrHook {
                 return Some(json!({}));
             }
             HookEvent::SessionEnd => {
-                let reporter = self.reporter.lock().unwrap_or_else(PoisonError::into_inner).take();
+                let reporter = jsrt::sync::lock(&self.reporter).take();
                 drop(reporter);
                 return Some(json!({}));
             }
@@ -122,7 +122,7 @@ impl HerdrHook {
 
     /// The server shuts down: release the agent.
     pub fn release(&self) {
-        let reporter = self.reporter.lock().unwrap_or_else(PoisonError::into_inner).take();
+        let reporter = jsrt::sync::lock(&self.reporter).take();
         drop(reporter);
     }
 }

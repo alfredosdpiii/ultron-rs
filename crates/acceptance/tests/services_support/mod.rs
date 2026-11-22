@@ -108,8 +108,7 @@ impl Host {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .last()
-            .map(|(_, prompt)| prompt.clone())
-            .unwrap_or_default()
+            .map_or_default(|(_, prompt)| prompt.clone())
     }
 
     pub fn close(&self) {

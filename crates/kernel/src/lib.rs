@@ -1442,8 +1442,7 @@ impl Shared {
                     .options
                     .snapshot_path
                     .as_ref()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_default();
+                    .map_or_default(|path| path.display().to_string());
                 let report = recovery_report(crash, path, restore, state.continuity.checkpoint.as_ref());
                 state.continuity.notice = Some(report.clone());
                 state.continuity.last_recovery = Some(report);
@@ -1462,8 +1461,7 @@ impl Shared {
         let directory = path.parent().unwrap_or(Path::new(""));
         let name = path
             .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .map_or_default(|name| name.to_string_lossy().into_owned());
         let unsigned = directory.join(format!(".{name}.{}.unsigned", random_uuid()?));
         let frame = object([
             ("request", Value::from("snapshot")),
@@ -1786,7 +1784,7 @@ impl Shared {
                     let killed = status
                         .as_ref()
                         .ok()
-                        .and_then(|status| status.signal())
+                        .and_then(std::os::unix::process::ExitStatusExt::signal)
                         .is_some_and(|signal| signal == SIGKILL || signal == SIGTERM);
                     let tree_kill = match state.current(id) {
                         Some(current) if killed => shared.tree_memory_exceeded(current).then_some(current.tree_backend),

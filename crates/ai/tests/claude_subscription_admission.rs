@@ -349,7 +349,7 @@ fn ai_claude_subscription_relay_admits_one_request_and_refuses_the_rest_locally(
                 "end_turn",
                 json!({"input_tokens": 0, "output_tokens": 0}),
             ),
-        )
+        );
     });
     let mut relay = gate(&upstream.url(), None);
     assert!(relay.url.starts_with("http://127.0.0.1:"));

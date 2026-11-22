@@ -48,7 +48,7 @@ fn ai_claude_subscription_first_response_owns_usage_and_stops_recovery() {
             reply_sse(
                 stream,
                 &reply_events("first", &[json!({"type": "text", "text": "FIRST"})], stop, zero()),
-            )
+            );
         });
         let (message, _) = call(
             fake.config(&upstream.url(), &[("FAKE_RETRIES", "1")]),
@@ -222,7 +222,7 @@ fn ai_claude_subscription_incomplete_upstream_error_names_the_first_attempt() {
             stream,
             529,
             r#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 213000 tokens > 200000 maximum"}}"#,
-        )
+        );
     });
     let (message, _) = call(
         fake.config(&upstream.url(), &[]),
@@ -368,7 +368,7 @@ fn ai_claude_subscription_an_old_cli_error_names_the_minimum_version() {
             stream,
             400,
             r#"{"type":"error","error":{"type":"invalid_request_error","message":"Claude Code 2.1.200 does not support this model"}}"#,
-        )
+        );
     });
     let (message, _) = call(
         fake.config(&upstream.url(), &[]),
@@ -391,7 +391,7 @@ fn ai_claude_subscription_first_turn_frame_goes_ahead_of_native_context() {
         reply_sse(
             stream,
             &reply_events("m", &[json!({"type": "text", "text": "ok"})], "end_turn", zero()),
-        )
+        );
     });
     let (message, _) = call(
         fake.config(&upstream.url(), &[("FAKE_PREPEND", "1"), ("FAKE_MARK", "1")]),

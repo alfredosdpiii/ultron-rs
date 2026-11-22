@@ -25,11 +25,11 @@ pub fn run(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
             let report = sandbox::doctor::doctor(&launcher(env));
             let text = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
             writeln!(out, "{text}").map_err(io)?;
-            Ok(if report["ok"] == true { 0 } else { 1 })
+            Ok(i32::from(report["ok"] != true))
         }
         Some("--help" | "-h") | None => {
             out.write_all(USAGE.as_bytes()).map_err(io)?;
-            Ok(if argv.is_empty() { 1 } else { 0 })
+            Ok(i32::from(argv.is_empty()))
         }
         Some(other) => {
             writeln!(err, "Error: unknown sandbox command: {other}").map_err(io)?;

@@ -490,7 +490,7 @@ impl Loader {
     pub fn set_indicator(&mut self, indicator: Option<(Vec<String>, u64)>) {
         self.verbatim = indicator.is_some();
         let (frames, interval) =
-            indicator.unwrap_or_else(|| (DEFAULT_FRAMES.iter().map(|s| s.to_string()).collect(), 0));
+            indicator.unwrap_or_else(|| (DEFAULT_FRAMES.iter().map(std::string::ToString::to_string).collect(), 0));
         self.frames = frames;
         self.interval_ms = if interval > 0 { interval } else { DEFAULT_INTERVAL_MS };
         self.current = 0;

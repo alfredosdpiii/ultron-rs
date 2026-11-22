@@ -684,22 +684,7 @@ impl Run<'_, '_, AgyStream> {
     fn delta(&mut self, delta: AgyDelta) {
         match delta {
             AgyDelta::Text(chunk) => {
-                let index = match self.state.text_index {
-                    Some(index) => index,
-                    None => {
-                        let index = self.output.content.len();
-                        self.output.content.push(AssistantContent::Text(TextContent {
-                            text: String::new(),
-                            text_signature: None,
-                        }));
-                        self.state.text_index = Some(index);
-                        self.emit(|partial| AssistantMessageEvent::TextStart {
-                            content_index: index,
-                            partial,
-                        });
-                        index
-                    }
-                };
+                let index = self.ensure_text_block();
                 if let AssistantContent::Text(block) = &mut self.output.content[index] {
                     block.text.push_str(&chunk);
                 }
@@ -710,23 +695,7 @@ impl Run<'_, '_, AgyStream> {
                 });
             }
             AgyDelta::Thinking(chunk) => {
-                let index = match self.state.thought_index {
-                    Some(index) => index,
-                    None => {
-                        let index = self.output.content.len();
-                        self.output.content.push(AssistantContent::Thinking(ThinkingContent {
-                            thinking: String::new(),
-                            thinking_signature: None,
-                            redacted: None,
-                        }));
-                        self.state.thought_index = Some(index);
-                        self.emit(|partial| AssistantMessageEvent::ThinkingStart {
-                            content_index: index,
-                            partial,
-                        });
-                        index
-                    }
-                };
+                let index = self.ensure_thinking_block();
                 if let AssistantContent::Thinking(block) = &mut self.output.content[index] {
                     block.thinking.push_str(&chunk);
                 }
@@ -737,6 +706,41 @@ impl Run<'_, '_, AgyStream> {
                 });
             }
         }
+    }
+
+    fn ensure_text_block(&mut self) -> usize {
+        if let Some(index) = self.state.text_index {
+            return index;
+        }
+        let index = self.output.content.len();
+        self.output.content.push(AssistantContent::Text(TextContent {
+            text: String::new(),
+            text_signature: None,
+        }));
+        self.state.text_index = Some(index);
+        self.emit(|partial| AssistantMessageEvent::TextStart {
+            content_index: index,
+            partial,
+        });
+        index
+    }
+
+    fn ensure_thinking_block(&mut self) -> usize {
+        if let Some(index) = self.state.thought_index {
+            return index;
+        }
+        let index = self.output.content.len();
+        self.output.content.push(AssistantContent::Thinking(ThinkingContent {
+            thinking: String::new(),
+            thinking_signature: None,
+            redacted: None,
+        }));
+        self.state.thought_index = Some(index);
+        self.emit(|partial| AssistantMessageEvent::ThinkingStart {
+            content_index: index,
+            partial,
+        });
+        index
     }
 }
 

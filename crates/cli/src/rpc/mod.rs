@@ -264,7 +264,7 @@ fn run_command(
         }
         "get_last_assistant_text" => done(Some(json!({"text": session.last_assistant_text()}))),
         "set_session_name" => {
-            let name = str_field("name").map(jsrt::string::trim).unwrap_or_default();
+            let name = str_field("name").map_or_default(jsrt::string::trim);
             if name.is_empty() {
                 return Err("Session name cannot be empty".into());
             }

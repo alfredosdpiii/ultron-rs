@@ -237,10 +237,7 @@ pub fn write_atomic(path: &Path, content: &[u8], mode: u32) -> std::io::Result<(
         Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
         _ => PathBuf::from("."),
     };
-    let name = target
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let name = target.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     let (temporary, mut file) = loop {
         let temporary = dir.join(format!(
             ".{name}.{}.{}.tmp",

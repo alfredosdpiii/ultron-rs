@@ -64,7 +64,7 @@ fn send(out: &Out, mut message: Map<String, Value>) {
     let mut line = Map::new();
     line.insert("jsonrpc".into(), "2.0".into());
     line.append(&mut message);
-    let mut out = out.lock().unwrap_or_else(|p| p.into_inner());
+    let mut out = out.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let _ = out.write_all(format!("{}\n", jsrt::json::stringify(&Value::Object(line))).as_bytes());
     let _ = out.flush();
 }
@@ -114,7 +114,7 @@ impl<H: McpHandlers + 'static> Server<H> {
                         client.insert(key.into(), text.clone().into());
                     }
                 }
-                *self.client.lock().unwrap_or_else(|p| p.into_inner()) = client;
+                *self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = client;
                 let mut capabilities = Map::new();
                 capabilities.insert("tools".into(), json!({"listChanged": false}));
                 if handlers.prompts().is_some() {
@@ -210,13 +210,17 @@ impl<H: McpHandlers + 'static> Server<H> {
                     && let Some(signal) = self
                         .running
                         .lock()
-                        .unwrap_or_else(|p| p.into_inner())
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .get(&request_id.to_string())
                 {
                     signal.abort();
                 }
             } else if method == "notifications/initialized" {
-                let client = self.client.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                let client = self
+                    .client
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
                 self.handlers.on_initialized(&client);
             }
             return;
@@ -241,7 +245,7 @@ impl<H: McpHandlers + 'static> Server<H> {
         let key = id.to_string();
         self.running
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(key.clone(), signal.clone());
         let server = self.clone();
         std::thread::spawn(move || {
@@ -251,7 +255,11 @@ impl<H: McpHandlers + 'static> Server<H> {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 handlers.call_tool(&name, args, &signal, meta)
             }));
-            server.running.lock().unwrap_or_else(|p| p.into_inner()).remove(&key);
+            server
+                .running
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&key);
             match outcome {
                 Ok(Ok(result)) => reply(&server.out, id, result),
                 Ok(Err(message)) => fail(&server.out, id, INTERNAL_ERROR, &message),
@@ -306,7 +314,12 @@ pub fn serve<H: McpHandlers + 'static>(handlers: Arc<H>, input: &mut dyn BufRead
             server.on_message(record(Some(&item)));
         }
     }
-    for signal in server.running.lock().unwrap_or_else(|p| p.into_inner()).values() {
+    for signal in server
+        .running
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .values()
+    {
         signal.abort();
     }
 }

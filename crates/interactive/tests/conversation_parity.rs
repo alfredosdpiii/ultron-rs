@@ -143,14 +143,11 @@ fn interactive_assistant_message_matches_ts() {
             hide_thinking: c["hide"].as_bool().unwrap_or(false),
             hidden_thinking_label: c["label"].as_str().unwrap_or("Thinking...").to_string(),
             output_pad: c["pad"].as_u64().unwrap_or(1) as usize,
-            thinking_overrides: c["overrides"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .map(|o| (o[0].as_u64().unwrap() as usize, o[1].as_bool().unwrap()))
-                        .collect()
-                })
-                .unwrap_or_default(),
+            thinking_overrides: c["overrides"].as_array().map_or_default(|a| {
+                a.iter()
+                    .map(|o| (o[0].as_u64().unwrap() as usize, o[1].as_bool().unwrap()))
+                    .collect()
+            }),
             code_highlight: None,
         })
     });
@@ -374,8 +371,7 @@ fn footer_view(c: &Value) -> FooterView {
         experimental: false,
         statuses: c["statuses"]
             .as_array()
-            .map(|a| a.iter().map(|p| (s(&p[0]), s(&p[1]))).collect())
-            .unwrap_or_default(),
+            .map_or_default(|a| a.iter().map(|p| (s(&p[0]), s(&p[1]))).collect()),
     }
 }
 

@@ -383,7 +383,7 @@ impl GitHub {
             path,
         ]
         .iter()
-        .map(|part| part.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
         for (name, value) in &options.headers {
             argv.push("-H".into());
@@ -395,7 +395,7 @@ impl GitHub {
         }
         let run = RunOptions {
             env: (self.env)()?,
-            input: options.body.as_ref().map(|body| body.to_string()),
+            input: options.body.as_ref().map(std::string::ToString::to_string),
             ..RunOptions::default()
         };
         for attempt in 0..=TRANSIENT_BACKOFF_MS.len() {

@@ -96,7 +96,7 @@ pub fn antigravity_model(id: &str) -> Option<Model> {
 fn antigravity_interned(id: &str) -> Option<&'static Model> {
     static INTERNED: LazyLock<std::sync::Mutex<std::collections::HashMap<String, &'static Model>>> =
         LazyLock::new(Default::default);
-    let mut table = INTERNED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut table = jsrt::sync::lock(&INTERNED);
     if let Some(found) = table.get(id) {
         return Some(found);
     }

@@ -527,14 +527,11 @@ impl ModelRegistry {
     pub fn request_config(&self, model: &Model, lookup: Option<SharedLookup>) -> Option<RequestConfig> {
         let config = self.provider_config(&model.provider)?;
         let strings = |value: Option<&Value>| -> Vec<(String, String)> {
-            value
-                .and_then(Value::as_object)
-                .map(|map| {
-                    map.iter()
-                        .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
-                        .collect()
-                })
-                .unwrap_or_default()
+            value.and_then(Value::as_object).map_or_default(|map| {
+                map.iter()
+                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                    .collect()
+            })
         };
         let mut model_headers: Vec<(String, String)> = strings(
             config

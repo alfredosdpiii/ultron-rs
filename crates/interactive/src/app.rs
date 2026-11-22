@@ -616,23 +616,20 @@ fn estimate_tokens(message: &Value) -> u64 {
         }
     };
     let chars = match message["role"].as_str() {
-        Some("assistant") => message["content"]
-            .as_array()
-            .map(|blocks| {
-                blocks
-                    .iter()
-                    .map(|b| match b["type"].as_str() {
-                        Some("text") => b["text"].as_str().unwrap_or("").encode_utf16().count(),
-                        Some("thinking") => b["thinking"].as_str().unwrap_or("").encode_utf16().count(),
-                        Some("toolCall") => {
-                            b["name"].as_str().unwrap_or("").encode_utf16().count()
-                                + b["arguments"].to_string().encode_utf16().count()
-                        }
-                        _ => 0,
-                    })
-                    .sum()
-            })
-            .unwrap_or(0),
+        Some("assistant") => message["content"].as_array().map_or(0, |blocks| {
+            blocks
+                .iter()
+                .map(|b| match b["type"].as_str() {
+                    Some("text") => b["text"].as_str().unwrap_or("").encode_utf16().count(),
+                    Some("thinking") => b["thinking"].as_str().unwrap_or("").encode_utf16().count(),
+                    Some("toolCall") => {
+                        b["name"].as_str().unwrap_or("").encode_utf16().count()
+                            + b["arguments"].to_string().encode_utf16().count()
+                    }
+                    _ => 0,
+                })
+                .sum()
+        }),
         Some(_) => text_chars(&message["content"]),
         None => 0,
     };
@@ -1061,7 +1058,11 @@ impl App {
     /// The terminal's appearance, told to the client when it is new (the controller's: OSC 11, a scheme report,
     /// else `COLORFGBG`).
     fn tell_terminal_theme(&mut self) {
-        let Some(theme) = self.theme_controller.as_ref().map(|c| c.terminal_theme()) else {
+        let Some(theme) = self
+            .theme_controller
+            .as_ref()
+            .map(super::theme_setup::ThemeController::terminal_theme)
+        else {
             return;
         };
         if self.told_terminal_theme != Some(theme) {
@@ -1097,7 +1098,10 @@ impl App {
     /// `setAutoSync` / `queryTerminalColorScheme`: the palette notifications follow the controller's auto sync, and an
     /// applied pair asks for the current scheme; the answer arrives as input ([`App::handle_input`]).
     fn sync_scheme_notifications(&mut self, query: bool) {
-        let want = self.theme_controller.as_ref().is_some_and(|c| c.auto_sync());
+        let want = self
+            .theme_controller
+            .as_ref()
+            .is_some_and(super::theme_setup::ThemeController::auto_sync);
         if want != self.scheme_notifications {
             self.scheme_notifications = want;
             self.terminal_writes
@@ -1243,8 +1247,7 @@ impl App {
         let replies: Vec<ClipboardReply> = self
             .clipboard
             .as_ref()
-            .map(|c| std::iter::from_fn(|| c.try_reply()).collect())
-            .unwrap_or_default();
+            .map_or_default(|c| std::iter::from_fn(|| c.try_reply()).collect());
         for reply in replies {
             match reply {
                 ClipboardReply::Copied(result) => match (self.pending_copies.pop_front().flatten(), result) {
@@ -1309,7 +1312,12 @@ impl App {
                 changed = true;
             }
         }
-        let writes = std::mem::take(&mut *self.side_writes.lock().unwrap_or_else(|e| e.into_inner()));
+        let writes = std::mem::take(
+            &mut *self
+                .side_writes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         if !writes.is_empty() {
             self.terminal_writes.extend(writes);
             changed = true;
@@ -1574,11 +1582,14 @@ impl App {
             if settled.len() == committed.len() {
                 return None;
             }
-            let rows: Vec<String> = settled[committed.len()..].iter().map(|row| row.to_string()).collect();
+            let rows: Vec<String> = settled[committed.len()..]
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect();
             committed.extend(rows.iter().cloned());
             (rows, HistoryKind::Append)
         } else {
-            let rows: Vec<String> = settled.iter().map(|row| row.to_string()).collect();
+            let rows: Vec<String> = settled.iter().map(std::string::ToString::to_string).collect();
             committed.clone_from(&rows);
             (rows, HistoryKind::Replay)
         };
@@ -1614,7 +1625,10 @@ impl App {
             header.len() + self.chat.settled_lines()
         };
         let history = Self::commit(&mut self.committed, &mut self.history_id, &document[..settled]);
-        let mut viewport: Vec<String> = document[settled..].iter().map(|row| row.to_string()).collect();
+        let mut viewport: Vec<String> = document[settled..]
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         for part in self.dock(width) {
             viewport.extend(part);
         }
@@ -1715,8 +1729,7 @@ impl App {
     fn update_title(&mut self) {
         let cwd = std::path::Path::new(&self.cwd)
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .map_or_default(|n| n.to_string_lossy().into_owned());
         let title = match &self.session_name {
             Some(name) => format!("ultron - {name} - {cwd}"),
             None => format!("ultron - {cwd}"),
@@ -1842,7 +1855,7 @@ impl App {
                 self.rlm_polled = None;
                 self.chat.set_working(false);
                 self.chat.set_queues(Vec::new());
-                self.status = error.map(|e| format!("Operation failed: {e}")).unwrap_or_default();
+                self.status = error.map_or_default(|e| format!("Operation failed: {e}"));
             }
             LaneEvent::Name(name) => {
                 let confirmed = name.is_some() && self.pending_name == name;
@@ -2079,7 +2092,7 @@ impl App {
                         .into_iter()
                         .enumerate()
                         .map(|(i, message)| {
-                            let at = message["timestamp"].as_i64().map(|t| t.to_string()).unwrap_or_default();
+                            let at = message["timestamp"].as_i64().map_or_default(|t| t.to_string());
                             crate::copy_targets::TranscriptEntry::new(&format!("{id}#{i}"), &at, message)
                         })
                         .collect();
@@ -2305,7 +2318,7 @@ impl App {
                 answer: serde_json::json!({ "cancelled": true }),
             }),
             Some(Panel::OAuthLogin(_, LoginFlow::Client(id))) => {
-                self.send(LaneCommand::LoginReply { id, answer: None })
+                self.send(LaneCommand::LoginReply { id, answer: None });
             }
             _ => {}
         }
@@ -2397,7 +2410,10 @@ impl App {
     }
 
     pub fn handle_input(&mut self, data: &str) {
-        let expecting = self.theme_controller.as_ref().is_some_and(|c| c.expects_background());
+        let expecting = self
+            .theme_controller
+            .as_ref()
+            .is_some_and(super::theme_setup::ThemeController::expects_background);
         let read = self.osc11.input(data, expecting);
         if let Some(rgb) = read.reply {
             self.background_reported(rgb);
@@ -2899,14 +2915,14 @@ impl App {
                 match (verb.as_deref(), target) {
                     (None, _) => self.send(LaneCommand::Autoreview(AutoreviewRequest::Status)),
                     (Some("on"), _) if words.len() == 1 => {
-                        self.send(LaneCommand::Autoreview(AutoreviewRequest::Accounts))
+                        self.send(LaneCommand::Autoreview(AutoreviewRequest::Accounts));
                     }
                     (Some("off"), _) if words.len() == 1 => self.send(LaneCommand::Autoreview(AutoreviewRequest::Off)),
                     (Some("ban"), Some((login, account))) => {
-                        self.send(LaneCommand::Autoreview(AutoreviewRequest::Ban { login, account }))
+                        self.send(LaneCommand::Autoreview(AutoreviewRequest::Ban { login, account }));
                     }
                     (Some("unban"), Some((login, account))) => {
-                        self.send(LaneCommand::Autoreview(AutoreviewRequest::Unban { login, account }))
+                        self.send(LaneCommand::Autoreview(AutoreviewRequest::Unban { login, account }));
                     }
                     _ => self.show_status("Usage: /autoreview on|off, or ban|unban <login> [--account <login>]"),
                 }
@@ -3007,7 +3023,7 @@ impl App {
                 }
             }
             Slash::ArminSaysHi | Slash::DementedElves => {
-                self.show_status(&format!("Error: /{name} is not available in the Rust build yet"))
+                self.show_status(&format!("Error: /{name} is not available in the Rust build yet"));
             }
         }
     }
@@ -4057,8 +4073,7 @@ impl App {
             "enabledModels" => {
                 self.enabled_models = value
                     .as_array()
-                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
-                    .unwrap_or_default();
+                    .map_or_default(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect());
             }
             _ => self.apply_local_setting(key, &value),
         }
@@ -4181,8 +4196,7 @@ impl App {
             self.rlm_round = false;
             self.detached_cells = result
                 .ok()
-                .map(|v| rlm_views::running::parse_detached_cells(&v))
-                .unwrap_or_default();
+                .map_or_default(|v| rlm_views::running::parse_detached_cells(&v));
             return self.update_work_active();
         }
         let lane = &self.lane;

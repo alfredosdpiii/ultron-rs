@@ -597,7 +597,7 @@ fn inbox_ops(chat: &harness::chat::ChatHarness) -> Arc<Mutex<Vec<Value>>> {
                 {
                     sink.lock()
                         .unwrap()
-                        .push(Value::Array(ops.iter().map(|op| op.to_json()).collect()));
+                        .push(Value::Array(ops.iter().map(chord_delta::Op::to_json).collect()));
                 }
             }
         })
@@ -1272,7 +1272,7 @@ fn harness_chat_usage_records_usage_as_numeric_sets_on_the_ledger_in_the_entrys_
                         .count();
                     sink.lock()
                         .unwrap()
-                        .push((entries, ops.iter().map(|op| op.to_json()).collect()));
+                        .push((entries, ops.iter().map(chord_delta::Op::to_json).collect()));
                 }
             })
             .unwrap();

@@ -309,9 +309,9 @@ fn whole_ledger(transactions: Vec<Vec<Value>>) -> Vec<Vec<Value>> {
             if let Some(id) = key.strip_prefix(CALLS_PREFIX) {
                 let list = calls.entry(id.to_string()).or_default();
                 if set {
-                    list.push(record["value"].clone())
+                    list.push(record["value"].clone());
                 } else {
-                    list.clear()
+                    list.clear();
                 }
             } else if let Some(id) = key.strip_prefix(ROOT_PREFIX) {
                 roots.retain(|(stored, _)| stored != id);
@@ -543,8 +543,7 @@ pub fn routed_server_held(
                     m.iter()
                         .find(|m| m["role"] == "user" && !m.to_string().contains("[clock]"))
                 })
-                .map(Value::to_string)
-                .unwrap_or_default();
+                .map_or_default(Value::to_string);
             let is_child = first_user.contains(&marker);
             let reply = if is_child {
                 next_child += 1;

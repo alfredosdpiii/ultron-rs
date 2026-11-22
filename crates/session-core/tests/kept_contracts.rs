@@ -125,7 +125,7 @@ fn run(
     }
 }
 
-const GREP: &str = r#"contract={'checks': [{'run': 'grep -q fixed status.txt'}]}"#;
+const GREP: &str = r"contract={'checks': [{'run': 'grep -q fixed status.txt'}]}";
 
 #[test]
 fn session_core_w18s_kept_child_each_answer_is_held_to_its_contract() {
@@ -246,7 +246,7 @@ fn session_core_w21c_kept_child_report_hop_failure_is_final_after_verified_answe
 /// the same messages); a retry and the next question start the count afresh.
 #[test]
 fn session_core_w21c_kept_child_rejected_finishes_are_bounded_per_answer() {
-    let options = r#"contract={'returns': {'type': 'object', 'required': ['n']}}, hop={'retry': 1}"#;
+    let options = r"contract={'returns': {'type': 'object', 'required': ['n']}}, hop={'retry': 1}";
     let bad = "await rlm.finish('passed', 'x', evidence=['data.txt:1 counted'], outputs={})";
     let good = "print(await rlm.finish('passed', 'x', evidence=['data.txt:1 counted'], outputs={'n': 2}))";
     let tries = |tag: &str, n: usize| {
@@ -312,7 +312,7 @@ fn session_core_w18s_kept_child_retry_hop_asks_it_again_with_its_failures() {
 
 #[test]
 fn session_core_w18s_kept_child_returns_reads_each_answers_own_verdict() {
-    let options = r#"contract={'returns': {'type': 'object', 'required': ['n']}}"#;
+    let options = r"contract={'returns': {'type': 'object', 'required': ['n']}}";
     let r = run(options, &["Q-NO-FINISH"], false, |prompt| {
         if !prompt.contains(BRIEF) {
             return None;
@@ -372,7 +372,7 @@ fn session_core_w18s_kept_child_review_hop_spawns_the_reviewer() {
 
 #[test]
 fn session_core_w18s_kept_child_workspace_checks_compare_with_its_spawn() {
-    let options = r#"contract={'checks': [{'changed_files_within': ['status.txt']}, {'no_new_dependencies': True}]}"#;
+    let options = r"contract={'checks': [{'changed_files_within': ['status.txt']}, {'no_new_dependencies': True}]}";
     let r = run(options, &["Q-MORE"], false, |prompt| {
         Some(match prompt {
             p if p.contains(BRIEF) => work("fixed", false, FINISH),

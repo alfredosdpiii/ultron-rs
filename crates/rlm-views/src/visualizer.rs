@@ -486,7 +486,7 @@ impl RlmClock {
 
     pub fn timings(&mut self, tasks: &[RlmTask], usage: Option<&RlmUsage>, now: f64) -> HashMap<String, RlmTiming> {
         let mut admitted = HashMap::new();
-        for r in usage.map(|u| u.reservations.as_slice()).unwrap_or(&[]) {
+        for r in usage.map_or(&[][..], |u| u.reservations.as_slice()) {
             if let (Some(id), Some(at)) = (&r.task_id, r.admitted_at) {
                 admitted.insert(id.clone(), at);
             }
@@ -1081,7 +1081,7 @@ pub fn extract_turn(
                 &mut cells,
                 RlmRootCell {
                     tool_call_id: id.to_string(),
-                    code: known.as_ref().map(|c| c.code.clone()).unwrap_or_default(),
+                    code: known.as_ref().map_or_default(|c| c.code.clone()),
                     status: if message["isError"] == true {
                         CellStatus::Error
                     } else {
@@ -1108,7 +1108,7 @@ pub fn extract_turn(
             RlmRootCell {
                 tool_call_id: tool.tool_call_id.clone(),
                 code: if code.is_empty() {
-                    known.as_ref().map(|c| c.code.clone()).unwrap_or_default()
+                    known.as_ref().map_or_default(|c| c.code.clone())
                 } else {
                     code
                 },

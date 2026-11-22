@@ -250,28 +250,22 @@ impl RestoreReport {
 }
 
 fn string_list(value: &Value) -> Vec<String> {
-    value
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default()
+    value.as_array().map_or_default(|items| {
+        items
+            .iter()
+            .filter_map(|item| item.as_str().map(String::from))
+            .collect()
+    })
 }
 
 fn string_record(value: &Value) -> Map<String, Value> {
-    value
-        .as_object()
-        .map(|record| {
-            record
-                .iter()
-                .filter(|(_, item)| item.is_string())
-                .map(|(key, item)| (key.clone(), item.clone()))
-                .collect()
-        })
-        .unwrap_or_default()
+    value.as_object().map_or_default(|record| {
+        record
+            .iter()
+            .filter(|(_, item)| item.is_string())
+            .map(|(key, item)| (key.clone(), item.clone()))
+            .collect()
+    })
 }
 
 /// The done frame's `snapshot` field, as kernel.ts `snapshotReport` reads it.

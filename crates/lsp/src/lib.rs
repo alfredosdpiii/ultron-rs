@@ -124,7 +124,7 @@ impl Inner {
             let found = sandbox::launcher::resolve_program(program, &path);
             (found != Path::new(program)).then(|| found.to_string_lossy().into_owned())
         };
-        let args = spec.args.iter().map(|arg| arg.to_string());
+        let args = spec.args.iter().map(std::string::ToString::to_string);
         let mut out = Vec::new();
         if let Some(server) = on_path(spec.command) {
             out.push(Candidate {
@@ -138,7 +138,7 @@ impl Inner {
             let enter = ["--", "/bin/sh", "-c", r#"cd "$1" && shift && exec "$@""#, "sh"].map(String::from);
             let argv = [mise, "exec".into()]
                 .into_iter()
-                .chain(spec.mise.iter().map(|tool| tool.to_string()))
+                .chain(spec.mise.iter().map(std::string::ToString::to_string))
                 .chain(enter)
                 .chain([root.to_string_lossy().into_owned(), spec.command.to_string()])
                 .chain(args)
@@ -335,7 +335,7 @@ fn describe(server: &str, file: &str, errors: &[Diagnostic]) -> Option<String> {
             Some((cut, _)) => format!("{}…", &message[..cut]),
             None => message,
         };
-        let code = error.code.as_ref().map(|code| format!("{code} ")).unwrap_or_default();
+        let code = error.code.as_ref().map_or_default(|code| format!("{code} "));
         lines.push(format!("  {}:{} {code}{message}", error.line + 1, error.column + 1));
     }
     if errors.len() > MAX_SHOWN {

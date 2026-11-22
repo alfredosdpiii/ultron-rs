@@ -82,8 +82,10 @@ fn launch_prompt(env: &RunEnv) -> String {
         .files
         .iter()
         .find(|(path, _)| path.file_name().is_some_and(|n| n.to_string_lossy().contains("prompt")))
-        .map(|(_, text)| text.clone())
-        .unwrap_or_else(|| panic!("no prompt file in {:?}", launch.files))
+        .map_or_else(
+            || panic!("no prompt file in {:?}", launch.files),
+            |(_, text)| text.clone(),
+        )
 }
 
 #[test]

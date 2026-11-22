@@ -65,7 +65,7 @@ fn pump<W: Write>(mut out: W, inner: &Inner) {
                 if inner.stop.load(Ordering::Acquire) {
                     return;
                 }
-                back = inner.cv.wait(back).unwrap_or_else(|e| e.into_inner());
+                back = inner.cv.wait(back).unwrap_or_else(std::sync::PoisonError::into_inner);
             }
             std::mem::swap(&mut *back, &mut front);
         }
@@ -169,7 +169,7 @@ impl TtyWriter {
                 .inner
                 .cv
                 .wait_timeout(back, deadline - now)
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .0;
         }
         drop(back);

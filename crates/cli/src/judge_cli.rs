@@ -142,7 +142,7 @@ fn bench(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -
     for line in judge::bench::report(&runs) {
         writeln!(out, "{line}").map_err(io)?;
     }
-    Ok(if runs.iter().any(|r| r.stopped.is_some()) { 1 } else { 0 })
+    Ok(i32::from(runs.iter().any(|r| r.stopped.is_some())))
 }
 
 /// `ultron judge bench ...` and `ultron judge --help`; `None` for anything else (a prompt that starts with "judge").

@@ -229,7 +229,7 @@ pub fn parse_args(args: &[String]) -> Args {
                 }
                 None => error(&mut r, "--tui-mode requires regular or fullscreen".into()),
                 Some(mode) if mode.starts_with('-') => {
-                    error(&mut r, "--tui-mode requires regular or fullscreen".into())
+                    error(&mut r, "--tui-mode requires regular or fullscreen".into());
                 }
                 Some(mode) => {
                     i += 1;

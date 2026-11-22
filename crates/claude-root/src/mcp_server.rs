@@ -335,7 +335,7 @@ impl Opened {
             durable.close();
         }
         self.lane.shutdown();
-        self.lock.lock().unwrap_or_else(PoisonError::into_inner).take();
+        jsrt::sync::lock(&self.lock).take();
     }
 }
 
@@ -704,7 +704,7 @@ pub struct Server {
 impl Server {
     /// Wait for the runtime; the startup error when it failed.
     fn runtime(&self) -> Result<Arc<Opened>, String> {
-        let mut startup = self.startup.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut startup = jsrt::sync::lock(&self.startup);
         while !startup.done {
             startup = self.ready.wait(startup).unwrap_or_else(PoisonError::into_inner);
         }
@@ -715,7 +715,7 @@ impl Server {
     }
 
     fn opened_now(&self) -> (Option<Arc<Opened>>, Option<String>) {
-        let startup = self.startup.lock().unwrap_or_else(PoisonError::into_inner);
+        let startup = jsrt::sync::lock(&self.startup);
         (startup.opened.clone(), startup.error.clone())
     }
 
@@ -750,7 +750,7 @@ impl Server {
         match requested {
             op::STATUS => Ok(self.status()),
             op::CELLS => {
-                let cells = self.cells.lock().unwrap_or_else(PoisonError::into_inner);
+                let cells = jsrt::sync::lock(&self.cells);
                 let start = cells.1.len().saturating_sub(50);
                 Ok(json!({"cells": cells.1[start..].iter().map(CellRecord::to_json).collect::<Vec<_>>()}))
             }
@@ -799,13 +799,7 @@ impl Server {
                 let lane = request
                     .get("token")
                     .and_then(Value::as_str)
-                    .and_then(|token| {
-                        self.child_tokens
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .get(token)
-                            .cloned()
-                    })
+                    .and_then(|token| jsrt::sync::lock(&self.child_tokens).get(token).cloned())
                     .ok_or("rlm.finish: unknown subagent")?;
                 let payload = match request.get("payload") {
                     Some(Value::Object(payload)) => payload.clone(),
@@ -822,13 +816,7 @@ impl Server {
                 let lane = request
                     .get("token")
                     .and_then(Value::as_str)
-                    .and_then(|token| {
-                        self.child_tokens
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .get(token)
-                            .cloned()
-                    })
+                    .and_then(|token| jsrt::sync::lock(&self.child_tokens).get(token).cloned())
                     .ok_or("the session's shared world: unknown subagent")?;
                 let kind = request.get("kind").and_then(Value::as_str).unwrap_or_default();
                 let payload = match request.get("payload") {
@@ -906,10 +894,7 @@ impl Server {
         };
         match event {
             HookEvent::SessionStart => {
-                self.shown_playbooks
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clear();
+                jsrt::sync::lock(&self.shown_playbooks).clear();
                 let mut parts: Vec<String> = root.session_context().into_iter().collect();
                 parts.extend(self.session_skills_context());
                 Ok(context(
@@ -928,7 +913,7 @@ impl Server {
                         return Ok(answer);
                     }
                 }
-                *self.persona_nudges.lock().unwrap_or_else(PoisonError::into_inner) = 0;
+                *jsrt::sync::lock(&self.persona_nudges) = 0;
                 let mut contexts: Vec<String> = root.begin_turn().into_iter().collect();
                 let mut notice = None;
                 if !self.args.child {
@@ -954,7 +939,7 @@ impl Server {
                 if self.args.child {
                     return Ok(json!({}));
                 }
-                let mut nudges = self.persona_nudges.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut nudges = jsrt::sync::lock(&self.persona_nudges);
                 let global = self.persona_on();
                 let transcript = crate::persona_hook::transcript_of(input);
                 let answer = self.persona_change(&opened, |state, now, limits| {
@@ -979,7 +964,7 @@ impl Server {
         }
         let bundled = session_core::session_resources::bundled_skills(&self.env.skills(), &*self.env.var)?;
         let rigor = PathBuf::from(bundled).join("pstack/rigor");
-        let mut shown = self.shown_playbooks.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut shown = jsrt::sync::lock(&self.shown_playbooks);
         let message =
             session_core::playbook_route::playbook_message(prompt, &rigor, &shown, jsrt::date::now_ms() as u64)?;
         if let Some(name) = message["details"]["playbook"].as_str() {
@@ -1053,7 +1038,7 @@ impl Server {
             SessionPersona::from_json(session_core::durable_store::lock(&opened.session).value(MODULE, STATE_KEY));
         let launched = self.persona_on();
         let wanted = state.effective(launched);
-        let mut told = self.persona_told.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut told = jsrt::sync::lock(&self.persona_told);
         if wanted == launched {
             *told = None;
             return None;
@@ -1125,7 +1110,7 @@ impl Server {
             }
         };
         let n = {
-            let mut cells = self.cells.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut cells = jsrt::sync::lock(&self.cells);
             cells.0 += 1;
             let n = cells.0;
             cells.1.push(CellRecord {
@@ -1141,14 +1126,7 @@ impl Server {
             n
         };
         let result = opened.root.run_cell(code, signal);
-        if let Some(cell) = self
-            .cells
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .1
-            .iter_mut()
-            .find(|c| c.n == n)
-        {
+        if let Some(cell) = jsrt::sync::lock(&self.cells).1.iter_mut().find(|c| c.n == n) {
             cell.ended_at = Some(jsrt::date::now_ms());
             cell.status = if result.is_error { "error" } else { "ok" };
             cell.output = result
@@ -1242,10 +1220,10 @@ impl Running {
         }
         self.server.herdr.release();
         self.server.closed.store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Some(control) = self.control.lock().unwrap_or_else(PoisonError::into_inner).take() {
+        if let Some(control) = jsrt::sync::lock(&self.control).take() {
             control.close();
         }
-        self.parent.lock().unwrap_or_else(PoisonError::into_inner).take();
+        jsrt::sync::lock(&self.parent).take();
         if let Ok(opened) = self.server.runtime() {
             opened.close();
         }
@@ -1377,7 +1355,7 @@ pub fn start(argv: &[String], ctx: &Ctx) -> Result<(Arc<Running>, Arc<Handlers>)
     let starter = server.clone();
     std::thread::spawn(move || {
         let outcome = open_runtime(&starter, claude, root_finish);
-        let mut startup = starter.startup.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut startup = jsrt::sync::lock(&starter.startup);
         match outcome {
             Ok(opened) => startup.opened = Some(Arc::new(opened)),
             Err(error) => {
@@ -1404,7 +1382,7 @@ pub fn start(argv: &[String], ctx: &Ctx) -> Result<(Arc<Running>, Arc<Handlers>)
 /// `rootFinish`: the verdict goes to the parent server as `child.finish` with this server's token.
 fn root_finish(parent: Arc<Mutex<Option<ControlClient>>>, token: Option<String>) -> delegation::host::RootFinish {
     Arc::new(move |payload: Map<String, Value>| {
-        let mut parent = parent.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut parent = jsrt::sync::lock(&parent);
         let client = parent
             .as_mut()
             .ok_or("rlm.finish: the parent server is not reachable")?;
@@ -1420,7 +1398,7 @@ fn root_finish(parent: Arc<Mutex<Option<ControlClient>>>, token: Option<String>)
 /// A subagent server's shared-world requests go to its parent server with its token (crate::shared_world).
 fn upstream(parent: Arc<Mutex<Option<ControlClient>>>, token: Option<String>) -> crate::shared_world::Upstream {
     Arc::new(move |name: Option<&str>, kind: &str, payload: &Map<String, Value>| {
-        let mut parent = parent.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut parent = jsrt::sync::lock(&parent);
         let client = parent
             .as_mut()
             .ok_or_else(|| format!("{kind}: the parent server is not reachable"))?;
@@ -1505,11 +1483,7 @@ fn claude_subagents(
                     model: crate::claude_code_ref(&model),
                 };
                 let token = jsrt::random::random_hex(24);
-                server
-                    .child_tokens
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .insert(token.clone(), run.lane_name.clone());
+                jsrt::sync::lock(&server.child_tokens).insert(token.clone(), run.lane_name.clone());
                 let options = crate::child::ChildOptions {
                     claude: &claude,
                     server: crate::child::ChildServer {
@@ -1538,11 +1512,7 @@ fn claude_subagents(
                 let result = crate::child_usage::charged(&charge, &|| run.signal.is_aborted(), || {
                     crate::child::run_claude_child(&options, &child, &token, &run.signal, &|_| {})
                 });
-                server
-                    .child_tokens
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .remove(&token);
+                jsrt::sync::lock(&server.child_tokens).remove(&token);
                 result.map(|done| done.text)
             }) as delegation::host::ChildRunner
         }),

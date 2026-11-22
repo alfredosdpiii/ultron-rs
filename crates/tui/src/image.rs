@@ -535,7 +535,7 @@ static KITTY_IMAGES: LazyLock<Mutex<Registry>> = LazyLock::new(|| {
 });
 
 fn registry() -> std::sync::MutexGuard<'static, Registry> {
-    KITTY_IMAGES.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    jsrt::sync::lock(&KITTY_IMAGES)
 }
 
 /// `registerKittyImageMetadata`: each registration is a new transmission generation.

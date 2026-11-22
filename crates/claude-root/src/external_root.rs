@@ -17,7 +17,7 @@ use session_core::lane::Lane;
 use session_core::nudge::{SkillExtractionNudger, ToolRoundNudger};
 use session_core::session_stats::SessionStats;
 use session_journal::run::MAIN_LANE;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 /// At most this many events are kept waiting; older ones are dropped with a count.
 pub const MAX_INBOX: usize = 64;
@@ -126,7 +126,7 @@ impl ExternalRoot {
 
     /// The nudges' thresholds (0 disables one) and whether completion events are on (`asyncEvents`).
     pub fn with_nudges(self, tool_rounds: u64, skill: u64, async_events: bool) -> ExternalRoot {
-        *self.nudgers.lock().unwrap_or_else(PoisonError::into_inner) = (
+        *jsrt::sync::lock(&self.nudgers) = (
             ToolRoundNudger::new(tool_rounds, async_events).with_next_call(),
             SkillExtractionNudger::new(skill),
         );
@@ -136,11 +136,7 @@ impl ExternalRoot {
     /// The host wakes the model when root work ends while it is idle (`ultron claude`'s wait-events hook): the wait
     /// steer says so instead of "nothing wakes you".
     pub fn waking(self) -> ExternalRoot {
-        self.nudgers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .0
-            .set_next_call(false);
+        jsrt::sync::lock(&self.nudgers).0.set_next_call(false);
         self
     }
 
@@ -293,7 +289,7 @@ impl ExternalRoot {
         }
         self.host.end_root_turn(&turn);
         self.host.run_ended(MAIN_LANE);
-        let mut nudgers = self.nudgers.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut nudgers = jsrt::sync::lock(&self.nudgers);
         nudgers.0.run_ended(&turn);
         nudgers.1.run_ended(&turn);
     }
@@ -332,7 +328,7 @@ impl ExternalRoot {
             state.cells += 1;
             turn
         };
-        let lead = self.take_events().map(|e| format!("{e}\n")).unwrap_or_default();
+        let lead = self.take_events().map_or_default(|e| format!("{e}\n"));
         if let Some(exhausted) = self.host.turn_budget_exhausted(&self.host.root_id_of_run(&turn)) {
             if let Some(stats) = &self.stats {
                 stats.usage_limit_block();
@@ -353,7 +349,7 @@ impl ExternalRoot {
         }
         let running = self.host.pending_root_notifications();
         let notes: Vec<String> = {
-            let mut nudgers = self.nudgers.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut nudgers = jsrt::sync::lock(&self.nudgers);
             let (rounds, skill) = &mut *nudgers;
             [
                 rounds.turn_ended(&turn, 1, running),

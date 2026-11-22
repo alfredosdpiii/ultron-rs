@@ -104,7 +104,7 @@ impl Server {
 
     /// A server on `env` with exactly `argv`.
     fn launch(env: RunEnv, argv: &[&str]) -> Server {
-        let argv: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
+        let argv: Vec<String> = argv.iter().map(std::string::ToString::to_string).collect();
         let (running, handlers) = start(&argv, &claude_root::Ctx { env }).unwrap();
         let (input, stdin) = std::io::pipe().unwrap();
         let (stdout, output) = std::io::pipe().unwrap();
@@ -272,8 +272,7 @@ fn last_message(body: &Value) -> String {
     body["messages"]
         .as_array()
         .and_then(|m| m.last())
-        .map(Value::to_string)
-        .unwrap_or_default()
+        .map_or_default(Value::to_string)
 }
 
 fn has_tool_result(body: &Value) -> bool {
@@ -308,7 +307,7 @@ impl Waiter {
 fn wait_events(socket: &str) -> (i32, String) {
     let args: Vec<String> = ["wait-events", "--socket", socket]
         .iter()
-        .map(|a| a.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let code = claude_root::hooks::run(&args, &mut std::io::empty(), true, &|_| None, &mut out, &mut err);
@@ -827,7 +826,7 @@ fn root_inbox<const N: usize>(server: &Server, seen: [&str; N]) -> String {
 fn fake_claude(dir: &Path) -> PathBuf {
     let script = dir.join("claude");
     let text = format!(
-        r#"#!{python}
+        r"#!{python}
 import json, os, sys
 args = sys.argv[1:]
 server = json.loads(args[args.index('--mcp-config') + 1])['mcpServers']['ultron']
@@ -841,7 +840,7 @@ os.rename('{dir}/child.json.tmp', '{dir}/child.json')
 with open('{dir}/go') as f:
     f.read()
 print(json.dumps({{'type': 'result', 'result': 'claude child done', 'num_turns': 1, 'usage': {{'input_tokens': 1, 'output_tokens': 1}}}}))
-"#,
+",
         python = python(),
         dir = dir.display()
     );

@@ -13,7 +13,7 @@ const R: &str = "\x1b[0m\x1b]8;;\x07";
 fn plan(rows: &[&str]) -> FramePlan {
     FramePlan {
         history: None,
-        viewport: rows.iter().map(|s| s.to_string()).collect(),
+        viewport: rows.iter().map(std::string::ToString::to_string).collect(),
     }
 }
 

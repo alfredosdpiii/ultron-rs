@@ -52,8 +52,10 @@ fn printed(output: &str, prefix: &str) -> Value {
     output
         .lines()
         .find_map(|l| l.strip_prefix(&format!("{prefix} ")))
-        .map(|l| serde_json::from_str(l).unwrap())
-        .unwrap_or_else(|| panic!("no {prefix} line in {output}"))
+        .map_or_else(
+            || panic!("no {prefix} line in {output}"),
+            |l| serde_json::from_str(l).unwrap(),
+        )
 }
 
 fn outputs(a: &p_session_support::Actor) -> String {

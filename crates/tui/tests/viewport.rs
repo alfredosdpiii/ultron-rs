@@ -18,7 +18,7 @@ const R: &str = "\x1b[0m\x1b]8;;\x07";
 fn plan(viewport: &[&str]) -> FramePlan {
     FramePlan {
         history: None,
-        viewport: viewport.iter().map(|s| s.to_string()).collect(),
+        viewport: viewport.iter().map(std::string::ToString::to_string).collect(),
     }
 }
 
@@ -26,7 +26,7 @@ fn with_history(id: u64, rows: &[&str], viewport: &[&str]) -> FramePlan {
     FramePlan {
         history: Some(HistoryBatch {
             id,
-            rows: rows.iter().map(|s| s.to_string()).collect(),
+            rows: rows.iter().map(std::string::ToString::to_string).collect(),
             kind: HistoryKind::Append,
         }),
         ..plan(viewport)

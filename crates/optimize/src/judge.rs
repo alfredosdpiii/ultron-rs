@@ -422,8 +422,8 @@ pub fn point(set: &JudgeSet, config: &Value, verdicts: &[Verdict], ms: &[f64]) -
         } else {
             Outcome::Passed
         },
-        quality: correct as f64 / cases,
-        penalty: (review + abstained) as f64 / cases,
+        quality: f64::from(correct) / cases,
+        penalty: f64::from(review + abstained) / cases,
         cost_usd: total,
         metrics,
         failures,

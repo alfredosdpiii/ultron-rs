@@ -223,14 +223,11 @@ pub fn api_key_request_auth(env: &Env, provider: &str) -> Result<Option<ai::auth
 
 /// The string members of a credential's `env` object.
 fn string_map(value: Option<&Value>) -> std::collections::HashMap<String, String> {
-    value
-        .and_then(Value::as_object)
-        .map(|env| {
-            env.iter()
-                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
-                .collect()
-        })
-        .unwrap_or_default()
+    value.and_then(Value::as_object).map_or_default(|env| {
+        env.iter()
+            .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+            .collect()
+    })
 }
 
 /// The value of a future that is ready on its first poll (the built-in api-key auths read only the environment and

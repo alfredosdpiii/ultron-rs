@@ -119,8 +119,7 @@ fn set_setting(core: &CoreCall, context: &ControlContext, key: &str, value: &Val
 fn set_project_trust(context: &ControlContext, updates: &Value) -> ServiceResult {
     let updates: Vec<config::trust::TrustUpdate> = updates
         .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or_default()
+        .map_or_default(Vec::as_slice)
         .iter()
         .map(|u| config::trust::TrustUpdate {
             path: PathBuf::from(u["path"].as_str().unwrap_or_default()),

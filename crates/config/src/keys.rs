@@ -393,7 +393,7 @@ pub fn judge_settings(global: &Settings) -> JudgeSettings {
             }
             picked
         }
-        None => JUDGE_BACKENDS.iter().map(|b| b.to_string()).collect(),
+        None => JUDGE_BACKENDS.iter().map(std::string::ToString::to_string).collect(),
     };
     let d1_url = object(field("d1"))
         .and_then(|d1| d1.get("url"))

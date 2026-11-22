@@ -136,8 +136,7 @@ impl KimiCodingOAuth {
             if status == 401 || status == 403 || field(&json, "error") == Some(&json!("invalid_grant")) {
                 let description = field(&json, "error_description")
                     .and_then(Value::as_str)
-                    .map(|d| format!(": {d}"))
-                    .unwrap_or_default();
+                    .map_or_default(|d| format!(": {d}"));
                 return Err(format!(
                     "Kimi Code token refresh unauthorized (status {status}){description}"
                 ));
@@ -261,8 +260,7 @@ impl OAuthAuth for KimiCodingOAuth {
                     let error = field(&json, "error");
                     let description = field(&json, "error_description")
                         .and_then(Value::as_str)
-                        .map(|d| format!(": {d}"))
-                        .unwrap_or_default();
+                        .map_or_default(|d| format!(": {d}"));
                     Ok(match error.and_then(Value::as_str) {
                         Some("authorization_pending") => Poll::Pending,
                         Some("slow_down") => Poll::SlowDown(positive(field(&json, "interval"))),
@@ -273,7 +271,7 @@ impl OAuthAuth for KimiCodingOAuth {
                         other => Poll::Failed(format!(
                             "Kimi Code device token request failed (status {}){}",
                             response.status,
-                            other.map(|e| format!(": {e}{description}")).unwrap_or_default()
+                            other.map_or_default(|e| format!(": {e}{description}"))
                         )),
                     })
                 },

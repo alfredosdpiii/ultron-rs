@@ -754,9 +754,9 @@ impl VimState {
         format!(
             "{}{}{}{}{}{}",
             self.count,
-            self.operator.map(|o| o.key().to_string()).unwrap_or_default(),
+            self.operator.map_or_default(|o| o.key().to_string()),
             if self.pending_g { "g" } else { "" },
-            self.text_object.map(String::from).unwrap_or_default(),
+            self.text_object.map_or_default(String::from),
             find,
             if self.replace_char { "r" } else { "" }
         )

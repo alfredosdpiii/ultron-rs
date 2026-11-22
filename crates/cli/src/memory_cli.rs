@@ -59,7 +59,7 @@ pub fn run(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
         Some("import") => {}
         Some("--help" | "-h") | None => {
             out.write_all(USAGE.as_bytes()).map_err(io)?;
-            return Ok(if argv.is_empty() { 1 } else { 0 });
+            return Ok(i32::from(argv.is_empty()));
         }
         Some(other) => return usage(err, &format!("unknown memory command: {other}")),
     }
@@ -156,7 +156,7 @@ pub fn run(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
         harness.label()
     )
     .map_err(io)?;
-    Ok(if failed > 0 { 1 } else { 0 })
+    Ok(i32::from(failed > 0))
 }
 
 /// `<type> <key> (<scope>[ <project>]) from <source>`.

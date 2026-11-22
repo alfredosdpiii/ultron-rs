@@ -47,7 +47,7 @@ impl LokiNotice {
 
     fn settle(&self, text: Option<String>) {
         let (state, changed) = &*self.state;
-        let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = jsrt::sync::lock(state);
         state.shown = state.shown || text.is_none();
         state.known = Some(text);
         changed.notify_all();
@@ -105,7 +105,7 @@ impl LokiNotice {
     /// once.
     pub fn take(&self, wait: Duration) -> Option<String> {
         let (state, changed) = &*self.state;
-        let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = jsrt::sync::lock(state);
         let end = Instant::now() + wait;
         while state.known.is_none() && !state.shown {
             let left = end.saturating_duration_since(Instant::now());
@@ -154,7 +154,7 @@ mod tests {
         assert_eq!(notice.take(Duration::from_secs(120)), None);
         let none = LokiNotice::known(None);
         assert_eq!(
-            none.take(Duration::from_secs(24 * 60 * 60)),
+            none.take(Duration::from_hours(24)),
             None,
             "a known absence is not waited for (a wait would hang the test)"
         );

@@ -25,10 +25,7 @@ fn cell(stack: &session_core::compose::Stack, lane: &str, code: &str) -> String 
             "{}{}{}",
             result.stdout,
             result.result.unwrap_or_default(),
-            result
-                .error
-                .map(|e| format!("{}: {}", e.ename, e.evalue))
-                .unwrap_or_default()
+            result.error.map_or_default(|e| format!("{}: {}", e.ename, e.evalue))
         ),
         other => panic!("cell did not end: {other:?}"),
     }

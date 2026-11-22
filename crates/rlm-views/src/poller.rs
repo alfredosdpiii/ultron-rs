@@ -81,7 +81,7 @@ impl RlmPoller {
                 tag: tag.into(),
                 request,
                 payload,
-            })
+            });
         };
         send("frames", "rlm.frames", json!({ "limit": self.frame_limit }));
         send("pool", "rlm.pool", json!({}));

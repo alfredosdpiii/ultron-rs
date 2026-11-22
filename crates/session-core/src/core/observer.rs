@@ -92,8 +92,7 @@ fn parse(response: &AssistantMessage, mask: &dyn Fn(&str) -> String) -> Option<S
         .strip_prefix("```")
         .and_then(|rest| rest.find('\n').map(|nl| &rest[nl + 1..]))
         .and_then(|rest| rest.trim_end().strip_suffix("```"))
-        .map(str::trim)
-        .unwrap_or(trimmed);
+        .map_or(trimmed, str::trim);
     let value: Value = serde_json::from_str(json_text).ok()?;
     let obj = value.as_object()?;
     if obj.len() != 1 {

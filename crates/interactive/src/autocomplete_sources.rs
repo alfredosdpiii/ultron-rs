@@ -261,7 +261,7 @@ impl GhRefTitles {
                 let title = lookup(kind, n);
                 shared
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .insert((kind, n), title);
                 on_update();
             }
@@ -299,7 +299,7 @@ impl GhRefTitles {
     fn title(&self, kind: RefKind, number: u64) -> Option<String> {
         self.cache
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&(kind, number))
             .cloned()
             .flatten()
@@ -309,7 +309,7 @@ impl GhRefTitles {
         if self
             .asked
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert((kind, number))
         {
             self.thread.send((kind, number));

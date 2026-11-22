@@ -37,8 +37,7 @@ impl SessionFlags {
             no_context_files: options["noContextFiles"] == true,
             skill_paths: options["skillPaths"]
                 .as_array()
-                .map(|list| list.iter().filter_map(|p| p.as_str().map(str::to_string)).collect())
-                .unwrap_or_default(),
+                .map_or_default(|list| list.iter().filter_map(|p| p.as_str().map(str::to_string)).collect()),
         }
     }
 

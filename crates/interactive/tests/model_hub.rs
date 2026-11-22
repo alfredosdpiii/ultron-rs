@@ -69,7 +69,7 @@ fn interactive_model_hub_ordering_matches_omp() {
     }
     for c in f["tiers"].as_array().unwrap() {
         let got = model_search_tier(c[0].as_str().unwrap(), c[1].as_str().unwrap(), c[2].as_str().unwrap());
-        assert_eq!(got as u64, c[3].as_u64().unwrap(), "{c}");
+        assert_eq!(u64::from(got), c[3].as_u64().unwrap(), "{c}");
     }
 }
 

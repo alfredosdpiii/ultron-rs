@@ -348,10 +348,7 @@ pub fn export(input: &str, output: Option<&str>, env: &crate::Env) -> Result<Str
 }
 
 fn file_stem(path: &Path) -> String {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let name = path.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     match name.strip_suffix(".jsonl") {
         Some(stem) if !stem.is_empty() => stem.to_string(),
         _ => name,

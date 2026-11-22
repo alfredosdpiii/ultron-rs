@@ -71,14 +71,14 @@ async fn health() -> &'static str {
 }
 "#;
 
-const RUST_TEST: &str = r#"use std::path::Path;
+const RUST_TEST: &str = r"use std::path::Path;
 use store::db;
 
 #[test]
 fn saves() {
     db::save(&conn());
 }
-"#;
+";
 
 const ROUTES: &str = r#"import os
 
@@ -87,17 +87,17 @@ async def list_users():
     return os.environ["DB_URL"]
 "#;
 
-const PY_TEST: &str = r#"import pytest
+const PY_TEST: &str = r"import pytest
 from app.routes import list_users
 
 def test_list():
     assert list_users()
-"#;
+";
 
-const SERVER_TS: &str = r#"app.post('/login', login);
+const SERVER_TS: &str = r"app.post('/login', login);
 const secret = process.env.SECRET;
 cache.get('/warm', refill);
-"#;
+";
 
 /// One commit of the repository.
 fn repository(root: &Path) -> String {

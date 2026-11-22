@@ -98,8 +98,7 @@ fn merge_scopes(scopes: &[Option<&str>]) -> Option<String> {
 fn registered_redirect_urls(client: Option<&Value>) -> Vec<String> {
     client
         .and_then(|c| c["redirect_uris"].as_array())
-        .map(|uris| uris.iter().filter_map(Value::as_str).map(String::from).collect())
-        .unwrap_or_default()
+        .map_or_default(|uris| uris.iter().filter_map(Value::as_str).map(String::from).collect())
 }
 
 fn provider<'a>(
@@ -258,9 +257,7 @@ pub fn sign_in(
             settings,
             &redirect_url,
             Box::new(|url: &str| {
-                *authorization_url
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(url.to_string());
+                *jsrt::sync::lock(&authorization_url) = Some(url.to_string());
             }),
         );
         let granted = stored.as_ref().and_then(|s| s["tokens"]["scope"].as_str());
@@ -285,9 +282,7 @@ pub fn sign_in(
         if authorize(&provider, &flow)? == FlowResult::Authorized {
             return Ok(());
         }
-        let url = authorization_url
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        let url = jsrt::sync::lock(&authorization_url)
             .clone()
             .ok_or_else(|| OAuthError::Other("OAuth flow did not produce an authorization URL".into()))?;
         let state = provider.state()?;
@@ -428,7 +423,7 @@ impl AuthProvider for OAuthAuth {
 
     fn on_unauthorized(&self, context: &Unauthorized) -> Result<(), Error> {
         let challenge = parse_www_authenticate(context.challenge.as_deref());
-        *self.challenge.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(challenge.clone());
+        *jsrt::sync::lock(&self.challenge) = Some(challenge.clone());
         if challenge.error.as_deref() == Some("insufficient_scope") {
             return Err(transport_error(OAuthError::AuthorizationRequired));
         }

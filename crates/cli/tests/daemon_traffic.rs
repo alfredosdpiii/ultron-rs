@@ -167,7 +167,7 @@ fn interleave_like(got: Vec<(String, Value)>, want: &[(String, Value)]) -> Vec<(
     }
     let mut out = Vec::new();
     for (dir, _) in want {
-        if let Some(frame) = queues.get_mut(dir).and_then(|q| q.pop_front()) {
+        if let Some(frame) = queues.get_mut(dir).and_then(std::collections::VecDeque::pop_front) {
             out.push(frame);
         }
     }

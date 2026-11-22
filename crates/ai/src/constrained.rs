@@ -108,8 +108,7 @@ fn make_strict(schema: &mut Value) -> Result<(), String> {
     let names: Vec<String> = object
         .get("properties")
         .and_then(Value::as_object)
-        .map(|p| p.keys().cloned().collect())
-        .unwrap_or_default();
+        .map_or_default(|p| p.keys().cloned().collect());
     let required = required.unwrap_or_default();
     if required.iter().any(|key| !names.contains(key)) {
         return Err("required contains an unknown property".into());

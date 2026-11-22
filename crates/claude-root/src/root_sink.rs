@@ -7,7 +7,7 @@
 //! The windows are kept against an injected clock and closed whenever the sink is read or written, so delivery
 //! happens at the same moments TS's timer delivers, as seen by everyone who reads the inbox.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 /// `DEFAULT_COALESCE_MS`.
 pub const COALESCE_MS: u64 = 500;
@@ -44,7 +44,7 @@ impl RootSink {
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = jsrt::sync::lock(&self.state);
         let now = (self.clock)();
         if state.due.is_some_and(|due| due <= now) {
             let batch = std::mem::take(&mut state.batch);

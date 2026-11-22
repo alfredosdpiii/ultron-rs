@@ -86,7 +86,7 @@ pub fn detect_ecosystems(repo: &Path) -> Ecosystems {
         names
             .iter()
             .filter(|name| repo.join(name).exists())
-            .map(|name| name.to_string())
+            .map(std::string::ToString::to_string)
             .collect()
     };
     let requirements_dir = repo.join("requirements");
@@ -179,8 +179,7 @@ pub fn toolchain_requests(repo: &Path) -> ToolchainRequests {
     if let Some(toml) = toml.filter(|text| !text.is_empty()) {
         let tools = regex(r"(?s)\[tools\](.*?)(?:\n\[|\z)")
             .captures(&toml)
-            .map(|found| found[1].to_string())
-            .unwrap_or_default();
+            .map_or_default(|found| found[1].to_string());
         let value = |pattern: &str| regex(pattern).captures(&tools).map(|found| found[1].to_string());
         out.python = value(r#"(?m)^\s*python\s*=\s*["']([^"']+)["']"#);
         out.node = value(r#"(?m)^\s*node(?:js)?\s*=\s*["']([^"']+)["']"#);
@@ -280,7 +279,7 @@ pub fn find_mise(env: &HashMap<String, String>, home: &str, setting: Option<&Mis
         Some(Mise::Path(path)) if !jsrt::string::trim(path).is_empty() && path != "true" => return Some(path.clone()),
         _ => {}
     }
-    let path = env.get("PATH").map(String::as_str).unwrap_or("");
+    let path = env.get("PATH").map_or("", String::as_str);
     path.split(':')
         .map(|dir| jsrt::path::join(&[dir, "mise"]))
         .chain([

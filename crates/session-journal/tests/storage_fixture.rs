@@ -48,7 +48,7 @@ fn write_of(value: &Value) -> Write {
 fn snapshot(root: &Path) -> BTreeMap<String, String> {
     fn walk(dir: &Path, root: &Path, out: &mut BTreeMap<String, String>) {
         let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().flatten().collect();
-        entries.sort_by_key(|e| e.file_name());
+        entries.sort_by_key(std::fs::DirEntry::file_name);
         for entry in entries {
             let path = entry.path();
             if path.is_dir() {

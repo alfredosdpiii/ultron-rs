@@ -67,7 +67,7 @@ pub fn debug_log(
             "Server: {} ({}){}",
             or(client.server_id.as_deref(), "(none)"),
             or(client.transport.as_deref(), "unknown"),
-            server_dir.as_deref().map(|d| format!(" in {d}")).unwrap_or_default()
+            server_dir.as_deref().map_or_default(|d| format!(" in {d}"))
         ),
         match worker {
             Err(error) => format!("Worker: {error}"),
@@ -107,7 +107,7 @@ pub fn debug_log(
     }));
     data.push(String::new());
     data.push("=== Agent messages (JSONL) ===".into());
-    data.extend(capture.messages.iter().map(|m| m.to_string()));
+    data.extend(capture.messages.iter().map(std::string::ToString::to_string));
     data.push(String::new());
     (data.join("\n"), summary)
 }

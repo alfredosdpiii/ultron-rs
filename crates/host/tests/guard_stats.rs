@@ -33,7 +33,7 @@ fn recorded(hooks: &FileHooks) -> Arc<Mutex<Vec<Value>>> {
     let records = Arc::new(Mutex::new(Vec::new()));
     let sink = records.clone();
     hooks.on_record(Arc::new(move |record: &GuardRecord| {
-        sink.lock().unwrap().push(record.to_json())
+        sink.lock().unwrap().push(record.to_json());
     }));
     records
 }

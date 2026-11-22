@@ -132,7 +132,9 @@ fn use_installed(base: &Path) -> Result<PathBuf, String> {
         lock.lock_shared()
             .map_err(|e| format!("Cannot lock Ultron's runtime files in {}: {e}", target.display()))?;
         if same_file(&lock, &target.join(LOCK)) && verified(&target) {
-            HELD.lock().unwrap_or_else(|e| e.into_inner()).push(lock);
+            HELD.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(lock);
             prune(base, &target);
             return Ok(target);
         }
@@ -275,8 +277,7 @@ fn unique(base: &Path, prefix: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default();
+        .map_or_default(|d| d.as_nanos());
     base.join(format!(
         "{prefix}-{}-{}-{nanos}",
         std::process::id(),

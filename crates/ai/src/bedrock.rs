@@ -215,8 +215,7 @@ fn http_error(status: u16, headers: &crate::http::HeaderMap, body: &str) -> Bedr
                 .filter(|v| !v.is_null())
                 .or_else(|| o.get("Message").filter(|v| !v.is_null()))
         })
-        .map(value_text)
-        .unwrap_or_else(|| "UnknownError".into());
+        .map_or_else(|| "UnknownError".into(), value_text);
     BedrockError {
         name: code,
         message,
@@ -266,8 +265,7 @@ fn stream_error(message: &EventMessage, first: bool, response_status: u16, respo
                     .get("message")
                     .filter(|v| !v.is_null())
                     .or_else(|| body.get("Message").filter(|v| !v.is_null()))
-                    .map(value_text)
-                    .unwrap_or_else(|| "UnknownError".into());
+                    .map_or_else(|| "UnknownError".into(), value_text);
                 return BedrockError {
                     name: name.into(),
                     message: text,
@@ -490,7 +488,7 @@ fn convert_messages(
                             match block {
                                 UserContent::Text(text) => content.extend(non_blank_text(&text.text)),
                                 UserContent::Image(image) => {
-                                    content.push(json!({"image": image_block(&image.mime_type, &image.data)?}))
+                                    content.push(json!({"image": image_block(&image.mime_type, &image.data)?}));
                                 }
                             }
                         }
@@ -977,9 +975,8 @@ fn is_reserved_header(name: &str) -> bool {
 }
 
 fn build_request(target: &Target, model: &Model, body: &str, options: &BedrockOptions) -> HttpRequest {
-    let path_prefix = reqwest::Url::parse(&target.endpoint)
-        .map(|u| u.path().trim_end_matches('/').to_string())
-        .unwrap_or_default();
+    let path_prefix =
+        reqwest::Url::parse(&target.endpoint).map_or_default(|u| u.path().trim_end_matches('/').to_string());
     let path = format!("{path_prefix}/model/{}/converse-stream", escape_uri(&model.id));
     let host = reqwest::Url::parse(&target.endpoint)
         .ok()

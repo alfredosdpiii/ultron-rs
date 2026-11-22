@@ -97,16 +97,13 @@ pub fn context_edits_of(entry: &Value) -> Vec<ContextEdit> {
 
 /// The ids of the tool calls in a message's content.
 pub fn content_call_ids(content: &Value) -> Vec<String> {
-    content
-        .as_array()
-        .map(|parts| {
-            parts
-                .iter()
-                .filter(|p| str_of(p, "type") == "toolCall")
-                .filter_map(|p| p.get("id").and_then(Value::as_str).map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default()
+    content.as_array().map_or_default(|parts| {
+        parts
+            .iter()
+            .filter(|p| str_of(p, "type") == "toolCall")
+            .filter_map(|p| p.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect()
+    })
 }
 
 /// `replaceContent`: `message` with `content` in place of its own (a string becomes one text part for an assistant
@@ -187,8 +184,7 @@ pub fn apply_context_edits_marked<V: Borrow<Value>>(entries: &[V]) -> Vec<Applie
         };
         let kept: HashSet<String> = replacement
             .as_ref()
-            .map(content_call_ids)
-            .unwrap_or_default()
+            .map_or_default(content_call_ids)
             .into_iter()
             .collect();
         for id in content_call_ids(&entry["message"]["content"]) {

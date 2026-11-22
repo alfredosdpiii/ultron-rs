@@ -139,8 +139,7 @@ fn servers(generated_at: i64, requests: Requests) -> (u16, u16) {
         }
         let token = headers
             .get("authorization")
-            .map(|a| a.trim_start_matches("Bearer ").to_string())
-            .unwrap_or_default();
+            .map_or_default(|a| a.trim_start_matches("Bearer ").to_string());
         if token == "fail-key" {
             return (
                 503,

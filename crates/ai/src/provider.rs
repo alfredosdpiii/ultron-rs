@@ -139,5 +139,5 @@ where
 
 /// A delay in milliseconds as a sleep: negative and NaN are none, one too long to represent is a day.
 fn delay(ms: f64) -> Duration {
-    Duration::try_from_secs_f64(ms.max(0.0) / 1000.0).unwrap_or(Duration::from_secs(86_400))
+    Duration::try_from_secs_f64(ms.max(0.0) / 1000.0).unwrap_or(Duration::from_hours(24))
 }

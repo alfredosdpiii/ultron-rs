@@ -50,7 +50,7 @@ pub fn durable(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Wr
         Some("status") => {
             let running = running();
             out.write_all(instance::render(&running).as_bytes()).map_err(io)?;
-            Ok(if running.is_empty() { 1 } else { 0 })
+            Ok(i32::from(running.is_empty()))
         }
         Some("stop") => {
             for server in running() {

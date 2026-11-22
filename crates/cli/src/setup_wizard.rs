@@ -729,7 +729,7 @@ fn choose_default_model<U: SetupUi>(
             &format!(
                 "✓ Default model saved: {}{}.",
                 describe(&model),
-                thinking.as_ref().map(|t| format!(", thinking {t}")).unwrap_or_default()
+                thinking.as_ref().map_or_default(|t| format!(", thinking {t}"))
             ),
             Tone::Success,
         );
@@ -776,18 +776,14 @@ fn test_and_report<U: SetupUi>(ui: &mut U, deps: &SetupDeps, model: &Model) -> R
     )?;
     let seconds = jsrt::number::to_fixed(result.ms as f64 / 1000.0, 1);
     if result.ok {
-        let reply = result
-            .reply
-            .as_deref()
-            .map(|r| {
-                let collapsed = r
-                    .split(jsrt::string::is_space)
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>();
-                let joined = collapsed.join(" ");
-                jsrt::utf16::head(jsrt::string::trim(&joined), 60).to_string()
-            })
-            .unwrap_or_default();
+        let reply = result.reply.as_deref().map_or_default(|r| {
+            let collapsed = r
+                .split(jsrt::string::is_space)
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>();
+            let joined = collapsed.join(" ");
+            jsrt::utf16::head(jsrt::string::trim(&joined), 60).to_string()
+        });
         let shown = if reply.is_empty() {
             String::new()
         } else {
@@ -1242,14 +1238,12 @@ fn install_with_docker<U: SetupUi>(ui: &mut U, deps: &SetupDeps, url: &str) -> R
         return Ok(None);
     }
     let docker = deps.run_docker.clone();
-    let env: Vec<(String, String)> = api_key
-        .map(|k| {
-            vec![(
-                "HINDSIGHT_API_LLM_API_KEY".to_string(),
-                jsrt::string::trim(&k).to_string(),
-            )]
-        })
-        .unwrap_or_default();
+    let env: Vec<(String, String)> = api_key.map_or_default(|k| {
+        vec![(
+            "HINDSIGHT_API_LLM_API_KEY".to_string(),
+            jsrt::string::trim(&k).to_string(),
+        )]
+    });
     let (ok, output) = ui.busy("Pulling and starting Hindsight (docker run)…", move || {
         docker(&args, &env)
     })?;
@@ -1740,7 +1734,7 @@ pub fn create_setup_deps(env: &Env) -> SetupDeps {
         settings: SettingsManager::create(&env.cwd, &env.agent_dir(), false),
         test_model: Arc::new(test_model),
         run_docker: run_docker(path),
-        hindsight_wait: Duration::from_secs(5 * 60),
+        hindsight_wait: Duration::from_mins(5),
         hindsight_interval: Duration::from_secs(3),
         loki_version: Some(loki::analyzers::bundled_version()),
         probe_judge: ((env.var)(interactive::qol::PARITY_ENV).as_deref().map(str::trim) != Some("1")).then(|| {

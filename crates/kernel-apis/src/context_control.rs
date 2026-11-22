@@ -501,10 +501,10 @@ impl ContextControl {
                     problems.push(format!(
                         "{id} is a {} entry and cannot be edited",
                         entry["type"].as_str().unwrap_or("undefined")
-                    ))
+                    ));
                 }
                 Some(_) if view.protected.contains(id) => {
-                    problems.push(format!("{id} belongs to the current user turn and cannot be edited"))
+                    problems.push(format!("{id} belongs to the current user turn and cannot be edited"));
                 }
                 Some(_) if view.pinned(id) => problems.push(format!("{id} is pinned (ctx.unpin it first)")),
                 Some(_) => {}
@@ -743,7 +743,7 @@ impl ContextControl {
             "ctx.pin" | "ctx.unpin" => {
                 kernel::ops::fields(kind, payload)?;
                 let id = jsrt::payload::nonempty_string(payload.get("id"), "id")?;
-                if !view.by_id(&id).is_some_and(|entry| kind_of(entry).is_some()) {
+                if view.by_id(&id).is_none_or(|entry| kind_of(entry).is_none()) {
                     return Err(format!("Unknown context item: {id}"));
                 }
                 let pin = kind == "ctx.pin";
@@ -844,8 +844,7 @@ impl ContextControl {
                     .cells
                     .iter()
                     .find(|(id, _)| *id == cell)
-                    .map(|(_, lines)| lines.clone())
-                    .unwrap_or_default();
+                    .map_or_default(|(_, lines)| lines.clone());
                 lines.push(line);
                 set_cell(&mut tracking.cells, &cell, lines);
             }
@@ -1057,8 +1056,7 @@ impl ContextControl {
         };
         let retained: HashSet<String> = view.path[index]["retainedTail"]
             .as_array()
-            .map(|tail| tail.iter().map(jsrt::json::stringify).collect())
-            .unwrap_or_default();
+            .map_or_default(|tail| tail.iter().map(jsrt::json::stringify).collect());
         let before = &view.path[..index];
         let omitted: HashSet<String> = before
             .iter()

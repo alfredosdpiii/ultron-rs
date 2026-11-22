@@ -42,7 +42,7 @@ fn ai_claude_subscription_usage_reads_rate_limit_events_like_the_ts_root_runner(
     for case in fixture["cases"].as_array().unwrap() {
         let limits = rate_limits_from_event(&case["event"]);
         assert_eq!(
-            limits.as_ref().map(limits_json).unwrap_or(Value::Null),
+            limits.as_ref().map_or(Value::Null, limits_json),
             case["limits"],
             "{}",
             case["event"]

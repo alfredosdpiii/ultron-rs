@@ -135,11 +135,10 @@ impl SecretDetector {
         for rule in list("rules") {
             let flags = string_field(&rule, "flags").unwrap_or_default();
             let caseless = flags.contains('i');
-            let scopes: Vec<String> = rule
-                .get("scopes")
-                .and_then(Value::as_array)
-                .map(|scopes| scopes.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect())
-                .unwrap_or_else(|| vec!["mask".into(), "scan".into()]);
+            let scopes: Vec<String> = rule.get("scopes").and_then(Value::as_array).map_or_else(
+                || vec!["mask".into(), "scan".into()],
+                |scopes| scopes.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect(),
+            );
             let optional = |key: &str, flags_key: &str| -> Result<Option<Regex>, String> {
                 string_field(&rule, key)
                     .map(|pattern| js_regex(pattern, string_field(&rule, flags_key).unwrap_or_default()))
@@ -151,17 +150,13 @@ impl SecretDetector {
                 group: rule.get("group").and_then(Value::as_u64).unwrap_or(0) as usize,
                 mask: scopes.iter().any(|s| s == "mask"),
                 scan: scopes.iter().any(|s| s == "scan"),
-                keywords: rule
-                    .get("keywords")
-                    .and_then(Value::as_array)
-                    .map(|words| {
-                        words
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .map(|word| if caseless { word.to_lowercase() } else { word.to_owned() })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                keywords: rule.get("keywords").and_then(Value::as_array).map_or_default(|words| {
+                    words
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(|word| if caseless { word.to_lowercase() } else { word.to_owned() })
+                        .collect()
+                }),
                 caseless,
                 min_entropy: rule.get("minEntropy").and_then(Value::as_f64).unwrap_or(0.0),
                 letter_and_digit: rule.get("requireLetterAndDigit") == Some(&Value::Bool(true)),
@@ -304,7 +299,7 @@ impl SecretDetector {
 
 /// Whether cell output is masked: `ULTRON_MASK_SECRETS` (passed as its value) set to off, 0, false or no turns it off.
 pub fn mask_secrets_enabled(value: Option<&str>) -> bool {
-    let value = value.map(|v| v.trim().to_lowercase()).unwrap_or_default();
+    let value = value.map_or_default(|v| v.trim().to_lowercase());
     value.is_empty() || !["off", "0", "false", "no"].contains(&value.as_str())
 }
 
@@ -317,7 +312,7 @@ pub struct OutputMasker {
 impl OutputMasker {
     /// Mask these exact values from now on; values shorter than 8 characters after trimming are skipped.
     pub fn register_secret_values(&self, values: &[Value]) {
-        let mut known = self.known.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut known = jsrt::sync::lock(&self.known);
         for value in values.iter().filter_map(Value::as_str) {
             let value = value.trim();
             if jsrt::utf16::len(value) >= KNOWN_SECRET_MIN_LENGTH && !known.iter().any(|k| k == value) {
@@ -333,12 +328,7 @@ impl OutputMasker {
         }
         let mut out = text.to_owned();
         let mut masked = 0;
-        for secret in self
-            .known
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-        {
+        for secret in jsrt::sync::lock(&self.known).iter() {
             masked += out.matches(secret.as_str()).count();
             out = out.replace(secret.as_str(), "[REDACTED:known_secret]");
         }

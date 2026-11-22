@@ -208,7 +208,7 @@ fn ai_claude_subscription_advertised_inventory_is_exactly_rlm() {
                 "end_turn",
                 json!({"input_tokens": 1, "output_tokens": 1}),
             ),
-        )
+        );
     });
     let (message, _) = call(
         fake.config(&upstream.url(), &[]),

@@ -550,11 +550,7 @@ impl TranscriptPicker {
     /// Visible targets whose rendered rows contain every query word: Latin words match whole words
     /// (case-insensitive: `ls` matches `ls -la`, not `tools`), other scripts match substrings.
     pub fn filter_matches(&self) -> Vec<usize> {
-        let query = self
-            .filter
-            .as_ref()
-            .map(|f| f.value().to_lowercase())
-            .unwrap_or_default();
+        let query = self.filter.as_ref().map_or_default(|f| f.value().to_lowercase());
         let patterns: Vec<Regex> = query
             .split_whitespace()
             .filter_map(|word| {
@@ -590,7 +586,7 @@ impl TranscriptPicker {
     }
 
     fn first_key(&self, id: &str) -> String {
-        self.keys.get_keys(id).first().map(|k| key_glyph(k)).unwrap_or_default()
+        self.keys.get_keys(id).first().map_or_default(|k| key_glyph(k))
     }
 
     fn keys_pair(&self, a: &str, b: &str) -> String {
@@ -720,10 +716,7 @@ impl TranscriptPicker {
                     None,
                     &style,
                 );
-                let id = target
-                    .as_ref()
-                    .map(|t| format!("copy:{}", t.turn_id))
-                    .unwrap_or_default();
+                let id = target.as_ref().map_or_default(|t| format!("copy:{}", t.turn_id));
                 (column, id)
             }
         };
@@ -735,8 +728,7 @@ impl TranscriptPicker {
                 let open = stack
                     .get(self.block_selected)
                     .filter(|b| b.href.is_some())
-                    .map(|_| format!("  {} open", self.first_key("app.copy.open")))
-                    .unwrap_or_default();
+                    .map_or_default(|_| format!("  {} open", self.first_key("app.copy.open")));
                 format!(
                     "{}/{}  {up_down} block  {}/{cancel} back  {enter} {}{open}  click ⧉/↗",
                     self.block_selected + 1,
@@ -792,7 +784,7 @@ impl TranscriptPicker {
                 Some(lang) if warmed() && supports_language(lang) => {
                     highlight_lines(&shown.join("\n"), Some(lang), &colors)
                 }
-                _ => shown.iter().map(|s| s.to_string()).collect(),
+                _ => shown.iter().map(std::string::ToString::to_string).collect(),
             };
             let mut rows: Vec<String> = styled
                 .iter()
@@ -918,7 +910,7 @@ impl TranscriptPicker {
             });
         }
         let selected = matches.iter().position(|&i| i == self.selected);
-        let query = self.filter.as_ref().map(|f| f.value().to_string()).unwrap_or_default();
+        let query = self.filter.as_ref().map_or_default(|f| f.value().to_string());
         let fg_fn = self.painter();
         let bold_fn = |s: &str| bold(s);
         let paint = OutlinePaint {
@@ -965,8 +957,7 @@ impl TranscriptPicker {
         let field = self
             .filter
             .as_mut()
-            .map(|f| f.render(input_width).into_iter().next().unwrap_or_default())
-            .unwrap_or_default();
+            .map_or_default(|f| f.render(input_width).into_iter().next().unwrap_or_default());
         let id = format!(
             "rewind:filter:{query}:{}",
             self.targets

@@ -188,24 +188,22 @@ impl Home {
 pub fn hang_report(root: &Path, extra: &[u32]) -> String {
     use std::collections::BTreeSet;
     use std::fmt::Write as _;
-    let parents: Vec<(u32, u32)> = std::fs::read_dir("/proc")
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter_map(|e| {
-                    let pid = e.file_name().to_string_lossy().parse::<u32>().ok()?;
-                    let status = std::fs::read_to_string(e.path().join("status")).ok()?;
-                    let ppid = status
-                        .lines()
-                        .find_map(|l| l.strip_prefix("PPid:"))?
-                        .trim()
-                        .parse()
-                        .ok()?;
-                    Some((pid, ppid))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let parents: Vec<(u32, u32)> = std::fs::read_dir("/proc").map_or_default(|entries| {
+        entries
+            .flatten()
+            .filter_map(|e| {
+                let pid = e.file_name().to_string_lossy().parse::<u32>().ok()?;
+                let status = std::fs::read_to_string(e.path().join("status")).ok()?;
+                let ppid = status
+                    .lines()
+                    .find_map(|l| l.strip_prefix("PPid:"))?
+                    .trim()
+                    .parse()
+                    .ok()?;
+                Some((pid, ppid))
+            })
+            .collect()
+    });
     let mut pids: BTreeSet<u32> = processes_mentioning(root)
         .into_iter()
         .chain(extra.iter().copied())
@@ -224,24 +222,22 @@ pub fn hang_report(root: &Path, extra: &[u32]) -> String {
     let read = |path: String| std::fs::read_to_string(path).unwrap_or_default().trim().to_string();
     let mut out = String::from("--- processes ---\n");
     for pid in &pids {
-        let cmdline = std::fs::read(format!("/proc/{pid}/cmdline"))
-            .map(|c| String::from_utf8_lossy(&c).replace('\0', " "))
-            .unwrap_or_else(|_| "(gone)".to_string());
+        let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).map_or_else(
+            |_| "(gone)".to_string(),
+            |c| String::from_utf8_lossy(&c).replace('\0', " "),
+        );
         let fds: Vec<String> = (0..3)
             .map(|fd| {
                 std::fs::read_link(format!("/proc/{pid}/fd/{fd}"))
-                    .map(|t| format!("{fd}={}", t.display()))
-                    .unwrap_or_else(|_| format!("{fd}=-"))
+                    .map_or_else(|_| format!("{fd}=-"), |t| format!("{fd}={}", t.display()))
             })
             .collect();
         let _ = writeln!(out, "pid {pid}: {cmdline}\n  fds {}", fds.join(" "));
-        let tasks = std::fs::read_dir(format!("/proc/{pid}/task"))
-            .map(|e| {
-                e.flatten()
-                    .map(|e| e.file_name().to_string_lossy().into_owned())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let tasks = std::fs::read_dir(format!("/proc/{pid}/task")).map_or_default(|e| {
+            e.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        });
         for tid in tasks {
             let stat = read(format!("/proc/{pid}/task/{tid}/stat"));
             // `pid (comm) state ...`: the comm may hold spaces, the state follows its closing parenthesis.

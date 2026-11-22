@@ -199,7 +199,7 @@ struct Server {
 
 impl Server {
     fn start(args: &[&str], env: RunEnv) -> Server {
-        let argv: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        let argv: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
         let (running, handlers) = start(&argv, &claude_root::Ctx { env }).unwrap();
         let (input, stdin) = std::io::pipe().unwrap();
         let (stdout, output) = std::io::pipe().unwrap();

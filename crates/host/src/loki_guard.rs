@@ -173,7 +173,7 @@ impl LokiGuard {
     /// `#unseen`: the lines of one tier not yet shown for their file; a finding gone from a file checked now was
     /// fixed, and is new again if it comes back.
     fn unseen(&self, tier: &'static str, lines: &[String], checked: &[String]) -> Unseen {
-        let mut open = self.open.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut open = jsrt::sync::lock(&self.open);
         let memory = open.entry(tier).or_default();
         let mut now: Vec<(String, HashSet<String>)> = Vec::new();
         let mut fresh = Vec::new();
@@ -211,10 +211,7 @@ impl LokiGuard {
 
     /// NOT CHECKED notes not yet shown this session, as one short line.
     fn notice(&self, lines: &[String]) -> Option<String> {
-        let mut shown = self
-            .shown_notices
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut shown = jsrt::sync::lock(&self.shown_notices);
         let mut fresh = Vec::new();
         for line in lines {
             if !shown.contains(line) {

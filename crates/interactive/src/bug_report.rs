@@ -38,7 +38,7 @@ impl SelectorDialog {
             keys,
             title: title.to_string(),
             description: description.filter(|d| !d.is_empty()).map(str::to_string),
-            options: options.iter().map(|o| o.to_string()).collect(),
+            options: options.iter().map(std::string::ToString::to_string).collect(),
             selected: 0,
         }
     }

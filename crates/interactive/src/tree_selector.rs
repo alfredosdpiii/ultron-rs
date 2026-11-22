@@ -143,7 +143,7 @@ fn format_tool_call(name: &str, args: &Value, home: &str) -> String {
             let limit = args["limit"].as_i64();
             if offset.is_some() || limit.is_some() {
                 let start = offset.unwrap_or(1);
-                let end = limit.map(|l| (start + l - 1).to_string()).unwrap_or_default();
+                let end = limit.map_or_default(|l| (start + l - 1).to_string());
                 display += &format!(
                     ":{start}{}",
                     if end.is_empty() || end == "0" {
@@ -836,8 +836,7 @@ impl TreeList {
             let label = node
                 .label
                 .as_ref()
-                .map(|l| t.fg(Fg::Warning, &format!("[{l}] ")))
-                .unwrap_or_default();
+                .map_or_default(|l| t.fg(Fg::Warning, &format!("[{l}] ")));
             let label_time = match (&node.label, &node.label_timestamp) {
                 (Some(_), Some(ts)) if self.show_label_timestamps => {
                     t.fg(Fg::Muted, &format!("{} ", format_label_timestamp(ts)))

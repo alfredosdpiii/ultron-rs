@@ -148,8 +148,10 @@ impl MemoryBackend for FakeHindsight {
         Ok(jsrt::sync::lock(&self.documents)
             .iter()
             .find(|(key, _)| key == id)
-            .map(|(_, document)| document.clone())
-            .unwrap_or_else(|| json!({"id": id, "original_text": null, "tags": []})))
+            .map_or_else(
+                || json!({"id": id, "original_text": null, "tags": []}),
+                |(_, document)| document.clone(),
+            ))
     }
 
     fn delete(&self, id: &str, _: &Signal) -> Result<Value, String> {
@@ -164,8 +166,7 @@ impl MemoryBackend for FakeHindsight {
             .iter()
             .rev()
             .find(|(key, _)| key == id)
-            .map(|(_, status)| status.clone())
-            .unwrap_or_else(|| "not_found".into());
+            .map_or_else(|| "not_found".into(), |(_, status)| status.clone());
         Ok(json!({"operation_id": id, "status": status}))
     }
 }

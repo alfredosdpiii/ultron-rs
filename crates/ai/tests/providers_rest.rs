@@ -322,7 +322,7 @@ thread_local! {
 
 /// `Date.now()` of the generator's fake clock: the recorded start plus the (paused) tokio time slept since.
 fn oauth_clock() -> i64 {
-    let base = CLOCK_BASE.with(|b| b.get()).expect("clock base");
+    let base = CLOCK_BASE.with(std::cell::Cell::get).expect("clock base");
     1_767_225_600_000 + (tokio::time::Instant::now() - base).as_millis() as i64
 }
 

@@ -281,7 +281,7 @@ fn ai_claude_subscription_fallback_transient_429_and_overload_do_not_fall_back()
             stream,
             429,
             r#"{"type":"error","error":{"type":"rate_limit_error","message":"Number of request tokens has exceeded your per-minute rate limit"}}"#,
-        )
+        );
     });
     let throttled = make_rig(&upstream.url(), &[], &keyed(), true);
     let (message, events) = run(&throttled, &first_turn());

@@ -235,11 +235,7 @@ pub fn values(settings: &SettingsManager, live: &Live, env: Env) -> Result<Map<S
     );
     put(
         "outputPad",
-        json!(if get(settings, &["outputPad"]) == Some(&json!(0)) {
-            0
-        } else {
-            1
-        }),
+        json!(i32::from(get(settings, &["outputPad"]) != Some(&json!(0)))),
     );
     put(
         "autocompleteMaxVisible",
@@ -406,7 +402,7 @@ pub fn apply(
     settings.drain_errors();
     let set = |settings: &mut SettingsManager, field: &str, value: Value| settings.set_global(field, Some(value));
     let nested = |settings: &mut SettingsManager, field: &str, k: &str, v: Option<Value>| {
-        settings.set_global_nested(field, k, v)
+        settings.set_global_nested(field, k, v);
     };
     match key {
         "compaction.enabled" => {
@@ -572,7 +568,7 @@ pub fn apply(
             set(settings, key, floor_int(padding));
         }
         "outputPad" => {
-            let pad = if int(key, value, 0.0)? == 0.0 { 0 } else { 1 };
+            let pad = i32::from(int(key, value, 0.0)? != 0.0);
             set(settings, key, json!(pad));
         }
         "autocompleteMaxVisible" => {

@@ -65,9 +65,9 @@ fn on_path(path: &str, name: &str) -> bool {
 impl Layout for RealLayout {
     fn entry(&self, path: &Path) -> Entry {
         match std::fs::symlink_metadata(path) {
-            Ok(meta) if meta.file_type().is_symlink() => std::fs::read_link(path)
-                .map(|target| Entry::Symlink(target.to_string_lossy().into_owned()))
-                .unwrap_or(Entry::Missing),
+            Ok(meta) if meta.file_type().is_symlink() => std::fs::read_link(path).map_or(Entry::Missing, |target| {
+                Entry::Symlink(target.to_string_lossy().into_owned())
+            }),
             Ok(meta) if meta.is_dir() => Entry::Dir,
             Ok(_) => Entry::File,
             Err(_) => Entry::Missing,
@@ -425,7 +425,7 @@ impl Policy {
                 out.extend(self.env.iter().map(|(name, value)| format!("{name}={value}")));
                 out.extend([s("sh"), s("-c"), s(INTERACTIVE_UNSHARE_SCRIPT), s("sandbox")]);
                 out.extend([self.uid.to_string(), self.gid.to_string(), p(&self.home), p(cwd)]);
-                out.push(self.tmp.as_deref().map(p).unwrap_or_default());
+                out.push(self.tmp.as_deref().map_or_default(p));
                 for list in [&writable, &readable, &hidden] {
                     out.push(list.len().to_string());
                     out.extend(list.iter().map(|path| p(path)));

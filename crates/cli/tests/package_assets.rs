@@ -420,17 +420,17 @@ fn cli_package_install_replaces_a_damaged_directory() {
     type Damage = fn(&Path);
     let damages: [(&str, Damage); 4] = [
         ("truncated runtime.py", |dir| {
-            std::fs::write(dir.join(RUNTIME), "").unwrap()
+            std::fs::write(dir.join(RUNTIME), "").unwrap();
         }),
         ("deleted skill file", |dir| {
             let skill = FILES.iter().find(|a| a.path.starts_with("skills/")).unwrap();
             std::fs::remove_file(dir.join(skill.path)).unwrap();
         }),
         ("marker of another build", |dir| {
-            std::fs::write(dir.join(MARKER), "0000\n").unwrap()
+            std::fs::write(dir.join(MARKER), "0000\n").unwrap();
         }),
         ("no marker (an interrupted copy)", |dir| {
-            std::fs::remove_file(dir.join(MARKER)).unwrap()
+            std::fs::remove_file(dir.join(MARKER)).unwrap();
         }),
     ];
     for (name, damage) in damages {

@@ -264,14 +264,14 @@ mod tests {
         std::fs::write(&keep, b"real-snapshot").unwrap();
         std::fs::write(&log, br#"{"type":"session"}"#).unwrap();
 
-        let dry = collect(agent, Duration::from_secs(30 * 86_400), Duration::ZERO, true);
+        let dry = collect(agent, Duration::from_hours(720), Duration::ZERO, true);
         assert_eq!(dry.orphan_files, 1);
         assert_eq!(dry.orphan_bytes, 11);
         assert_eq!(dry.stale_dirs, 0);
         assert_eq!(dry.stale_sessions, 0);
         assert!(orphan.exists());
 
-        let live = collect(agent, Duration::from_secs(30 * 86_400), Duration::ZERO, false);
+        let live = collect(agent, Duration::from_hours(720), Duration::ZERO, false);
         assert_eq!(live.orphan_files, 1);
         assert!(!orphan.exists());
         assert!(keep.exists());

@@ -72,8 +72,7 @@ fn unsummed(result: &Value) -> Vec<String> {
     let phases: Vec<&Value> = usage
         .get("byPhase")
         .and_then(Value::as_object)
-        .map(|phases| phases.values().collect())
-        .unwrap_or_default();
+        .map_or_default(|phases| phases.values().collect());
     if phases.is_empty() {
         return Vec::new();
     }

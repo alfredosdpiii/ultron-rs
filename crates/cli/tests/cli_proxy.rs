@@ -88,7 +88,10 @@ fn cli_proxy_setting_carries_the_self_update_version_check() {
         latest_version_url: "http://registry.invalid/ultron-agent/latest".into(),
     };
     let (mut out, mut err) = (Vec::new(), Vec::new());
-    let args: Vec<String> = ["update", "--self"].iter().map(|s| s.to_string()).collect();
+    let args: Vec<String> = ["update", "--self"]
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
     let code = cli::update_cli::run_update_with(&args, &proxied, &mut out, &mut err, &endpoints).unwrap();
     assert_eq!(
         seen.recv_timeout(HANG_GUARD).unwrap(),
@@ -163,7 +166,7 @@ fn cli_proxy_offline_run_sends_nothing() {
     let (port, seen) = fake_proxy(json_answer(r#"{"version":"0.0.1"}"#));
     let args: Vec<String> = ["update", "--self", "--offline"]
         .iter()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
     let run_env = cli::startup::offline_env(
         &args,

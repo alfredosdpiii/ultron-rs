@@ -170,14 +170,11 @@ impl CredentialStore {
     /// Runs `run` while no other refresh of the server's tokens runs, in this process or another. The lock is renewed
     /// while held (as `proper-lockfile` does), so a refresh slower than the staleness period is not taken over.
     fn with_refresh_lock<T>(&self, key: &str, run: impl FnOnce() -> Result<T, OAuthError>) -> Result<T, OAuthError> {
-        let local = self
-            .refreshing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        let local = jsrt::sync::lock(&self.refreshing)
             .entry(key.to_string())
             .or_default()
             .clone();
-        let _local = local.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _local = jsrt::sync::lock(&local);
         let (Some(dir), Some(lock_path)) = (&self.lock_dir, self.refresh_lock_path(key)) else {
             return run();
         };

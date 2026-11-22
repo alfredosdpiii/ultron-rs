@@ -16,14 +16,14 @@
 
 use serde_json::{Value, json};
 use services::{Branch, BranchSource, LocalServices};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use protocol::custom_types::REFINEMENTS;
 /// Targets of main-lane refinements: `instruction:main.r<n>` (the ledger keeps one active record per target).
 const TARGET_PREFIX: &str = "instruction:main.";
 /// The least time between two proposal passes.
-pub const COOLDOWN: Duration = Duration::from_secs(20 * 60);
+pub const COOLDOWN: Duration = Duration::from_mins(20);
 /// The most proposals one pass keeps.
 pub const MAX_PROPOSALS: usize = 3;
 /// The longest refinement text, in bytes.
@@ -96,7 +96,7 @@ impl AutoRefine {
 
     /// Whether a proposal pass may start now (on, and past the cooldown); starting one restarts the cooldown.
     pub fn start_pass(&self) -> bool {
-        let mut last = self.last_pass.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut last = jsrt::sync::lock(&self.last_pass);
         if !self.on || last.is_some_and(|at| at.elapsed() < COOLDOWN) {
             return false;
         }

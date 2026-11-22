@@ -1148,7 +1148,7 @@ impl Scheduler {
                         st.dirty = false;
                         break Job::Reserve;
                     }
-                    st = self.wake.wait(st).unwrap_or_else(|poisoned| poisoned.into_inner());
+                    st = self.wake.wait(st).unwrap_or_else(std::sync::PoisonError::into_inner);
                 }
             };
             match job {

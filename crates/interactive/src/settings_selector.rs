@@ -691,15 +691,12 @@ fn model_ref(m: &ModelInfo) -> String {
 
 impl SettingsSelector {
     pub fn new(theme: Rc<Theme>, keys: KeybindingsManager, input: SettingsInput) -> Self {
-        let model_thinking: BTreeMap<String, String> = input
-            .get("modelThinkingLevels")
-            .as_object()
-            .map(|m| {
+        let model_thinking: BTreeMap<String, String> =
+            input.get("modelThinkingLevels").as_object().map_or_default(|m| {
                 m.iter()
                     .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
                     .collect()
-            })
-            .unwrap_or_default();
+            });
         let theme_setting = input.str("theme", "dark");
         let (light, dark) = automatic_themes(&theme_setting, &input.themes);
         let mut selector = SettingsSelector {
@@ -2279,11 +2276,7 @@ impl Component for SettingsSelector {
 impl SettingsSelector {
     /// The input value of the search line (tests).
     pub fn query(&self) -> String {
-        self.list
-            .search
-            .as_ref()
-            .map(|s| s.value().to_string())
-            .unwrap_or_default()
+        self.list.search.as_ref().map_or_default(|s| s.value().to_string())
     }
 }
 

@@ -170,7 +170,7 @@ fn cancel_while_blocked(stack: &Stack, code: &str, blocker: &Blocker) -> (String
     assert!(alive(pid));
     let outcome = stack.lanes.cancel(&cell, "test cancel").unwrap().unwrap();
     assert_eq!(outcome.status, kernel::Status::Error, "{outcome:?}");
-    (outcome.error.map(|error| error.evalue).unwrap_or_default(), pid)
+    (outcome.error.map_or_default(|error| error.evalue), pid)
 }
 
 #[test]

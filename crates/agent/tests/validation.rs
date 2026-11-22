@@ -76,7 +76,7 @@ fn agent_validate_tool_arguments_matches_typescript() {
         let label = format!("{name} {}", case["args"]);
         match (&actual, case.get("ok")) {
             (Ok(args), Some(expected)) => {
-                assert_eq!(normalize(args.clone()), normalize(expected.clone()), "{label}")
+                assert_eq!(normalize(args.clone()), normalize(expected.clone()), "{label}");
             }
             (Err(error), None) => assert_eq!(error, case["error"].as_str().unwrap(), "{label}"),
             _ => panic!("{label}: got {actual:?}, TypeScript {case}"),

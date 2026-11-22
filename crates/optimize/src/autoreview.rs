@@ -169,7 +169,7 @@ pub fn point(report: &Report, block_at: &str) -> Point {
                 "sha": short, "failure": "control blocked", "subject": case.subject, "findings": got.findings.len(),
             })),
             (CaseKind::Reverted | CaseKind::FixInducing, false) => {
-                failures.push(json!({"sha": short, "failure": "bug not blocked", "subject": case.subject}))
+                failures.push(json!({"sha": short, "failure": "bug not blocked", "subject": case.subject}));
             }
             _ => {}
         }

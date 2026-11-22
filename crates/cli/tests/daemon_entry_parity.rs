@@ -46,14 +46,12 @@ fn stop_durable(home: &Home) {
 
 /// The environment of a live process as `KEY=value` lines.
 fn environ(pid: u32) -> Vec<String> {
-    std::fs::read(format!("/proc/{pid}/environ"))
-        .map(|bytes| {
-            bytes
-                .split(|b| *b == 0)
-                .map(|v| String::from_utf8_lossy(v).into_owned())
-                .collect()
-        })
-        .unwrap_or_default()
+    std::fs::read(format!("/proc/{pid}/environ")).map_or_default(|bytes| {
+        bytes
+            .split(|b| *b == 0)
+            .map(|v| String::from_utf8_lossy(v).into_owned())
+            .collect()
+    })
 }
 
 fn system_text(request: &Value) -> String {

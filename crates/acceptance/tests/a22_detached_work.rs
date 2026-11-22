@@ -107,14 +107,12 @@ fn poll<T>(timeout: Duration, mut read: impl FnMut() -> T, done: impl Fn(&T) -> 
 }
 
 fn sockets(dir: &Path) -> Vec<String> {
-    std::fs::read_dir(dir)
-        .map(|d| {
-            d.flatten()
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|n| n.ends_with(".sock"))
-                .collect()
-        })
-        .unwrap_or_default()
+    std::fs::read_dir(dir).map_or_default(|d| {
+        d.flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".sock"))
+            .collect()
+    })
 }
 
 /// The RPC client process of `session` (its own command line names the session id).
@@ -682,7 +680,7 @@ fn acceptance_a22_a_running_child_survives_a_worker_kill_and_its_result_stays_co
     assert!(event.contains(&id) && event.contains(CHILD_RESULT), "{event}");
     poll(
         HANG,
-        || client.get_state().map(|s| s["isStreaming"] == false).unwrap_or(false),
+        || client.get_state().is_ok_and(|s| s["isStreaming"] == false),
         |idle| *idle,
     );
     f.collect(&mut client, &id);

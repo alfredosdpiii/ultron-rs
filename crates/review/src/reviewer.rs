@@ -904,7 +904,7 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
                         pull: pull_key(r),
                         now: jsrt::date::iso_string((deps.now)()),
                         findings: saved.findings.iter().map(PostedFinding::ledger).collect(),
-                        threads: threads.map(thread_states).unwrap_or_default(),
+                        threads: threads.map_or_default(thread_states),
                         merged: pull.merged,
                         ..FateInput::default()
                     });

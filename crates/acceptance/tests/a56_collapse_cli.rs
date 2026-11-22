@@ -49,7 +49,7 @@ fn acceptance_a56_collapse_on_return_rewrites_only_the_newest_cell_output() {
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|m| m.to_string())
+                .map(std::string::ToString::to_string)
                 .collect()
         })
         .collect();

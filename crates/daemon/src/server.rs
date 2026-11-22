@@ -153,7 +153,7 @@ impl Lifetime {
     }
 
     pub fn start(&self, retire: Box<dyn Fn() + Send + Sync>) {
-        *self.retire.lock().unwrap_or_else(|e| e.into_inner()) = Some(retire);
+        *self.retire.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(retire);
         if self.lock().startup_held {
             let me = self.me.clone();
             std::thread::spawn(move || {
@@ -214,7 +214,13 @@ impl Lifetime {
             state.armed = None;
             return;
         }
-        if state.armed.is_some() || self.retire.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
+        if state.armed.is_some()
+            || self
+                .retire
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_none()
+        {
             return;
         }
         let token = state.timer;
@@ -231,7 +237,7 @@ impl Lifetime {
                 state.armed = None;
                 state.timer == token && Self::idle(&state)
             };
-            if fire && let Some(retire) = &*me.retire.lock().unwrap_or_else(|e| e.into_inner()) {
+            if fire && let Some(retire) = &*me.retire.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
                 retire();
             }
         });
@@ -308,12 +314,19 @@ impl RunningServer {
 
     /// Close this generation: busy workers are released (they keep running detached), idle ones exit.
     pub fn close(&self) {
-        if std::mem::replace(&mut *self.closing.lock().unwrap_or_else(|e| e.into_inner()), true) {
+        if std::mem::replace(
+            &mut *self.closing.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+            true,
+        ) {
             return self.wait_closed();
         }
         self.lifetime.stop();
         self.schedules.stop();
-        let relay = self.relay.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let relay = self
+            .relay
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         if let Some(relay) = relay {
             relay.close();
         }
@@ -330,14 +343,26 @@ impl RunningServer {
         self.coordinator.close();
         let _ = sockets::cleanup_socket(&self.endpoint_path);
         let _ = std::fs::remove_file(&self.record);
-        *self.closed.done.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        *self
+            .closed
+            .done
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         self.closed.changed.notify_all();
     }
 
     pub fn wait_closed(&self) {
-        let mut done = self.closed.done.lock().unwrap_or_else(|e| e.into_inner());
+        let mut done = self
+            .closed
+            .done
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         while !*done {
-            done = self.closed.changed.wait(done).unwrap_or_else(|e| e.into_inner());
+            done = self
+                .closed
+                .changed
+                .wait(done)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 }
@@ -416,7 +441,7 @@ fn start_generation(
     manager.set_logger(Box::new(move |label, message| record_error(&log_path, label, message)));
     let schedule_log = error_log_path(&options.directory, server_id);
     let schedule_clock = kernel_apis::prompt_schedule::clock_for(&|key| std::env::var(key).ok());
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let home = std::env::var_os("HOME").map_or_default(PathBuf::from);
     let schedules = crate::prompt_schedules::Scheduler::new(
         schedule_clock.clone(),
         Arc::new(crate::dream::QuietDreams {
@@ -428,7 +453,7 @@ fn start_generation(
             clock: schedule_clock,
         }),
         Some(Box::new(move |message| {
-            record_error(&schedule_log, "[ultron server warning]", message)
+            record_error(&schedule_log, "[ultron server warning]", message);
         })),
     );
     let reports = schedules.clone();
@@ -485,7 +510,7 @@ fn start_generation(
                 &error_log_path(&options.directory, server_id),
                 "[ultron server warning]",
                 message,
-            )
+            );
         });
     }
     schedules.start(options.session_dir.clone());

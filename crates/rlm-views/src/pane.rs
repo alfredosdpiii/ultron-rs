@@ -481,7 +481,7 @@ fn workflow_runs(snapshot: &RlmSnapshot) -> Vec<DagRun> {
                 } else if task.is_none() && ended.as_deref() == Some("skipped") {
                     Some(format!(
                         "skipped{}",
-                        reason.as_ref().map(|r| format!(": {r}")).unwrap_or_default()
+                        reason.as_ref().map_or_default(|r| format!(": {r}"))
                     ))
                 } else if task.is_none() && reason.is_some() {
                     reason.as_ref().map(|r| flat(r, 160))
@@ -1473,7 +1473,7 @@ pub fn render_wave_summary(runs: &[DagRun], width: usize, style: &RlmStyle, now:
                     }
                 })
             };
-            (time.map(|t| format!(" · {t}")).unwrap_or_default(), said)
+            (time.map_or_default(|t| format!(" · {t}")), said)
         };
         let room = bound as isize - 4 - visible_width(&head) as isize - visible_width(&tail) as isize - 3;
         let text = match said {

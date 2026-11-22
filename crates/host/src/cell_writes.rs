@@ -44,7 +44,7 @@ fn small_text(path: &Path) -> Result<Option<String>, ()> {
 
 impl CellWrites {
     fn lanes(&self) -> std::sync::MutexGuard<'_, HashMap<String, Vec<CellWrite>>> {
-        self.lanes.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        jsrt::sync::lock(&self.lanes)
     }
 
     pub fn set_enabled(&self, enabled: bool) {

@@ -755,7 +755,7 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
         let model = lane_models
             .get(lane.as_str())
             .cloned()
-            .or_else(|| durable_models.get(lane.as_str()).map(|m| m.to_string()))
+            .or_else(|| durable_models.get(lane.as_str()).map(std::string::ToString::to_string))
             .or_else(|| child_models.get(child.id.as_str()).cloned())
             .or_else(|| stats.as_ref().and_then(|s| s.child_models.get(&child.id).cloned()))
             .unwrap_or_else(|| "not recorded".into());
@@ -791,14 +791,16 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
             let merge = stats
                 .as_ref()
                 .and_then(|s| s.merges.get(&child.id).cloned())
-                .map(Value::String)
-                .unwrap_or_else(|| {
-                    if w.get("commit") == Some(&Value::Null) {
-                        Value::String("empty".into())
-                    } else {
-                        Value::Null
-                    }
-                });
+                .map_or_else(
+                    || {
+                        if w.get("commit") == Some(&Value::Null) {
+                            Value::String("empty".into())
+                        } else {
+                            Value::Null
+                        }
+                    },
+                    Value::String,
+                );
             worktrees.push(json!({
                 "task": child.id,
                 "branch": branch,
@@ -836,10 +838,7 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
         traces: &IndexMap<String, &Map<String, Value>>,
         level_of_task: &dyn Fn(Option<&str>) -> f64,
     ) -> f64 {
-        let id = trace
-            .get("id")
-            .map(|v| jsrt::value::string(Some(v)))
-            .unwrap_or_default();
+        let id = trace.get("id").map_or_default(|v| jsrt::value::string(Some(v)));
         if let Some(known) = levels.get(&id) {
             return *known;
         }

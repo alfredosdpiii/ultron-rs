@@ -493,9 +493,9 @@ fn populate(chars: &[char], start: usize, end: usize) -> Option<Vec<usize>> {
                 }
                 with_trie(engine, |trie| {
                     if engine == Engine::Cj {
-                        divide_cj(trie, chars, i, j, &mut breaks)
+                        divide_cj(trie, chars, i, j, &mut breaks);
                     } else {
-                        divide_sa(engine, trie, chars, i, j, &mut breaks)
+                        divide_sa(engine, trie, chars, i, j, &mut breaks);
                     }
                 });
                 i = j;
@@ -514,7 +514,7 @@ fn populate(chars: &[char], start: usize, end: usize) -> Option<Vec<usize>> {
     if start < breaks[0] {
         breaks.insert(0, start);
     }
-    if end > *breaks.last().unwrap() {
+    if breaks.last().is_some_and(|&last| end > last) {
         breaks.push(end);
     }
     Some(breaks)
@@ -663,7 +663,6 @@ fn rule_segments(chars: &[char]) -> Vec<(usize, usize, u16)> {
     let mut start = 0;
     while start < n {
         let mut i = start;
-        let mut base: Option<usize>;
         let mut prev_base: Option<usize> = None;
         let mut ri_count = 0;
         if newline(i) {
@@ -687,7 +686,7 @@ fn rule_segments(chars: &[char]) -> Vec<(usize, usize, u16)> {
             }
             joined = Some(0);
         }
-        base = Some(i);
+        let mut base = i;
         if k[i].wb == WordBreak::RegionalIndicator {
             ri_count = 1;
         }
@@ -701,7 +700,7 @@ fn rule_segments(chars: &[char]) -> Vec<(usize, usize, u16)> {
             if i >= n || newline(i) {
                 break;
             }
-            let b = base.unwrap();
+            let b = base;
             let next = i;
             let mut after = next + 1;
             while after < n && k[after].ex_fm {
@@ -721,7 +720,7 @@ fn rule_segments(chars: &[char]) -> Vec<(usize, usize, u16)> {
             match status_join {
                 Some(s) => {
                     prev_base = Some(b);
-                    base = Some(next);
+                    base = next;
                     if k[next].wb == WordBreak::RegionalIndicator {
                         ri_count += 1;
                     } else {
@@ -734,7 +733,7 @@ fn rule_segments(chars: &[char]) -> Vec<(usize, usize, u16)> {
                 None => break,
             }
         }
-        let b = base.unwrap();
+        let b = base;
         let status = if trailing > 0 {
             k[b].single.0
         } else {

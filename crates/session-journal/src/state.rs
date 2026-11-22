@@ -170,7 +170,7 @@ fn without_kind(write: Value) -> Value {
 }
 
 fn take_value(write: &mut Value) -> Value {
-    write.get_mut("value").map(Value::take).unwrap_or(Value::Null)
+    write.get_mut("value").map_or(Value::Null, Value::take)
 }
 
 /// What one committed write does to the state.
@@ -406,8 +406,7 @@ impl State {
     pub fn read_list(&self, namespace: &str, key: &str) -> Vec<&ListElement> {
         self.lists
             .get(&physical_key(namespace, key))
-            .map(|items| items.iter().take(1000).collect())
-            .unwrap_or_default()
+            .map_or_default(|items| items.iter().take(1000).collect())
     }
 
     /// A whole list, in append order.

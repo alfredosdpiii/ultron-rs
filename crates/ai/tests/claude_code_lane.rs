@@ -77,7 +77,7 @@ fn model_calls(fake: &Fake) -> Vec<String> {
         .filter_map(|r| {
             let argv: Vec<&str> = r["argv"].as_array()?.iter().filter_map(Value::as_str).collect();
             let at = argv.iter().position(|a| *a == "--model")?;
-            argv.get(at + 1).map(|m| m.to_string())
+            argv.get(at + 1).map(std::string::ToString::to_string)
         })
         .collect()
 }

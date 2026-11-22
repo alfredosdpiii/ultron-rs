@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 const SESSION_ID: &str = "a46-live-demo";
 const BUGGY: &str = "def average(values):\n    return sum(values) / (len(values) - 1)\n";
 /// The hang guard of the task (the TS runner's `promptAndWait` timeout).
-const TASK_GUARD: Duration = Duration::from_secs(40 * 60);
+const TASK_GUARD: Duration = Duration::from_mins(40);
 
 /// The diagnostics log and its most-failing location, counted here from the rows themselves.
 fn diagnostics() -> (String, String) {

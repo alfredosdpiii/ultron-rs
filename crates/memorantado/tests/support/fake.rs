@@ -119,7 +119,7 @@ impl FakeMemorantado {
     }
 
     pub fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn captured(&self) -> Vec<Captured> {
@@ -476,7 +476,7 @@ impl FakeMemorantado {
 
     /// A request URL and body as the fake handles it.
     fn dispatch(&self, method: &str, url: &str, body: &[u8]) -> (u16, Value) {
-        let target = url.splitn(4, '/').nth(3).map(|t| format!("/{t}")).unwrap_or_default();
+        let target = url.splitn(4, '/').nth(3).map_or_default(|t| format!("/{t}"));
         let (path, query) = target.split_once('?').unwrap_or((&target, ""));
         let path = path.strip_prefix("/api").unwrap_or(path).to_string();
         let query: Map<String, Value> = query

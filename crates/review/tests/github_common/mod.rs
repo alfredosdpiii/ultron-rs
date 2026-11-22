@@ -193,7 +193,7 @@ impl FakePull {
     }
 
     pub fn requested(mut self, logins: &[&str]) -> Self {
-        self.requested_reviewers = logins.iter().map(|l| l.to_string()).collect();
+        self.requested_reviewers = logins.iter().map(std::string::ToString::to_string).collect();
         self
     }
 
@@ -325,7 +325,7 @@ fn respond(status: u16, body: Option<Value>, headers: &[(String, String)]) -> Ru
         None => String::new(),
     };
     RunResult {
-        code: if status < 400 { 0 } else { 1 },
+        code: i32::from(status >= 400),
         stdout: format!("{}\r\n\r\n{text}", head.join("\r\n")),
         stderr: if status < 400 {
             String::new()
@@ -360,7 +360,7 @@ impl FakeHub {
     }
 
     pub fn lock(&self) -> MutexGuard<'_, HubState> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn now(&self) -> i64 {
@@ -397,7 +397,7 @@ impl FakeHub {
     pub fn add_account(&self, login: &str, host: &str, active: bool) -> String {
         let token = format!(
             "ghp_{}SECRETTOKEN0123456789abcdef",
-            login.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>()
+            login.chars().filter(char::is_ascii_alphanumeric).collect::<String>()
         );
         self.lock()
             .accounts
@@ -587,8 +587,7 @@ impl FakeHub {
             let q = query
                 .split('&')
                 .find_map(|pair| pair.strip_prefix("q="))
-                .map(percent_decode)
-                .unwrap_or_default();
+                .map_or_default(percent_decode);
             let items: Vec<Value> = state
                 .search
                 .iter()
@@ -1116,7 +1115,7 @@ impl Context {
         Candidate {
             account: self.account.clone(),
             pull: reference(),
-            reasons: reasons.iter().map(|r| r.to_string()).collect(),
+            reasons: reasons.iter().map(std::string::ToString::to_string).collect(),
             picked_at: self.hub.now() - 30_000,
             notified_at: None,
         }

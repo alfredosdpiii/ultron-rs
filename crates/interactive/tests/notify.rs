@@ -47,7 +47,7 @@ fn structured(title: &str, body: &str, kind: Option<&str>) -> Message {
     Message::Structured(Notification {
         title: Some(title.into()),
         body: Some(body.into()),
-        kinds: kind.map(|k| vec![k.to_string()]).unwrap_or_default(),
+        kinds: kind.map_or_default(|k| vec![k.to_string()]),
         ..Notification::default()
     })
 }
@@ -59,7 +59,7 @@ fn deliver(n: &mut Notifier, m: &Message) -> FakeSink {
 }
 
 fn s(v: &[&str]) -> Vec<String> {
-    v.iter().map(|x| x.to_string()).collect()
+    v.iter().map(std::string::ToString::to_string).collect()
 }
 
 #[test]

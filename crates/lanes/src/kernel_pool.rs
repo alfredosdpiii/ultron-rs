@@ -302,7 +302,7 @@ impl<K: PoolableKernel> KernelPool<K> {
             .entries
             .iter()
             .map(|(lane, e)| {
-                let pinned: Vec<&String> = self.pins.get(lane).map(|h| h.iter().collect()).unwrap_or_default();
+                let pinned: Vec<&String> = self.pins.get(lane).map_or_default(|h| h.iter().collect());
                 let idle = if e.running > 0 { 0.0 } else { now - e.last_used };
                 json!({ "lane": lane, "running": e.running, "pinnedBy": pinned, "idleMs": jsrt::json::number(idle) })
             })

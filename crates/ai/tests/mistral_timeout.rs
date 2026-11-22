@@ -82,8 +82,7 @@ async fn ai_mistral_whole_request_timeout_matches_typescript() {
     for case in cases {
         let chunks = case["chunks"]
             .as_array()
-            .map(|c| c.iter().map(|s| s.as_str().unwrap().to_string()).collect())
-            .unwrap_or_default();
+            .map_or_default(|c| c.iter().map(|s| s.as_str().unwrap().to_string()).collect());
         let started = tokio::time::Instant::now();
         let message = run(
             &model,

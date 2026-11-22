@@ -124,7 +124,7 @@ impl RunEnv {
     pub fn process(cwd: PathBuf, package: PathBuf) -> RunEnv {
         RunEnv {
             cwd,
-            home: std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default(),
+            home: std::env::var_os("HOME").map_or_default(PathBuf::from),
             var: Arc::new(|k| std::env::var(k).ok()),
             package,
         }

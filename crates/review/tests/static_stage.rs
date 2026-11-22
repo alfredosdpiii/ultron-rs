@@ -377,7 +377,7 @@ def abandon_start(claims, path, record):
 /// The fast pass raises three findings; the claims investigator refutes two of them as leads. The refutation of
 /// line 27 quotes line 9 as it is, so that lead is dropped; the one of line 6 quotes a line that is not there, so it
 /// refutes nothing. Line 18, a different failure in the same flow, is never refuted and stays.
-const RECHUNK_RLM: &str = r#"LEADS = []
+const RECHUNK_RLM: &str = r"LEADS = []
 class Rlm:
     async def map(self, tasks, items, **options):
         task = tasks[0]
@@ -421,7 +421,7 @@ result = asyncio.run(a.run(Rlm(), {'repoDir': repo, 'base': base, 'head': head, 
 print(json.dumps({'findings': sorted([f['line'], f['claim'][:40]] for f in result['findings']),
                   'refuted': result['dropped'].get('refutedByInvestigator'), 'leads': [l.get('id') for l in LEADS],
                   'notChecked': result['notChecked']}))
-"#;
+";
 
 /// Fisher #3239: the review posted "a failure in _close_record leaves the claim held" inline while its own summary
 /// said that lead does not hold. A lead the deep pass refutes with checked evidence is not posted.
@@ -446,5 +446,8 @@ fn review_drops_a_lead_the_deep_pass_refuted_and_keeps_a_different_failure() {
             "evidence": ["rechunk.py:9"]}])
     );
     // The investigators saw each lead with the id a refutation names.
-    assert!(got["leads"].as_array().unwrap().iter().all(|id| id.is_i64()), "{got}");
+    assert!(
+        got["leads"].as_array().unwrap().iter().all(serde_json::Value::is_i64),
+        "{got}"
+    );
 }
