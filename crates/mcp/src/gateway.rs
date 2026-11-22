@@ -147,8 +147,6 @@ struct Prompt<'a> {
 
 impl crate::oauth::signin::SignInPrompt for Prompt<'_> {
     fn show_authorization_url(&self, url: &str) {
-        // Without an injected opener nothing is launched: the URL is shown to open by hand. A launcher found on the
-        // process PATH could open the user's real browser from a test.
         if let Some(open) = &self.open_url {
             open(url);
         }
@@ -317,7 +315,6 @@ fn visible_tools(entry: &ServerEntry, connection: Option<&Arc<Connection>>) -> V
 impl Gateway {
     /// The gateway for one session. Servers are known before the session starts: a call may arrive first.
     pub fn new(mut options: GatewayOptions) -> Arc<Self> {
-        // `credentials ??= new McpOAuthCredentialStore()`: the profile's mcp-auth.json, read only when used.
         if options.env.credentials.is_none() {
             options.env.credentials = Some(Arc::new(crate::oauth::store::CredentialStore::new(
                 &options.agent_dir,
@@ -437,7 +434,6 @@ impl Gateway {
         if !errors.is_empty() {
             notices.push((format!("MCP configuration:\n{}", errors.join("\n")), "warning".into()));
         }
-        // Nothing here waits for a server.
         for name in eager {
             let gateway = self.clone();
             let notify = notify.clone();
@@ -595,7 +591,6 @@ impl Gateway {
             let connection = match self.connected(&entry.name) {
                 Ok(connection) => connection,
                 Err(error) => {
-                    // A server that is down does not hide a tool another server has; the named server's error is kept.
                     if (only.is_some() || index < prefixed_count) && failure.is_none() {
                         failure = Some(error);
                     }
@@ -640,7 +635,6 @@ impl Gateway {
                     "status": status_of(entry, connection),
                     "toolCount": tool_count,
                     "transport": if entry.config.contains_key("url") { "http" } else { "stdio" },
-                    // Servers given in code are not saved anywhere (`scope ?? "session"`).
                     "scope": if self.options.servers.is_some() { "session" } else { entry.scope.as_str() },
                 });
                 if !entry.enabled() {
@@ -1053,7 +1047,6 @@ impl Gateway {
                 None => format!("MCP server \"{name}\" does not use OAuth sign-in."),
             });
         };
-        // A first connection attempt finds out what the server asks for (the challenge), or that it needs nothing.
         let _ = connection.get_client();
         let credentials = self
             .options

@@ -172,7 +172,6 @@ pub fn resolve_cli_model(
             ..CliModel::default()
         };
     }
-    // The canonical spelling of each provider, last model winning (a Map keyed by the lowercased name).
     let canonical = |name: &str| -> Option<String> {
         let lower = name.to_lowercase();
         models

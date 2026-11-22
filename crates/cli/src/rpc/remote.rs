@@ -221,8 +221,6 @@ impl Remote<'_> {
                 return;
             }
         };
-        // A run its worker lost (also one prompted whose `run_start` never came) ends for RPC clients as failed when
-        // the link rejoins (recovery settled it) or is lost, unless its end, or another run, was seen meanwhile.
         let (run, lost) = self.run.next(&event);
         self.run = run;
         let event = if lost {
@@ -248,7 +246,6 @@ impl Remote<'_> {
 
     /// Stdin ended: stop runs, then [`busy`](Self::busy) drains the rest.
     pub fn input_ended(&mut self) {
-        // Leaving is not an abort (TS: a root turn in flight when its client closes stdin runs to completion).
         if signals::received().is_some() {
             return;
         }
@@ -275,12 +272,10 @@ impl Remote<'_> {
             images,
             queue: None,
         })?;
-        // The worker ran one of the session's commands: no run starts.
         if let Some(reply) = reply.filter(|r| r["command"].is_string()) {
             self.command_reply = Some(reply);
             return Ok(());
         }
-        // The run starts now; its `run_start` follows on the transcript.
         if self.run == RunTrack::Idle {
             self.run = RunTrack::Running;
         }
@@ -377,7 +372,6 @@ impl Remote<'_> {
                 .wait(&request)
                 .map(|data| Some(data.unwrap_or_default()))
                 .map_err(client::lost::message);
-            // The command loop answers it: that thread holds the process's stdout.
             let _ = tx.send(Input::Event(Event::BashDone { reply, result, pending }));
         });
         Ok(())
@@ -398,7 +392,6 @@ impl Remote<'_> {
     pub fn bash(&mut self, command: String, exclude_from_context: bool, reply: Reply) -> Result<(), String> {
         let connection = self.link()?.connection();
         let session = connection.session_target().map_err(|e| e.to_string())?;
-        // The command's id tags its streamed output (`bash_execution_update`), as rpc-mode.ts passes it.
         let id = reply.id.clone().filter(Value::is_string).unwrap_or(Value::Null);
         let request = connection
             .start(
@@ -445,7 +438,6 @@ impl Remote<'_> {
             })?
             .and_then(|t| t.as_str().map(str::to_string))
             .unwrap_or_default();
-        // As in Pi, the new session holds only the path from the root to just before that message.
         self.fork_to(json!({"entryId": entry_id, "position": "before"}))?;
         Ok(text)
     }
@@ -515,8 +507,6 @@ impl Remote<'_> {
 
     /// Write the session's active branch as an HTML page; returns the path written.
     pub fn export_html(&mut self, output_path: Option<&str>) -> Result<String, String> {
-        // The session's active branch as the worker holds it (`snapshot().transcript`), under its header's creation
-        // time; the page's working directory is this process's, as in rpc-native.ts.
         let described = self.op(Op::Describe)?.unwrap_or_default();
         let id = described["sessionId"].as_str().unwrap_or_default().to_string();
         let created_at = described["sessionFile"]
@@ -567,11 +557,7 @@ pub fn run(
     output: Box<dyn std::io::Write + Send>,
 ) -> Result<i32, String> {
     let (tx, rx) = std::sync::mpsc::channel();
-    // The link traces rpc-native.ts's `rpc.open` .. `rpc.attached` milestones as it starts the server, selects the
-    // session and attaches.
     let mut session = Remote::open(parsed, env, target, tx.clone())?;
-    // A signal ends RPC mode as the end of its input does (the session detaches, the server closes), then exits
-    // with the signal's code.
     let signalled = Arc::new(std::sync::atomic::AtomicI32::new(0));
     let (code, end) = (signalled.clone(), std::sync::Mutex::new(tx.clone()));
     crate::print_mode::exit_on_signal(move |exit| {

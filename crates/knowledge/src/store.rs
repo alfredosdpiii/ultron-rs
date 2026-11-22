@@ -229,8 +229,6 @@ impl Store {
                 )?;
             }
             Some(Ok(SCHEMA_VERSION)) => {}
-            // Schema 1 had no notes (the table was created above); schema 2's lack the rule columns; schema 3's
-            // symbols lack their ranges and parents; schema 4's relations tables were created above.
             Some(Ok(old @ 1..=4)) => {
                 let columns = |table: &str| -> Result<Vec<String>, Error> {
                     let mut statement = self
@@ -251,8 +249,6 @@ impl Store {
                 add("notes", &columns("notes")?, &NOTE_COLUMNS_3)?;
                 add("symbols", &columns("symbols")?, &SYMBOL_COLUMNS_4)?;
                 if old <= 2 {
-                    // Schema 2 counted an outdated thread as addressed: which of its addressed notes were resolved
-                    // is unknown, so none is a rule until the backfill, run again, reads the recent ones' threads.
                     self.conn
                         .execute("UPDATE notes SET state = 'outdated' WHERE state = 'addressed'", [])?;
                     self.conn
@@ -377,8 +373,6 @@ impl Store {
                 entry_row.execute(params![tree, path, oid])?;
             }
         }
-        // Older trees of this repository beyond the limit go, with the blobs no tree still holds. A tree read only
-        // for relations (a repository with no file the indexer reads) has no entries but is kept like the others.
         for table in ["entries", "relation_entries"] {
             tx.execute(
                 &format!(
@@ -420,7 +414,6 @@ impl Store {
         let mut added = 0;
         {
             let mut known = tx.prepare_cached("SELECT 1 FROM notes WHERE repo = ?1 AND url = ?2")?;
-            // A miss stays one: the pull request's findings do not change once it closed.
             let mut row = tx.prepare_cached(
                 "INSERT INTO notes (repo, pull, path, line, author, body, url, at, state, human, missed)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
@@ -591,7 +584,6 @@ impl Store {
         scanned: &[(String, Vec<Proposed>)],
         version: i64,
     ) -> Result<(), Error> {
-        // Write-locked from the start: the check below and the writes after it see one state of the store.
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -703,7 +695,6 @@ impl Store {
             if wanted.as_ref().is_some_and(|wanted| !wanted.contains(path.as_str())) {
                 continue;
             }
-            // A kind this build does not know came from another version; it is read again before it is used.
             let Some(kind) = Kind::parse(&kind) else { continue };
             let subject = if subject.is_empty() {
                 path.clone()

@@ -53,7 +53,7 @@ fn host(with_hook: Option<Option<&'static str>>) -> (Delegation, Runs) {
     let runs: Runs = Arc::default();
     let seen = runs.clone();
     let runner: ChildRunner = Arc::new(move |run| {
-        seen.lock().unwrap().push((run.prompt.clone(), run.fork_at.clone()));
+        seen.lock().unwrap().push((run.prompt.clone(), run.fork_at));
         Ok("child finished".into())
     });
     let (delegation, _ends) = Delegation::new(DelegationOptions::new(runner));

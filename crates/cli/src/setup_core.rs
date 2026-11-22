@@ -13,8 +13,6 @@ use std::time::{Duration, Instant};
 
 pub const SKIP_SETUP_ENV: &str = "ULTRON_SKIP_SETUP";
 
-// ---------------------------------------------------------------------------------------------------------- environment
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EnvironmentCheck {
     pub label: String,
@@ -88,8 +86,6 @@ pub fn check_environment(probe: &ProbeCommand, python: &str) -> Vec<EnvironmentC
     ]
 }
 
-// ------------------------------------------------------------------------------------------------------------- Loki
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LokiAnalyzerCheck {
     pub name: &'static str,
@@ -124,8 +120,6 @@ pub fn check_loki_analyzers(probe: &ProbeCommand) -> Vec<LokiAnalyzerCheck> {
         .collect()
 }
 
-// ----------------------------------------------------------------------------------------------------- secret files
-
 /// `writePrivateFile`: readable only by the user (0600), in a directory only the user can list (0700 when created).
 pub fn write_private_file(path: &Path, content: &str) -> std::io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -144,8 +138,6 @@ pub fn write_private_file(path: &Path, content: &str) -> std::io::Result<()> {
     std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))?;
     std::fs::rename(&temporary, path)
 }
-
-// --------------------------------------------------------------------------------------------------- custom endpoint
 
 /// `validateProviderId`: `/^[a-z0-9][a-z0-9._-]*$/`.
 pub fn validate_provider_id(value: &str) -> Option<String> {
@@ -252,8 +244,6 @@ pub fn custom_provider_exists(models_json: &Path, provider_id: &str) -> bool {
         .is_some_and(|providers| providers.contains_key(provider_id))
 }
 
-// ------------------------------------------------------------------------------------------------------------ fetch
-
 /// One GET as setup makes it (`fetch` with `redirect: "error"` and a timeout).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FetchRequest {
@@ -355,7 +345,6 @@ fn plain_get(url: &url::Url, request: &FetchRequest) -> Result<FetchResponse, St
         .and_then(|s| s.parse().ok())
         .ok_or("fetch failed")?;
     if (300..400).contains(&status) && head.to_ascii_lowercase().contains("\nlocation:") {
-        // `redirect: "error"`.
         return Err("unexpected redirect".into());
     }
     if head.to_ascii_lowercase().contains("transfer-encoding: chunked") {
@@ -439,8 +428,6 @@ pub fn list_endpoint_models(base_url: &str, api_key: Option<&str>, fetch: &Fetch
     jsrt::utf16::sort(&mut ids);
     Some(ids)
 }
-
-// --------------------------------------------------------------------------------------------------------- Hindsight
 
 pub const HINDSIGHT_IMAGE: &str = "ghcr.io/vectorize-io/hindsight:latest";
 pub const HINDSIGHT_CONTAINER: &str = "hindsight";
@@ -627,8 +614,6 @@ pub fn hindsight_manual_instructions(url: &str) -> Vec<String> {
         "Then run `ultron setup` again to check the connection.".into(),
     ]
 }
-
-// --------------------------------------------------------------------------------------------------------- first run
 
 pub struct SetupOfferInput<'a> {
     pub stdin_is_tty: bool,

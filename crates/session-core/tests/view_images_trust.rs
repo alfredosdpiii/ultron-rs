@@ -45,7 +45,7 @@ fn view_big_image(global: Value) -> String {
         ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
     ];
     let env = RunEnv {
-        cwd: cwd.clone(),
+        cwd,
         home,
         var: Arc::new(move |key| vars.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
         package: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent")),

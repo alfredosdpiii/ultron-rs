@@ -112,7 +112,7 @@ fn daemon_dream_quiet_night_passes_without_a_run_until_a_session_changes() {
     let inner = std::sync::Arc::new(Recorded::default());
     let quiet = daemon::dream::QuietDreams {
         inner: inner.clone(),
-        instance_dir: instance.clone(),
+        instance_dir: instance,
         session_dir: sessions.clone(),
         agent_dir: tmp.path().join("agent"),
         home: home.clone(),
@@ -200,7 +200,7 @@ fn changed_store_ends_a_quiet_night(store: impl Fn(&std::path::Path) -> std::pat
         instance_dir: instance,
         session_dir: sessions,
         agent_dir: agent,
-        home: home.clone(),
+        home,
         clock: clock.clone(),
     };
     clock.set(due + 1);

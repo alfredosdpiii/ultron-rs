@@ -135,8 +135,6 @@ pub fn cgroup_scope_command(cap_mb: u64) -> Vec<String> {
         &format!("MemoryMax={cap_mb}M"),
         "-p",
         "MemorySwapMax=0",
-        // The host sees the OOM kill and stops the tree itself with a clear error, instead of systemd stopping the
-        // scope with SIGTERM.
         "-p",
         "OOMPolicy=continue",
         "--",

@@ -246,7 +246,6 @@ impl Config {
     /// The kernel environment and output budget a lane reads.
     pub fn from_env(env: &Env) -> Config {
         let agent_dir = env.agent_dir();
-        // The worker's settings (`workerProjectTrusted`): a trusted project's `.pi/settings.json` applies too.
         let manager = config::settings::SettingsManager::for_worker(&env.cwd, &agent_dir, &env.home);
         let settings = Value::Object(manager.settings().clone());
         let loki_settings = loki::settings::saved(manager.global_settings());
@@ -340,12 +339,10 @@ impl Config {
                     masker.register_secret_values(&values);
                 })),
                 provider_token: Some(self.provider_token.clone()),
-                // The worker's proxies, with undici's semantics (TS: the worker's `configureHttpDispatcher`).
                 proxy: Some(ai::net::ProxyEnv::from_lookup(&*self.var)),
                 var: Some(self.var.clone()),
                 ..mcp::connection::ConnectionEnv::default()
             },
-            // The session's PATH finds the launcher (never the process's).
             open_url: Some(config::browser::browser_opener(
                 (self.var)("PATH"),
                 (self.var)("HOME"),
@@ -431,8 +428,6 @@ impl Config {
             } else {
                 git_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
             };
-            // Post-write checks compare against the committed policy and a base revision: only in a repository
-            // with a `.loki/` policy (TS: after its auto-install there).
             let post_write = git_root(cwd).is_some() && root.join(".loki").is_dir();
             hooks.add(Box::new(
                 LokiGuard::new(&root, self.loki)
@@ -500,8 +495,6 @@ pub fn mcp_runtime_guide(config: &Config) -> resources::runtime_guide::RuntimeGu
             .as_ref()
             .map(|t| mcp::gateway::server_names_of(&t.description))
             .unwrap_or_default(),
-        // The REPL's only `tools.*` tool is the gateway (TypeScript lists it among its extension tools): without
-        // `mcp.json` servers there is none, and the guide has no tools section.
         extension_tools: tool
             .into_iter()
             .map(|t| resources::runtime_guide::ExtensionToolSummary {
@@ -509,20 +502,13 @@ pub fn mcp_runtime_guide(config: &Config) -> resources::runtime_guide::RuntimeGu
                 description: t.description,
             })
             .collect(),
-        // The session runtime serves `rlm.ask`, `swarm`, `board`, `notes` (swarm_ops.rs) and typed memory: the model
-        // is told, unless `ULTRON_GUIDE=ts` asks for the TypeScript guide (the TS-recorded request replays use it).
         durable_apis: !config.ts_guide,
-        // The root is woken by its work's ends only with completion events on (crate::wake); with them off it is
-        // told to wait (`ULTRON_ASYNC_EVENTS=off`).
         delivery: if config.async_events {
             resources::runtime_guide::EventDelivery::Wake
         } else {
             resources::runtime_guide::EventDelivery::Off
         },
-        // The woken root's rlm.collect never waits (crate::wake); TypeScript's guide (`ULTRON_GUIDE=ts`, its
-        // recorded replays) keeps its wording.
         host_waits: !config.ts_guide,
-        // Cell results end with `[hint:<tag>]` lines under `ULTRON_HINTS=on`: the guide says what to do with them.
         hints: config.hints,
         result_footer: config.result_footer,
         ..Default::default()
@@ -607,8 +593,6 @@ impl SystemPrompt {
                 &extra,
             )
         };
-        // A subagent's guide (crate::wake): it awaits what its answer needs, has no `schedule`, and an in-memory
-        // child has no persistent children, `swarm`, `board` or `notes`.
         let render_child = move |mode: &crate::lane::PromptMode, reader: ChildReader| {
             let guide = resources::runtime_guide::RuntimeGuideOptions {
                 reader: resources::runtime_guide::GuideReader::Subagent {
@@ -781,13 +765,11 @@ impl Runtime {
         let config = Config::from_env(env);
         let trusted = config.project_trusted;
         let manager = config::settings::SettingsManager::create(&env.cwd, &config.agent_dir, trusted);
-        // resource-loader.ts `reload`: the local skills and prompts.
         let mut resolved = crate::session_resources::resolve(
             env,
             config::settings::SettingsManager::create(&env.cwd, &config.agent_dir, trusted),
             services.session.append_system_prompt.as_deref(),
         );
-        // `--skill <path>`: after the discovered skills (resource-loader.ts `additionalSkillPaths`).
         resolved
             .skill_paths
             .extend(services.session.skill_paths.iter().cloned());
@@ -798,7 +780,6 @@ impl Runtime {
             hindsight,
             explicit: memory_explicit,
         } = memory_backend(&*env.var, &manager, &config.agent_dir);
-        // Once memorantado is the backend, Hindsight is never written: an outage pauses memory, with a notice.
         let memory_notice = match &backend {
             memorantado::Backend::Memorantado { endpoint, up: false } => Some(endpoint.paused_notice()),
             _ => None,
@@ -806,14 +787,11 @@ impl Runtime {
         diagnostics.extend(memory_notice.clone());
         let hindsight = hindsight.filter(|_| backend == memorantado::Backend::Hindsight);
         let memorantado = backend.memorantado().cloned();
-        // The `mcp` gateway lives in the REPL: the runtime guide lists it with its servers (`mcpServerNames`).
         let runtime_guide = resources::runtime_guide::RuntimeGuideOptions {
-            // Topic pages are memorantado's (its dreaming writes them); an injected backend is neither.
             memory_topics: memorantado.is_some() && services.memory.is_none(),
             ..mcp_runtime_guide(&config)
         };
         let system = match &services.session.system_prompt {
-            // `--system-prompt`: exactly the given text (`currentSystemPrompt`).
             Some(text) => SystemPrompt::fixed(text.clone()),
             None => SystemPrompt::rendered(
                 env,
@@ -860,14 +838,10 @@ impl Runtime {
         subagents: Option<SubagentHost>,
     ) -> Result<Arc<Stack>, String> {
         let mut subagents = subagents;
-        // Without a subagent host, children run as in-memory agent loops, steerable by the agent hub and measured
-        // for their context reminder (crate::memory_children).
         let memory_children = subagents
             .is_none()
             .then(|| Arc::new(crate::memory_children::MemoryChildren::default()));
         let config = self.config.clone();
-        // Shell jobs are durable: their journal is in the session's module directory, and opening the host recovers
-        // the jobs a dead worker left (from their processes).
         let values = self.services.values.clone();
         let jobs: Arc<dyn kernel::store::DocumentStore> = match &values {
             Some(values) => Arc::new(crate::session_modules::ModuleJobJournal(
@@ -877,17 +851,10 @@ impl Runtime {
                 config.session_dir("rlm-modules", session_id).join("jobs.json"),
             )),
         };
-        // The session's runtime counters (`ultron.module/stats`): saved once the session actor attaches its journal.
         let stats = Arc::new(SessionStats::system("lane"));
-        // Typed memory records (kernel_apis::memory_records) are shared by every session of the agent directory;
-        // a cell's file changes that match one point at it with the next result (kernel_apis::memory_pointers).
         let memory_records = Arc::new(kernel_apis::memory_records::RecordIndex::for_agent_dir(
             &config.agent_dir,
         ));
-        // In engineering mode, the skill that fits a cell's file changes comes with its result
-        // (crate::situational_skills).
-        // Skill procedures in progress (`skills.run`, delegation::skill_runs) watch each cell for changes outside the
-        // current segment's files.
         let skill_runs = Arc::new(delegation::skill_runs::RunBook::default());
         let memory_pointers = self.memory_pointers(session_id, &memory_records);
         let situational_skills = self.situational_skills_in(&config.cwd);
@@ -906,7 +873,6 @@ impl Runtime {
                 .with_journal(jobs)?,
         );
         crate::guard_log::loki_setup(&config);
-        // `createSessionModuleStore(session, name)`: the session value `ultron.module/<name>`.
         let modules = |name: &str| -> Arc<dyn kernel::store::DocumentStore> {
             match &values {
                 Some(values) => Arc::new(crate::session_modules::ModuleDocument(
@@ -919,8 +885,6 @@ impl Runtime {
                 )),
             }
         };
-        // TS createWorkerServices: a configured server gives every session a backend tagged with the session, its
-        // project directory and the home directory; an invalid URL fails the session as it does there.
         let (cwd, home) = (config.cwd.display().to_string(), config.home.display().to_string());
         let backend = match (&self.services.memory, &self.memorantado, &self.hindsight) {
             (Some(backend), _, _) => Some(backend.clone()),
@@ -959,32 +923,24 @@ impl Runtime {
         let no_skills = self.services.session.no_skills;
         let extra = self.services.resources.clone();
         let loader: kernel_apis::SkillLoader = Arc::new(move || Ok(skill_sources(&skills_config, &extra, no_skills)));
-        // Skill test kernels start from the session's environment, as the lanes' kernels do.
         let code = CodeSkills::new(CodeSkillsOptions::for_session(
             &config.skills_dir,
             &config.runtime_path,
             config.child_env(),
         ));
         let clock = kernel_apis::util::system_clock();
-        // The local services: refinements (lessons, checked by the worker's activation rules) and experiment history in
-        // one keyed document file, release gates in their module document. Active instruction refinements reach
-        // later typed-agent prompts through the host's refinement hook.
         let local = Arc::new(services::LocalServices::worker(match &values {
             Some(values) => Box::new(values.keyed(session_journal::ns::LOCAL)),
             None => Box::new(kernel_apis::artifacts::FileKeyedDocuments::new(
                 config.session_dir("rlm-modules", session_id).join("local.json"),
             )),
         }));
-        // Refinements follow the conversation branch (`mainBranch`): anchored at the main lane's tip, read back only
-        // while the anchor is on the branch in use (A07).
         let branch = values.as_ref().map(crate::session_modules::main_branch);
         let refinements = services::instruction_hook(local.clone(), branch.clone());
         let ledger = crate::auto_refine::Ledger {
             services: local.clone(),
             branch: branch.clone(),
         };
-        // `session_start` of the MCP extension: eager servers connect in the background; configuration errors were
-        // reported with the runtime's diagnostics.
         let gateway = config.mcp_gateway();
         let notices = gateway.start(self.services.mcp_notices.clone());
         if let Some(notify) = &self.services.mcp_notices {
@@ -1001,17 +957,13 @@ impl Runtime {
             config.agent_dir.clone(),
             config.project_trusted,
         ));
-        // `--api-key` is a runtime key of the starting model's provider only (`setRuntimeApiKey`); every request
-        // resolves its provider's key when it is sent (crate::request_keys).
         let keys = crate::request_keys::Keys::new(
             api_key.map(|key| (model.provider.clone(), key)),
             config.provider_token.clone(),
         );
         let root_model = Arc::new(Mutex::new(model.clone()));
         self.system.set_model(&model.id);
-        // `judge.decide` settles in the session's usage ledger, built with the stack below.
         let judge_ledger: Arc<std::sync::OnceLock<UsageLedger>> = Arc::default();
-        // Its usage rows go to the session's values (set later by a composer that keeps them elsewhere).
         let judge_rows: Arc<std::sync::OnceLock<services::SessionValues>> = Arc::default();
         if let Some(values) = &values {
             let _ = judge_rows.set(values.clone());
@@ -1024,10 +976,7 @@ impl Runtime {
             judge_ledger.clone(),
         ));
         let skills = Arc::new(SkillsModule::new(modules("skills"), loader, clock.clone(), Some(code)));
-        // A skill procedure's `check` commands run as spawn contract checks do, with the stack's check runner.
         let skill_checks: Arc<std::sync::OnceLock<delegation::spawn_contract::CheckRunner>> = Arc::default();
-        // Runs a dead worker left `running` end `interrupted` now: their book died with it. A store that cannot be
-        // read leaves them for the next start.
         let procedures = Arc::new(delegation::skill_runs::SkillRuns {
             book: skill_runs.clone(),
             skills: skills.clone(),
@@ -1072,7 +1021,6 @@ impl Runtime {
                 )
                 .with_github(kernel_apis::prompt_schedule::GitHub::for_env(&*config.var)),
             ),
-            // `tools.*`: the `mcp` gateway called from the REPL, detached after `yield_after`.
             tools: Arc::new(kernel_apis::ToolCalls::new(
                 gateway.tool().is_some().then(|| {
                     Arc::new(crate::session_tools::SessionTools { mcp: gateway.clone() })
@@ -1080,8 +1028,6 @@ impl Runtime {
                 }),
                 modules("tool-calls"),
             )),
-            // The task modules of session-worker.ts over the typed-agent host: retained instances (their lanes
-            // pinned in the kernel pool), progress with verifier runs, and family messages.
             instances: Arc::new(kernel_apis::InstancesModule::new(modules("instances"), None)),
             progress: Arc::new(kernel_apis::ProgressModule::new(modules("progress"))),
             family: Arc::new(kernel_apis::FamilyModule::new(
@@ -1090,7 +1036,6 @@ impl Runtime {
             )),
             sessions: Arc::new(session_search(&config, &self.sessions_dir, session_id)),
         };
-        // Situational hints (`ULTRON_HINTS=on`): what a cell did, observed per lane, ends its result with one line.
         let var = |key: &str| (config.var)(key);
         let context_reminders = Arc::new(crate::context_reminder::ContextReminders::new(
             crate::context_reminder::ReminderSettings::from_vars(
@@ -1116,8 +1061,6 @@ impl Runtime {
         let sessions_dir = self.sessions_dir.clone();
         let services = self.services.clone();
         let model = model.clone();
-        // One request stack for every lane's frames (built once: an HTTP client is not free, and a handler is made
-        // per cell); it reads the settings per request.
         let frame_stream = crate::request_keys::lane_stream(config.settings_reader(), keys.clone());
         let child = ChildDefaults {
             model: model.clone(),
@@ -1141,7 +1084,6 @@ impl Runtime {
                         Some(children) => children.runner(factory),
                         None => agent_runner(factory),
                     };
-                    // Typed agents keep in-memory records, their `rlm` lanes run where `agent_lanes` says.
                     let agent_stores = agent_lanes.as_ref().map(|lanes| {
                         let lanes = lanes.clone();
                         AgentStores {
@@ -1156,8 +1098,6 @@ impl Runtime {
                 }
             };
             let goal_slot: Arc<std::sync::OnceLock<Arc<GoalDriver>>> = Arc::new(std::sync::OnceLock::new());
-            // Bounded-inference frames: traces as session values (in memory without a session), run as
-            // `rlm-frame@1` tasks of the typed-agent host.
             let frames = inference::FrameSession::new(match &agent_stores {
                 Some(stores) => stores.frames.clone(),
                 None => Arc::new(inference::MemoryTraceStore::default()),
@@ -1179,7 +1119,6 @@ impl Runtime {
                 usage: usage.clone(),
                 stack: me.clone(),
             }));
-            // Schedules and the session goal are durable tasks of the typed-agent host.
             let schedules = Arc::new(SchedulesModule::new(schedules_store, None));
             let goal = Arc::new(GoalDriver::new(
                 goal_store,
@@ -1188,8 +1127,6 @@ impl Runtime {
             ));
             let _ = goal_slot.set(goal.clone());
             let closer = me.clone();
-            // A subagent's lane closes when its run ends; its stuck-loop hints start over with its next run
-            // (`cellHints.runEnded(lane)` on every lane's `run_end`).
             let runner: ChildRunner = Arc::new(move |run: ChildRun| {
                 let lane = run.lane_name.clone();
                 let result = inner(run);
@@ -1204,21 +1141,15 @@ impl Runtime {
             if let Some(store) = store {
                 options.store = store;
             }
-            // Per lane (crate::wake): a woken root's cell never waits for subagents (rlm.collect returns what has
-            // ended, and the host waits between turns, delivering each end as a child_done event); every other
-            // lane waits in its cell.
             let lane_wake = wake.clone();
             options.collect = Arc::new(move |lane: &str| lane_wake.collect_mode(lane));
             options.spawn_depth = config.spawn_depth;
             options.session_id = session_id.clone();
             options.workspace = Some(config.cwd.clone());
             options.now = Box::new(|| jsrt::date::now_ms() as f64);
-            // `ULTRON_KEEP_WORKTREES`: worktrees and branches stay after merges, on close and at startup.
             options.keep_worktrees = delegation::worktrees::keep_worktrees(
                 (config.var)(delegation::worktrees::KEEP_WORKTREES_ENV).as_deref(),
             );
-            // Read per worktree spawn, as session-worker.ts passes it: the `worktrees` setting, so a changed setting
-            // applies to the next subagent.
             let settings = config.settings_reader();
             options.worktree_setup = Arc::new(move || {
                 let configured = config::keys::worktree_settings(settings().settings());
@@ -1229,28 +1160,19 @@ impl Runtime {
                     timeout_ms: None,
                 })
             });
-            // How each worktree child's merge ended is counted (`onMerge`).
             let merges = stats.clone();
             options.on_merge = Some(Arc::new(move |task: &str, status: &str| merges.merge(task, status)));
-            // A spawn naming a model the session cannot run is refused, never run on the root's model (A04).
             options.model_check = Some(config.model_check());
-            // Spawn contract `run` checks run under the session's shell sandbox, in the child's working directory.
             options.check_runner = crate::contract_checks::check_runner(me.clone());
             let _ = skill_checks.set(options.check_runner.clone());
-            // Contract baselines run git with the session's environment (its PATH finds git).
             options.command_env = config.child_env();
             let (delegation, child_ends) = Delegation::new(options);
-            // Read per spawn, as session-worker.ts passes it: `rlm.childModel` (/settings -> Models), so a changed
-            // setting applies to the next subagent.
             let settings = config.settings_reader();
             delegation.set_child_model(Arc::new(move || {
                 config::keys::rlm_model_settings(settings().global_settings()).child_model
             }));
-            // Worktrees of sessions that ended without cleaning up (a crash): pruned in the background, their work
-            // kept on its branch (native-host.ts `loadTasks`).
             let pruning = delegation.clone();
             std::thread::spawn(move || pruning.prune_orphan_worktrees());
-            // Workflow nodes with worktree=True run as subagents of the workflow's caller (worktrees live there).
             agents.set_worktree_children(delegation.clone());
             let factory_stack = me.clone();
             let handler_stack = me.clone();
@@ -1265,8 +1187,6 @@ impl Runtime {
                 }),
                 max_lanes: 64,
                 cancel_grace: Duration::from_secs(5),
-                // Live kernels are bounded as the TS session's rlm tool bounds them (A43): an idle lane is
-                // snapshotted to its own snapshot path and evicted, and its next cell restores it.
                 pool: Some(lanes::PoolLimits::new(
                     max_live_kernels(&config.settings),
                     Some(lane_snapshot_path(&config, &session_id)),
@@ -1274,8 +1194,6 @@ impl Runtime {
             });
             let (lanes, cell_ends) = match lanes {
                 Ok(pair) => {
-                    // Every host request a kernel makes is counted; `rlm.pool`, inspected or asked by a cell, carries
-                    // the session's guard statistics.
                     let calls = stats.clone();
                     pair.0
                         .observe_requests(Arc::new(move |kind: &str| calls.host_call(kind)));
@@ -1463,14 +1381,11 @@ impl Runtime {
     ) -> Result<Host, String> {
         let config = &self.config;
         let jobs_dir = self.sessions_dir.join("rlm-jobs").join(session_id);
-        // Blocking-bash spill files stay with the session (TS: the OS temp dir), so the sandbox keeps only
-        // session paths writable.
         let spill_dir = config.session_dir("rlm-output", session_id).join(spill);
         let tmp_dir = config.session_dir("rlm-tmp", session_id);
         for dir in [&spill_dir, &tmp_dir] {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
-        // `createLocalBashOperations({ shellPath: settingsManager.getShellPath() })`: the REPL's bash and its jobs.
         let shell_path = config
             .settings
             .as_object()
@@ -1482,10 +1397,7 @@ impl Runtime {
             Box::new(self.file_hooks_in(cwd, stats, observers)),
         )
         .with_shell_path(shell_path)
-        // The session's environment, never the server's: its PATH finds the shell, the sandbox and the tools.
         .with_base_env(config.child_env())
-        // Cell results carry the diff of what they wrote (crate::cell_file_changes), except in the TS-compatible
-        // output the TS-recorded replays compare (`ULTRON_GUIDE=ts`).
         .recording_cell_writes(!config.ts_guide)
         .sandboxed(&config.settings, &config.home, Some(&tmp_dir)))
     }
@@ -1760,9 +1672,6 @@ impl Stack {
             swarm: self.swarm.get().cloned(),
             cell: cell_signal.clone().map(CellShell::new),
         };
-        // Frames are lanes of the session as TypeScript's are: on the root lane's model now, with the live request
-        // settings, each request's key resolved when it is sent, and the harness retry policy. They run on their
-        // handler threads' own runtimes, so they get their own HTTP client.
         let models = crate::frame_models::resolver(self.config.clone());
         let inference = Inference::new(
             Arc::new(router),
@@ -1772,12 +1681,8 @@ impl Stack {
             self.sessions_dir.join("rlm-context").join(&self.session_id),
         )
         .with_stream(self.frame_stream.clone())
-        // A frame naming another model calls it as a lane of that model would (crate::frame_models); its key is
-        // resolved per request like the session model's.
         .with_models(Arc::new(move |spec: &str| models(spec).map(|(model, _)| (model, None))))
         .with_session(self.frames.clone(), lane);
-        // `rlm.map` and the frame-model defaults wrap the frames.
-        // Read per frame (session-worker.ts `modelSettings`): `/settings -> Models` applies to the next frame.
         let settings = self.config.settings_reader();
         let models = move || {
             let settings = settings();
@@ -1791,7 +1696,6 @@ impl Stack {
             }
         };
         let frames = inference::Frames::new(inference, self.config.frame_env.clone(), models);
-        // Frames end with their cell: an aborted root turn cancels every in-flight frame at once.
         let frames: Arc<dyn HostHandler> = match cell_signal {
             Some(cell) => Arc::new(FramesOfCell {
                 inner: Arc::new(frames),
@@ -1799,10 +1703,7 @@ impl Stack {
             }),
             None => Arc::new(frames),
         };
-        // Typed agents answer their requests (and their own lanes' `rlm.finish`) outside the delegation router.
         let typed: Arc<dyn HostHandler> = Arc::new(self.agents.handler(lane, frames));
-        // `schedules.*` and `goal.*` from every lane, as session-worker.ts registers them: the goal module itself
-        // refuses lanes other than the root and the goal's job.
         let mut apis = KernelApis::new(typed)
             .with_host(Arc::new(self.agents.clone()), lane)
             .with(self.schedules.clone() as Arc<dyn kernel_apis::ApiModule>)
@@ -1840,13 +1741,11 @@ impl Stack {
         } else {
             Arc::new(apis)
         };
-        // `view_image` is the cell's own (`executeCell`), outside what the hints observe.
         let viewed: Arc<dyn HostHandler> = Arc::new(crate::view_images::ViewImageLayer {
             inner: observed,
             images: self.images.clone(),
             lane: lane.to_string(),
         });
-        // The composition root's layer, if it set one (crate::request_layer), sees every request first.
         Arc::new(crate::request_layer::Layered {
             inner: viewed,
             layer: self.request_layer.clone(),
@@ -1864,7 +1763,6 @@ impl Stack {
         };
         let spill_dir = config.session_dir("rlm-output", &self.session_id).join(lane_dir(lane));
         let mut options = KernelOptions::new(&cwd, &config.runtime_path);
-        // The kernel starts from the session's environment (its PATH, its ULTRON_* settings), never the server's.
         options.base_env = Some(config.child_env());
         options.env = vec![
             (
@@ -1873,9 +1771,7 @@ impl Stack {
             ),
             (kernel::env::RLM_SPILL_DIR_ENV.into(), spill_dir.display().to_string()),
             (kernel::env::SESSION_ID_ENV.into(), self.session_id.clone()),
-            // The kernel's write skills ask the host's file hooks (Loki, the sandbox's containment) first.
             (kernel::env::FILE_HOOKS_ENV.into(), "1".into()),
-            // What a running cell prints reaches the host as it is written (`cell.output`): its partial output.
             (kernel::env::RLM_STREAM_OUTPUT_ENV.into(), "1".into()),
             ("HOME".into(), config.home.display().to_string()),
         ];
@@ -1888,10 +1784,7 @@ impl Stack {
         options.snapshot_path = Some(snapshots.join(format!("{}.snapshot", lane_dir(lane))));
         options.snapshot_key = config.snapshot_key.clone();
         options.continuity = Some(ContinuityPolicy::default());
-        // The Python process itself runs inside the session's shell sandbox, so direct writes are contained too.
         options.sandbox = self.kernel_launcher(lane)?;
-        // The whole process tree is capped (ULTRON_RLM_MAX_TREE_MEMORY_MB, default twice the per-process limit) by the
-        // host watchdog; ULTRON_RLM_TREE_MEMORY_BACKEND=auto|cgroup opts into a systemd scope where one is available.
         options.tree_memory = Some(kernel::TreeMemoryOptions {
             backend: Some(
                 (config.var)(kernel::env::RLM_TREE_MEMORY_BACKEND_ENV)
@@ -2015,7 +1908,6 @@ impl Stack {
         if let Some(work) = self.work.get() {
             work.hand_over();
         }
-        // Tool calls run in this worker's MCP connections: they end with it (a successor reads them as interrupted).
         self.apis.tools.close();
         self.mcp.close();
         self.lanes.close();
@@ -2032,7 +1924,6 @@ impl Stack {
         self.agents.close();
         self.delegation.close();
         self.lanes.close();
-        // What the closing lanes counted is saved; nothing is counted after.
         self.stats.close();
     }
 
@@ -2080,7 +1971,10 @@ pub struct AgentStores {
 /// The typed-agent host of a session: its journal, definitions and usage ledger in `stores` (in memory without),
 /// the predict adapter over the session's model, `rlm` lanes as `stores` runs them, root turns charged to roots
 /// of their own. Returns the host, its ledger and its task-end channel.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal wiring helper; parameters match distinct caller inputs"
+)]
 fn typed_agents(
     config: &Config,
     stores: Option<AgentStores>,
@@ -2113,19 +2007,15 @@ fn typed_agents(
             None,
         ),
     };
-    // `nativeUsageLimitsFromEnv(process.env, settingsManager.getRootBudgetSettings())`: the session's environment
-    // and the `rootBudget` settings, whose token cap is off unless set.
     let var = config.var.clone();
     let root_budget = delegation::usage::root_budget_settings(&config.settings["rootBudget"]);
     let limits = delegation::usage::limits_from_env(&|key| var(key), &root_budget);
-    // Work refused at a root's limit is counted (`onRefused: () => sessionStats.usageLimitBlock()`).
     let refused = stats.clone();
     let usage = UsageLedger::new(
         usage_store,
         delegation::usage::UsageOptions {
             limits,
             on_refused: Some(Arc::new(move |_: &str| refused.usage_limit_block())),
-            // With the token cap off by default, the turn counts are still kept, as TypeScript's capped ledger does.
             keep_turns: true,
             ..Default::default()
         },
@@ -2141,8 +2031,6 @@ fn typed_agents(
     options.root_turns = true;
     options.refinements = refinements;
     options.pricing = Some(crate::budget_pricing::pricing(config, root_model.clone()));
-    // The session goal follows its runs' ends; the root's context control attributes each root-level task's
-    // result to the cell that returns it (collapse on return).
     let context_stack = stack.clone();
     options.on_task_end = Some(Arc::new(move |task: &Value, cost, _| {
         if let (Some(goal), Some(id)) = (goal.get(), task["id"].as_str()) {
@@ -2154,8 +2042,6 @@ fn typed_agents(
             context.task_ended(task, cost);
         }
     }));
-    // `createPredictAdapter({model: () => lane.getModel()})`: the root lane's model as of each call, its key
-    // resolved then, over the process's HTTP stack at the idle timeout the settings name now.
     let settings = config.settings_reader();
     options.predict = Some(predict_adapter(Arc::new(move |call: PredictCall<'_>| {
         let model = sync::lock(&root_model).clone();
@@ -2166,7 +2052,6 @@ fn typed_agents(
         };
         complete_once(&model, &provider, &call)
     })));
-    // Retained instances pin their lanes' kernels in the session's pool.
     let (pin_stack, unpin_stack) = (stack.clone(), stack.clone());
     options.pin_lane = Some(Arc::new(move |lane: &str, holder: &str| {
         pin_stack.upgrade().is_some_and(|stack| stack.lanes.pin(lane, holder))
@@ -2176,7 +2061,6 @@ fn typed_agents(
             stack.lanes.unpin(lane, holder);
         }
     }));
-    // `statusExtras`: the shell jobs and REPL tool calls `lane` may see, for `agents.status` and the TUI graph.
     let extras_stack = stack.clone();
     options.status_extras = Some(Arc::new(move |lane: &str| match extras_stack.upgrade() {
         Some(stack) => crate::agents::status_extras(&stack.host, stack.tool_calls(), lane),
@@ -2285,10 +2169,8 @@ pub fn child_setup(stack: &Stack, run: &ChildRun) -> ChildSetup {
         .and_then(|(provider, id)| stack.config.model(provider, id))
         .unwrap_or_else(|| stack.model.clone());
     let root_cwd = stack.config.cwd.display().to_string();
-    // The subagent's own guide (crate::wake): nothing wakes it, so it awaits what its answer needs.
     let mut system = stack.child_system(&model);
     if let Some(cwd) = run.cwd.as_deref() {
-        // A worktree subagent works in its worktree: its shell, kernel and prompt name it, not the checkout.
         let worktree_runtime = Runtime {
             config: stack.config.clone(),
             services: stack.services.clone(),
@@ -2321,8 +2203,6 @@ pub fn child_setup(stack: &Stack, run: &ChildRun) -> ChildSetup {
         );
         match host {
             Ok(host) => {
-                // Its commands run with the worktree's environment (`withShellEnv(..., laneWorkspace(lane).env)`),
-                // and its shell jobs are the session's (one `ShellJobs` for every lane).
                 let host = host.with_env(run.env.clone()).sharing_jobs(&stack.host);
                 sync::lock(&stack.workspaces).insert(
                     run.lane_name.clone(),
@@ -2337,15 +2217,11 @@ pub fn child_setup(stack: &Stack, run: &ChildRun) -> ChildSetup {
             Err(error) => system.push_str(&format!("\n\nThe worktree could not be prepared: {error}")),
         }
     }
-    // A subagent's `view_image` resizes for its own model.
     stack.images.set_model(Some(&run.lane_name), model.clone());
-    // Its context reminder: a child conversation compacts at the harness's default threshold.
     stack.context_reminders.set_limit(
         &run.lane_name,
         crate::context_reminder::lane_limit(&model, true, harness::chat::CompactionPolicy::default().reserve_tokens),
     );
-    // The model each `rlm.spawn` subagent runs on is counted (`childModel`; a subagent run as a process has no lane
-    // to ask).
     stack
         .stats
         .child_model(&run.task_id, &format!("{}/{}", model.provider, model.id));
@@ -2359,7 +2235,6 @@ pub fn child_setup(stack: &Stack, run: &ChildRun) -> ChildSetup {
 /// A subagent's agent (its lane per [`child_setup`]), the loop that runs it when it is not run durably.
 fn child_agent(stack: &Weak<Stack>, defaults: &ChildDefaults, run: &ChildRun) -> (AgentOptions, Box<dyn StreamFn>) {
     let Some(stack) = stack.upgrade() else {
-        // The session is closing: a loop without tools whose provider reports no work.
         let mut options = AgentOptions::new(defaults.model.clone());
         options.system_prompt = Some("The session ended before this subagent started.".into());
         let provider = crate::request_keys::Keyed {
@@ -2375,11 +2250,8 @@ fn child_agent(stack: &Weak<Stack>, defaults: &ChildDefaults, run: &ChildRun) ->
     options.thinking_level = setup.thinking;
     match stack.rlm(&run.lane_name) {
         Ok(tool) => options.tools = vec![Arc::new(tool) as Arc<dyn AgentTool>],
-        // The child's loop then runs without its REPL and reports the failure in its reply.
         Err(error) => options.system_prompt = Some(format!("{system}\n\nThe REPL failed to start: {error}")),
     }
-    // Its requests carry the session's stream options as the root's do (one harness in TypeScript).
-    // Each request carries its provider's key, resolved when it is sent.
     let provider = crate::request_keys::Keyed {
         inner: Provider::new().with_live_settings(stack.config.settings_reader()),
         keys: stack.keys.clone(),
@@ -2490,7 +2362,6 @@ impl CellShell {
             move |_reason: String| stop_cell_jobs(&host, &lane, &request, &list)
         };
         if self.waits.on_abort(stop).is_none() {
-            // Already aborted: the listener was dropped, so stop now.
             stop_cell_jobs(host, lane, request, &self.jobs);
         }
     }
@@ -2498,7 +2369,6 @@ impl CellShell {
 
 impl HostHandler for Router {
     fn handle(&self, kind: &str, payload: Map<String, Value>, signal: &Signal) -> Result<Value, String> {
-        // The worker answers this itself, before the host (session-worker.ts `hostHandler`).
         if kind == "rlm.find_models" {
             return Ok(self.config.find_models());
         }
@@ -2523,7 +2393,6 @@ impl HostHandler for Router {
         if Delegation::serves(kind) {
             return self.delegation.handle(kind, payload, signal);
         }
-        // runtime.py's `ext` (Pi extension functions): Pi extensions are not supported by ultron-rs.
         if kind == "ext.call" || kind == "ext.list" {
             return Err(EXTENSIONS_UNSUPPORTED.into());
         }
@@ -2537,7 +2406,6 @@ impl HostHandler for Router {
             && let Some(output) = value["output"].as_str().filter(|o| !o.is_empty())
             && let Some(progress) = sync::lock(progress).as_ref()
         {
-            // Masked, as the cell's result will be: the durable partial output reaches the transcript too.
             let output = session_mask(&self.config)(output);
             progress.output(
                 if output.ends_with('\n') {

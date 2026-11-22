@@ -97,7 +97,6 @@ impl HerdrHook {
                 return Some(json!({}));
             }
             HookEvent::SessionEnd => {
-                // Dropped: the agent is released; a later SessionStart starts a new reporter.
                 let reporter = self.reporter.lock().unwrap_or_else(PoisonError::into_inner).take();
                 drop(reporter);
                 return Some(json!({}));

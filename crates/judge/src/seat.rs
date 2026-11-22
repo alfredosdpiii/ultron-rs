@@ -345,9 +345,6 @@ impl Seat {
                 self.settings.max_calls
             )));
         }
-        // Jev's answers carry no cost: unless `judge.jev.pricePerMTok` prices their tokens, one settled unpriced in a
-        // ledger with a cost cap would stop all of the session's model work ("pricing unknown"), so under that cap
-        // an unpriced Jev is passed over.
         if backend.name() == "jev"
             && self.settings.jev_price_per_mtok.is_none()
             && let Some(cap) = self.ledger.as_ref().and_then(|l| l.cost_cap())
@@ -434,7 +431,6 @@ impl Seat {
             if let Err(failure) = &outcome {
                 receipt.error = Some(failure.message());
             }
-            // A free backend's call costs nothing, answered or not (never an unpriced call in the ledger).
             if sent && !backend.paid() {
                 receipt.spend.cost.get_or_insert(0.0);
             }

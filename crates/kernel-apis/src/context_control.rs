@@ -350,7 +350,6 @@ impl ContextControl {
 
     fn append(&self, lane: &str, custom_type: &str, data: Value) -> Result<String, String> {
         let id = self.branches.append_custom(lane, custom_type, &data)?;
-        // While a turn runs the entry waits for the next boundary; later reads in this cell must already see it.
         if self.branches.tip_id(lane)?.as_deref() != Some(id.as_str()) {
             jsrt::sync::lock(&self.pending).push((
                 lane.to_string(),
@@ -411,7 +410,6 @@ impl ContextControl {
                 pins.push(target.to_string());
             }
         }
-        // The current user message, and a tool call still waiting for its result, are never edited.
         let mut protected = HashSet::new();
         if let Some(user) = window
             .iter()
@@ -544,8 +542,8 @@ impl ContextControl {
                 let call = entry["message"]["toolCallId"].as_str().unwrap_or_default();
                 if let Some((_, owner)) = call_owner.iter().find(|(known, _)| known == call) {
                     match results_of.iter_mut().find(|(known, _)| known == owner) {
-                        Some(slot) => slot.1.push(id.clone()),
-                        None => results_of.push((owner.clone(), vec![id.clone()])),
+                        Some(slot) => slot.1.push(id),
+                        None => results_of.push((owner.clone(), vec![id])),
                     }
                 }
             }
@@ -1017,7 +1015,6 @@ impl ContextControl {
             if view.pinned(id) || view.edit(id).is_some() || view.protected.contains(id) {
                 continue;
             }
-            // Text only: an image's cost is not in its characters.
             if !message["content"]
                 .as_array()
                 .is_some_and(|parts| parts.iter().all(|part| part["type"] == "text"))

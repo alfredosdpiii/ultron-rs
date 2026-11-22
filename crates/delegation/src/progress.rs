@@ -147,10 +147,8 @@ pub fn report(messages: &[Value], now_ms: f64, elapsed_ms: f64, timeout_ms: Opti
         "elapsed_s": (elapsed_ms / 1000.0).round(),
         "cost_usd": activity.cost_usd,
         "forecast": {
-            // At most this long before its timeout ends it.
             "time_left_s_max": left_ms.map(|left| (left / 1000.0).round()),
             "cost_usd_per_min": rate,
-            // What it will have cost if it runs to its timeout at its rate so far.
             "cost_usd_at_timeout": match (rate, left_ms) {
                 (Some(rate), Some(left)) => Some(activity.cost_usd + rate * left / 60_000.0),
                 _ => None,

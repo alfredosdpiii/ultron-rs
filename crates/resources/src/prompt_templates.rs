@@ -60,7 +60,6 @@ fn number(s: &str) -> usize {
 fn placeholder(s: &str, args: &[String], all: &str) -> Option<(usize, String)> {
     let arg = |n: usize| n.checked_sub(1).and_then(|i| args.get(i)).cloned();
     if let Some(inner) = s.strip_prefix("${") {
-        // ${N:-default}, ${@:-default}, ${ARGUMENTS:-default}
         let target = match digits(inner) {
             0 if inner.starts_with("ARGUMENTS") => Some("ARGUMENTS"),
             0 if inner.starts_with('@') => Some("@"),
@@ -81,7 +80,6 @@ fn placeholder(s: &str, args: &[String], all: &str) -> Option<(usize, String)> {
                 .unwrap_or_else(|| rest[..end].to_string());
             return Some((2 + target.len() + 2 + end + 1, replacement));
         }
-        // ${@:N} and ${@:N:L}
         let rest = inner.strip_prefix("@:")?;
         let n = digits(rest);
         if n == 0 {

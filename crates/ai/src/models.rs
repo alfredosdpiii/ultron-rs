@@ -78,7 +78,6 @@ pub fn antigravity_model(id: &str) -> Option<Model> {
     } else {
         ANTIGRAVITY_DEFAULT_CONTEXT_WINDOW
     };
-    // The id carries its effort (`-low`/`-high`), so no thinking levels.
     serde_json::from_value(serde_json::json!({
         "id": id,
         "name": format!("{id} (Antigravity CLI)"),

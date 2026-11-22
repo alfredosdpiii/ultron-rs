@@ -102,7 +102,7 @@ pub enum SessionEnd {
 
 /// One change of a successful commit.
 #[derive(Clone, Debug, PartialEq)]
-#[allow(
+#[expect(
     clippy::large_enum_variant,
     reason = "short-lived publication value; boxing would only complicate matching"
 )]
@@ -308,7 +308,6 @@ impl Session {
                 return Err(error);
             }
         };
-        // A callback that caught a failed read must not commit, nor succeed as if it had.
         if let Err(error) = self.inner.assert_healthy() {
             tx.discard();
             return Err(error);
@@ -334,7 +333,6 @@ impl Session {
         let documents = match crate::transaction::adopt(&self.inner, plans, seq) {
             Ok(documents) => documents,
             Err(error) => {
-                // Storage already committed; a failed adoption leaves memory behind durable state.
                 self.inner.fail(&mut line, error.clone());
                 return Err(error);
             }
@@ -520,7 +518,6 @@ impl Inner {
         lock(&self.documents).clear();
         if !line.storage_closed {
             line.storage_closed = true;
-            // A failing backend close is nobody's to see here; the first error stays the cause.
             let _ = line.storage.close();
         }
         lock(&self.status).end = Some(SessionEnd::Failed(error));
@@ -552,7 +549,6 @@ impl Inner {
     ) -> Result<Option<Loaded>> {
         let cached = lock(&self.documents).get(address_id).cloned();
         if let Some(cached) = cached {
-            // A tracker serves only definitions of the version its value was materialized for; others reload.
             if lock(&cached).value_version == definition.version {
                 return Ok(Some(cached));
             }

@@ -26,7 +26,6 @@ pub fn expand_path(path: &str, home: &str) -> String {
         return text.into();
     }
     let cwd = std::env::current_dir().map_or_else(|_| String::new(), |dir| dir.to_string_lossy().into_owned());
-    // path.resolve: joined and normalized, without a trailing slash.
     let resolved = jsrt::path::join(&[&cwd, text]);
     match resolved.strip_suffix('/') {
         Some(stripped) if !stripped.is_empty() => stripped.into(),
@@ -42,7 +41,6 @@ pub fn home_dir() -> String {
 /// Whether a git remote URL names `owner/repo` on `host` (https, ssh or scp-like syntax; `.git` optional).
 pub fn remote_matches(url: &str, host: &str, owner: &str, repo: &str) -> bool {
     let url = jsrt::string::trim(url);
-    // JavaScript's `.` stops at line terminators.
     let full = Regex::new(
         r"^(?:https?://|ssh://|git://)(?:[^@/]+@)?([^/:]+)(?::[0-9]+)?/([^\n\r\u{2028}\u{2029}]+?)(?:\.git)?/?$",
     )
@@ -82,7 +80,6 @@ pub fn find_checkout(runner: &dyn Runner, roots: &[String], r: &PullRef) -> Opti
             continue;
         }
         let urls = result.stdout.split('\n').filter_map(|line| {
-            // line.trim().split(/\s+/)[1]
             let line = jsrt::string::trim(line);
             let mut parts = line.split(jsrt::string::is_space).filter(|part| !part.is_empty());
             if line.is_empty() {
@@ -111,7 +108,6 @@ pub fn guide_mentions(text: &str, guide_names: &[String]) -> Vec<String> {
             if jsrt::utf16::len(&needle) < 4 {
                 return false;
             }
-            // A file name must stand alone; a path is matched anywhere.
             if needle.contains('/') {
                 return lower.contains(&needle);
             }

@@ -185,7 +185,6 @@ fn migrate_v1_to_v2(entries: &mut [Value], env: &mut dyn Env) {
             entry.insert("version".into(), 2.into());
             continue;
         }
-        // Upstream checks new ids against a set it never fills, so the first candidate always wins.
         let id = Value::from(generate_id(env, |_| false));
         entry.insert("id".into(), id.clone());
         entry.insert("parentId".into(), prev.replace(id).unwrap_or(Value::Null));
@@ -204,7 +203,6 @@ fn migrate_v1_to_v2(entries: &mut [Value], env: &mut dyn Env) {
             continue;
         };
         match target {
-            // The target's id is `undefined` until it is migrated, which drops the field.
             Some(Some(id)) => {
                 entry.insert("firstKeptEntryId".into(), id);
             }
@@ -242,7 +240,6 @@ pub fn migrate_session_entries(entries: &mut [Value], env: &mut dyn Env) -> bool
         None | Some(Value::Null) => 1.0,
         Some(v) => jsrt::value::number(v),
     };
-    // NaN compares false everywhere: such a header reports a migration that changes nothing.
     if version >= CURRENT_SESSION_VERSION as f64 {
         return false;
     }
@@ -307,7 +304,6 @@ fn build_session_info(path: &str, mtime: Option<f64>) -> Option<SessionInfo> {
             break;
         }
         let chunk = buf.strip_suffix(b"\n").unwrap_or(&buf);
-        // readline with crlfDelay: Infinity ends lines at \n, \r\n and a lone \r.
         for raw in chunk.split(|b| *b == b'\r') {
             let Some(entry) = parse_line(&lossy(raw)) else { continue };
             if header.is_none() {
@@ -331,7 +327,6 @@ fn build_session_info(path: &str, mtime: Option<f64>) -> Option<SessionInfo> {
             }
             message_count += 1;
             let message = match entry.get("message") {
-                // Upstream throws reading `role` of a missing message, which drops the file.
                 None | Some(Value::Null) => return None,
                 Some(Value::Object(message)) => message,
                 Some(_) => continue,
@@ -442,7 +437,6 @@ fn move_root_session(agent_dir: &str, name: &str) -> Option<()> {
     if entry_type(&header) != Some("session") {
         return None;
     }
-    // The header cwd is used as written (not resolved); a falsy or non-string cwd is skipped.
     let cwd = header.get("cwd")?.as_str().filter(|c| !c.is_empty())?;
     let dir = join(&[agent_dir, "sessions", &encode_cwd(cwd)]);
     fs::create_dir_all(&dir).ok()?;

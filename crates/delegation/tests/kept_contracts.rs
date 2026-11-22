@@ -70,7 +70,7 @@ fn reattached(
 ) -> (Value, Option<Value>) {
     let store = Shared::default();
     let started = Arc::new(Mutex::new(false));
-    let seen = started.clone();
+    let seen = started;
     let first = host(
         &store,
         Arc::new(move |run| {

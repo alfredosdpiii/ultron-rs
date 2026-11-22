@@ -192,8 +192,6 @@ fn wrap_segments(line: &str, max_width: usize, segments: &[(usize, &str)]) -> Ve
             }
             wrap_opp = None;
         }
-        // A wide atomic segment (paste marker) is re-wrapped visually. A single grapheme cannot be split, so it
-        // stays one overflowing chunk (TS recurses forever there).
         if g_width > max_width && grapheme.graphemes(true).nth(1).is_some() {
             let sub = word_wrap_line(grapheme, max_width);
             let (last, init) = sub.split_last().expect("wordWrapLine returns at least one chunk");
@@ -208,7 +206,6 @@ fn wrap_segments(line: &str, max_width: usize, segments: &[(usize, &str)]) -> Ve
         current_width += g_width;
         if let Some(&(next_index, next)) = segments.get(i + 1) {
             let next_marker = is_paste_marker(next);
-            // After a whitespace run, or where either side is CJK.
             let ws_break = ws && (next_marker || !is_ws(next));
             let cjk_break = !ws && !is_ws(next) && ((!marker && is_cjk(grapheme)) || (!next_marker && is_cjk(next)));
             if ws_break || cjk_break {
@@ -707,7 +704,6 @@ impl Editor {
             return None;
         }
         let data = data.as_str();
-        // Ctrl+C belongs to the parent.
         if self.keys.matches(data, "tui.input.copy") {
             return None;
         }
@@ -1399,7 +1395,6 @@ impl Editor {
             } else if forward {
                 line.match_indices(ch).map(|(i, _)| i).find(|&i| i > self.cursor_col)
             } else {
-                // lastIndexOf(ch, col - 1): a match starting before the cursor, or at 0 when the cursor is at 0.
                 line.match_indices(ch)
                     .map(|(i, _)| i)
                     .filter(|&i| i < self.cursor_col || i == 0)

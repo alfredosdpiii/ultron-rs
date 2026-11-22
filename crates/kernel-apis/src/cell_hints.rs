@@ -207,7 +207,6 @@ impl LoopDetector {
         }
         let n = state.history.len();
         let repeat = n >= 3 && state.history[n - 3].0 == hash;
-        // Progress: a success that is not part of a back-and-forth ends the phase.
         if !failed && !repeat {
             state.level = 0;
         }
@@ -247,7 +246,6 @@ impl LoopDetector {
                 return trip(state, 2, "alternation", run);
             }
         }
-        // The run total spans phases: it trips once, and escalates once, per run.
         if limits.total > 0 && failed {
             let total = state.total;
             if state.total_level == 0 && state.level == 0 && total >= limits.total {
@@ -482,7 +480,6 @@ impl CellHints {
             }
         }
         if STATUS_CALLS.contains(&kind) {
-            // A status call that found the work finished is a result fetch, not a poll.
             if (kind == "shell.get" || kind == "shell.result") && !running {
                 return;
             }
@@ -502,7 +499,6 @@ impl CellHints {
         if !self.active() {
             return None;
         }
-        // A lane nothing wakes gets the hints that say to await what the answer needs.
         let next_call = !self.woken(lane);
         let (mut candidates, code, failed) = {
             let mut lanes = jsrt::sync::lock(&self.lanes);
@@ -539,13 +535,11 @@ impl CellHints {
     ) -> Vec<(&'static str, String)> {
         let events = self.options.async_events;
         let mut found: Vec<(&'static str, String)> = Vec::new();
-        // Failure streaks count every cell, whether or not a hint fires for it.
         state.failure = match (outcome.ename, state.failure.take()) {
             (Some(ename), Some((previous, count))) if previous == ename => Some((previous, count + 1)),
             (Some(ename), _) => Some((ename.to_string(), 1)),
             (None, _) => None,
         };
-        // Exact repeats only: cells that differ in numbers (paging through a list) are different work.
         let code = cell.code.trim().to_string();
         state.repeat = if outcome.ename.is_none() && !cell.bash_failed {
             match state.repeat.take() {
@@ -588,7 +582,6 @@ impl CellHints {
             ));
         }
         let waited_ms = union_ms(&cell.waits);
-        // Without wake-ups, waiting for a result the answer needs is the right move, not a mistake.
         if events && !next_call && waited_ms as f64 >= self.options.blocked_seconds * 1000.0 {
             let calls: Vec<&str> = cell
                 .wait_types

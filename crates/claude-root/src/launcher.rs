@@ -180,14 +180,12 @@ pub fn build_claude_launch(input: &LaunchInput) -> ClaudeLaunch {
             mcp_args.extend([flag.to_string(), value.clone()]);
         }
     }
-    // Subagents get the same context files and skills as the root.
     if options.no_context_files {
         mcp_args.push("--no-context-files".into());
     }
     if options.no_skills {
         mcp_args.push("--no-skills".into());
     }
-    // Claude Code ends async hooks with a print run (`-p`): only an interactive root is woken.
     let print = options.claude_args.iter().any(|a| a == "-p" || a == "--print");
     let wake_hooks = options.hooks && !print;
     if crate::guide::wakes(input.var, wake_hooks) {
@@ -205,8 +203,6 @@ pub fn build_claude_launch(input: &LaunchInput) -> ClaudeLaunch {
         for event in SESSION_HOOKS {
             hooks[event.claude_event()] = json!([hook(event)]);
         }
-        // After every rlm call, a background waiter wakes the model when work it started ends while Claude Code is
-        // idle (HookEvent::WaitEvents); a newer waiter replaces the older one. Not under TypeScript's guide.
         if crate::guide::wakes(input.var, wake_hooks) {
             let wait = HookEvent::WaitEvents;
             hooks[wait.claude_event()] = json!([{"matcher": CLAUDE_RLM_TOOL, "hooks": [{
@@ -217,7 +213,6 @@ pub fn build_claude_launch(input: &LaunchInput) -> ClaudeLaunch {
                 "timeout": wait.timeout_secs(),
             }]}]);
         }
-        // Inside herdr, the events only its agents panel needs (crate::herdr_hook).
         if herdr::detect(input.var, None).is_some() {
             for event in HERDR_HOOKS {
                 hooks[event.claude_event()] = json!([hook(event)]);
@@ -275,13 +270,9 @@ pub fn build_claude_launch(input: &LaunchInput) -> ClaudeLaunch {
     }
     args.extend(options.claude_args.iter().cloned());
     let mut env = Vec::new();
-    // A cell may wait on subagents for a long time; Claude Code's MCP tool timeout must not cut it off.
     if (input.var)("MCP_TOOL_TIMEOUT").is_none_or(|v| v.is_empty()) {
         env.push(("MCP_TOOL_TIMEOUT".to_string(), (2 * 60 * 60 * 1000).to_string()));
     }
-    // Claude Code moves an MCP call still running after 120 s to the background; the model then calls `rlm` again
-    // to wait, and every copy later returns the same result. Ultron backgrounds cells itself (cell_done events), so a
-    // call blocks until it ends unless the user chose otherwise.
     if (input.var)("CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS").is_none_or(|v| v.is_empty()) {
         env.push(("CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS".to_string(), "0".to_string()));
     }

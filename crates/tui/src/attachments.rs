@@ -127,7 +127,6 @@ impl BracketedPaste {
                 remaining,
             };
         }
-        // JS measures UTF-16 length; ASCII-dominated pastes agree.
         if self.buffer.encode_utf16().count() > self.byte_limit {
             self.active = false;
             return PasteResult::Handled {

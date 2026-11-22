@@ -201,13 +201,13 @@ fn lsp_project_root_is_the_outermost_marker_inside_the_repository() {
     let rust = &lsp::servers::SERVERS[0];
     assert_eq!(rust.name, "rust-analyzer");
     let file = member.join("src/lib.rs");
-    assert_eq!(lsp::servers::root_of(rust, &file), Some(member.clone()));
+    assert_eq!(lsp::servers::root_of(rust, &file), Some(member));
     // With a workspace manifest at the top, one server serves every member.
     std::fs::write(project.root.join("Cargo.toml"), "").unwrap();
     assert_eq!(lsp::servers::root_of(rust, &file), Some(project.root.clone()));
     // A marker above the repository is not this project's.
     std::fs::write(project.root.parent().unwrap().join("Cargo.toml"), "").unwrap();
-    assert_eq!(lsp::servers::root_of(rust, &file), Some(project.root.clone()));
+    assert_eq!(lsp::servers::root_of(rust, &file), Some(project.root));
 }
 
 #[test]

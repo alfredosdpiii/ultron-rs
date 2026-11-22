@@ -188,7 +188,7 @@ pub fn render_focus_view(
         style: style.clone(),
         now: snapshot.now,
         spinner: spinner.to_string(),
-        selected_key: selected_key.clone(),
+        selected_key,
         gutter: true,
     };
     let mut body: Vec<String> = Vec::new();
@@ -369,7 +369,6 @@ impl RlmGraphFocus {
             },
         );
         self.scroll = view.scroll;
-        // Keep the selection on a real row after the graph changed shape.
         let index = if view.row_keys.is_empty() {
             None
         } else {

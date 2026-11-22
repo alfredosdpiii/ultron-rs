@@ -127,7 +127,6 @@ impl ToolRoundNudger {
             return None;
         }
         let state = self.runs.entry(run.to_string()).or_default();
-        // A turn that answers without tools ends the streak, and so does the end of the last running child.
         state.rounds = if tool_calls == 0 {
             0
         } else if state.was_running && running == 0 {

@@ -64,9 +64,16 @@ fn num(s: &str) -> i64 {
     s.parse().unwrap_or(i64::MAX)
 }
 
+type CsiUMatch<'a> = (
+    &'a str,
+    Option<&'a str>,
+    Option<&'a str>,
+    Option<&'a str>,
+    Option<&'a str>,
+);
+
 /// `^\x1b\[(\d+)(?::(\d*))?(?::(\d+))?(?:;(\d+))?(?::(\d+))?u$` -> (cp, shifted, base, mod, event)
-#[allow(clippy::type_complexity)]
-fn match_csi_u(data: &str) -> Option<(&str, Option<&str>, Option<&str>, Option<&str>, Option<&str>)> {
+fn match_csi_u(data: &str) -> Option<CsiUMatch<'_>> {
     let body = data.strip_prefix("\x1b[")?.strip_suffix('u')?;
     let (keys, mods) = match body.split_once(';') {
         Some((k, m)) => (k, Some(m)),
@@ -76,7 +83,6 @@ fn match_csi_u(data: &str) -> Option<(&str, Option<&str>, Option<&str>, Option<&
     let cp = kp.next()?;
     let shifted = kp.next();
     let base = kp.next();
-    // Without `;mod`, a fourth `:n` group is the regex's trailing event-type group.
     let trailing_event = kp.next();
     if kp.next().is_some()
         || (trailing_event.is_some() && mods.is_some())
@@ -143,7 +149,6 @@ fn parse_kitty(data: &str) -> Option<Kitty> {
             modifier: (m - 1) as u32,
         });
     }
-    // `^\x1b\[(\d+)(?:;(\d+))?(?::(\d+))?~$`
     if let Some(body) = data.strip_prefix("\x1b[").and_then(|b| b.strip_suffix('~')) {
         let (head, ev) = match body.split_once(':') {
             Some((h, e)) => (h, Some(e)),

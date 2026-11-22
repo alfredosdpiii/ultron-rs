@@ -47,9 +47,6 @@ pub struct MouseResult {
     pub render: Option<bool>,
 }
 
-// SGR mouse reports for fullscreen overlays (`parseSgrMouse` of oh-my-pi packages/tui/src/mouse.ts). Overlays
-// that own the alternate screen turn on mouse tracking and receive `ESC [ < b ; x ; y M|m`.
-
 /// One decoded report. Rows and columns are 0-based.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SgrMouse {
@@ -81,7 +78,6 @@ pub fn parse_sgr_mouse(data: &str) -> Option<SgrMouse> {
         if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }
-        // JS `Number()` of a long digit run is a float; reports this large never come from a terminal.
         part.parse::<i64>().ok()
     };
     let button = number()?;

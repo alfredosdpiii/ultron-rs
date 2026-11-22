@@ -217,7 +217,6 @@ impl Input {
                 self.cursor = find_word_forward(&self.value, self.cursor);
             }
         } else if let Some(ch) = data.ends_with('u').then(|| decode_printable_key(&data)).flatten() {
-            // TS uses decodeKittyPrintable here: CSI-u only (those end in `u`), not modifyOtherKeys.
             self.insert_character(&ch);
         } else if !data
             .chars()

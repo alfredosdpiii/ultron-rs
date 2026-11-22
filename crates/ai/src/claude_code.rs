@@ -52,7 +52,6 @@ fn alias_model(id: &str, name: &str, max_tokens: u64) -> Model {
         "reasoning": true,
         "thinkingLevelMap": effort,
         "input": ["text", "image"],
-        // Subscription usage has no per-token price here; each response carries the CLI's own reported cost.
         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
         "contextWindow": 1_000_000,
         "maxTokens": max_tokens,

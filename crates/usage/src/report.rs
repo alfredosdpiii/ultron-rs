@@ -223,7 +223,6 @@ fn definition_name(definition: Option<&Value>) -> String {
         None | Some(Value::Null) => "unknown".to_string(),
         Some(v) => jsrt::value::string(Some(v)),
     };
-    // `.replace(/@\d+$/, "")`
     if let Some(at) = text.rfind('@') {
         let digits = &text[at + 1..];
         if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
@@ -322,7 +321,6 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
         task_by_id.insert(&task.id, task);
     }
 
-    // Entries belong to the lane whose branch they are on.
     let mut entry_by_id: HashMap<&str, &LogEntry> = HashMap::new();
     for entry in &log.entries {
         entry_by_id.insert(&entry.id, entry);
@@ -379,7 +377,6 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
         }
     }
 
-    // Mode.
     let main_entries: Vec<&LogEntry> = log
         .entries
         .iter()
@@ -438,7 +435,6 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
         .as_ref()
         .is_some_and(|s| s.since <= first_activity + COUNTER_SLACK_MS);
 
-    // Turns.
     let turns = if external {
         match &stats {
             None => {
@@ -475,7 +471,6 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
         })
     };
 
-    // Usage per lane kind and model.
     let mut buckets = Buckets {
         subscription: &subscription,
         lanes: Default::default(),
@@ -581,10 +576,6 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
         }
     }
 
-    // Durable children (ultron-rs `rlm.spawn`, kept or not, typed agents) answer in their own conversations, which are
-    // not session entries: their responses are `ultron.assistant` entries of the durable records, with model, split and
-    // cost. A conversation a task owns is a sub-agent's; another root conversation's goes to "other". Under `ultron
-    // claude` too: its server runs persistent children and typed agents' `rlm` lanes on a durable runtime of the session.
     let mut durable_other = Bucket::default();
     {
         for response in &log.durable_responses {
@@ -601,9 +592,6 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
         }
     }
 
-    // The host's usage ledger counts every response of a budget root's tree (a turn's root carries its root lane and
-    // the children it spawned; kept children are charged to `ultron-root`). What it holds beyond every response the
-    // file records (root, frame and sub-agent lanes, other conversations) is usage the records lack: totals only.
     if !external {
         let field = |root: &Value, name: &str| {
             root.get("turns")
@@ -645,7 +633,6 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
         }
     }
 
-    // Cells.
     let mut transcript: [Cells; 3] = Default::default();
     let mut other_tools: IndexMap<String, (f64, f64)> = IndexMap::new();
     let mut redactions = 0.0;
@@ -732,7 +719,6 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
         Value::Null
     };
 
-    // Depth: subagents.
     let children: Vec<&Task> = tasks.iter().filter(|t| t.definition == "rlm-child").collect();
     let child_depth = |task: &Task| -> f64 {
         let mut depth = 0.0;
@@ -754,13 +740,10 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
         |id: Option<&str>| -> f64 { id.and_then(|i| task_by_id.get(i)).map_or(0.0, |t| child_depth(t)) };
     let state =
         |items: &[&Task], states: &[&str]| items.iter().filter(|t| states.contains(&t.state.as_str())).count() as f64;
-    // verified, contradicted, unverified, invalid, unchecked, none
     let mut verdicts = [0.0; 6];
-    // passed, failed, blocked
     let mut claims = [0.0; 3];
     let mut worktrees = Vec::new();
     let mut child_by_model: IndexMap<String, ModelCount> = IndexMap::new();
-    // A durable child's model: its first response's.
     let mut durable_models: HashMap<&str, &str> = HashMap::new();
     for response in &log.durable_responses {
         if let Some(lane) = &response.lane {
@@ -828,7 +811,6 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
     let depths: Vec<f64> = children.iter().map(|c| child_depth(c)).collect();
     let max_child_depth = depths.iter().fold(0.0_f64, |m, d| m.max(*d));
 
-    // Depth: frames.
     let mut trace_by_id: IndexMap<String, &Map<String, Value>> = IndexMap::new();
     for (key, value) in log.values_of(ns::RLM_FRAMES) {
         if key == "index" {
@@ -842,7 +824,6 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
     }
     let frame_tasks: Vec<&Task> = tasks.iter().filter(|t| t.definition == "rlm-frame").collect();
     let mut traced: HashSet<&str> = HashSet::new();
-    // count, complete, incomplete, failed, cancelled, running, nested
     let mut frames = [0.0; 7];
     let mut incomplete_reasons: IndexMap<String, f64> = IndexMap::new();
     let mut budget_tokens = 0.0;
@@ -980,7 +961,6 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
         unrecorded.insert("depth.frames.calls".into(), reason.into());
     }
 
-    // Guardrails.
     let mut hints: IndexMap<String, f64> = IndexMap::new();
     if let Some(lanes) = record(record(log.value(ns::MODULE, "hints")).and_then(|h| h.get("lanes"))) {
         for lane in lanes.values() {
@@ -1020,13 +1000,10 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
         (Value::Null, Value::Null)
     };
 
-    // Memory.
     let memory = record(log.value(ns::MEMORY_STATE, "root"))
         .and_then(|m| m.get("operations"))
         .and_then(Value::as_array)
         .filter(|ops| !ops.is_empty());
-    // Automatic recalls (session-core auto_memory): not in the journal, which keeps the model's own `memory.*`
-    // calls, but on the branch as `ultron.memory` messages.
     let recalls: Vec<_> = log.entries.iter().filter_map(|entry| entry.recall).collect();
     let recall = (!recalls.is_empty()).then(|| {
         json!({

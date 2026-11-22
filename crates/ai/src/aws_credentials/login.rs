@@ -114,7 +114,6 @@ pub(super) async fn from_login(input: &super::ChainInput<'_>, profile: &super::S
     let session = profile.get("login_session").cloned().unwrap_or_default();
     let path = login_token_path(&session, input);
     let token = load_token(&path)?;
-    // `expiryTime - now <= REFRESH_THRESHOLD` (an unparsable date is NaN: never refreshed).
     match expiry(&token) {
         Some(at) if at - input.now_ms <= REFRESH_THRESHOLD_MS => refresh(input, profile, &path, token).await,
         _ => Ok(credentials(input, &token)),
@@ -148,7 +147,6 @@ async fn refresh(
             Err(CredentialError::stop(message))
         }
         Err(Failure::Other(text)) => {
-            // The SDK logs a warning and keeps the token until it expires.
             if expiry(&fresh).is_some_and(|at| at > now) {
                 return Ok(credentials(input, &fresh));
             }
@@ -193,7 +191,6 @@ async fn create_token(
     let mut attempt = 0;
     let reply = loop {
         attempt += 1;
-        // The DPoP proof is made for each attempt (the interceptor runs in `finalizeRequest`).
         let proof = dpop(path, "POST", &url, input.now_ms).map_err(|e| Failure::Other(thrown(&e.name, &e.message)))?;
         let mut headers = HeaderMap::new();
         headers.insert("content-type".into(), "application/json".into());
@@ -353,13 +350,11 @@ pub fn parse_sec1_pem(pem: &str) -> std::result::Result<(Vec<u8>, Vec<u8>), Stri
         let (tag, inner, rest) = der(contents)?;
         contents = rest;
         match tag {
-            // [0] parameters: the named curve must be prime256v1.
             0xa0 => {
                 if inner != [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07] {
                     return Err("Unsupported curve: the DPoP key must be P-256".into());
                 }
             }
-            // [1] publicKey: a BIT STRING with no unused bits holding the uncompressed point.
             0xa1 => {
                 let (bits_tag, bits, _) = der(inner)?;
                 if bits_tag != 0x03 || bits.len() != 66 || bits[0] != 0 || bits[1] != 0x04 {

@@ -92,7 +92,6 @@ pub fn child_layer(world: Arc<SharedWorld>) -> RequestLayer {
                 return Err(error);
             }
             if SWARM_KINDS.contains(&kind) {
-                // This server's root is the subagent its parent knows by its token; its own subagents go by name.
                 let name = (lane != MAIN_LANE).then(|| world.name_of_lane(lane));
                 return world.serve(name.as_deref(), kind, &payload);
             }

@@ -166,7 +166,6 @@ pub fn hex_to_rgb(hex: &str) -> Result<(u8, u8, u8), String> {
     if cleaned.chars().count() != 6 {
         return Err(invalid());
     }
-    // parseInt accepts a hex prefix ("1z" -> 1) and fails only when the first digit is invalid.
     let channel = |i: usize| -> Result<u8, String> {
         let pair: Vec<char> = cleaned.chars().skip(i).take(2).collect();
         let digits: String = pair.iter().take_while(|c| c.is_ascii_hexdigit()).collect();

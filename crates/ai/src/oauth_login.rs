@@ -107,7 +107,6 @@ pub fn parse_authorization_input(input: &str) -> AuthorizationInput {
         };
     }
     if value.contains('#') {
-        // `value.split("#", 2)`: JS drops everything after the second piece.
         let mut parts = value.split('#');
         return AuthorizationInput {
             code: parts.next().map(str::to_owned),
@@ -491,7 +490,6 @@ async fn login_codex_browser(ctx: &LoginContext<'_>) -> Result<OAuthCredential, 
         ("originator", "pi"),
     ]);
     let port = ctx.callback_port.unwrap_or(CODEX_CALLBACK_PORT);
-    // Upstream falls back to the pasted code alone when the port is taken.
     let mut server = CallbackServer::start(&ctx.callback_host, port, CallbackKind::OpenAiCodex, &state)
         .await
         .ok();
@@ -636,7 +634,6 @@ async fn login_copilot(ctx: &LoginContext<'_>) -> Result<OAuthCredential, String
         ("User-Agent", "GitHubCopilotChat/0.35.0"),
     ];
 
-    // startDeviceFlow
     let raw = fetch_copilot_json(
         ctx.transport,
         "POST",
@@ -663,7 +660,6 @@ async fn login_copilot(ctx: &LoginContext<'_>) -> Result<OAuthCredential, String
     ) else {
         return Err("Invalid device code response fields".into());
     };
-    // The URI is opened in a browser, so only http(s) URLs are trusted.
     let verification_uri = reqwest::Url::parse(verification_uri)
         .ok()
         .filter(|url| matches!(url.scheme(), "https" | "http"))
@@ -676,7 +672,6 @@ async fn login_copilot(ctx: &LoginContext<'_>) -> Result<OAuthCredential, String
         expires_in_seconds: Some(expires_in),
     });
 
-    // pollForGitHubAccessToken
     let poll_body = form_urlencode(&[
         ("client_id", COPILOT_CLIENT_ID),
         ("device_code", device_code),

@@ -646,7 +646,10 @@ fn session_core_subagent_prompt_includes_rigor_worker_rules_in_engineering_mode(
     let env = session_core::RunEnv {
         cwd: tmp.path().to_path_buf(),
         home: tmp.path().to_path_buf(),
-        var: Arc::new(|_| None),
+        var: Arc::new(|name| match name {
+            "ULTRON_HINDSIGHT_URL" | "ULTRON_MEMORANTADO_URL" | "ULTRON_LSP" => Some("off".into()),
+            _ => None,
+        }),
         package: bundled,
     };
     let cwd = tmp.path().display().to_string();
@@ -686,4 +689,47 @@ fn session_core_subagent_prompt_includes_rigor_worker_rules_in_engineering_mode(
         !root_eng.contains("You are working for the operator."),
         "worker.md is for subagents, not root"
     );
+}
+
+#[test]
+fn session_core_every_playbook_route_and_default_skill_exists_in_shipped_package() {
+    let skills_root =
+        std::fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/skills"))
+            .unwrap();
+    let playbooks_dir = skills_root.join("pstack/rigor/playbooks");
+    for (stem, _, _) in session_core::playbook_route::ROUTES {
+        let path = playbooks_dir.join(format!("{stem}.md"));
+        assert!(
+            path.is_file(),
+            "playbook_route::ROUTES names `{stem}` but {} does not exist",
+            path.display()
+        );
+    }
+    let skills_dir = skills_root.display().to_string();
+    let paths = [skills_dir.clone()];
+    let loaded = resources::skills::load_skills(&resources::skills::LoadSkillsOptions {
+        cwd: &skills_dir,
+        agent_dir: &skills_dir,
+        home: &skills_dir,
+        skill_paths: &paths,
+        include_defaults: false,
+    })
+    .skills;
+    let names: std::collections::HashSet<&str> = loaded.iter().map(|s| s.name.as_str()).collect();
+    for rule in rules(&json!({})) {
+        assert!(
+            names.contains(rule.skill.as_str()),
+            "situational_skills::DEFAULT_RULES names `{}` which is not in packages/coding-agent/skills",
+            rule.skill
+        );
+    }
+    for skill in [
+        session_core::situational_skills::MANY_FILES_SKILL,
+        session_core::situational_skills::SHIP_SKILL,
+    ] {
+        assert!(
+            names.contains(skill),
+            "situational_skills names `{skill}` which is not in packages/coding-agent/skills"
+        );
+    }
 }

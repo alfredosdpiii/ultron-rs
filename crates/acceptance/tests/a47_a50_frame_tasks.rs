@@ -513,7 +513,7 @@ fn acceptance_a49_host_a_frame_without_depth_cannot_start_nested_frames() {
 #[test]
 fn acceptance_a50_host_all_in_flight_frames_are_cancelled_and_the_map_returns_per_item_errors() {
     let never = Arc::new(AtomicBool::new(false));
-    let gate = never.clone();
+    let gate = never;
     let s = setup(move |_| Reply {
         wait: Some(gate.clone()),
         ..text("1")

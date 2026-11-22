@@ -421,7 +421,7 @@ fn session_core_opening_a_session_prunes_orphan_worktrees() {
         (config::env::OFFLINE_ENV.into(), "1".into()),
     ];
     let env = session_core::RunEnv {
-        cwd: cwd.clone(),
+        cwd,
         home: root.clone(),
         var: Arc::new(move |key| vars.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
         package: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent")),

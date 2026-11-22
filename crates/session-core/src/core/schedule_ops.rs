@@ -11,8 +11,6 @@ impl Core {
     /// Fire schedule `id` for its slot `due`: `{fired, run, schedules}` (the session's active schedules after it).
     pub(super) fn schedule_fire(&mut self, id: &str, due: i64) -> OpResult {
         let schedules = self.lane.stack.prompt_schedules().clone();
-        // The run counts only once its prompt was taken: a prompt that cannot start (no key, a journal error)
-        // leaves the slot due and the error goes back to the server, which tries again.
         let fired = schedules.fire_with(id, due, &mut |message| self.schedule_start(message.clone()))?;
         let run = fired.as_ref().map(|f| f.schedule.runs);
         Ok(Some(

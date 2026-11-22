@@ -136,7 +136,6 @@ pub fn parse_transaction(line: &str) -> Result<Vec<Value>, String> {
 pub fn serialize_transaction(writes: &[Value]) -> String {
     match writes {
         [one] => jsrt::json::stringify(one),
-        // `JSON.stringify` of the array, without copying the writes into one.
         many => format!(
             "[{}]",
             many.iter().map(jsrt::json::stringify).collect::<Vec<_>>().join(",")

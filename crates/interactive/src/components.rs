@@ -287,7 +287,6 @@ impl AssistantMessage {
         let pad = self.output_pad;
         let content = &self.message.content;
         let mut c = Container::default();
-        // The child index of each thinking run's component.
         let mut runs: Vec<(usize, usize, bool)> = Vec::new();
         if content.iter().any(visible) {
             c.children.push(Box::new(Spacer(1)));
@@ -891,7 +890,6 @@ impl ToolExecution {
             bg: Some(self.bg()),
         }
         .render(width);
-        // `Box.handleMouse`: inside the padding only.
         let content_rows = panel.len().saturating_sub(2);
         let content_width = width.saturating_sub(2).max(1);
         lines.extend(panel);

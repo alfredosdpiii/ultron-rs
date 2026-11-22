@@ -209,7 +209,7 @@ impl Env {
 
 fn open_env(storage: Controlled, gates: Gates) -> Env {
     let hold = hold(&gates);
-    let opened = open_tasks(storage.clone(), vec![hold.clone(), waiter()], OpenOptions::default()).unwrap();
+    let opened = open_tasks(storage, vec![hold.clone(), waiter()], OpenOptions::default()).unwrap();
     let root = opened.harness.root().unwrap();
     opened.harness.resume().unwrap();
     Env {
@@ -784,7 +784,7 @@ fn harness_ownership_applies_marks_found_through_an_edge_loaded_after_reopen_onc
         let target: Arc<Mutex<Option<TaskId>>> = Arc::default();
         let reopened = storage.reopen();
         fail_mark_of(&reopened, target.clone());
-        let env = open_env(reopened.clone(), gates.clone());
+        let env = open_env(reopened, gates.clone());
         let child = env.conversation(tree.child);
         let late = child
             .commit(|tx| {

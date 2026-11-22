@@ -55,7 +55,6 @@ pub fn fold_frame(message: &mut Value, frame: &Value) {
         if index < content.len() {
             content[index] = block;
         } else {
-            // A frame for a later index than the next: the blocks between are unknown here.
             content.resize(index, Value::Null);
             content.push(block);
         }

@@ -132,7 +132,6 @@ pub fn referenced_pulls(text: &str, own: u64) -> Vec<u64> {
     let mut out: Vec<u64> = Vec::new();
     for captures in REFERENCE.captures_iter(text) {
         let digits = captures.get(2).expect("group");
-        // As the TypeScript `#([0-9]{1,7})(?![A-Za-z0-9_])`: a number of at most 7 digits, not part of a word.
         let next = text[digits.end()..].chars().next();
         if digits.as_str().len() > 7 || next.is_some_and(|c| c.is_ascii_alphabetic() || c == '_') {
             continue;
@@ -319,7 +318,6 @@ pub fn promotion_delta(
 ) -> PromotionDelta {
     let files = parse_diff(pull_diff);
     let (pull_added, _) = changes(&files);
-    // A source the pull request does not carry (named for context only) is left out: its lines are not missing.
     let mut carried: Vec<(String, Counts, Counts)> = Vec::new();
     let mut recontext: HashSet<String> = HashSet::new();
     for source in sources {
@@ -376,14 +374,12 @@ pub fn promotion_delta(
         }
     }
     let touched: HashSet<String> = added.keys().chain(removed.keys()).cloned().collect();
-    // A line one source adds and a later one replaces (a chain of follow-ups) is not missing.
     let removed_by_sources = removed.clone();
     let mut read: HashSet<&str> = HashSet::new();
     let mut out: Vec<String> = Vec::new();
     let (mut carried_lines, mut carried_files, mut context_files) = (0u64, 0u64, 0u64);
     for file in &files {
         if recontext.contains(&file.new_path) || recontext.contains(&file.old_path) {
-            // Reviewed against other surrounding code: read as the pull request has it.
             context_files += 1;
             read.insert(&file.new_path);
             out.extend(file.header.iter().cloned());
@@ -393,7 +389,6 @@ pub fn promotion_delta(
             continue;
         }
         if file.hunks.is_empty() {
-            // A rename, mode change or binary file: carried when a source touches the same path.
             if touched.contains(&file.new_path) || touched.contains(&file.old_path) {
                 carried_files += 1;
             } else {
@@ -417,7 +412,6 @@ pub fn promotion_delta(
                     None => {}
                 }
             }
-            // Windows of context around each unmatched line, merged where they touch.
             let mut window: Option<(usize, usize)> = None;
             for index in open {
                 let from = index.saturating_sub(PROMOTION_CONTEXT);

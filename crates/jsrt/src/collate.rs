@@ -9,9 +9,6 @@
 //! `scripts/gen-collate-tables.mjs`) cover JavaScript whitespace, ASCII, Latin-1, General Punctuation, currency signs,
 //! combining marks and Latin Extended-A; random strings over those agree with Node 26 (ICU 78) on every pair.
 // ponytail: outside the tables, letters sort after the Latin ones by lowercase code point, other numerals after 9,
-// private use after every letter, and other symbols just before currency, where ICU orders scripts (Greek before
-// Cyrillic...), equates non-ASCII digits with ASCII ones and expands compatibility forms (`ǅ`, `ﬁ`); stacked
-// accents are not canonically reordered. No `numeric` option: review/prepare_env keeps its own numeric comparison.
 // ponytail: each comparison collects both strings' elements into a Vec; callers sort short lists.
 
 use std::cmp::Ordering;
@@ -23,8 +20,8 @@ mod tables;
 const SYMBOL: u32 = 1;
 const OTHER_SYMBOL: u32 = 1_000;
 const CURRENCY: u32 = 2_000_000;
-const DIGIT: u32 = 3_000_000; // + the digit; other numerals after 9 by code point
-const LETTER: u32 = 4_000_000; // + a LETTERS primary, below 0x10000
+const DIGIT: u32 = 3_000_000;
+const LETTER: u32 = 4_000_000;
 const OTHER_LETTER: u32 = 5_000_000;
 
 /// One collation element: primary, secondary, tertiary weight. `p == 0` is an accent (secondary only).
@@ -102,7 +99,6 @@ fn ces(c: char) -> Ces {
     } else if let Some(d) = "¹²³".chars().position(|x| x == c) {
         out.push(digit(d as u32 + 1, 3));
     } else if let Some(n) = "¼½¾".chars().position(|x| x == c) {
-        // `1⁄4`, `1⁄2`, `3⁄4`.
         let slash = symbol('\u{2044}').map_or(0, |(ranks, _, _)| u32::from(ranks[0]));
         out.push(digit(if n == 2 { 3 } else { 1 }, 3));
         out.push(ce(SYMBOL + slash, 0, 3));
@@ -125,7 +121,6 @@ fn ces(c: char) -> Ces {
                 s: 0,
                 t,
             });
-            // The accent (or a ligature's own secondary) follows the first letter, as ICU's elements do.
             if i == 0 && s != 0 {
                 out.push(Ce { p: 0, s, t: 0 });
             }
@@ -133,7 +128,6 @@ fn ces(c: char) -> Ces {
     } else if c.is_numeric() {
         out.push(ce(DIGIT + 10 + c as u32, 0, 0));
     } else if matches!(c, '\u{e000}'..='\u{f8ff}' | '\u{f0000}'..) {
-        // Private use: ICU's implicit weights, after every script.
         out.push(ce(OTHER_LETTER + 0x11_0000 + c as u32, 0, 0));
     } else if c.is_alphanumeric() {
         let lower = c.to_lowercase().next().unwrap_or(c);
@@ -250,7 +244,6 @@ mod tests {
             sorted(&["Zürich", "Zurich", "zz", "Zuerich"]),
             ["Zuerich", "Zurich", "Zürich", "zz"]
         );
-        // A decomposed accent is the precomposed one.
         assert_eq!(locale_compare("e\u{301}", "é"), Ordering::Equal);
     }
 
@@ -268,7 +261,6 @@ mod tests {
 
     #[test]
     fn jsrt_locale_compare_orders_whitespace_symbols_and_currency_like_icu() {
-        // Line terminators and tab before the space; other spaces equal it but for a tertiary difference.
         assert_eq!(
             sorted(&["a b", "a\tb", "a\nb", "a\u{a0}b", "a_b"]),
             ["a\tb", "a\nb", "a b", "a\u{a0}b", "a_b"]

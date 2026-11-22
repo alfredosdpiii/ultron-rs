@@ -236,7 +236,6 @@ impl SessionManager {
             match read_session_header(&resolved) {
                 Ok(found) => header = found,
                 Err(HeaderScanError::Io(e)) => return Err(e.into()),
-                // The bounded scan only speeds up discovery; a full load stays authoritative.
                 Err(HeaderScanError::ScanLimit) => {
                     let entries = load_entries_from_file(&*env, &resolved)?;
                     header = entries.first().filter(|e| entry_type(e) == Some("session")).cloned();
@@ -322,7 +321,6 @@ impl SessionManager {
             None => load_entries_from_file(&*self.env, &path)?,
         };
         if entries.is_empty() {
-            // An empty file gets a header; any other non-session content is left untouched.
             if fs::metadata(&path)?.len() > 0 {
                 return invalid(format!("Session file is not a valid ultron session: {path}"));
             }
@@ -522,8 +520,6 @@ impl SessionManager {
     pub fn reset_leaf(&mut self) {
         self.leaf_id = None;
     }
-
-    // ---- reads ----
 
     pub fn cwd(&self) -> &str {
         &self.cwd

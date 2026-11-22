@@ -23,7 +23,6 @@ pub fn connection_env(env: &Env, agent_dir: &Path) -> ConnectionEnv {
         env_overlay: HashMap::new(),
         client_version: config::version().to_string(),
         credentials: Some(Arc::new(CredentialStore::new(agent_dir, None))),
-        // The run's proxies (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`), never this process's own environment.
         proxy: Some(ai::net::ProxyEnv::from_lookup(&*env.var)),
         var: Some(env.var.clone()),
         ..ConnectionEnv::default()

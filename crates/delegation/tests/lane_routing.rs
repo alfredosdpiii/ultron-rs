@@ -160,7 +160,7 @@ fn delegation_busy_lane_runs_the_next_cell_in_a_side_lane_with_the_note_and_goes
 
     let (side, result) = r.run("main", "import os\n('x' in globals(), os.getpid())");
     assert_eq!(side.lane, "main-side-1");
-    let note = side.note.clone().unwrap();
+    let note = side.note.unwrap();
     // `started Ns ago`: the stuck cell's age when the call came, a whole number of seconds.
     let secs: u64 = note
         .strip_prefix(&format!("[lane main is still running {} (started ", stuck.cell))
@@ -299,7 +299,7 @@ fn delegation_a_cell_being_cancelled_is_waited_for_not_routed_around() {
         go = r.path("go"),
     );
     let cell = r.start("main", &code);
-    let (lanes, id) = (r.lanes.clone(), cell.cell.clone());
+    let (lanes, id) = (r.lanes.clone(), cell.cell);
     let cancel = std::thread::spawn(move || lanes.cancel(&id, "esc"));
     let caught = r.path("caught");
     wait_until("the cancelled cell caught it", || Path::new(&caught).exists());
@@ -362,7 +362,7 @@ fn delegation_a_cancelled_cells_waiting_call_gets_its_outcome_too() {
     // Its own call waits for it (as the rlm tool does while it cancels the cell on an abort).
     let (lanes, id) = (r.lanes.clone(), cell.cell.clone());
     let waiter = std::thread::spawn(move || lanes.wait(&id, HANG_GUARD));
-    let (lanes, id) = (r.lanes.clone(), cell.cell.clone());
+    let (lanes, id) = (r.lanes.clone(), cell.cell);
     let cancel = std::thread::spawn(move || lanes.cancel(&id, "esc"));
     // `rlm.cells` shows it being cancelled; it ends within its grace (here: when the test lets it).
     wait_until("the cell is being cancelled", || {

@@ -294,7 +294,6 @@ struct Agy {
 impl Drop for Agy {
     fn drop(&mut self) {
         if let Some(group) = self.group {
-            // Keep agy's MCP subprocesses within this agy's lifetime too.
             let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
         }
     }
@@ -341,7 +340,6 @@ impl Agy {
         if let Some(env) = env {
             command.envs(env);
         }
-        // The `ultron` relay in agy's config shadows a session server of the same name, so it must reach this bridge too.
         command
             .env("ULTRON_AGY_BRIDGE_URL", &bridge.url)
             .env("ULTRON_AGY_BRIDGE_TOKEN", &bridge.token);
@@ -458,8 +456,6 @@ impl Agy {
             let authorization = format!("Bearer {}", self.bridge.token);
             json!([{"type":"http","name":"ultron","url":self.bridge.url,"headers":[{"name":"Authorization","value":authorization}]}])
         };
-        // No `systemPrompt.append`: the backend refuses appended text that names another assistant identity, and agy
-        // reports that as 429 RESOURCE_EXHAUSTED on every turn.
         let cwd = self.workspace.as_ref().expect("workspace").path();
         let params = json!({"cwd": cwd, "mcpServers": servers});
         let session = self.request("session/new", params).await?;
@@ -614,7 +610,6 @@ impl Agy {
                     thought_signature: None,
                 };
                 content.push(AssistantContent::ToolCall(call));
-                // Token counts come only with the reply that ends the turn; mid-turn agy reports its context size.
                 let usage = Usage {
                     input: self.context_used,
                     total_tokens: self.context_used,
@@ -787,7 +782,6 @@ pub async fn stream_simple(
     };
     let ended = result.map(|(content, usage)| {
         run.output.usage = usage;
-        // Close any live-streamed blocks and emit any tool call or unstreamed block.
         let streamed_thought = run.state.thought_index;
         let streamed_text = run.state.text_index;
         if let Some(index) = streamed_thought

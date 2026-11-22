@@ -160,7 +160,7 @@ fn acceptance_a16_scope_tags_pinned_through_consolidation_and_cross_scope_merge_
     let recalls = hindsight.recalls();
     assert_eq!(
         recalls.iter().map(|r| r["tags"].clone()).collect::<Vec<_>>(),
-        vec![session.clone(), project.clone()]
+        vec![session.clone(), project]
     );
     assert!(recalls.iter().all(|r| r["tags_match"] == "exact"));
 

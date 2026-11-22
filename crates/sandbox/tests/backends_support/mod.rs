@@ -10,7 +10,7 @@
 //! already on this machine, never pulled: `ULTRON_SANDBOX_TEST_IMAGE`, else the first
 //! of [`DOCKER_CANDIDATES`] present locally (each has bash, coreutils and util-linux).
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;

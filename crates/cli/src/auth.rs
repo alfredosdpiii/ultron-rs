@@ -237,8 +237,6 @@ impl Credentials<'_> {
         if provider == ai::claude_code::PROVIDER {
             return Ok(None);
         }
-        // `apiKey.check`: a stored key, else a models.json key that is a command or whose variables are all set,
-        // else the provider's own environment key; nothing is resolved (a failing command is found by `getAuth`).
         let stored_key = self.read(provider)?.is_some_and(|s| {
             s.get("type").and_then(Value::as_str) == Some("api_key")
                 && s.get("key").and_then(Value::as_str).is_some_and(|k| !k.is_empty())
@@ -259,7 +257,6 @@ fn check(
 ) -> Result<(Value, Option<String>), String> {
     let (provider, model) = validate(parsed, Kind::Check)?;
     let invalid = |p: &str| json!({"status": "invalid", "provider": p, "reason": "invalid_state"});
-    // What a failure before the provider is known reports: the requested provider, else the model.
     let requested = provider.clone().or_else(|| model.clone()).unwrap_or_default();
     let path = config::paths::AgentPaths::new(env.agent_dir()).auth();
     if command.no_refresh
@@ -277,10 +274,7 @@ fn check(
         return Ok((invalid(&requested), None));
     }
     let provider = match &model {
-        // `resolveCliModel`, once the runtime exists: the model's provider is checked; a model that does not
-        // resolve throws, and the check reports the requested provider (else the model) as invalid.
         Some(model) => {
-            // `createAuthCheckModelRuntime` does not refresh on create: no provider counts as configured yet.
             let resolved = session_core::lane::resolve_cli_model(env, provider.as_deref(), model, false);
             match resolved.model {
                 Some(found) if resolved.error.is_none() => found.provider,
@@ -289,7 +283,6 @@ fn check(
         }
         None => requested,
     };
-    // `modelRuntime.getError()`: models.json that does not load or compose leaves every check invalid.
     if session_core::lane::registry(env).error().is_some() {
         return Ok((invalid(&provider), None));
     }
@@ -301,8 +294,6 @@ fn check(
     }
     let not_configured = json!({"status": "not_ready", "provider": provider, "reason": "credentials_not_configured"});
     if provider == ai::claude_code::PROVIDER {
-        // `claudeCodeCliAuth`: configured when a `claude` executable exists (`ULTRON_CLAUDE_CODE_BIN`, else on the
-        // run's PATH; never run), and every request resolves with no credential to print.
         let source = ai::env::EnvSource {
             lookup: &*env.var,
             exists: &|p: &std::path::Path| p.exists(),
@@ -333,7 +324,6 @@ fn check(
             Some(s) if command.no_refresh && s.get("type").and_then(Value::as_str) == Some("oauth") => {
                 s.get("access").and_then(Value::as_str).map(str::to_string)
             }
-            // Ambient AWS or Google credentials resolve to a marker, not a credential to print.
             _ => credentials
                 .resolve(&provider, None)?
                 .map(|(c, _)| c)
@@ -372,8 +362,6 @@ fn print_credential(
             .find(|(p, _)| p == id)
             .and_then(|(_, t)| t.as_str().map(str::to_string))
     };
-    // The providers whose credential is printed: `--provider` (its `--model` must resolve there), else every provider
-    // with a stored credential where `--model` resolves to a listed model (not the custom-id fallback).
     let providers: Vec<String> = match &provider {
         Some(provider) => {
             if !credentials.known(provider) {
@@ -392,7 +380,7 @@ fn print_credential(
             vec![provider.clone()]
         }
         None => {
-            let model = model.clone().unwrap_or_default();
+            let model = model.unwrap_or_default();
             let matched: Vec<String> = session_core::lane::registry(env)
                 .provider_ids()
                 .into_iter()

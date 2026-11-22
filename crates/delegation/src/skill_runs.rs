@@ -97,7 +97,6 @@ impl CellObserver for RunBook {
 
     fn cell_changed(&self, changes: &CellChanges, cwd: &Path, lane: &str) -> Vec<String> {
         let mut runs = jsrt::sync::lock(&self.runs);
-        // A cell that steps is judged by the step's own picture.
         let Some(Slot::Ready(run)) = runs.get_mut(lane) else {
             return Vec::new();
         };
@@ -299,7 +298,6 @@ impl SkillRuns {
             procedure,
             index: 0,
             tries: 0,
-            // Taken when the segment begins (`enter`).
             baseline: WorkspaceSnapshot {
                 root: self.cwd.clone(),
                 method: "walk",
@@ -365,7 +363,6 @@ impl SkillRuns {
         let rung = verdict["rung"].as_str().unwrap_or("abstained");
         let summary = json!({"rung": rung, "backend": verdict["backend"], "model": verdict["model"],
                              "answers": verdict["answers"], "reason": verdict["reason"], "pass": pass});
-        // judge::Verdict `settled`: a first or escalated answer.
         if verdict["settled"] != true {
             return Ok(Decision::Review(summary));
         }
@@ -423,7 +420,6 @@ impl SkillRuns {
         kernel::ops::fields("procedure.step", payload)?;
         let id = jsrt::payload::nonempty_string(payload.get("run"), "run")?;
         let named = jsrt::payload::nonempty_string(payload.get("segment"), "segment")?;
-        // The step holds the run while it runs (a check may take minutes); the book keeps its place.
         let mut run = {
             let mut runs = jsrt::sync::lock(&self.book.runs);
             let skill = match runs.get(request.lane) {
@@ -440,9 +436,9 @@ impl SkillRuns {
                 _ => return Err(format!("No skill run {id} is in progress on this lane")),
             };
             let stepping = Slot::Stepping {
-                id: id.clone(),
+                id,
                 skill,
-                segment: named.clone(),
+                segment: named,
                 abort: None,
             };
             match runs.insert(request.lane.to_string(), stepping) {
@@ -490,7 +486,6 @@ impl SkillRuns {
             }
             Step::Judge { .. } => {
                 let decision = self.judge(run, request, state)?;
-                // A judgment changes no files: its boundary is checked as a check's is.
                 match (decision, &segment.writes) {
                     (Decision::Pass(summary), Some(_)) => {
                         let report = self.evaluate(&segment.writes, Vec::new(), &run.baseline, request.signal)?;
@@ -526,7 +521,7 @@ impl SkillRuns {
         let result = json!({"name": segment.name, "kind": segment.kind(), "tries": run.tries, "outcome": outcome});
         match decision {
             Decision::Review(_) => {
-                run.results.push(result.clone());
+                run.results.push(result);
                 let mut status = self.finish(lane, run, "needs_review", Some("the judge is unsure".into()))?;
                 status["step"] = json!({"passed": false, "evidence": evidence});
                 Ok(status)
@@ -609,7 +604,6 @@ impl SkillRuns {
                     Some(Slot::Ready(run)) => *run,
                     _ => unreachable!("checked above"),
                 },
-                // Its step is running: the run ends as aborted when the step returns.
                 Some(Slot::Stepping {
                     id: stepping,
                     skill,

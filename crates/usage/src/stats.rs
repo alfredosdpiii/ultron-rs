@@ -32,7 +32,6 @@ pub const CELL_APIS: [&str; 16] = [
 ];
 
 static API_PATTERNS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
-    // `(?<![\w.])name\s*\(`: the regex crate has no look-behind, so the preceding character is matched instead.
     let bare = |name: &str| format!(r"(?:^|[^A-Za-z0-9_.]){name}\s*\(");
     let dotted = |name: &str| format!(r"(?:^|[^A-Za-z0-9_]){}\s*\(", name.replace('.', r"\."));
     CELL_APIS

@@ -48,7 +48,6 @@ impl CertificateSource {
                 "Both `useDefaultCertificateConfig` and `certificateConfigLocation` cannot be provided.",
             ));
         }
-        // `certificateConfigLocation ?? ''`: an empty location searches the defaults.
         let location = location.filter(|v| !v.is_null()).map(|v| jsrt::value::string(Some(v)));
         Ok(CertificateSource {
             location: location.unwrap_or_default(),

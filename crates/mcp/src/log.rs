@@ -28,7 +28,6 @@ pub fn format_log_message(server: &str, params: Option<&Value>, now_ms: i64) -> 
         .unwrap_or_default();
     let data = match message.get("data") {
         Some(Value::String(text)) => text.clone(),
-        // `JSON.stringify(undefined)` is undefined, so `String(data)`.
         None => "undefined".into(),
         Some(other) => other.to_string(),
     };
@@ -64,7 +63,6 @@ impl ServerLog {
             *size = Some(current_size(&self.path));
         }
         if size.unwrap_or(0) > MAX_LOG_BYTES {
-            // Another process may have rotated it already; check before renaming.
             if current_size(&self.path) > MAX_LOG_BYTES {
                 let mut rotated = self.path.clone().into_os_string();
                 rotated.push(".1");

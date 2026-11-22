@@ -24,14 +24,16 @@ fn dos_date_time(at: LocalDateTime) -> (u16, u16) {
 
 fn deflate_raw(data: &[u8]) -> Vec<u8> {
     let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
-    // Writing to a Vec cannot fail.
     let _ = encoder.write_all(data);
     encoder.finish().unwrap_or_default()
 }
 
-#[allow(clippy::cast_possible_truncation)]
 fn u32_len(len: usize) -> u32 {
-    len as u32
+    u32::try_from(len).unwrap_or(u32::MAX)
+}
+
+fn u16_len(len: usize) -> u16 {
+    u16::try_from(len).unwrap_or(u16::MAX)
 }
 
 /// One zip with each `(name, data)` entry deflated, UTF-8 names flagged, and a central directory.
@@ -43,8 +45,7 @@ pub fn create_zip_archive(entries: &[(&str, &[u8])], at: LocalDateTime) -> Vec<u
         let compressed = deflate_raw(data);
         let checksum = crc32fast::hash(data);
         let name = name.as_bytes();
-        #[allow(clippy::cast_possible_truncation)]
-        let name_len = name.len() as u16;
+        let name_len = u16_len(name.len());
         let offset = u32_len(files.len());
 
         files.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
@@ -67,13 +68,11 @@ pub fn create_zip_archive(entries: &[(&str, &[u8])], at: LocalDateTime) -> Vec<u
             directory.extend_from_slice(&long.to_le_bytes());
         }
         directory.extend_from_slice(&name_len.to_le_bytes());
-        // Extra and comment lengths, disk number, internal and external attributes.
         directory.extend_from_slice(&[0; 12]);
         directory.extend_from_slice(&offset.to_le_bytes());
         directory.extend_from_slice(name);
     }
-    #[allow(clippy::cast_possible_truncation)]
-    let count = entries.len() as u16;
+    let count = u16_len(entries.len());
     let central_offset = u32_len(files.len());
     let central_len = u32_len(directory.len());
     files.extend_from_slice(&directory);

@@ -279,7 +279,6 @@ impl Editor {
             SuggestionsJob::Background(job) => {
                 let signal = Arc::new(AbortSignal::default());
                 let Some(id) = self.worker.submit(job, Arc::clone(&signal)) else {
-                    // No worker thread: nothing answers, as when `fd` cannot run.
                     self.apply_answer(None, force, explicit_tab);
                     return;
                 };
@@ -371,7 +370,6 @@ impl Editor {
             list.min_primary_column_width = Some(12);
             list.max_primary_column_width = Some(32);
         }
-        // Exact value match wins, else the first value starting with the prefix (case-sensitive).
         if !suggestions.prefix.is_empty() {
             let items = &suggestions.items;
             let best = items
@@ -446,7 +444,6 @@ impl Editor {
             if self.apply_selected() {
                 self.cancel_autocomplete();
                 if slash {
-                    // Enter on a slash command submits it.
                     return true;
                 }
                 self.changed();

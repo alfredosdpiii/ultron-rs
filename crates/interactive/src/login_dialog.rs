@@ -117,7 +117,6 @@ impl LoginDialog {
                 self.line(theme.fg(Fg::Dim, &link(verification_uri, "Ctrl+click to open")));
                 self.items.push(Item::Spacer);
                 self.line(theme.fg(Fg::Warning, &format!("Enter code: {user_code}")));
-                // `showWaiting("Waiting for authentication...")` follows every device code.
                 self.items.push(Item::Spacer);
                 self.line(theme.fg(Fg::Dim, "Waiting for authentication..."));
                 let hint = self.hint(theme, "tui.select.cancel", "to cancel");
@@ -153,7 +152,6 @@ impl LoginDialog {
                 });
             }
             LoginPrompt::ManualCode { message } => {
-                // A pasted code or redirect URL is not a secret, whatever an earlier prompt asked for.
                 if self.secret {
                     self.reset_input(false);
                 }
@@ -273,7 +271,6 @@ impl LoginDialog {
         let text = |s: &str| Text::new(s, 1, 0, None).render(width);
         let mut lines = vec![border.clone()];
         if let Some(select) = &self.select {
-            // `ExtensionSelectorComponent` in the dialog's slot.
             lines.push(String::new());
             lines.extend(text(&theme.fg(Fg::Accent, &bold(&select.message))));
             lines.push(String::new());

@@ -200,8 +200,8 @@ fn acceptance_a42_inspect_correct_and_stop_one_childs_subtree_while_the_sibling_
     let expected: HashMap<String, Value> = [
         (a.clone(), json!("cancelled")),
         (b.clone(), json!("completed")),
-        (grandchild.clone(), json!("cancelled")),
-        (great.clone(), json!("cancelled")),
+        (grandchild, json!("cancelled")),
+        (great, json!("cancelled")),
     ]
     .into_iter()
     .collect();

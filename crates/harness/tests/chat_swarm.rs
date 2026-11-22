@@ -106,7 +106,7 @@ fn spawn_kept(setup: &Setup, handle: Arc<Mutex<Option<Value>>>) {
                 signal,
             )
             .unwrap()?;
-        *handle.lock().unwrap() = Some(spawned.clone());
+        *handle.lock().unwrap() = Some(spawned);
         Ok(CellResult::text(collected.to_string()))
     });
 }

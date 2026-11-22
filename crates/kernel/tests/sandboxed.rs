@@ -345,7 +345,7 @@ fn kernel_sandbox_snapshot_restore_and_continuity_work_in_the_session_dir() {
         // spawning thread).
         let mut options = options(&tree, launcher(&tree, Mode::Required, Some(mechanism)));
         options.continuity = Some(ContinuityPolicy::default());
-        let kernel = Kernel::new(options, host_handler(tree.project.clone())).unwrap();
+        let kernel = Kernel::new(options, host_handler(tree.project)).unwrap();
         value(&kernel, "total = 41");
         wait_until("checkpoint", || {
             kernel

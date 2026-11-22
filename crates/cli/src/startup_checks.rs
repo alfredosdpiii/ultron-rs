@@ -56,9 +56,6 @@ pub fn startup_changelog(env: &Env) -> Option<StartupNotice> {
     let last = settings.last_changelog_version();
     let shown =
         interactive::startup_notices::changelog_for_display(content.as_deref(), last.as_deref(), version, false);
-    // interactive-mode.ts also records the version on a first run (no `lastChangelogVersion`); the shipped TUI
-    // (client-tui.ts) never writes the setting, and its recorded settings.json has no such key, so a first run here
-    // records nothing either. Once a version is recorded, newer entries show and the version moves on.
     if let Some(save) = shown.save.as_ref().filter(|_| last.is_some()) {
         settings.set_last_changelog_version(save);
     }
@@ -89,7 +86,6 @@ pub fn subscription_auth_warns(env: &Env, provider: &str) -> bool {
         .into_iter()
         .find(|(id, _)| id == provider)
         .and_then(|(_, credential)| credential["type"].as_str().map(str::to_string));
-    // An OAuth credential is the subscription itself; reading its key could refresh it over the network.
     if stored_type.as_deref() == Some("oauth") {
         return true;
     }

@@ -204,8 +204,8 @@ fn run(recorded: &Value) {
         project_trusted: recorded["trusted"] == true,
         servers: None,
         env: ConnectionEnv {
-            cwd: cwd.clone(),
-            home: base.clone(),
+            cwd,
+            home: base,
             env_overlay,
             client_version: config::version().to_string(),
             log: Some(Arc::new(ServerLog::new(agent.join("mcp.log")))),

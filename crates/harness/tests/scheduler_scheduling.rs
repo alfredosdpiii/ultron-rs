@@ -51,7 +51,7 @@ fn harness_scheduling_fails_the_harness_on_a_failed_reservation_commit_and_reope
         assert_eq!(runs.load(Ordering::SeqCst), 0);
         opened.harness.close().unwrap();
 
-        let reopened = open_tasks(storage.reopen(), vec![once.clone()], OpenOptions::default()).unwrap();
+        let reopened = open_tasks(storage.reopen(), vec![once], OpenOptions::default()).unwrap();
         reopened.harness.resume().unwrap();
         let receipt = reopened.harness.wait_for_task(id, &bg()).unwrap();
         assert_eq!(outcome(&receipt)["status"], "completed");
@@ -88,7 +88,7 @@ fn harness_scheduling_fails_the_harness_instead_of_running_a_task_again_when_its
         );
         opened.harness.close().unwrap();
         // Reopening recovers the task as after a crash: still running, so its phase runs again.
-        let reopened = open_tasks(storage.reopen(), vec![throws.clone()], OpenOptions::default()).unwrap();
+        let reopened = open_tasks(storage.reopen(), vec![throws], OpenOptions::default()).unwrap();
         reopened.harness.resume().unwrap();
         assert_eq!(
             outcome(&reopened.harness.wait_for_task(id, &bg()).unwrap()),
@@ -122,7 +122,7 @@ fn harness_scheduling_waits_for_harness_and_conversation_idleness() {
             gate.resolve();
         };
         let (opened, root, _) = open_root(backend, vec![gated_task.clone()], OpenOptions::default());
-        let harness = opened.harness.clone();
+        let harness = opened.harness;
         harness.wait_for_idle(&bg()).unwrap();
         // wait_for_idle enables scheduling, as upstream; pause what it started by creating work only now.
         let other = harness.create_conversation(ConversationOwnership::Ownerless).unwrap();
@@ -245,7 +245,7 @@ fn harness_scheduling_rejects_task_waits_cancelled_or_closed_while_queued_on_the
         let gate = Deferred::new();
         let blocking = gated("test.wait-close", gate.clone());
         let (opened, root, storage) = open_root(backend, vec![blocking.clone()], OpenOptions::default());
-        let harness = opened.harness.clone();
+        let harness = opened.harness;
         let id = start(&root, &blocking, false);
         let blocker = |harness: &Harness| {
             let harness = harness.clone();
@@ -544,7 +544,7 @@ fn harness_abort_does_not_signal_a_running_abort_handler_when_aborted_again() {
             },
         );
         let (opened, root, _) = open_root(backend, vec![run.clone()], OpenOptions::default());
-        let harness = opened.harness.clone();
+        let harness = opened.harness;
         let id = start(&root, &run, false);
         harness.resume().unwrap();
         // The phase handler itself, not only the `running` record (TS: `await flush()`): a mark committed before the
@@ -643,7 +643,7 @@ fn harness_abort_mark_wins_over_a_fault_that_races_it() {
             // The mark is in storage but not committed when the handler throws; the fault commit queues behind it.
             Err(HarnessError::msg("would fault"))
         });
-        let opened = open_tasks(storage.clone(), vec![racing.clone()], OpenOptions::default()).unwrap();
+        let opened = open_tasks(storage, vec![racing.clone()], OpenOptions::default()).unwrap();
         *harness_ref.lock().unwrap() = Some(opened.harness.clone());
         let root = opened.harness.root().unwrap();
         let id = start(&root, &racing, false);

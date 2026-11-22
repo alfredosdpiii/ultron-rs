@@ -20,7 +20,6 @@ pub fn run_check(check: &CommandCheck, launcher: Option<&sandbox::Launcher>) -> 
     let mut command = match launcher {
         Some(launcher) => {
             let cwd = std::fs::canonicalize(&check.cwd).unwrap_or_else(|_| check.cwd.clone());
-            // A worktree child's directory is outside the session's project: it is writable for its checks too.
             let widened = (!launcher.policy.may_write(&cwd)).then(|| {
                 let mut policy = launcher.policy.clone();
                 policy.writable.push(cwd);
@@ -44,7 +43,6 @@ pub fn run_check(check: &CommandCheck, launcher: Option<&sandbox::Launcher>) -> 
         }
     };
     command.envs(check.env.iter().map(|(key, value)| (key, value)));
-    // A child server's verdict token authenticates only its own `rlm.finish`; checks never see it.
     command.env_remove(host::PARENT_TOKEN_ENV);
     run_command(command, check.timeout, &check.signal)
 }

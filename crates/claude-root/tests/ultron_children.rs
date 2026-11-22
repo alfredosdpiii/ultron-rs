@@ -427,7 +427,7 @@ fn claude_root_ultron_child_collect_waits_for_a_grandchild_and_its_guide_has_no_
     let root = Root::new();
     let gate = root.path("w/collecting");
     let child_cell = collect_then_gate("h = await rlm.spawn('GRAND-BRIEF: answer', name='grand')", &gate);
-    let waits = gate.clone();
+    let waits = gate;
     let (port, requests) = fake_provider(Arc::new(move |body: &Value| {
         let first = first_user(body);
         if first.contains("GRAND-BRIEF") {

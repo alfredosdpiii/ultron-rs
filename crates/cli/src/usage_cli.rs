@@ -240,7 +240,6 @@ fn command(rest: &[String], env: &Env, lines: &mut Vec<String>) -> Result<(), Fa
     };
     let cwd = env.cwd.display().to_string();
     let error = |e: LogError| Failure::Error(e.message().to_string());
-    // Costs of providers this runtime reaches through a subscription login are notional, as in `/usage`.
     let subscription = session_core::lane::subscription_providers(env);
     if let Some(last) = options.last {
         let mut reports = Vec::new();

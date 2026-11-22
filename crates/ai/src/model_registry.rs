@@ -181,7 +181,6 @@ fn options_with(
         return Ok(None);
     };
     let env = stored.and_then(|s| s.env.as_ref());
-    // Model header templates see the stored env under the request's own (`{ ...resolution.env, ...overrides.env }`).
     let model_env = match (env, options.base.env.as_ref()) {
         (Some(stored), Some(own)) => {
             let mut merged = stored.clone();
@@ -202,7 +201,6 @@ fn options_with(
     }
     let mut options = options.clone();
     options.base.headers = merge_headers(auth.as_ref(), options.base.headers.as_ref());
-    // `{ ...(resolution.env ?? {}), ...(options?.env ?? {}) }`.
     if let Some(env) = env {
         let mut merged = env.clone();
         merged.extend(options.base.env.take().unwrap_or_default());
@@ -383,7 +381,6 @@ impl ModelRegistry {
     pub fn find(&self, provider: &str, id: &str) -> Option<Model> {
         match self.provider_config(provider) {
             Some(config) => self.models(provider).into_iter().find(|m| m.id == id).or_else(|| {
-                // A provider whose catalog takes any id (claude-subscription): models.json applies to that model.
                 let dynamic = crate::models::builtin_model(provider, id)?;
                 compose_over(provider, std::iter::once(dynamic), config)
                     .ok()?
@@ -539,7 +536,6 @@ impl ModelRegistry {
                 })
                 .unwrap_or_default()
         };
-        // `rawModelHeaders`: the override's headers under the definition's (object spread).
         let mut model_headers: Vec<(String, String)> = strings(
             config
                 .get("modelOverrides")

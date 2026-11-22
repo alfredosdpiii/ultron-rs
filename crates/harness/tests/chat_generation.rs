@@ -1123,7 +1123,7 @@ fn harness_chat_generation_recovery_reruns_preparation_interrupted_before_its_co
         let mut setup = Setup::new();
         let reached = Deferred::new();
         let block = Arc::new(Mutex::new(true));
-        let (signal_reached, blocking) = (reached.clone(), block.clone());
+        let (signal_reached, blocking) = (reached.clone(), block);
         setup.sections = Some(Arc::new(move |_, signal| {
             let first = std::mem::replace(&mut *blocking.lock().unwrap(), false);
             if first {

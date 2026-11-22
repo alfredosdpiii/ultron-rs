@@ -283,7 +283,6 @@ impl Shared {
             self.wait_reconnected();
             let connection = self.connection();
             if connection.is_closed() && !self.lost_reported.load(Ordering::SeqCst) && Instant::now() < deadline {
-                // Not sent: wait for the supervisor to reconnect.
                 self.wait_link_change();
                 continue;
             }
@@ -291,7 +290,6 @@ impl Shared {
                 .session_target()
                 .and_then(|session| connection.call(session, service, member, args.clone()));
             match result {
-                // Refused before it reached a worker: send it again once the link rejoined.
                 Err(CallError::Server(error))
                     if error.code == protocol::names::RECONNECTING_CODE && Instant::now() < deadline =>
                 {
@@ -374,8 +372,6 @@ impl Shared {
             .wait_attachment(|a| a.is_some_and(|a| a.session_id == id))
             .map_err(crate::lost::message)?;
         self.subscribe(&connection, id)?;
-        // The session's worker starts without the kept operation: run it (best effort; the caller keeps it again
-        // when it changes).
         let kept = self.kept_op.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(op) = kept {
             let _ = connection
@@ -412,7 +408,6 @@ impl Shared {
                 .map_err(crate::lost::message)?;
             subscriptions.push(subscription.clone());
         }
-        // The session's name and run health, as they change (the Rust-only operations service).
         let ops = connection
             .subscribe(session, protocol::names::SESSION_OPS)
             .map_err(crate::lost::message)?;
@@ -531,7 +526,6 @@ impl Shared {
                 }
             }
         };
-        // A link that gave up stays `Lost`: the supervisor tries again (the link never gives up on its session).
         self.set_phase(if result.is_ok() {
             LinkPhase::Attached
         } else {
@@ -560,7 +554,6 @@ impl Shared {
             let connection =
                 Connection::connect(&started.route.path, &started.route.server_id).map_err(crate::lost::message)?;
             let old = self.replace_connection(connection, started.stop);
-            // The old generation already closed when it lost its coordinator; this only waits for that.
             if let Some(old) = old {
                 std::thread::spawn(move || old());
             }
@@ -874,7 +867,6 @@ impl SessionLink {
             }
         }
         let result = self.shared.attach(id);
-        // A recovery under way sets the phase when it ends.
         let mut state = self.shared.lock();
         if !state.phase.recovering() {
             state.phase = if result.is_ok() {
@@ -922,7 +914,6 @@ impl SessionLink {
     pub fn close(mut self, remove_created: bool) {
         self.shared.closing.store(true, Ordering::SeqCst);
         self.shared.changed.notify_all();
-        // A recovery under way is abandoned (the reconnector stops and disconnects).
         if self.shared.phase() == LinkPhase::RadiusRecovering {
             self.shared.stop_radius_reconnector();
         }

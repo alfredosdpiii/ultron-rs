@@ -444,8 +444,6 @@ impl Engine {
         let stream: ai::http::BoxFuture<'_, Result<AssistantMessage, String>> = match &self.stream {
             Some(stream) => Box::pin(async move { Ok(stream.stream(&self.model, context, options, sink).await) }),
             None => {
-                // A stored OAuth credential may name the request's base URL and headers; models.json headers (and
-                // `authHeader`'s bearer) go out under the frame's own, as the session's provider sends them.
                 let (routed, prepared) = ai::model_registry::prepare_request(&self.model, options)?;
                 Box::pin(async move {
                     let model = routed.as_ref().unwrap_or(&self.model);
@@ -454,8 +452,6 @@ impl Engine {
                 })
             }
         };
-        // The request ends at the deadline or as soon as the frame is cancelled (the root turn's abort cancels
-        // every in-flight frame); either way nothing is charged.
         let (abort, aborted) = tokio::sync::oneshot::channel::<()>();
         let Some(listener) = signal.on_abort(move |_| {
             let _ = abort.send(());

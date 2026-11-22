@@ -78,7 +78,6 @@ impl Progress {
                 state.stuck = false;
                 Change::Ended(id)
             }
-            // Name changes and usage totals are not the run's own progress.
             Some("session_name" | "usage") | None => Change::None,
             Some(_) if state.run.is_some() => {
                 state.last_progress = now;

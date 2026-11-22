@@ -112,7 +112,6 @@ struct Command {
 }
 
 const COMMANDS: &[Command] = &[
-    // `runExperimentalCommand` (PI_EXPERIMENTAL=1): `ultron server` and `ultron client`.
     Command {
         names: &[],
         package_files: false,
@@ -134,7 +133,6 @@ const COMMANDS: &[Command] = &[
         typescript: false,
         run: |argv, env, out, err| Some(instances::durable(&argv[1..], env, out, err)),
     },
-    // `ultron trace check <file>`: the resets of a request trace (`ULTRON_REQUEST_TRACE`).
     Command {
         names: &["trace"],
         package_files: false,
@@ -177,7 +175,6 @@ const COMMANDS: &[Command] = &[
         typescript: true,
         run: |argv, env, out, err| usage_cli::run(argv, env, out, err).map(Ok),
     },
-    // `ultron mcp add|remove|list|login|logout`; bare `ultron mcp` is Ultron's own MCP server (below).
     Command {
         names: &["mcp"],
         package_files: false,
@@ -216,7 +213,6 @@ const COMMANDS: &[Command] = &[
             Some(Ok(claude_root::cli::exit_code(result, err)))
         },
     },
-    // `ultron memory import|migrate ...` only: a bare `ultron memory` stays a prompt, as in TypeScript.
     Command {
         names: &["memory"],
         package_files: false,
@@ -227,7 +223,6 @@ const COMMANDS: &[Command] = &[
                 .then(|| memory_cli::run(&argv[1..], env, out, err))
         },
     },
-    // `ultron schedule list|wake|cancel <id>|--help` only: any other `ultron schedule ...` stays a prompt.
     Command {
         names: &["schedule"],
         package_files: false,
@@ -235,8 +230,6 @@ const COMMANDS: &[Command] = &[
         typescript: false,
         run: |argv, env, out, err| schedule_cli::run(&argv[1..], env, out, err),
     },
-    // `ultron service install|uninstall|status|restart|run|--help` only: any other `ultron service ...` stays a
-    // prompt.
     Command {
         names: &["service"],
         package_files: false,
@@ -244,7 +237,6 @@ const COMMANDS: &[Command] = &[
         typescript: false,
         run: |argv, env, out, err| service_cli::run(&argv[1..], env, out, err),
     },
-    // `ultron session send <id> <message|->` only: any other `ultron session ...` stays a prompt.
     Command {
         names: &["session"],
         package_files: false,
@@ -252,7 +244,6 @@ const COMMANDS: &[Command] = &[
         typescript: false,
         run: |argv, env, out, err| session_cli::run(&argv[1..], env, out, err),
     },
-    // `ultron judge bench|--help` only: any other `ultron judge ...` stays a prompt.
     Command {
         names: &["judge"],
         package_files: false,
@@ -260,7 +251,6 @@ const COMMANDS: &[Command] = &[
         typescript: false,
         run: |argv, env, out, err| judge_cli::run(&argv[1..], env, out, err),
     },
-    // `ultron optimize judge|memory|autoreview|--help` only: any other `ultron optimize ...` stays a prompt.
     Command {
         names: &["optimize"],
         package_files: false,
@@ -268,7 +258,6 @@ const COMMANDS: &[Command] = &[
         typescript: false,
         run: |argv, env, out, err| optimize_cli::run(&argv[1..], env, out, err),
     },
-    // `ultron skills proposals|show|approve|reject` only: any other `ultron skills ...` stays a prompt.
     Command {
         names: &["skills"],
         package_files: false,
@@ -294,7 +283,6 @@ const COMMANDS: &[Command] = &[
 
 fn run_inner(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
     let io = |e: std::io::Error| e.to_string();
-    // main.ts: `--offline` (or PI_OFFLINE) holds for every command, the subcommands included.
     let mut env = startup::offline_env(argv, env);
     let mut proxied = false;
     let first = argv.first().map(String::as_str);
@@ -317,7 +305,6 @@ fn run_inner(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Writ
     if let Some(name) = first.filter(|name| COMMANDS.iter().any(|c| c.typescript && c.names.contains(name))) {
         return Err(format!("`ultron {name}` is not implemented in the Rust build yet"));
     }
-    // `ultron acp [options]`: an Agent Client Protocol agent on stdio (crate::acp); the options are the session's.
     let acp = argv.first().is_some_and(|a| a == "acp");
     let mut parsed = parse_args(if acp { &argv[1..] } else { argv });
     for d in &parsed.diagnostics {
@@ -372,12 +359,8 @@ fn run_inner(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Writ
             .map_err(io)?;
         return Ok(0);
     }
-    // Everything below runs a session (or reads its files): the package files must exist from here on.
     package_files(env)?;
-    // The native worker command starts here (main.ts `shouldRunUltronWorker`).
     print_mode::trace_startup(env, "cli.native");
-    // `--claude`: the root lane runs on Claude, through the claude-subscription provider (worker-root.ts
-    // `prepareClaudeRoot`'s selection; crates/claude-root `subscription_root`).
     let claude_setting = claude_root::settings::ClaudeCodeSettings::load(&env.cwd, &env.agent_dir()).root;
     let mut rooted = None;
     if parsed.claude || session_core::core::claude_root_requested(&*env.var) || claude_setting {
@@ -389,8 +372,6 @@ fn run_inner(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Writ
             Ok(selection) => {
                 parsed.model = Some(selection.model);
                 parsed.provider = selection.provider;
-                // `ULTRON_ROOT=claude` for the session workers (TypeScript sets it in `process.env`): a resumed
-                // session's lane moves to the root model there (session-worker.ts).
                 rooted = Some(startup::overlay(
                     env,
                     vec![(session_core::core::ROOT_ENV.to_string(), "claude".to_string())],
@@ -427,11 +408,9 @@ fn run_inner(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Writ
         writeln!(err, "Error: @file arguments are not supported in RPC mode").map_err(io)?;
         return Ok(1);
     }
-    // An interactive start with no usable model offers the guided setup; other modes are never prompted.
     if !rpc_mode && !setup::offer_setup_on_first_run(&parsed, env, out) {
         return Ok(0);
     }
-    // RPC reads its commands from stdin, so it is not read as a prompt.
     let stdin = startup::read_piped_stdin(&parsed);
     for warning in startup::tool_flag_warnings(&parsed)
         .into_iter()
@@ -442,7 +421,6 @@ fn run_inner(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Writ
     match native_run(&parsed, env, stdin, out, err) {
         Ok(code) => Ok(code),
         Err(NativeError::Exit(message)) => {
-            // processFileArguments reports and exits on its own (no setup hint).
             writeln!(err, "Error: {message}").map_err(io)?;
             Ok(1)
         }
@@ -504,7 +482,6 @@ fn native_run(
     });
     let runs_tui = !rpc_mode && prompt.is_none() && !parsed.print && terminal;
     let target = match selection {
-        // On a terminal, `ultron -r` picks one of this directory's sessions and opens it in the TUI.
         Selection::List(sessions) if runs_tui => {
             let stdin = std::io::stdin();
             match interactive::pick_session(&sessions, &mut std::io::stdout(), &mut stdin.lock()) {
@@ -536,7 +513,6 @@ fn native_run(
             .map_err(io)?;
         return Ok(0);
     };
-    // Neither `-p` nor `--mode json`: the answer streams to stdout as it arrives (`onEvent` text deltas).
     let streaming = !parsed.print && !json_mode;
     let on_event: Option<client::runtime::EventListener> = streaming.then(|| {
         std::sync::Arc::new(|event: &serde_json::Value| {
@@ -550,14 +526,12 @@ fn native_run(
             }
         }) as client::runtime::EventListener
     });
-    // herdr's agents panel: `working` for the run, then its end's state, released when this returns.
     let herdr = herdr_report::PrintReport::start(env);
     let prompted = print_mode::run_prompt(parsed, env, prompt, target, on_event);
     if let Some(herdr) = &herdr {
         herdr.finish(prompted.as_ref().map(|p| p.text.as_str()).map_err(String::as_str));
     }
     let prompted = prompted?;
-    // A Claude turn that switched to API credits (or back) says so, beside the answer.
     for notice in &prompted.notices {
         writeln!(err, "{notice}").map_err(io)?;
     }
@@ -625,8 +599,6 @@ fn native_command(parsed: &Args, env: &Env, prompted: bool, terminal: bool) -> R
     print_mode::trace_startup(env, "cli.list-sessions");
     let repo = SessionRepo::new(&session_dir, SystemClock::shared());
     let needs_sessions = parsed.continue_ || parsed.resume || parsed.session.is_some() || parsed.fork.is_some();
-    // A client of the durable instance selects among all of the instance's sessions, wherever they were started
-    // (`ultron-s` runs its sessions in the home directory; herdr resumes them as `ultron durable --session <id>`).
     let durable = durable_client::is_client(env);
     let sessions = match (needs_sessions, durable) {
         (false, _) => Vec::new(),
@@ -660,7 +632,6 @@ fn native_command(parsed: &Args, env: &Env, prompted: bool, terminal: bool) -> R
         if !prompted {
             return Ok(Selection::List(listed));
         }
-        // `selectedSessionId`: on a terminal the user picks one (`selectInteractiveSession`); otherwise the newest.
         let picked = if terminal {
             let stdin = std::io::stdin();
             interactive::pick_session(&listed, &mut std::io::stdout(), &mut stdin.lock())
@@ -673,8 +644,6 @@ fn native_command(parsed: &Args, env: &Env, prompted: bool, terminal: bool) -> R
         }));
     }
     if parsed.continue_ {
-        // The newest format-4 session of this directory (a durable client's: of the instance, as `ultron-s -c`),
-        // else the newest session the server lists (any cwd).
         if let Some(newest) = sessions.first() {
             return open_or_new(newest.id.clone());
         }

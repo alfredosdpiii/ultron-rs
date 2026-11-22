@@ -30,7 +30,7 @@ fn delegation_spawn_context_retrieve_names_the_parent_session_in_the_brief() {
     let prompts: Arc<Mutex<Vec<String>>> = Arc::default();
     let seen = prompts.clone();
     let delegation = host(Arc::new(move |run| {
-        seen.lock().unwrap().push(run.prompt.clone());
+        seen.lock().unwrap().push(run.prompt);
         Ok("done".into())
     }));
     for kwargs in [json!({"context": "retrieve"}), json!({"context": "fresh"}), json!({})] {
@@ -130,7 +130,7 @@ fn delegation_progress_levels_are_described_from_the_transcript() {
         Activity::of(&failing).level(now),
         ("stalled", "Its last 3 cells failed in a row.".to_string())
     );
-    let mut old = [user.clone(), assistant("print(1)", 0.0, now - STALL_MS - 60_000.0)];
+    let mut old = [user, assistant("print(1)", 0.0, now - STALL_MS - 60_000.0)];
     old[0]["timestamp"] = json!(now - STALL_MS - 60_000.0);
     assert_eq!(
         Activity::of(&old).level(now),

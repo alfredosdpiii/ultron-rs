@@ -252,7 +252,6 @@ impl Lanes {
         let limits = options.pool.clone();
         let snapshot_path = limits.as_ref().and_then(|l| l.snapshot_path.clone());
         let pool = KernelPool::new(KernelPoolOptions {
-            // Kernels are created by `Lanes` (fallibly) and handed to the pool; this one is never called.
             create: Box::new(|lane: &str| -> LaneKernel { unreachable!("lane {lane} kernels are created by Lanes") }),
             max_live: limits.as_ref().map_or(options.max_lanes, |l| l.max_live),
             idle_ttl_ms: limits.as_ref().map_or(f64::MAX, |l| l.idle_ttl.as_secs_f64() * 1000.0),
@@ -399,7 +398,6 @@ impl Lanes {
         let mut pool = self.pool();
         let mut stats = pool.stats();
         stats["evictions"] = json!(pool.evictions().iter().filter(|r| r["evicted"] == true).count());
-        // Each live kernel's process-tree memory (session-worker.ts `poolStats`), and the tree cap.
         let (mut total, mut measured, mut cap) = (0u64, false, None);
         if let Some(lanes) = stats["lanes"].as_array_mut() {
             for lane in lanes {
@@ -441,9 +439,6 @@ impl Lanes {
                 self.inner.options.max_lanes
             ));
         }
-        // The lane's kernel is admitted with its first cell, as the TS rlm tool admits a kernel only for a cell
-        // (`kernels.use`): an open lane is not a live kernel (`rlm.pool` shows 0/16 at idle). Past the pool's capacity
-        // (every live kernel running or pinned) the lane is refused now.
         self.check_room(lane)?;
         state.lanes.insert(
             lane.to_string(),
@@ -465,7 +460,6 @@ impl Lanes {
             }
             Some(_) => state.lanes.remove(lane),
         };
-        // A closed lane's kernel goes, pinned or not (its continuity checkpoint is already written).
         self.pool().discard(lane);
         Ok(())
     }
@@ -539,7 +533,6 @@ impl Lanes {
     /// cell with [`Lanes::wait`].
     pub fn start_routed(&self, lane: &str, code: &str) -> Result<Started, String> {
         let mut state = sync::lock(&self.inner.state);
-        // A cancelled cell ends within its grace and the kill that follows it.
         let deadline = Instant::now() + self.inner.options.cancel_grace + Duration::from_secs(15);
         loop {
             let busy = state.lanes.get(lane).and_then(|l| l.busy.clone());
@@ -562,7 +555,6 @@ impl Lanes {
                     )
                 })?;
                 let cell = self.start_in(&mut state, &side, code)?;
-                // The busy cell's own call returns now; its end is reported as an event.
                 if let Some(cell) = state.cells.get_mut(&busy)
                     && !cell.cancelled
                 {
@@ -645,10 +637,7 @@ impl Lanes {
                 "REPL lane {lane} is still running {cell}: cancel it, wait for its end, or run in another lane"
             ));
         }
-        // A side lane's host requests are those of the lane it serves.
         let owner = entry.serves.clone().unwrap_or_else(|| lane.to_string());
-        // The lane's kernel for this cell: its live one, or a new one restoring its snapshot. Past the pool's
-        // capacity the cell is refused before it is admitted.
         let (lease, kernel) = self.lease(lane)?;
         if let Some(entry) = state.lanes.get_mut(lane) {
             entry.busy = Some(id.clone());
@@ -673,7 +662,7 @@ impl Lanes {
         let handler: Arc<dyn HostHandler> = Arc::new(CellHandler {
             lanes: self.clone(),
             cell: id.clone(),
-            inner: (self.inner.options.handlers)(&owner, waits.clone(), {
+            inner: (self.inner.options.handlers)(&owner, waits, {
                 let (lanes, cell) = (self.clone(), id.clone());
                 Arc::new(move |on| lanes.park(&cell, if on { 1 } else { -1 }))
             }),
@@ -697,7 +686,6 @@ impl Lanes {
             let cell = state.cells.get_mut(id).ok_or_else(|| format!("Unknown cell: {id}"))?;
             cell.waiting = true;
             if cell.detached {
-                // Its end was (or will be) reported as an event.
                 cell.waiting = false;
                 if cell.outcome.is_some() && cell.cancellers == 0 {
                     state.cells.remove(id);
@@ -709,7 +697,6 @@ impl Lanes {
             }
             if let Some(outcome) = &cell.outcome {
                 let outcome = outcome.clone();
-                // A cell being cancelled is left for its canceller to remove.
                 cell.waiting = false;
                 if cell.cancellers == 0 {
                     state.cells.remove(id);
@@ -764,7 +751,6 @@ impl Lanes {
             let lane = cell.lane.clone();
             let waiting = cell.waiting;
             let detached = cell.detached && !cell.cancelled;
-            // A side lane's cell ends as a cell of the lane it serves.
             let owner = state
                 .lanes
                 .get(&lane)
@@ -842,7 +828,6 @@ impl Lanes {
         let deadline = Instant::now() + timeout;
         let mut state = sync::lock(&self.inner.state);
         loop {
-            // The record stays: the canceller removes it (a caller still waiting gets the outcome too).
             if let Some(outcome) = state.cells.get(id)?.outcome.clone() {
                 return Some(outcome);
             }
@@ -894,7 +879,6 @@ impl Lanes {
                     .map(|(id, c)| {
                         let mut cell =
                             json!({ "cell": id, "lane": c.lane, "parked": c.parked > 0, "detached": c.detached });
-                        // A cell being cancelled (its kernel is killed when the grace passes).
                         if c.cancelled {
                             cell["cancelling"] = json!(true);
                         }
@@ -904,7 +888,6 @@ impl Lanes {
                 cells.sort_by(|a, b| a["cell"].as_str().cmp(&b["cell"].as_str()));
                 Ok(json!({ "cells": cells }))
             }
-            // `rlm.cancel(id)` and `rlm.cell.cancel(id)`: any lane's running cell but the requesting one.
             "rlm.cell.cancel" | "rlm.cancel" => {
                 jsrt::payload::fields(&payload, &["cell"])?;
                 let cell = text("cell")?;
@@ -948,7 +931,6 @@ impl Lanes {
         for cell in cells {
             let _ = self.cancel(&cell, "REPL lanes closed");
         }
-        // Every kernel goes, the idle ones after their snapshot.
         self.pool().close();
     }
 }

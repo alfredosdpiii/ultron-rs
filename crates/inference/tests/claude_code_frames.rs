@@ -138,7 +138,7 @@ fn inference_depth_frame_on_claude_code_runs_on_the_subscription_without_api_cre
     let session = FrameSession::new(Arc::new(MemoryTraceStore::default()));
     let tasks = Arc::new(Tasks::default());
     let _ = tasks.session.set(session.clone());
-    session.set_tasks(tasks.clone());
+    session.set_tasks(tasks);
     let handler = Inference::new(
         Arc::new(EchoHandler),
         claude_code("claude-haiku-5-5"),

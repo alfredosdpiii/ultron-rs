@@ -13,7 +13,7 @@ fn acceptance_w22_persona_and_keep_going_over_rpc_answer_the_session_status_with
     let provider = Provider::start(|_| Reply::Text("hello".into()));
     let install = Install::new(&provider);
     let mut client = install.rpc(&["--no-session"], &[]);
-    let data = |response: serde_json::Value| RpcClient::data(&response).unwrap().clone();
+    let data = |response: serde_json::Value| RpcClient::data(&response).unwrap();
     let on = data(client.send(json!({"type": "persona", "args": "on"})).unwrap());
     assert_eq!(
         on,

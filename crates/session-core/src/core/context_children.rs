@@ -292,8 +292,6 @@ impl ChildContext {
         };
         let custom = json!({"id": id, "parentId": null, "type": "custom", "customType": custom_type, "data": data,
             "timestamp": timestamp});
-        // An edit of a note still waiting for the boundary withdraws that note's write and queues it again carrying
-        // what stays visible of it; one that landed meanwhile is edited as placed, on the next attempt.
         let mut attempts = 0;
         let (conversation, stored) = loop {
             attempts += 1;
@@ -358,10 +356,8 @@ impl ChildContext {
                 break (conversation, stored);
             }
         };
-        // Held across the write: a write admitted at once lands (and the next read drops it) only after the push.
         let mut queued = sync::lock(&self.queued);
         let submission = match sync::lock(&self.capture).as_mut() {
-            // A trim declining a compaction: the harness places the entry with the request it prepares.
             Some((capturing, captured)) if capturing == lane => {
                 captured.push(stored);
                 None

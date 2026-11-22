@@ -1,6 +1,6 @@
 //! Shared by the acceptance tests: the real runtime.py, kernels over recording handlers, process-tree checks, a
 //! scripted OpenAI-compatible provider over real HTTP, and a runner for the `ultron` binary in private directories.
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use kernel::{ExecutionResult, HostHandler, Kernel, KernelOptions, Signal, Status};
 use serde_json::{Map, Value, json};

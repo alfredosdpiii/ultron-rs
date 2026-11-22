@@ -104,7 +104,6 @@ pub fn prepare_branch_entries(entries: &[Value], token_budget: i64) -> BranchPre
         extract_file_ops_from_message(&message, &mut file_ops);
         let tokens = estimate_tokens(&message);
         if token_budget > 0 && (total_tokens + tokens) as i64 > token_budget {
-            // A summary is important context: still take it while under 90% of the budget.
             let summary = matches!(entry_type(entry), Some("compaction" | "branch_summary"));
             if summary && (total_tokens as f64) < token_budget as f64 * 0.9 {
                 newest_first.push(message);

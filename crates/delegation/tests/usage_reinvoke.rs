@@ -7,7 +7,7 @@ use kernel::store::MemoryDocumentStore;
 use std::sync::{Arc, Mutex};
 
 fn ledger(limits: UsageLimits, now: Arc<Mutex<f64>>) -> UsageLedger {
-    let clock = now.clone();
+    let clock = now;
     UsageLedger::new(
         Box::new(MemoryDocumentStore::default()),
         UsageOptions {

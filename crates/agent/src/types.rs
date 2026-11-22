@@ -125,7 +125,10 @@ impl AgentLoopConfig {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[allow(clippy::large_enum_variant)] // events are short-lived; boxing every message would cost more than it saves
+#[expect(
+    clippy::large_enum_variant,
+    reason = "events are short-lived; boxing every message would cost more than it saves"
+)]
 pub enum AgentEvent {
     AgentStart,
     AgentEnd {

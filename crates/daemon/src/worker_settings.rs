@@ -277,7 +277,6 @@ pub fn values(settings: &SettingsManager, live: &Live, env: Env) -> Result<Map<S
         "enabledModels",
         get(settings, &["enabledModels"]).cloned().unwrap_or(Value::Null),
     );
-    // `modelSettingValues`: global only.
     let rlm = config::keys::rlm_model_settings(settings.global_settings());
     put(
         "observer.model",
@@ -297,7 +296,6 @@ pub fn values(settings: &SettingsManager, live: &Live, env: Env) -> Result<Map<S
             json!(text(claude.and_then(|c| c.get(key)))),
         );
     }
-    // Only the durable instance's sessions have one (and start on it).
     if config::settings::is_durable_process() {
         put("durable.model", json!(settings.durable_model()));
     }
@@ -405,7 +403,6 @@ pub fn apply(
 ) -> Result<(Applied, Vec<Change>), String> {
     let mut applied = Applied::Saved;
     let mut changes = Vec::new();
-    // Errors recorded before this change (a malformed file at startup) are not this change's failure.
     settings.drain_errors();
     let set = |settings: &mut SettingsManager, field: &str, value: Value| settings.set_global(field, Some(value));
     let nested = |settings: &mut SettingsManager, field: &str, k: &str, v: Option<Value>| {
@@ -444,7 +441,6 @@ pub fn apply(
             let timeout = int(key, value, 0.0)? as u64;
             set(settings, key, json!(timeout));
             changes.push(Change::HttpIdleTimeout(timeout));
-            // Model requests carry the idle timeout unless `retry.provider.timeoutMs` pins one.
             if get(settings, &["retry", "provider", "timeoutMs"]).is_none() {
                 changes.push(Change::StreamTimeout(if timeout == 0 {
                     DISABLED_REQUEST_TIMEOUT_MS
@@ -454,7 +450,6 @@ pub fn apply(
             }
             applied = Applied::Live;
         }
-        // Saved for Pi; the Ultron worker does not warm provider caches.
         "cacheWarming" => set(settings, key, json!(one_of(key, value, &CACHE_WARMING_MODES)?)),
         "modelThinkingLevel" => {
             let target = record(key, value)?;
@@ -468,7 +463,6 @@ pub fn apply(
                 None => settings.remove_model_thinking_level(&provider, &model_id),
                 Some(level) => settings.set_model_thinking_level(&provider, &model_id, level),
             }
-            // As in Pi, an override for the current model applies to the session now.
             if current_model == Some((provider.as_str(), model_id.as_str())) {
                 let level = level.unwrap_or_else(|| {
                     get(settings, &["defaultThinkingLevel"])
@@ -510,19 +504,15 @@ pub fn apply(
             let mode = one_of(key, value, &MERMAID_MODES)?;
             nested(settings, "markdown", "mermaid", Some(json!(mode)));
         }
-        // The worker renders its system prompt again on the next request.
         "engineering" => {
             set(settings, key, json!(bool_value(key, value)?));
             applied = Applied::Live;
         }
-        // The persona (resources::persona): `ultron`, or `off`/null to remove it; the worker renders its system
-        // prompt again on the next request and reads it when a run ends.
         config::keys::PERSONA_KEY => {
             let persona = match value {
                 Value::Null => None,
                 value => Some(one_of(key, value, &config::keys::PERSONA_VALUES)?),
             };
-            // Off is kept as `"off"` where a process default would turn it on again (the durable instance).
             let defaulted = config::settings::process_defaults().is_some_and(|d| d.contains_key(key));
             settings.set_global(
                 key,
@@ -547,7 +537,6 @@ pub fn apply(
             applied = Applied::Live;
         }
         "autoreview" => {
-            // A patch of `autoreview.*` (`/autoreview on|off`): `enabled` and `accounts`, where null removes the key.
             let patch = record(key, value)?;
             let mut next: Vec<(&str, Option<Value>)> = Vec::new();
             for (name, item) in patch {
@@ -604,7 +593,6 @@ pub fn apply(
         "rlm.frameModel" | "rlm.childModel" => {
             let field = &key["rlm.".len()..];
             nested(settings, "rlm", field, opt(model_value(key, value)?));
-            // The runtime reads it for every frame and spawn.
             applied = Applied::Live;
         }
         "rlm.frameThinking" => {
@@ -623,7 +611,6 @@ pub fn apply(
             nested(settings, "review", "model", opt(model_value(key, value)?));
             applied = Applied::Live;
         }
-        // Rust-only: the subagent race's models, read for every race.
         "rlm.raceModels" => {
             let models = match value {
                 Value::Null => None,
@@ -641,7 +628,6 @@ pub fn apply(
             nested(settings, "rlm", "raceModels", models.map(Value::Array));
             applied = Applied::Live;
         }
-        // Rust-only, global: REPL result footers (config::keys::result_footer), read when a session starts.
         "rlm.resultFooter" => {
             let on = match value {
                 Value::Null => None,
@@ -650,7 +636,6 @@ pub fn apply(
             nested(settings, "rlm", "resultFooter", on);
             applied = Applied::Restart;
         }
-        // Rust-only token caps: `rlm.mapTokens` is read for every frame, `rootBudget` when the session starts.
         "rlm.mapTokens" | "rootBudget.maxTotalTokens" => {
             let cap = match value {
                 Value::Null => None,
@@ -666,7 +651,6 @@ pub fn apply(
                 Applied::Restart
             };
         }
-        // Rust-only, global: the judge seat (crates/judge), read at each `judge.decide`.
         "judge.provider" => {
             let order = match value {
                 Value::Null => None,
@@ -695,7 +679,6 @@ pub fn apply(
                     if host.is_none_or(|host| host.is_empty() || host.contains(char::is_whitespace)) {
                         return Err(format!("{key} must be an http(s) URL"));
                     }
-                    // Its key goes there: https, or plain http to this machine only.
                     config::auth::secure_url(url).map_err(|why| format!("{key}: {why}"))?;
                     Some(json!(url))
                 }
@@ -791,8 +774,6 @@ pub fn apply(
             nested(settings, "judge", "maxCalls", cap);
             applied = Applied::Live;
         }
-        // Rust-only, global (it points at a service): the memory backend (memorantado::resolve), chosen when a
-        // session starts; null removes it (detected).
         "memory.backend" => {
             let backend = match value {
                 Value::Null => None,
@@ -817,7 +798,6 @@ pub fn apply(
         "durable.model" => {
             let model = model_value(key, value)?;
             nested(settings, "durable", "model", opt(model));
-            // A new durable session starts on it; the running one keeps its model.
             applied = Applied::Restart;
         }
         "enabledModels" => {

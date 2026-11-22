@@ -95,7 +95,6 @@ fn git_files(root: &Path) -> Option<Vec<String>> {
     }
     let mut files: Vec<String> = Vec::new();
     for item in String::from_utf8_lossy(&output.stdout).split('\0') {
-        // A nested repository is listed as its directory ("sub/"); it is recorded as one entry.
         let path = item.strip_suffix('/').unwrap_or(item);
         if !path.is_empty() && !files.iter().any(|f| f == path) {
             files.push(path.to_string());
@@ -228,7 +227,6 @@ pub fn check_files(
         if listed(before, &path) || listed(after, &path) {
             unobserved.push(declared.clone());
         } else if std::fs::symlink_metadata(workspace.join(&path)).is_ok() {
-            // Neither snapshot lists it: an ignored file is not checked.
             unlisted.push(declared.clone());
         } else {
             unobserved.push(declared.clone());

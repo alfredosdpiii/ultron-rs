@@ -3,7 +3,7 @@
 //! stack (the product's executor is `session_core::turns::TurnCells`). A cell's host requests go to the test's
 //! handler, except `cell.output`, which publishes durable partial output into the cell's `ultron.live` slot (what an
 //! interrupted cell's result carries after a crash).
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};

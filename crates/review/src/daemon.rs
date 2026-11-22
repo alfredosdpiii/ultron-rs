@@ -308,7 +308,6 @@ impl Inner {
     fn enqueue(&mut self, candidate: Candidate, not_before: f64) {
         let key = task_key(&candidate.account, &candidate.pull);
         if let Some(waiting) = self.candidates.get_mut(&key) {
-            // Keep the earliest pickup; merge the reasons.
             for reason in candidate.reasons {
                 if !waiting.candidate.reasons.contains(&reason) {
                     waiting.candidate.reasons.push(reason);
@@ -421,7 +420,6 @@ impl Shared {
                 pull_key(&candidate.pull),
                 candidate.account.login
             ));
-            // prepare_pull gives up after three failed reviews of one commit.
             self.enqueue(candidate.clone(), (self.now() + RETRY_DELAY_MS) as f64);
         }
         self.report(&candidate, Reported::Failed(message));
@@ -635,7 +633,6 @@ impl Daemon {
             search
         };
         let deps = &shared.deps.reviewer;
-        // `autoreview.ban` as it is now: what waits and what is found by a banned author is dropped.
         let bans = deps.bans.refresh();
         self.drop_banned(&bans);
         for account in &shared.deps.accounts {
@@ -765,7 +762,6 @@ impl Daemon {
             let Some(waiting) = inner.candidates.shift_remove(&key) else {
                 continue;
             };
-            // An author known to be banned for the account: nothing is fetched or posted.
             if let Some(author) = inner.authors.get(&pull_key(&waiting.candidate.pull)).cloned()
                 && bans.banned(&waiting.candidate.account, &author).is_some()
             {
@@ -895,7 +891,6 @@ impl Daemon {
             self.prepare();
             self.pump();
             self.record();
-            // Reviews that finish free a slot: fill it without waiting for the next poll.
             let deadline = self.shared.now() as f64 + self.poll_seconds() * 1000.0;
             while !stopped() && (self.shared.now() as f64) < deadline {
                 let left = deadline - self.shared.now() as f64;

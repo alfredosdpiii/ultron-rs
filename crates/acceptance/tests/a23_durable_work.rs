@@ -72,7 +72,7 @@ fn worker(dir: &Path, now: i64, phase: Phase) -> Worker {
         Box::new(FileTasks(dir.join("tasks.json"))),
         Box::new(kernel::store::MemoryDocumentStore::default()),
     );
-    let agents = fixture.agents.clone();
+    let agents = fixture.agents;
     let tasks: Arc<dyn TaskHost> = Arc::new(Phased {
         inner: agents.clone(),
         phase,

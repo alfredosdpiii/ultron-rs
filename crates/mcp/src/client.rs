@@ -182,7 +182,6 @@ fn validate_list_page(
     if !items.iter().all(|item| item.as_object().is_some_and(is_item)) {
         return Err(Error::invalid(format!("Invalid entry in MCP {method} result")));
     }
-    // Some servers end pagination with `null` or `""` instead of omitting the cursor.
     let cursor = match value.get("nextCursor") {
         None | Some(Value::Null) => None,
         Some(Value::String(s)) if s.is_empty() => None,
@@ -200,7 +199,6 @@ fn is_tool(tool: &Map<String, Value>) -> bool {
     tool.get("name").is_some_and(Value::is_string) && tool.get("inputSchema").is_some_and(Value::is_object)
 }
 
-// `name` is required by the spec, but some servers omit it; the URI stands in.
 fn is_resource(resource: &Map<String, Value>) -> bool {
     resource.get("uri").is_some_and(Value::is_string) && optional_string(resource, "name")
 }
@@ -388,8 +386,6 @@ impl Client {
         }
         transport.set_protocol_version(&version);
         self.notify_internal("notifications/initialized", None, true)?;
-        // Connecting -> Connected only: a server that exited during the handshake has closed the client already (its
-        // close listeners ran), and a closed client never reads as connected.
         let mut state = sync::lock(&self.0.state);
         if state.conn != ConnState::Connecting {
             return Err(Error::closed());
@@ -522,7 +518,6 @@ impl Client {
             .timeout
             .or(self.0.options.request_timeout)
             .unwrap_or(DEFAULT_REQUEST_TIMEOUT);
-        // The spec forbids cancelling `initialize`.
         let cancellable = method != "initialize";
         let (tx, rx) = mpsc::channel();
         let (id, message) = {
@@ -652,8 +647,6 @@ impl Client {
             let incoming: Vec<CancelToken> = state.incoming.drain().map(|(_, c)| c).collect();
             (was_closed, pending, incoming)
         };
-        // Close listeners run before the waiting requests wake, as in TypeScript, where they run synchronously and
-        // the rejected requests continue in later microtasks: a caller that sees its request fail also sees the close.
         if !was_closed {
             let listeners = sync::lock(&self.0.close_listeners).clone();
             for listener in listeners {
@@ -676,7 +669,6 @@ impl Client {
     }
 
     fn handle_incoming(&self, event: Incoming) {
-        // A closed client has dropped its transport; like the TypeScript client's disposed listeners, it hears nothing.
         if sync::lock(&self.0.state).transport.is_none() {
             return;
         }

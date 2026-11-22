@@ -448,7 +448,6 @@ impl RadiusRelayHost {
                     return;
                 };
                 runtime.block_on(run.run());
-                // A credential lookup still running after close finishes on its own.
                 runtime.shutdown_background();
             })
             .ok();
@@ -537,7 +536,6 @@ impl Run {
 
     async fn attempt(&self, retry_ms: &mut u64) -> Attempt {
         let auth = self.options.auth.clone();
-        // A credential lookup may block (a token refresh); closing the host does not wait for it.
         let resolving = tokio::task::spawn_blocking(move || auth.resolve(false));
         let resolved = tokio::select! {
             resolved = resolving => match resolved {
@@ -573,9 +571,6 @@ impl Run {
             Ok(socket) => socket,
             Err(error) => return Attempt::Failed(error),
         };
-        // The writer is shared before the host checks for a close and reports `connected`: a close() that runs
-        // after the check finds it and sends the close frame. Shared only in serve(), a close() between the report
-        // and serve() found no writer and the socket ended without its close frame.
         *sync::lock(&self.shared.writer) = Some(socket.writer.clone());
         if self.closed() {
             *sync::lock(&self.shared.writer) = None;
@@ -754,7 +749,7 @@ pub fn unix_accept(endpoint: PathBuf) -> RelayAccept {
                 }
             }
         });
-        let outbound = connection.clone();
+        let outbound = connection;
         std::thread::spawn(move || {
             use std::io::Read;
             let mut buffer = vec![0u8; 64 * 1024];

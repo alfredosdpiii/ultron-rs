@@ -199,7 +199,7 @@ fn kernel_apis_images_n_requests_until_enough_images_and_out_names_the_files() {
             default_model: Some("openai/gpt-image-1".into()),
             base_url: Some(base),
             out_dir: s.root.join("out/images"),
-            cwd: cwd.clone(),
+            cwd,
             api_key: Arc::new(|_: &str| Ok(Some("k".into()))),
             transport: Arc::new(ai::ReqwestTransport::new(None)),
         }))),

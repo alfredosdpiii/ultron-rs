@@ -243,7 +243,6 @@ impl FamilyModule {
                     .unwrap_or("unknown")
             ),
         };
-        // The body is JSON-encoded so it cannot close the envelope or impersonate host text.
         [
             "[Untrusted family message]".to_string(),
             format!("Verified sender: {from}"),
@@ -349,7 +348,6 @@ impl FamilyModule {
         message.insert("state".into(), "pending".into());
         let message = Value::Object(message);
         let can_steer = steer && receiver.is_some();
-        // Record steering delivery before handing it to the lane so a crash cannot deliver twice.
         let stored = if can_steer {
             delivered(&message, now, "steer")
         } else {
@@ -366,7 +364,6 @@ impl FamilyModule {
         if request.host.steer(receiver, &envelope).unwrap_or(false) {
             return Ok(json!({"id": id, "duplicate": false, "state": "delivered", "steered": true}));
         }
-        // The lane did not take it: the message waits in the inbox instead.
         let latest = self.load(cached)?;
         let restored: Vec<Value> = latest
             .into_iter()
@@ -413,7 +410,6 @@ impl FamilyModule {
                 }
             })
             .collect();
-        // Mark delivered before returning: a lost response loses the message rather than repeating it.
         self.save(cached, marked)?;
         let remaining = current
             .iter()
@@ -492,7 +488,6 @@ impl ApiModule for FamilyModule {
     }
 
     fn handle(&self, request: &Request<'_>) -> Result<Value, String> {
-        // Every request runs under this lock so reads and writes of the document never interleave.
         let mut cached = jsrt::sync::lock(&self.messages);
         match request.kind {
             "agent_message.send" => self.send(request, &mut cached),

@@ -216,10 +216,6 @@ pub fn composite_line(
     }
 }
 
-// Two columns side by side with a vertical border (`SplitView` of packages/tui components/split-view.ts): the main
-// column and a side pane on the right. [`split_widths`] sizes the columns; [`render_split`] merges them line by
-// line as `SplitView.render` does (`compositeTuiLine` into a blank line).
-
 /// `widths`: `(main, side)` for a total width; the side is 0 while the pane is closed. `side_width` is the pane's
 /// wanted width (without the border).
 pub fn split_widths(width: usize, open: bool, side_width: usize) -> (usize, usize) {

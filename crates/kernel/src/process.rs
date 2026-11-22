@@ -139,7 +139,6 @@ pub(crate) fn kill_process_tree(root: i32, owns_process_group: bool, root_alive:
             signal(pid, Signal::KILL);
         }
     }
-    // Only a scope of the kernel's own: never the host's cgroup or an ancestor of it (see `is_foreign_scope`).
     if let Some(dir) = extras
         .cgroup_dir
         .filter(|dir| crate::tree_memory::is_foreign_scope(dir))

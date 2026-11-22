@@ -397,7 +397,6 @@ fn serves_route(line: &str, below: &[&str], found: &mut Vec<(Kind, String, Strin
         };
         format!("{method} {path}")
     };
-    // A decorator or attribute stands over its handler; the three forms never share a line.
     if let Some(captures) = PY_ROUTE.captures(line)
         && let Some(handler) = handler_below(below)
     {
@@ -459,7 +458,6 @@ fn touches_table(line: &str, from: Source, current: &str, found: &mut Vec<(Kind,
                 (true, _) => true,
                 (false, quoted) if upper && (quoted || sql_line) => true,
                 (false, true) => false,
-                // Not SQL: `from x import y`, prose. Dropped here, no model asked.
                 (false, false) => continue,
             };
             found.push((Kind::TouchesTable, current.to_string(), table, certain));
@@ -549,7 +547,6 @@ fn resolve_rust(path: &str, module: &str, paths: &BTreeSet<String>) -> Option<St
     let (first, rest) = segments.split_first()?;
     match *first {
         "crate" => {
-            // The crate a file belongs to: `<dir>/src/` for its sources, `<dir>/tests/` for an integration test.
             let root = ["src", "tests"].iter().find_map(|dir| {
                 let marker = format!("/{dir}/");
                 path.find(&marker)
@@ -581,7 +578,6 @@ fn resolve_python(path: &str, module: &str, paths: &BTreeSet<String>) -> Option<
         for _ in 1..dots {
             dir = parent(&dir).to_string();
         }
-        // `from .a import b`: `b` may be a module of `a`, else a name defined in `a`.
         let parts: Vec<&str> = rest.split('.').filter(|part| !part.is_empty()).collect();
         for keep in (0..=parts.len()).rev() {
             let base = joined(&dir, &parts[..keep].join("/"));

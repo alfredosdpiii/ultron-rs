@@ -67,13 +67,11 @@ fn try_acquire(lock_path: &Path, stale: Duration) -> io::Result<()> {
     }
     let modified = match fs::metadata(lock_path).and_then(|m| m.modified()) {
         Ok(modified) => modified,
-        // Released between our mkdir and stat: try once more without the stale check.
         Err(e) if e.kind() == io::ErrorKind::NotFound => return try_acquire(lock_path, Duration::MAX),
         Err(e) => return Err(e),
     };
     let age = SystemTime::now().duration_since(modified).unwrap_or_default();
     if age <= stale {
-        // `proper-lockfile`'s ELOCKED error.
         return Err(io::Error::new(
             io::ErrorKind::WouldBlock,
             "Lock file is already being held",
@@ -114,7 +112,6 @@ pub fn acquire(lock_path: &Path, options: Options) -> io::Result<LockGuard> {
         let touch = lock_path.to_path_buf();
         std::thread::spawn(move || {
             while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(every) {
-                // A lost lock at worst lets two holders overlap (`onCompromised` is ignored there too).
                 if fs::File::open(&touch)
                     .and_then(|dir| dir.set_modified(SystemTime::now()))
                     .is_err()

@@ -391,7 +391,7 @@ fn claude_root_board_notes_and_swarm_are_shared_by_the_root_and_its_kept_childre
     // cell's result, or once the events' coalescing window closes.
     let opened = server.running.opened().unwrap();
     let woke = if done.contains("<swarm_message") {
-        done.clone()
+        done
     } else {
         wait_until("the wake reaches the root's inbox", || opened.root.pending_events() > 0);
         opened.root.take_events().unwrap()

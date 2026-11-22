@@ -43,9 +43,6 @@ pub fn stored_key(env: &Env, provider: &str) -> Result<Stored, String> {
                 .and_then(Value::as_str)
                 .filter(|k| !k.is_empty())
                 .map(str::to_string);
-            // `envApiKeyAuth.resolve`: no stored key, so the built-in provider's ambient key; a custom provider
-            // (no inherited auth) is not configured. The credential's own `env` counts first (a Bedrock AWS-profile
-            // or Vertex project/location login stores only that).
             let builtin = ai::models::builtin_providers().any(|p| p == provider)
                 || crate::lane::registry(env).radius_gateway(provider).is_some();
             let stored_env = string_map(resolved.as_ref().and_then(|c| c.get("env")));
@@ -171,7 +168,6 @@ pub fn resolved_key(env: &Env, provider: &str) -> Result<Option<Option<String>>,
     {
         return Ok(None);
     }
-    // An unreadable auth.json fails the request as the store's read does.
     stored_key(env, provider)?;
     Ok(Some(api_key_request_auth(env, provider)?.and_then(|r| r.auth.api_key)))
 }
@@ -323,7 +319,6 @@ fn oauth_auth(
     };
     let ctx = EnvContext(env.clone());
     let store = FileCredentialStore::new(path);
-    // Callers are synchronous and may sit inside a runtime: the resolution runs on its own thread and runtime.
     std::thread::scope(|scope| {
         scope
             .spawn(|| {

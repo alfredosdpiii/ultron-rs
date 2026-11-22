@@ -222,7 +222,6 @@ fn is_candidate(contributions: &[Vec<Message>], index: usize) -> bool {
         Some(Message::User(_)) => {}
         _ => return false,
     }
-    // A result of the preceding assistant's calls that follows this entry, before the next assistant, belongs before it.
     let mut calls: Vec<String> = Vec::new();
     for before in (0..index).rev() {
         let assistant = contributions[before].iter().rev().find_map(|message| match message {
@@ -275,9 +274,6 @@ pub fn summary_plan(view: &ContextView, cut: usize) -> SummaryPlan {
     });
     let start = usize::from(previous.is_some());
     let cut = cut.max(start);
-    // `findTurnStartIndex`: a cut at an answer splits its turn, which starts at the user message before it.
-    // A turn starts at a user input (`role === "user"` of a message entry): the positional prompt sections, notes
-    // and other custom entries do not start one (`findTurnStartIndex`).
     let starts_turn = |index: usize| {
         view.entries
             .get(index)
@@ -391,7 +387,7 @@ fn select_phase(services: &Services, runtime: &TaskRuntime) -> Result<()> {
         attempt: 1,
         model: model_ref,
         thinking_level: agent.thinking_level,
-        stream_options: settings.stream.clone(),
+        stream_options: settings.stream,
         tail,
         first_kept,
     };
@@ -463,7 +459,6 @@ fn summarize_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime
         );
         return finish(runtime, fail(message, "no_model"));
     };
-    // The context at `tail` is immutable, so this is the range `select` chose.
     let view = runtime.read(|tx| read_context(tx, conversation_id, Some(request.tail)))?;
     let cut = view
         .entries
@@ -484,12 +479,10 @@ fn summarize_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime
     let reserve = services
         .compaction_policy(runtime.conversation_id(), &settings)
         .reserve_tokens;
-    // The history summary, then a split turn's prefix summary; the first response that is no summary ends them.
     let mut texts = Vec::new();
     let mut responses = Vec::new();
     let mut message = None;
     let requests = super::child_summary::summary_requests(&plan, reserve, &options);
-    // A split turn's last request is its prefix summary (`Turn prefix summarization failed: ...`).
     let prefix_request = (plan.split && !plan.prefix.is_empty()).then(|| requests.len() - 1);
     for summary_request in requests {
         let mut stream_options = request.stream_options.clone();
@@ -510,7 +503,6 @@ fn summarize_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime
             runtime.signal(),
             &mut |_| {},
         )?;
-        // An abort mark or close: the abort invocation or the reopened task handles the committed state.
         runtime.signal().check()?;
         let text = summary_text(&response);
         responses.push((

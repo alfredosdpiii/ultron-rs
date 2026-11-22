@@ -68,7 +68,6 @@ pub fn parse_auth_status(stdout: &str, stderr: &str) -> Vec<Account> {
             });
         }
     };
-    // JSON.parse, then `parsed.hosts`: a null document (or a null entry) throws and falls back to the text form.
     let parsed = serde_json::from_str::<Value>(stdout).ok();
     if let Some(parsed) = parsed.filter(|value| !value.is_null()) {
         let mut failed = false;
@@ -92,7 +91,6 @@ pub fn parse_auth_status(stdout: &str, stderr: &str) -> Vec<Account> {
             return accounts;
         }
     }
-    // An older gh: "✓ Logged in to github.com account octocat (keyring)".
     let pattern = Regex::new(r"Logged in to (\S+) (?:account|as) (\S+)").expect("static pattern");
     for line in format!("{stdout}\n{stderr}").split('\n') {
         if let Some(found) = pattern.captures(line) {
@@ -130,7 +128,6 @@ pub fn list_accounts(runner: &dyn Runner, only: Option<&[String]>) -> Result<Vec
 
 /// The environment that authenticates a child `gh` or `git` as an account.
 pub fn auth_env(account: &Account, token: &str) -> Env {
-    // gh reads GH_TOKEN for github.com and *.ghe.com, and GH_ENTERPRISE_TOKEN for any other host.
     let hosted = account.host == "github.com" || account.host.ends_with(".ghe.com");
     let mut env = Env::new();
     env.insert(

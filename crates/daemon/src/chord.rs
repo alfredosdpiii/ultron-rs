@@ -95,7 +95,6 @@ impl State {
         inner.value = next;
         inner.sequence += 1;
         let sequence = inner.sequence;
-        // Listeners run under the lock so every subscriber sees publications in sequence order.
         for (_, listener) in &inner.listeners {
             listener(&ops, sequence);
         }
@@ -110,8 +109,6 @@ impl State {
             drop(inner);
             return self.change(mutate);
         };
-        // Until the change publishes, the set-aside value goes back on every way out, a panic in `mutate` or the
-        // diff included: the poisoned lock is recovered (`lock`), so a value left out would stay null.
         let mut aside = Aside {
             inner: &mut inner,
             pointer: aside,
@@ -123,7 +120,6 @@ impl State {
         if ops.is_empty() {
             return;
         }
-        // Back in place, unless the mutation set the value after all (then the ops publish its new value).
         if let Some(kept) = aside.kept.take() {
             restore(&mut next, aside.pointer, kept);
         }

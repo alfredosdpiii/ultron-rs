@@ -157,7 +157,7 @@ fn session_core_resources_match_typescript_resource_loader() {
                 .map(|s| root.sub(&json!({"sourceInfo": session_resources::skill_source_info(&resources, s)})))
                 .collect()
         } else {
-            skill_rows.clone()
+            skill_rows
         };
         let (got, want) = listed("skill", &skills_expected);
         check("command skills", got, &want);

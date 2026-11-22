@@ -256,7 +256,6 @@ pub fn autocomplete_provider(
     }
     if qol.autocomplete_github {
         chain.push(Box::new(GithubRefProvider {
-            // Without its thread the provider still offers the references, untitled.
             titles: GhRefTitles::gh(PathBuf::from(cwd), || {}).ok(),
         }));
     }
@@ -300,17 +299,14 @@ impl PrLookup for NoPr {
 /// grammar warm-up (highlighting). Call once at startup, before the paint loop; fails when a thread cannot start.
 pub fn install_services(app: &mut App, path_var: Option<String>) -> std::io::Result<()> {
     let qol = app.qol().clone();
-    // Pi's Ctrl+V and copies use the clipboard in every mode (its tools come from `path_var`).
     app.set_clipboard(tui::ClipboardService::spawn(
         tui::SystemClipboard::with_env(path_var.clone(), std::env::vars().collect()).with_native_images(),
     )?);
-    // Clicked hyperlinks open with the launcher on `path_var` only (`openBrowser`).
     app.set_url_opener(config::browser::browser_opener(
         path_var.clone(),
         std::env::var("HOME").ok(),
         config::browser::opener_vars(&|name| std::env::var(name).ok()),
     ));
-    // Pi's footer branch: read and watched on its own thread (`git` from `path_var` only).
     app.set_footer_branch(crate::footer_data::FooterBranch::spawn(
         PathBuf::from(app.cwd()),
         path_var.clone(),

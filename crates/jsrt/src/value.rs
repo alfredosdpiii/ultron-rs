@@ -75,14 +75,11 @@ mod tests {
         }
         assert!(truthy(Some(&json!([]))) && truthy(Some(&json!({}))));
         assert!(!truthy(None));
-        // `JSON.parse("-0")` is -0, which is falsy.
         assert!(!truthy(Some(&serde_json::from_str::<Value>("-0").unwrap())));
     }
 
     #[test]
     fn jsrt_value_string_is_javascripts_string() {
-        // From node: String([1, null, [2, undefined], {}]), String(null), String([null]), String([[null, 1]]),
-        // String(1e21), String(-0).
         assert_eq!(string(Some(&json!([1, null, [2, null], {}]))), "1,,2,,[object Object]");
         assert_eq!(string(Some(&json!(null))), "null");
         assert_eq!(string(Some(&json!([null]))), "");

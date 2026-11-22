@@ -137,8 +137,6 @@ pub fn detect(
 
 /// Extra directories bubblewrap shows read-only besides the system ones (when present).
 const INTERACTIVE_SYSTEM_EXTRA: &[&str] = &["/opt", "/nix"];
-// Rootless `unshare` replaces /tmp, /var/tmp, /dev/shm and /run/user by private empty tmpfs mounts: shared sockets
-// (tmux, ssh-agent, D-Bus) live there.
 const INTERACTIVE_UNSHARE_SCRIPT: &str = r#"set -e
 PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH
 uid=$1; gid=$2; home=$3; cwd=$4; tmp=$5; shift 5
@@ -209,7 +207,6 @@ fn nested<'a>(
     };
     let mut out = tagged(readable, false);
     out.extend(tagged(writable, true));
-    // Parents before children, so a nested path inside another nested one lands on top of it.
     out.sort_by_key(|(_, _, path)| path.components().count());
     out
 }
@@ -355,7 +352,6 @@ impl Policy {
         argv: &[String],
         cwd: &Path,
     ) -> Vec<String> {
-        // `; exit $?` keeps the shell from replacing itself with the sandbox (it must stay its parent).
         [s("sh"), s("-c"), s(r#""$@"; exit $?"#), s("ultron-job")]
             .into_iter()
             .chain(self.wrap(mechanism, layout, argv, cwd))
@@ -444,9 +440,6 @@ impl Policy {
                 out
             }
             Mechanism::Docker => {
-                // A container is not a process of ours: killing the `docker run` client, or its process group, leaves
-                // it running. It is tied to the client instead (DOCKER_CLIENT, DOCKER_TIED), and the client to its
-                // parent as unshare is.
                 let mut out: Vec<String> = Vec::new();
                 let setpriv = layout.which("setpriv");
                 if setpriv {
@@ -493,7 +486,6 @@ impl Policy {
                 out.extend([s("-w"), p(cwd)]);
                 out.push(self.image.clone().unwrap_or_default());
                 out.extend([s("sh"), s("-c"), s(DOCKER_TIED), s("sh")]);
-                // `env -i`, not `docker run -e`: `-e` adds to the image's own ENV, which then reaches the command.
                 out.extend([s("env"), s("-i")]);
                 out.extend(self.env.iter().map(|(name, value)| format!("{name}={value}")));
                 out.extend(argv.iter().cloned());

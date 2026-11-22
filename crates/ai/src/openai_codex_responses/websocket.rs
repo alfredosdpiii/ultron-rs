@@ -377,7 +377,6 @@ async fn release(mut acquired: Acquired, keep: bool, continuation: Option<Contin
                 entry.idle_generation += 1;
                 Ok(entry.idle_generation)
             }
-            // The cache was closed while the socket was in use.
             None => Err(socket),
         }
     };
@@ -389,7 +388,6 @@ async fn release(mut acquired: Acquired, keep: bool, continuation: Option<Contin
         }
     };
     if let (Some(generation), Ok(handle)) = (generation, tokio::runtime::Handle::try_current()) {
-        // Five minutes from now, not from when the timer task first runs.
         let deadline = tokio::time::Instant::now() + Duration::from_millis(SESSION_WEBSOCKET_CACHE_TTL_MS);
         handle.spawn(async move {
             tokio::time::sleep_until(deadline).await;

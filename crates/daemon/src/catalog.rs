@@ -180,7 +180,6 @@ pub fn remove(meta: &Meta) -> Result<(), String> {
     match std::fs::remove_file(&meta.path) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
         _ => {
-            // Its single-owner record (crates/durable `owner`) goes with it.
             let _ = std::fs::remove_file(crate::owner::owner_path(&meta.path));
             Ok(())
         }

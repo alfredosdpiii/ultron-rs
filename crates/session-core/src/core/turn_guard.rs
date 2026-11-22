@@ -39,7 +39,6 @@ pub(super) struct TurnGuard {
     empty: u32,
     /// Subagents whose left items the root was already given.
     // ponytail: in memory, so a restarted worker gives earlier subagents' items once more; keep the ids beside the
-    // persona state (session values) if that repeats too often.
     left_seen: HashSet<String>,
     /// Turns continued for failed checks since the user's last input.
     check_continues: u32,
@@ -169,7 +168,6 @@ impl Core {
                     Some((self.turn_guard.empty, MAX_EMPTY)),
                     EMPTY_TEXT.into(),
                 );
-                // A nudge that cannot start is dropped, as the persona's is.
                 let _ = self.prompt_with(message, None, true);
                 return;
             }
@@ -188,8 +186,6 @@ impl Core {
     /// Runs the settings' turn-end checks off the actor; [`Input::TurnChecked`] brings what failed.
     fn turn_guard_check(&mut self) {
         let config = &self.runtime.config;
-        // Read when the turn ends, so an edit of the settings applies; a list that does not parse was reported
-        // when the session started.
         let settings =
             config::settings::SettingsManager::create(&self.env.cwd, &config.agent_dir, config.project_trusted);
         let checks = parse_checks(settings.settings()).unwrap_or_default();
@@ -228,7 +224,6 @@ impl Core {
                 .unwrap_or_default();
             let _ = tx.send(Input::TurnChecked { id, failed, findings });
         });
-        // The session is not idle while they run.
         self.report_activity();
     }
 

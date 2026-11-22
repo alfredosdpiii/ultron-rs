@@ -173,7 +173,6 @@ fn cli_daemon_server_registers_again_when_its_leased_coordinator_exits() {
     // The exiting coordinator: takes the lease connection, then removes its socket and goes away unanswered.
     let listener = UnixListener::bind(&control).unwrap();
     let exiting = {
-        let control = control.clone();
         std::thread::spawn(move || {
             let lease = listener.accept().unwrap();
             std::fs::remove_file(&control).unwrap();

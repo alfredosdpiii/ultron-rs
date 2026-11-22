@@ -302,7 +302,6 @@ pub(crate) fn cell_definition() -> &'static TaskDefinition {
 pub(crate) fn cell_task(services: Arc<Services>) -> Task {
     let (call, execute, abort) = (services.clone(), services.clone(), services);
     Task::define(CELL_KIND, 2, |input| (CELL_DEFINITION.initial)(input))
-        // Version 1 had only model-issued calls.
         .migrate(|input, checkpoint, _| {
             let mut input = input.clone();
             if input.get("kind").is_none() {
@@ -395,8 +394,6 @@ fn call_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> 
         name: name.clone(),
         arguments: arguments.clone(),
     };
-    // `before_tool`: a blocked cell never runs; its result is the reason (`immediateError`), and `terminate` ends
-    // the run after the round.
     if let Some(gate) = &services.hooks.gate_tool {
         let run = runtime.read(|tx| super::gate::gate_run(tx, call.conversation_id))?;
         if let Some(block) = gate(&run, &call) {
@@ -452,7 +449,6 @@ fn execute_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) 
         arguments,
     };
     if replay == Replay::Safe && name == services.cells.tool().name && services.cells.replay(&call) == Replay::Safe {
-        // The rerun reports from scratch; clear what the interrupted attempt published.
         let conversation_id = runtime.conversation_id();
         let task_id = runtime.task_id();
         runtime.commit(&runtime.ctx(), |tx, _| {

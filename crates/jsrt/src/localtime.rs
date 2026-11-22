@@ -317,21 +317,16 @@ mod tests {
         }
     }
 
-    // Ported from cli/tests/subcommand_units.rs `cli_localtime_posix_rules_match_node` (values from Node under TZ).
     #[test]
     fn jsrt_localtime_posix_rules_match_node() {
         let ny = Zone::from_posix("EST5EDT,M3.2.0,M11.1.0").unwrap();
-        // 2026-03-08T06:59:59Z is 01:59 EST; 07:00Z is 03:00 EDT.
         assert_eq!(ny.fields(1_772_953_199_000.0), at(2026, 3, 8, 1, 59));
         assert_eq!(ny.fields(1_772_953_200_000.0), at(2026, 3, 8, 3, 0));
-        // 2026-11-01T06:00:00Z is 01:00 EST (fall back at 06:00Z); 05:59Z is 01:59 EDT.
         assert_eq!(ny.fields(1_793_512_740_000.0), at(2026, 11, 1, 1, 59));
         assert_eq!(ny.fields(1_793_512_800_000.0), at(2026, 11, 1, 1, 0));
-        // Southern hemisphere: 2026-01-01T00:00Z is 11:00 AEDT.
         let sydney = Zone::from_posix("AEST-10AEDT,M10.1.0,M4.1.0/3").unwrap();
         assert_eq!(sydney.fields(1_767_225_600_000.0).hour, 11);
         assert_eq!(sydney.fields(1_782_864_000_000.0).hour, 10);
-        // A fixed offset with a quoted name, and a fractional one.
         assert_eq!(
             Zone::from_posix("<+0530>-5:30").unwrap().fields(0.0),
             at(1970, 1, 1, 5, 30)
@@ -339,7 +334,6 @@ mod tests {
         assert_eq!(Zone::utc().fields(-1.0), at(1969, 12, 31, 23, 59));
     }
 
-    // Ported from cli/tests/subcommand_units.rs `cli_localtime_reads_zoneinfo_files`.
     #[test]
     fn jsrt_localtime_reads_zoneinfo_files() {
         if !Path::new("/usr/share/zoneinfo/America/New_York").exists() {
@@ -348,7 +342,6 @@ mod tests {
         let zone = Zone::from_env(Some("America/New_York"));
         assert_eq!(zone.offset(1_772_953_200_000.0), -4 * 3600);
         assert_eq!(zone.offset(1_772_953_199_000.0), -5 * 3600);
-        // 1990 is inside the transition table; 2090 relies on the footer rule.
         assert_eq!(zone.offset(647_100_000_000.0), -4 * 3600);
         assert_eq!(zone.offset(3_802_982_400_000.0), -4 * 3600);
         assert_eq!(zone.offset(3_787_862_400_000.0), -5 * 3600);

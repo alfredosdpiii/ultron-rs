@@ -1,6 +1,6 @@
 //! Shared by the fixture replays: runs a recorded scenario's cells through crates/kernel with a `KernelApis`
 //! handler and normalizes the outcome exactly as fixtures/generate.mjs does.
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use fancy_regex::Regex;
 use kernel::{HostHandler, Kernel, KernelOptions, Signal};

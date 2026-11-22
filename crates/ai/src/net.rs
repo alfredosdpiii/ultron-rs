@@ -46,7 +46,6 @@ impl ProxyEnv {
             .split([',', ' ', '\t', '\n', '\r', '\u{b}', '\u{c}'])
             .filter(|entry| !entry.is_empty())
             .map(|entry| {
-                // `[::1]:443`: a bracketed IPv6 address with a port.
                 let bracketed_with_port = entry.strip_prefix('[').and_then(|rest| {
                     let (host, port) = rest.split_once("]:")?;
                     let port = digits(port)?;
@@ -58,7 +57,6 @@ impl ProxyEnv {
                         .and_then(|e| e.strip_suffix(']'))
                         .filter(|e| !e.is_empty())
                         .unwrap_or(entry);
-                    // Only `host:port` with exactly one colon splits (a bare IPv6 address has several).
                     let split = (unbracketed.matches(':').count() == 1)
                         .then(|| unbracketed.rsplit_once(':'))
                         .flatten()
@@ -101,7 +99,6 @@ impl ProxyEnv {
         if hostname.len() > 1 && hostname.ends_with('.') {
             hostname.pop();
         }
-        // `DEFAULT_PORTS`: only http and https have one.
         let default = match url.scheme() {
             "http" => 80,
             "https" => 443,
@@ -121,7 +118,6 @@ fn digits(text: &str) -> Option<u16> {
     if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    // A port past 65535 can never match a URL's port.
     Some(
         text.parse::<u32>()
             .ok()
@@ -191,8 +187,6 @@ fn proxy_url(uri: &str) -> String {
         format!("http://{uri}")
     }
 }
-
-// utils/node-http-proxy.ts: the proxy a Node SDK client (Bedrock's) is given for its target
 
 pub const UNSUPPORTED_PROXY_PROTOCOL_MESSAGE: &str =
     "Unsupported proxy protocol. SOCKS and PAC proxy URLs are not supported; use an HTTP or HTTPS proxy URL.";
@@ -308,7 +302,6 @@ pub fn node_proxy_for_target(target: &str, env: Option<&crate::env::ProviderEnv>
     if !proxy.contains("://") {
         proxy = format!("{protocol}://{proxy}");
     }
-    // `new URL()`'s TypeError message.
     let parsed = Url::parse(&proxy).map_err(|_| {
         format!(
             "Invalid proxy URL {}: Invalid URL",

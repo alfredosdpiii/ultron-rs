@@ -214,8 +214,6 @@ pub fn js_order(value: Value) -> Value {
     }
 }
 
-// The TypeBox schema of models.json and the subset of TypeBox's error walk it needs (`schema/engine/schema.mjs`).
-
 enum Schema {
     Unknown,
     Str {
@@ -370,7 +368,6 @@ fn validate(schema: &Schema, value: &Value, path: &str, errors: &mut Vec<SchemaE
             };
             let mut ok = true;
             for (key, child) in map {
-                // `^.*$` without flags: `.` stops at line terminators, so such keys are not validated.
                 if key.chars().any(is_line_terminator) {
                     continue;
                 }

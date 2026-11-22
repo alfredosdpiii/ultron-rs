@@ -294,8 +294,6 @@ pub fn secure_endpoint(value: &str) -> Result<Url, OAuthError> {
     Ok(url)
 }
 
-// ---- the stateful provider (`McpOAuthProvider`) ----
-
 /// The default stateful provider for one exact MCP server URL.
 pub struct Provider<'a> {
     pub redirect_url: String,
@@ -814,7 +812,6 @@ fn run_flow(provider: &Provider<'_>, options: &FlowOptions) -> Result<FlowResult
         }
     };
     if let Some(code) = &options.authorization_code {
-        // RFC 9207: never send a code from another authorization server to this one.
         if let Some(metadata) = metadata
             && (options.iss.is_some() || metadata["authorization_response_iss_parameter_supported"] == true)
         {
@@ -855,13 +852,11 @@ fn run_flow(provider: &Provider<'_>, options: &FlowOptions) -> Result<FlowResult
         );
         match refreshed {
             Ok(tokens) => {
-                // `{refresh_token, ...tokens}`: the old refresh token unless a new one came.
                 let mut merged = Map::new();
                 merged.insert("refresh_token".into(), json!(refresh_token));
                 if let Value::Object(tokens) = tokens {
                     merged.extend(tokens);
                 }
-                // A refresh without `scope` keeps the scope of the grant.
                 let granted = existing.as_ref().and_then(|t| t["scope"].as_str());
                 provider.save_tokens(&with_scope(Value::Object(merged), granted))?;
                 return Ok(FlowResult::Authorized);

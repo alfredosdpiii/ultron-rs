@@ -117,7 +117,6 @@ fn reviewer_output() -> Value {
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn builtin(
     id: &str,
     strategy: &str,

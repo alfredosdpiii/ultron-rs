@@ -166,7 +166,7 @@ impl Run {
             "at": OpAt::Starting.as_str(), "control": {"status": "running"}, "settings": run.settings, "latestAssistantEntryId": null,
         });
         let mut writes = Vec::new();
-        let mut parent = source_tip.clone();
+        let mut parent = source_tip;
         for (id, message) in captured {
             writes.push(Write::message_entry(id, parent.as_deref(), message.clone()));
             parent = Some(id.clone());
@@ -174,7 +174,7 @@ impl Run {
         writes.push(Write::message_entry(&prompt_id, parent.as_deref(), prompt));
         writes.extend(captured.iter().map(|(id, _)| Write::delete(PENDING_ENTRY, id)));
         writes.extend([
-            Write::set(BRANCH_TIP, MAIN_LANE, prompt_id.clone().into()),
+            Write::set(BRANCH_TIP, MAIN_LANE, prompt_id.into()),
             Write::set(OP_META, &operation_id, meta),
             Write::set(OP_STATE, &operation_id, starting),
             Write::set(LANE_STATE, MAIN_LANE, run.lane_state(true)),
@@ -248,7 +248,6 @@ impl Run {
             .or_else(|| text(&context["triggerEntryId"]))
             .or_else(|| text(&resume_after["triggerEntryId"]))
             .unwrap_or(prompt);
-        // A compaction a dead worker left is not resumed; its preparation goes with the operation.
         let preparations = text(&state["task"]["taskId"])
             .map(|task| vec![format!("{operation_id}:{task}")])
             .unwrap_or_default();
@@ -360,7 +359,6 @@ impl Run {
         if running {
             json!({"currentOperationId": self.operation_id, "lastOperationId": self.last_operation_id, "inbox": self.inbox})
         } else {
-            // Messages queued for the next run wait in the inbox past this run's end.
             let next_run: Vec<Value> = self
                 .inbox
                 .as_array()
@@ -435,7 +433,6 @@ impl Run {
         trigger: Option<String>,
     ) -> Result<(), String> {
         if let Some(next) = self.retry_waiting.take() {
-            // The retry wait ended (`runRetryWait`): the same step again, as the next attempt.
             let mut ready = self.scope(OpAt::AssistantReady);
             ready.insert("generationContext".into(), self.generation_context());
             ready.insert("nextAttempt".into(), next.into());
@@ -445,7 +442,6 @@ impl Run {
             self.attempt = next;
         } else if std::mem::take(&mut self.ready_written) {
             self.attempt = 1;
-            // The compaction before this generation committed its `assistant.ready`.
             if !before.is_empty() {
                 session.commit(&before)?;
             }
@@ -472,7 +468,6 @@ impl Run {
 
     fn commit_ready(&mut self, session: &mut Session, before: Vec<Write>) -> Result<(), String> {
         let mut ready = self.scope(OpAt::AssistantReady);
-        // The checkpoint's continuation carries over (`may_finish` when a follow-up reopens a finished turn).
         let continuation = session
             .value(OP_STATE, &self.operation_id)
             .and_then(|state| state.get("continuation").cloned())
@@ -597,7 +592,6 @@ impl Run {
         self.assistant_entry_id = id.clone();
         let mut writes = Vec::new();
         let next = if let Some((task, prepared)) = self.compaction_with_answer.take() {
-            // An overflowed answer: the compaction starts in the same transaction (`summary.deciding`).
             self.calls.clear();
             writes.push(self.prepare_compaction(&task, prepared));
             self.compaction = Some(Compaction {
@@ -622,7 +616,6 @@ impl Run {
                 .collect();
             self.tools_state()
         };
-        // An answer that did not overflow ends any recovery: the next overflow may compact again.
         if self.compaction.is_none() {
             self.overflow_recovery_used = false;
         }
@@ -636,7 +629,6 @@ impl Run {
             Write::delete_list(PENDING_FRAMES, &self.frames_key()),
         ];
         if let Some((not_before, error_message)) = retry {
-            // `assistant.retry_wait`: the answer commits now and the step is tried again after the wait.
             let next = self.attempt + 1;
             let mut wait = self.scope(OpAt::AssistantRetryWait);
             wait.insert("generationContext".into(), self.generation_context());
@@ -649,10 +641,6 @@ impl Run {
             return Ok(false);
         }
         if error {
-            // The run ends with it. The TypeScript drive holds the answer for its terminal transaction
-            // (`providerError`); it commits now, with a state that says the run failed with it, so a worker that dies
-            // before the terminal transaction leaves this answer and a failed run, not an interrupted partial that
-            // recovery would resume.
             let mut failed = self.scope(OpAt::AssistantFailed);
             failed.insert("responseEntryId".into(), id.into());
             failed.insert("errorMessage".into(), error_message);
@@ -669,7 +657,6 @@ impl Run {
     /// The checkpoint the operation is at: its continuation and trigger entry (`resumeAfter` of a compaction).
     pub fn checkpoint_resume(&self, session: &Session) -> Value {
         let state = session.value(OP_STATE, &self.operation_id);
-        // A compaction a dead worker left resumes the checkpoint it started at.
         if let Some(resume_after) = state
             .map(|state| &state["task"]["boundary"]["resumeAfter"])
             .filter(|resume_after| resume_after.is_object())
@@ -976,7 +963,6 @@ impl Run {
         let Some(i) = self.call_index(call_id) else {
             return Ok(());
         };
-        // The harness writes a failed tool's result without `details`.
         if result["isError"] == true && result.get("details") == Some(&json!({})) {
             result.as_object_mut().map(|m| m.shift_remove("details"));
         }

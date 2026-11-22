@@ -59,9 +59,7 @@ pub fn source(var: &dyn Fn(&str) -> Option<String>, home: &Path) -> Result<Sourc
         }
     };
     match var(DEV_ASSETS).as_deref().unwrap_or("") {
-        // `getPackageDir()`: `PI_PACKAGE_DIR` names the package directory (Nix/Guix store paths).
         "" => match var(PACKAGE_DIR).filter(|dir| !dir.is_empty()) {
-            // `getRlmRuntimePath`'s error when the directory has no runtime.
             Some(dir) => live(PACKAGE_DIR, &dir).map_err(|_| "Ultron RLM runtime.py is not installed".to_string()),
             None => Ok(checkout().map_or_else(embedded, Source::Live)),
         },
@@ -131,7 +129,6 @@ fn use_installed(base: &Path) -> Result<PathBuf, String> {
             None => open_lock(&target, true)
                 .map_err(|e| format!("Cannot use Ultron's runtime files in {}: {e}", target.display()))?,
         };
-        // The installer's exclusive lock becomes shared here; otherwise this waits out a pruner.
         lock.lock_shared()
             .map_err(|e| format!("Cannot lock Ultron's runtime files in {}: {e}", target.display()))?;
         if same_file(&lock, &target.join(LOCK)) && verified(&target) {
@@ -160,7 +157,6 @@ fn install_inner(base: &Path) -> Result<(PathBuf, Option<File>), String> {
     };
     std::fs::create_dir_all(base).map_err(|e| failed("create", base, e))?;
     let name = target.file_name().unwrap_or_default().to_string_lossy().to_string();
-    // A rename that loses to a damaged directory (another process is replacing it) retries; a few rounds settle it.
     for _ in 0..8 {
         let staging = unique(base, &format!("{STAGING}{name}"));
         let lock = match write_tree(&staging) {
@@ -173,14 +169,11 @@ fn install_inner(base: &Path) -> Result<(PathBuf, Option<File>), String> {
         match std::fs::rename(&staging, &target) {
             Ok(()) => return Ok((target, Some(lock))),
             Err(_) if verified(&target) => {
-                // Another process installed the same files first; keep its directory.
                 let _ = std::fs::remove_dir_all(&staging);
                 return Ok((target, None));
             }
             Err(_) => {
                 let _ = std::fs::remove_dir_all(&staging);
-                // Damaged (an interrupted copy by hand, a deleted file): move it aside, then try again. A process
-                // still using it keeps it until it exits; a later prune removes it.
                 let aside = unique(base, &format!("{STALE}{name}"));
                 if std::fs::rename(&target, &aside).is_ok() {
                     remove_if_unused(&aside, false);

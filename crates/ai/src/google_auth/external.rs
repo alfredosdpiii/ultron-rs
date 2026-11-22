@@ -166,8 +166,6 @@ impl External {
         env: Option<&ProviderEnv>,
         transport: &dyn Transport,
     ) -> Result<String, Fail> {
-        // `retrieveSubjectToken`: a certificate source's exchange and impersonation go through a client presenting the
-        // workload's certificate and key (`createMtlsHttpsAgent`).
         let (subject_token, mtls) = match &self.source {
             Source::Certificate(source) => {
                 let token = source.subject_token(env)?;
@@ -197,7 +195,6 @@ impl External {
         if let Some(options) = &options {
             fields.push(("options", options));
         }
-        // StsCredentials runs on its own Gaxios: no auth-library user agent.
         let mut headers: HeaderMap = [
             (
                 "content-type".to_string(),
@@ -219,8 +216,6 @@ impl External {
         let Some(url) = &self.impersonation_url else {
             return Ok(token);
         };
-        // `getImpersonatedAccessToken`. After a certificate source the client's transporter is a new `Gaxios` with
-        // the mTLS agent, without the auth library's user-agent interceptor.
         let mut headers: HeaderMap = [
             ("content-type".to_string(), "application/json".to_string()),
             ("accept".to_string(), "application/json".to_string()),
@@ -305,7 +300,6 @@ fn credential_source(json: &Value) -> Result<Source, Fail> {
     if source.is_some_and(|s| jsrt::value::truthy(s.get("executable"))) {
         return executable_source(source.unwrap_or(&Value::Null));
     }
-    // `IdentityPoolClient`.
     let Some(source) = camel_option(json, "credential_source").filter(|v| jsrt::value::truthy(Some(v))) else {
         return Err(Fail::new(
             "A credential source or subject token supplier must be specified.",
@@ -347,7 +341,6 @@ fn credential_source(json: &Value) -> Result<Source, Fail> {
         return Ok(Source::Url { url, headers, format });
     }
     if let Some(certificate) = certificate {
-        // `CertificateSubjectTokenSupplier`'s constructor.
         return super::certificate::CertificateSource::from_json(certificate).map(Source::Certificate);
     }
     Err(Fail::new(NO_SOURCE))
@@ -425,7 +418,6 @@ async fn url_subject_token(
 fn aws_source(source: &Value) -> Result<Source, Fail> {
     let environment_id = truthy_string(source, "environment_id").unwrap_or_default();
     let verification_url = truthy_string(source, "regional_cred_verification_url");
-    // `/^(aws)(\d+)$/`
     let version = environment_id
         .strip_prefix("aws")
         .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()));
@@ -518,7 +510,6 @@ impl AwsSource<'_> {
         let zone = jsrt::value::string(Some(
             &Self::metadata_text(transport, "GET", url, &headers, ResponseType::Text).await?,
         ));
-        // `substr(0, length - 1)`: the availability zone without its letter.
         let mut chars: Vec<char> = zone.chars().collect();
         chars.pop();
         Ok(chars.into_iter().collect())
@@ -583,7 +574,6 @@ pub fn aws_subject_token(
     let service = host.split('.').next().unwrap_or_default().to_string();
     let date = amz_date(now_ms);
     let day = &date[..8];
-    // Sorted, as `Headers` iterates.
     let mut signed: Vec<(&str, String)> = vec![("host", host.clone()), ("x-amz-date", date.clone())];
     if let Some(token) = &credentials.token {
         signed.push(("x-amz-security-token", token.clone()));
@@ -801,7 +791,6 @@ impl External {
         let response = match cached {
             Some(response) => response,
             None => {
-                // Node leaves an undefined value out of the child's environment.
                 let mut vars = vec![("GOOGLE_EXTERNAL_ACCOUNT_AUDIENCE".to_string(), self.audience.clone())];
                 if let Some(kind) = &self.subject_token_type {
                     vars.push(("GOOGLE_EXTERNAL_ACCOUNT_TOKEN_TYPE".into(), kind.clone()));
@@ -843,7 +832,6 @@ impl External {
         if url.encode_utf16().count() > 256 {
             return Err(Fail::typed("RangeError", format!("URL is too long: {url}")));
         }
-        // `/serviceAccounts\/(?<email>[^:]+):generateAccessToken$/`
         let Some(head) = url.strip_suffix(":generateAccessToken") else {
             return Ok(None);
         };
@@ -905,7 +893,6 @@ async fn run_executable(
     }
     cmd.envs(vars.iter().map(|(k, v)| (k, v)));
     let mut child = cmd.spawn().map_err(spawn_error)?;
-    // The command holds the pipe's write ends until it is dropped; the read side ends when the child's copies close.
     drop(cmd);
     let mut receiver =
         tokio::net::unix::pipe::Receiver::from_owned_fd(reader.into()).map_err(|e| Fail::new(e.to_string()))?;

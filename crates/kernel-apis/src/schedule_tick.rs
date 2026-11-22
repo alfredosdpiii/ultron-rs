@@ -171,7 +171,6 @@ fn run(
         let deadline = match module.next_fire() {
             Ok(Some(next)) if next <= clock.now() => {
                 let report = module.tick(host);
-                // A tick that settled nothing (or failed) must not be repeated at once: wait for a change or retry.
                 let settled = report.as_ref().is_ok_and(|report| {
                     ["fired", "failed"]
                         .iter()
@@ -192,7 +191,6 @@ fn run(
         while !flags.woken && !flags.closed {
             let limit = deadline.map(|deadline| clock.wait_limit(deadline));
             match limit {
-                // No schedule fires and none is due: sleep until something changes.
                 None | Some(None) => {
                     flags = shared
                         .bell

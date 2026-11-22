@@ -28,7 +28,6 @@ pub fn parse_negotiation_sequence(sequence: &str) -> Option<NegotiationSequence>
         && !digits.is_empty()
         && digits.bytes().all(|b| b.is_ascii_digit())
     {
-        // `Number.parseInt`: past u32 the flags are still non-zero.
         return Some(NegotiationSequence::KittyFlags(
             digits
                 .parse()
@@ -148,7 +147,6 @@ impl KeyboardProtocol {
     }
 
     fn hold(&mut self, buffered: String, now: Instant) {
-        // `setKeyboardProtocolNegotiationBuffer` clears the timer; the flush is scheduled again from this fragment.
         self.buffer = buffered;
         self.flush_at = Some(now + RESPONSE_FRAGMENT_TIMEOUT);
     }

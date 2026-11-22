@@ -268,7 +268,6 @@ fn stream_error(message: &EventMessage, first: bool, response_status: u16, respo
                     .or_else(|| body.get("Message").filter(|v| !v.is_null()))
                     .map(value_text)
                     .unwrap_or_else(|| "UnknownError".into());
-                // Modeled exceptions carry SDK metadata without HTTP details: no hint, no status.
                 return BedrockError {
                     name: name.into(),
                     message: text,
@@ -873,7 +872,6 @@ pub fn configured_endpoint_url(
         return Some(url);
     }
     if let Some(services) = profile.get("services") {
-        // A missing services section fails this source; the default (none) follows.
         let section = config.get(&format!("services.{services}"))?;
         if let Some(url) = set(section.get("bedrock_runtime.endpoint_url").cloned()) {
             return Some(url);
@@ -1004,7 +1002,6 @@ fn build_request(target: &Target, model: &Model, body: &str, options: &BedrockOp
     }
     match &target.auth {
         Auth::Bearer(token) => headers.push(("authorization".into(), format!("Bearer {token}"))),
-        // Resolved by `drive` before the request is built.
         Auth::Chain(_) => {}
         Auth::SigV4(credentials) => {
             let mut signable = SignableRequest {
@@ -1524,9 +1521,6 @@ async fn drive(
         &serde_json::to_string(&body).unwrap_or_default(),
         options,
     );
-    // Through a proxy the SDK's HTTP/1.1 handler is used (its HTTP/2 handler takes no proxy agent); without one,
-    // `AWS_BEDROCK_FORCE_HTTP1=1`: "Some custom endpoints require HTTP/1.1 instead of HTTP/2". The proxy itself is
-    // the transport's.
     let proxied = crate::net::node_proxy_for_target(&model.base_url, options.base.env.as_ref())
         .map_err(BedrockError::plain)?
         .is_some();

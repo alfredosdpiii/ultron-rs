@@ -87,7 +87,6 @@ pub fn prompt_of(input: Option<&str>) -> Option<String> {
         Err(_) => {
             for prefix in ["{\"prompt\":\"", "{\"task\":\""] {
                 if let Some(rest) = input.strip_prefix(prefix) {
-                    // `((?:[^"\\]|\\.)*)`
                     let mut raw = String::new();
                     let mut chars = rest.chars();
                     while let Some(c) = chars.next() {
@@ -1619,7 +1618,10 @@ impl RlmPane {
     }
 
     /// Render `height` lines of `width` columns (one column of left padding next to the split border).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal wiring helper; parameters match distinct caller inputs"
+    )]
     pub fn render(
         &mut self,
         keys: &KeybindingsManager,

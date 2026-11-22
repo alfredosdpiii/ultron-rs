@@ -149,7 +149,6 @@ pub fn verify_snapshot(key: &[u8], raw: &[u8]) -> Result<String, SnapshotAuthErr
     let content = &raw[newline.map_or(raw.len(), |newline| newline + 1)..];
     let expected = jsrt::hash::hmac_sha256(key, content);
     let actual = hex64(signature).unwrap_or_default();
-    // Constant time over the digest length.
     let differs = actual.len() != expected.len()
         || actual
             .iter()
@@ -192,7 +191,6 @@ pub fn load_or_create_snapshot_key(agent_dir: &Path) -> Result<Vec<u8>, String> 
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(error.to_string()),
     }
-    // Keep the key private even if something loosened its mode.
     let mode = std::fs::metadata(&path)
         .map_err(|error| error.to_string())?
         .permissions()
@@ -211,7 +209,6 @@ pub fn process_snapshot_key() -> Vec<u8> {
     static KEY: OnceLock<[u8; KEY_BYTES]> = OnceLock::new();
     KEY.get_or_init(|| {
         let mut key = [0u8; KEY_BYTES];
-        // Without randomness a process key would be guessable; an all-zero key would still sign, so fail loudly.
         getrandom::fill(&mut key).expect("random snapshot key");
         key
     })

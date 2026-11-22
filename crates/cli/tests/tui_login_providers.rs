@@ -118,7 +118,7 @@ fn login_in(
             let _ = saved_tx.lock().unwrap().send(());
         }),
         OAuthOptions {
-            transport: transport.clone(),
+            transport,
             callback_port: Some(0),
         },
     );

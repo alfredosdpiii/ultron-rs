@@ -39,7 +39,6 @@ fn parse_color(color: &str) -> Option<(u8, u8, u8)> {
     {
         return None;
     }
-    // `Number.parseInt` of a large value does not fit a byte; such colors are not produced by themes.
     let n = |p: &str| p.parse::<u8>().ok();
     Some((n(parts[0])?, n(parts[1])?, n(parts[2])?))
 }
@@ -254,7 +253,6 @@ fn to_session_entry(entry: &Map<String, Value>) -> Value {
 /// The session data of a native session file's `main` branch (`exportNativeSessionFile` up to `generateHtml`).
 /// A torn last line is dropped from the file, as opening the session does.
 fn native_session_data(path: &Path) -> Result<Value, String> {
-    // `repo.list()` finds the file only when its header is a format-4 header.
     let listed = path.extension().is_some_and(|e| e == "jsonl")
         && path.is_file()
         && session_journal::io::first_line(path)

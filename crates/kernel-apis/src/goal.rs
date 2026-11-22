@@ -418,7 +418,6 @@ impl GoalDriver {
             Err(_) => Ok(()),
         };
         if !state.starting.is_empty() {
-            // Kept for the starts still in flight.
             state.early_ends.extend(early);
         }
         result
@@ -445,8 +444,6 @@ impl GoalDriver {
         };
         let mut changed = false;
         if goal["job"].is_null() {
-            // An active goal without a job was starting a run when the worker died: the run is written before it is
-            // admitted, so its key names the task if the admission happened.
             match self.jobs.job_with_key(&run_key(goal)) {
                 Some(task) => {
                     goal["job"] = task.into();
@@ -462,14 +459,12 @@ impl GoalDriver {
             Some(JobState::Running) if changed => self.persist(state),
             Some(JobState::Running) => Ok(()),
             Some(JobState::Ended(result)) if cut_off(&result) => {
-                // The worker going away cut the run off, not the job's own work: the goal goes on with its next run.
                 goal["job"] = Value::Null;
                 goal["last_answer"] = "The previous run was interrupted when Ultron restarted; continue from the goal's state and the files.".into();
                 self.start_job(state)
             }
             Some(JobState::Ended(result)) => self.job_ended(state, &job, Some(&result)),
             None => {
-                // No journal: a job does not outlive the worker that ran it, so the goal pauses (TypeScript).
                 goal["job"] = Value::Null;
                 goal["status"] = "paused".into();
                 goal["reason"] = "Ultron restarted while the goal job ran; /goal resume continues".into();
@@ -513,8 +508,6 @@ impl GoalDriver {
         goal["updated_at"] = now.into();
         goal["job"] = Value::Null;
         let key = run_key(goal);
-        // The run is durable before its task is admitted, so a reopen finds the task by this key; a run that could
-        // not be written is not started.
         if let Err(error) = self.persist(state) {
             let goal = state.goal.as_mut().expect("a goal");
             goal["status"] = "paused".into();
@@ -840,7 +833,6 @@ impl GoalDriver {
                 )),
             )?;
             let goal = state.goal.as_mut().expect("a goal");
-            // Stopped after this reply reaches the job's cell.
             if let Some(stopping) = goal["job"].as_str().map(str::to_string) {
                 let jobs = self.jobs.clone();
                 std::thread::spawn(move || {

@@ -267,7 +267,6 @@ pub fn write_atomic(path: &Path, content: &[u8], mode: u32) -> std::io::Result<(
         let _ = std::fs::remove_file(&temporary);
         return Err(e);
     }
-    // The rename is durable once the directory entry is: a failed directory flush is not a failed write.
     if let Ok(dir) = std::fs::File::open(&dir) {
         let _ = dir.sync_all();
     }

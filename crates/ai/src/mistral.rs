@@ -305,7 +305,6 @@ pub fn build_payload(
 /// `remapMistralProperty`: the value moves to `target` (appended unless already present), `source` is deleted.
 fn remap(record: &mut Map<String, Value>, source: &str, target: &str) {
     if let Some(value) = record.shift_remove(source) {
-        // Assigning an existing key keeps its position, as in JS.
         record.insert(target.into(), value);
     }
 }
@@ -451,7 +450,6 @@ async fn drive(
         .clone()
         .filter(|k| !k.is_empty())
         .ok_or_else(|| MistralError::plain(format!("No API key for provider: {}", model.provider)))?;
-    // Scoped so the future stays `Send`: nothing borrowed from the cell lives across an await.
     let messages = {
         let normalizer = RefCell::new(IdNormalizer::default());
         let normalize = |id: &str, _: &AssistantMessage| normalizer.borrow_mut().normalize(id);
@@ -487,7 +485,6 @@ async fn drive(
         headers: headers.build(),
         body: serde_json::to_string(&to_wire_payload(&payload)).unwrap_or_default(),
     };
-    // `AbortSignal.timeout(timeoutMs ?? 60000)`: the whole request, its stream included, is bounded.
     let limit = Duration::from_millis(base.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
     let exchange = async {
         let sent = tokio::select! {
@@ -569,7 +566,6 @@ async fn read_mistral_events(
         }
         let done = chunk.is_none();
         bytes.extend(chunk.into_iter().flatten());
-        // Decode the complete UTF-8 prefix; an incomplete trailing character waits for the next chunk.
         let valid = match std::str::from_utf8(&bytes) {
             Ok(text) => text.len(),
             Err(error) if !done && error.error_len().is_none() => error.valid_up_to(),

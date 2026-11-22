@@ -31,7 +31,6 @@ pub struct PromptHistoryStore {
 
 impl Drop for PromptHistoryStore {
     fn drop(&mut self) {
-        // Closing the channel ends the writer loop after the queued lines.
         self.writer = None;
         if let Some(thread) = self.writer_thread.take() {
             let _ = thread.join();

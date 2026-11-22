@@ -29,10 +29,6 @@ pub use branch::{
 };
 pub use bug_summary::{bug_summary_request, bug_summary_text};
 
-// ============================================================================
-// Shared utilities (utils.ts)
-// ============================================================================
-
 fn str_of<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(Value::as_str)
 }
@@ -526,8 +522,6 @@ fn find_projected_cut_point(entries: &[ProjectedEntry<'_>], start: usize, end: u
         entries[i].messages.iter().map(estimate_tokens).sum()
     });
 
-    // A recovery attempt and its omission edits are context-invisible after the last visible input. Advance only for
-    // a closed suffix containing an omitted assistant attempt; arbitrary metadata must not move the cut past input.
     let suffix = entries.get(cut + 1..end).unwrap_or_default();
     let visible = |e: &ProjectedEntry<'_>| {
         source_type(e) != Some("context_edit") && !session_file::entry_messages(e.source).is_empty()
@@ -636,7 +630,6 @@ pub fn prepare_compaction(path_entries: &[Value], settings: CompactionSettings) 
     }
     let projection = build_session_projection(path_entries, Leaf::Last);
     let entries = &projection.entries;
-    // The newest compaction is projected first; older ones in its kept range contribute nothing.
     let prev_compaction = entries
         .iter()
         .position(|e| source_type(e) == Some("compaction") && !e.messages.is_empty());
@@ -1072,7 +1065,6 @@ pub async fn compact(
                 let history = previous.unwrap_or_else(|| NO_PRIOR_HISTORY.to_string());
                 (split_turn_summary(&history, &prefix_text), plus(used))
             }
-            // A prefix too long for the model is summarized as more history, in halves.
             Err(failure) if failure.too_long && prefix.len() > 1 => {
                 let (first, rest) = prefix.split_at(halfway(prefix));
                 let (text, used) =

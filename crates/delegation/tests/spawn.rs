@@ -134,7 +134,7 @@ fn delegation_spawn_collect_finish_replay_typescript_scenarios() {
         let shared = Arc::new(Mutex::new(Shared::default()));
         let order: Arc<Mutex<Vec<String>>> = Arc::default();
         let runner: ChildRunner = {
-            let (children, order) = (children.clone(), order.clone());
+            let (children, order) = (children.clone(), order);
             Arc::new(move |run| {
                 // Scripts follow admission order (TS starts runs in that order; Rust threads race).
                 let index = run

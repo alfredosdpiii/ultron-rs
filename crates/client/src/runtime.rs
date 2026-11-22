@@ -243,7 +243,6 @@ impl Replica {
                 }
                 Ok(())
             }
-            // Keyed-instance updates: a singleton consumer ignores them.
             Some("spawned" | "closed") => Ok(()),
             _ => Err(UpdateError::Fatal("Invalid service provider update".into())),
         }
@@ -632,7 +631,6 @@ impl Connection {
 fn dispatch(shared: &Arc<(Mutex<Shared>, Condvar)>, message: ServerMessage) {
     let (lock, changed) = &**shared;
     let mut state = lock.lock().unwrap_or_else(|e| e.into_inner());
-    // A broken operation stream failed the connection (`connection.fail`): nothing after it is delivered.
     if state.closed.is_some() {
         return;
     }
@@ -779,7 +777,6 @@ pub fn rejoin(connection: &Connection, session_id: &str, options: &RunOptions) -
             Err(_) => std::thread::sleep(Duration::from_millis(250)),
         }
     };
-    // The session's run boundaries wake the wait for idle; subscribed before the recovery starts its run.
     let (boundaries, boundary) = mpsc::channel::<()>();
     let transcript = connection.subscribe(session.clone(), protocol::names::TRANSCRIPT)?;
     connection.listen(
@@ -810,12 +807,10 @@ fn wait_idle(
     deadline: Instant,
     options: &RunOptions,
 ) -> Result<(), CallError> {
-    // Recovery is idempotent: whichever of the worker and this client asks first starts the recovered run.
     ops(connection, session, json!({"op": "recover"}))?;
     let mut abort_sent = false;
     loop {
         let state = ops(connection, session, json!({"op": "state"}))?.unwrap_or_default();
-        // Turn-end checks may continue the turn; they end without a run boundary, so the state is read again.
         let checking = state["isChecking"] == true;
         let busy = checking || state["isStreaming"] == true || state["pendingMessageCount"].as_u64().unwrap_or(0) > 0;
         if !busy || (abort_sent && state["isStreaming"] != true) {
@@ -837,8 +832,6 @@ fn wait_idle(
                     "The rejoined session did not become idle".into(),
                 ));
             }
-            // The interrupt flag has no wake of its own: it is looked at between waits.
-            // A closed connection is reported by the next state read.
             match boundary.recv_timeout(Duration::from_millis(100)) {
                 Ok(()) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) if connection.is_closed() || checking => break,
@@ -906,7 +899,6 @@ pub fn run_client_reopening(
         Err(Failure::Other(error)) => Err(error),
         Ok(result) => Ok(result),
     };
-    // Dispose: unsubscribe every open subscription, server-scoped first, all pipelined.
     let mut calls = Vec::new();
     for (subscription, session) in &subscriptions {
         let target = if *session {
@@ -1124,7 +1116,6 @@ fn operation(
         .wait_attachment(|a| a.is_some_and(|a| a.session_id == session_id))
         .map_err(fail)?;
     let session = connection.session_target().map_err(fail)?;
-    // The session service namespace checks the catalogue, then subscribes to its facades.
     let catalogue = connection
         .start(session.clone(), protocol::names::CHORD_SERVICE, "catalogue", json!([]))
         .map_err(fail)?;
@@ -1204,7 +1195,6 @@ fn operation(
             return Err(Failure::Other(error));
         }
     };
-    // The prompt was one of the session's commands (`/goal`, `/persona`, `/keepgoing`): its reply, no run.
     if response["command"].is_string() {
         connection.unlisten(&transcript);
         return Ok(ClientResult::Prompted {
@@ -1215,7 +1205,6 @@ fn operation(
     }
     if response["accepted"] == true {
         let operation = response["operationId"].as_str().unwrap_or_default().to_string();
-        // Wait for the operation's boundary in the transcript.
         while !ended.contains(&operation) {
             match received.recv_timeout(std::time::Duration::from_millis(200)) {
                 Ok(event) => absorb(&event, &mut completed, &mut ended),
@@ -1295,7 +1284,6 @@ fn follow_event_runs(
                 break;
             }
         }
-        // A run's start or end wakes this at once; pending work with no run is inspected again after this.
         if let Ok(event) = received.recv_timeout(std::time::Duration::from_millis(200)) {
             take(event, &mut running);
         }

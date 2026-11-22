@@ -28,7 +28,6 @@ pub fn parse(content: &str) -> Result<Parsed, String> {
     let Some(end) = normalized[3..].find("\n---").map(|i| i + 3) else {
         return none(normalized);
     };
-    // TS: slice(4, end); an empty YAML string counts as no frontmatter.
     let yaml = normalized.get(4..end).unwrap_or("");
     let body = normalized[end + 4..].trim().to_string();
     if yaml.is_empty() {

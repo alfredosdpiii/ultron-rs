@@ -175,7 +175,7 @@ fn a_recording_of_another_set_is_refused() {
     let set = set();
     let mut recording = Recording::parse(RECORDING).unwrap();
     recording.set_hash = "0".repeat(64);
-    let error = Replay::new(set.clone(), recording).err().unwrap();
+    let error = Replay::new(set, recording).err().unwrap();
     assert!(error.contains("another case set"), "{error}");
     for (text, expected) in [
         ("[", "not JSON"),

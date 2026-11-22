@@ -192,7 +192,6 @@ mod tests {
         let marker = b"\x1eab\x1e";
         assert_eq!(marker_prefix_len(b"xx\x1ea", marker), 2);
         assert_eq!(marker_prefix_len(b"xx\x1eab", marker), 3);
-        // The closing byte of a whole marker can open the next one.
         assert_eq!(marker_prefix_len(b"xx\x1eab\x1e", marker), 1);
         assert_eq!(marker_prefix_len(b"xx\x1eab\x1ey", marker), 0);
         assert_eq!(marker_prefix_len(b"xx\x1e", marker), 1);

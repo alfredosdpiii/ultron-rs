@@ -66,10 +66,8 @@ fn session_core_event_summaries_honour_ultron_mask_secrets_off() {
 fn session_core_event_lines_mask_registered_values() {
     let masker = std::sync::Arc::new(host::secrets::OutputMasker::default());
     masker.register_secret_values(&[Value::String("opaque-session-value".into())]);
-    let mask: session_core::async_events::MaskText = {
-        let masker = masker.clone();
-        std::sync::Arc::new(move |text: &str| masker.mask_counted(text, None).0)
-    };
+    let mask: session_core::async_events::MaskText =
+        { std::sync::Arc::new(move |text: &str| masker.mask_counted(text, None).0) };
     let line = session_core::async_events::runtime_event_line(
         "job_done",
         "job-1",

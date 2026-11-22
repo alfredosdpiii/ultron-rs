@@ -62,13 +62,10 @@ fn pipeline_commands(command: &str) -> Option<Vec<String>> {
                 in_double = !in_double;
                 current.push(character);
             }
-            // Substitutions run commands of their own, inside quotes too.
             '`' => return None,
             '$' if characters.peek() == Some(&'(') => return None,
             _ if in_double => current.push(character),
-            // `2>&1`, `>&2`, `&>file`: redirections, not a background `&` or `&&`.
             '&' if current.ends_with(['>', '<']) || characters.peek() == Some(&'>') => current.push(character),
-            // A comment starts at a word's beginning; elsewhere `#` is part of the word.
             '#' if !(current.is_empty() || current.ends_with(char::is_whitespace)) => current.push(character),
             ';' | '&' | '\n' | '(' | ')' | '{' | '}' | '#' => return None,
             '|' => {

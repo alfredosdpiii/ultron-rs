@@ -164,7 +164,7 @@ fn ai_claude_subscription_protected_or_changed_text_cannot_be_flattened() {
     );
     mismatch(&wire(json!([native])), &[host]);
     for extra in [
-        image.clone(),
+        image,
         json!({"type": "text", "text": "note", "cache_control": {"type": "ephemeral"}}),
         json!({"type": "text", "text": "note", "citations": [{"type": "web_search_result_location"}]}),
     ] {

@@ -828,10 +828,6 @@ fn lane_config_resolving(
     let stored = session
         .as_ref()
         .and_then(|s| s.value(session_journal::ns::LANE_CONFIG, "main").cloned());
-    // Without --model a resumed session restores its own model; a new one starts on the settings' default
-    // (sdk.ts: restore from the session first, then `findInitialModel`).
-    // A `--model <pattern>:<thinking>` suffix or a scoped pattern's level names the thinking level unless
-    // `--thinking` does; otherwise the settings' level for the model.
     let choice = match (&flags.model, &stored) {
         (None, Some(_)) => Err("No model selected: pass --model <provider>/<id>".to_string()),
         _ => lane::resolve_choice(flags, env, stored.is_some()),
@@ -856,18 +852,12 @@ fn lane_config_resolving(
     let config = match session {
         Some(session) => {
             let mut config = run::ensure_lane(session, &wanted)?;
-            // `--thinking` holds for a resumed session that keeps its own model (no `--model`). With `--model`, the
-            // stored lane (model and level) is kept, as the TypeScript native server keeps it (recorded:
-            // print-continue-keeps-lane-model).
             if let Some(level) = flags.thinking.as_ref().filter(|_| flags.model.is_none())
                 && config["thinkingLevel"] != json!(level)
             {
                 config["thinkingLevel"] = json!(level);
                 session.commit(&[Write::set(LANE_CONFIG, session_journal::run::MAIN_LANE, config.clone())])?;
             }
-            // `ultron --claude` (session-worker.ts): a resumed lane that is not on the Claude root's provider moves
-            // to the root model, as `lane.setModel` does (its thinking level stays). A plain `--model` keeps the
-            // stored lane (above).
             if claude_root_requested(&*env.var)
                 && let Ok(m) = &flag_model
                 && config["model"]["provider"] != json!(m.provider)
@@ -933,16 +923,10 @@ impl Core {
         } = options;
         let repo = SessionRepo::new(&session_root, SystemClock::shared());
         let mut session = repo.open(&metadata)?;
-        // A session written by a newer Ultron fails here, naming the value and its format version, before any of it
-        // is loaded, settled or rewritten (session-worker.ts `assertSessionFormatsReadable`).
         crate::format_version::assert_session_formats_readable(&session)?;
-        // A worker that died left its run open. A run of the durable runtime resumes there; one journaled without
-        // it (an older build, the TypeScript product) is settled before anything reads the lane.
         let open_operation = session
             .value(LANE_STATE, MAIN_LANE)
             .and_then(|state| state["currentOperationId"].as_str().map(str::to_string));
-        // Only a run resumes in the durable runtime; another operation a dead worker left (a manual compaction, a
-        // navigation) is settled as interrupted.
         let durable_records = crate::durable_store::has_records(&session)
             && open_operation.as_ref().is_none_or(|operation| {
                 session
@@ -964,10 +948,8 @@ impl Core {
         trace("worker.harness");
         let mut runtime = Runtime::new(&env, &mode, sessions_dir, services)?;
         trace("worker.resources-loaded");
-        // Loki's setup (the minimal install where allowed, its commit in the background) before any cell runs.
         let loki_notice = crate::loki_notice::LokiNotice::start(&runtime.config);
         let (config, model, model_unavailable) = lane_config_resolving(&flags, &env, Some(&mut session))?;
-        // `setRuntimeApiKey(resolved.model.provider, apiKey)`: `--api-key` is the starting model's provider's key.
         let keys = crate::request_keys::Keys::session(flags.api_key.clone(), &model.provider, &env);
         let announced = session.state().entries().len();
         let announced_usage = session.state().usage_rows().len();
@@ -981,7 +963,7 @@ impl Core {
         let lane = Lane::open_with(
             &runtime,
             &model,
-            flags.api_key.clone(),
+            flags.api_key,
             &session_id,
             Some(children.host(values)),
         )?;
@@ -991,7 +973,6 @@ impl Core {
             .attach(Arc::new(crate::session_stats::SessionStore(session.clone())));
         let branches = Arc::new(context_lane::RootBranches::new(session.clone()));
         let child_context = Arc::new(context_children::ChildContext::new(children.clone(), session.clone()));
-        // `ULTRON_COMPACTION_TRIM` of the session's environment, as every other session switch.
         let context = Arc::new(
             kernel_apis::ContextControl::new(Arc::new(context_children::LaneBranches {
                 root: branches.clone(),
@@ -1001,8 +982,6 @@ impl Core {
         );
         child_context.observe(&context);
         let _ = lane.stack.context.set(context.clone());
-        // Requests read the settings as they are now (crate::request_settings): the stream options, transport and
-        // idle timeout of `/settings` apply to the next request.
         let provider = Arc::new(Provider::new().with_live_settings(runtime.config.settings_reader()));
         let queues = Arc::new(Mutex::new(Queues {
             items: recovered
@@ -1063,8 +1042,6 @@ impl Core {
             lane.stack.agents.clone(),
             lane.stack.usage.clone(),
         ));
-        // Each lane's context use for its reminder: the estimate the harness compacts by, over the lane's durable
-        // conversation (the root's, or the child's); its summary entry marks a compaction.
         let meter_children = children.clone();
         lane.stack.context_reminders.set_meter(Arc::new(move |lane_name: &str| {
             let chat = meter_children.chat()?;
@@ -1082,9 +1059,7 @@ impl Core {
         let _ = lane.stack.swarm.set(Arc::new(
             crate::swarm_ops::SwarmOps::new(children.clone()).with_contracts(Arc::downgrade(&lane.stack)),
         ));
-        // rlm.spawn(fork=True): the child's conversation starts as its caller's.
         lane.stack.delegation.set_fork_point(children.fork_point_hook());
-        // rlm.progress reads a running child's transcript from the runtime.
         let transcripts = durable.chat.clone();
         lane.stack.delegation.set_transcripts(Arc::new(move |lane: &str| {
             crate::agent_hub::child_transcript(&transcripts, lane).map(|(messages, _)| messages)
@@ -1095,19 +1070,17 @@ impl Core {
             &env,
             tx.clone(),
             durable.chat.clone(),
-            children.clone(),
+            children,
             durable.stop.clone(),
             session.clone(),
         );
         event_lanes::tick_activity(tx.clone(), durable.stop.clone());
-        // Idle kernels are swept every minute (evicted after their idle TTL), not only when a lane is leased.
         let sweep_stop = durable.stop.clone();
         lane.stack
             .lanes
             .sweep_every(lanes::IDLE_SWEEP_INTERVAL, move |interval| {
                 sweep_stop.wait_timeout(interval).is_some()
             });
-        // `compaction.enabled` (default on); `set_auto_compaction` changes it for the session.
         let auto_compaction = runtime.config.settings["compaction"]["enabled"] != false;
         let nudger = crate::nudge::ToolRoundNudger::new(runtime.config.tool_rounds_nudge, runtime.config.async_events);
         let skill_nudger = crate::nudge::SkillExtractionNudger::new(runtime.config.skill_nudge);
@@ -1162,17 +1135,13 @@ impl Core {
             observer,
             turn_guard: Default::default(),
         };
-        // The session's persona toggle and keep-going mode, before a resumed run can end.
         core.persona_load();
         if let Some(operation) = resume {
             core.resumed = Some(core.reopen_run(&operation)?);
         } else {
-            // Context entries a dead worker's run left waiting join the branch now; a resumed run places them at
-            // its next boundary.
             core.branches.place(true)?;
         }
         core.durable.chat.resume().map_err(|e| e.to_string())?;
-        // A fork's first worker consumes the marker its source recorded (`forkedSessionStart` of session-start.ts).
         let forked = lock_session(&core.session)
             .value(SESSION_START.0, SESSION_START.1)
             .is_some();
@@ -1259,16 +1228,12 @@ impl Core {
                 }
                 Input::EventLane(call, reply) => self.event_lane(call, reply),
                 Input::ActivityTick => {
-                    // A run whose terminal transaction failed tries it again.
                     if self.run.as_ref().is_some_and(|run| run.ending) {
                         self.run_end();
                     }
                     self.report_activity();
                 }
-                // A compaction's wake-up is read by the compaction itself.
                 Input::Woken => {}
-                // A queued fire was counted when it was taken; one that cannot start now is dropped (the next slot
-                // fires as usual).
                 Input::Scheduled(message) => {
                     let _ = self.schedule_start(message);
                 }
@@ -1284,7 +1249,6 @@ impl Core {
             return Some(input);
         }
         loop {
-            // A held stream frame is journaled when its window ends, even if the stream stalls before the next one.
             let due = self.run.as_ref().and_then(|run| run.journal.held_until());
             let inputs = self.inputs.as_ref()?;
             let Some(due) = due else {
@@ -1518,7 +1482,6 @@ impl Core {
                     return;
                 }
                 self.journal(&agent_event);
-                // The frame (`AssistantMessageFrame`) and the usage, never the message (crate::journal::update_fields).
                 let (frame, usage) = crate::journal::update_fields(message, assistant_message_event);
                 self.emit(WatchEvent::MessageUpdate {
                     run_id: run,
@@ -1563,11 +1526,9 @@ impl Core {
                 if let Some(note) = retry {
                     self.emit(note);
                 }
-                // A response that is retried ends no turn (no `turn_end` at `assistant.retry_wait`).
                 if let Some(message) = round_message.filter(|_| !retried) {
                     self.count_round(&message);
                 }
-                // Once the model answered after a cell's output that returned finished tasks, it collapses.
                 if answered {
                     let _ = self.context.message_end(MAIN_LANE, "assistant");
                 }
@@ -1618,7 +1579,6 @@ impl Core {
                     is_error: *is_error,
                 });
             }
-            // The lane's own boundaries: turns and the run's end are reconstructed by clients.
             AgentEvent::TurnStart => self.begin_generation(),
             AgentEvent::AgentStart | AgentEvent::AgentEnd { .. } | AgentEvent::TurnEnd { .. } => {}
         }
@@ -1645,7 +1605,6 @@ impl Core {
             .filter(|q| q.turn <= turn && !self.taken.contains(&q.entry_id))
             .cloned()
             .collect();
-        // Context entries appended since the last boundary join the branch first, in the same transaction.
         let tip = self.tip();
         let (mut writes, mut parent) = context_lane::placement(&lock_session(&self.session), tip.clone());
         for queued in &taken {
@@ -1658,7 +1617,6 @@ impl Core {
             parent = Some(queued.entry_id.clone());
         }
         let trigger = taken.last().map(|q| q.entry_id.clone());
-        // The retry wait ended (`runRetryWait`): the step's next attempt starts.
         let retry_start = self
             .run
             .as_ref()
@@ -1715,7 +1673,6 @@ impl Core {
                 .as_ref()
                 .filter(|run| !run.cancelled && run.error.is_none())
                 .and_then(|run| self.unanswered(run.submission));
-            // The run's last boundary: collapse what the model answered after, then place what is still waiting.
             let _ = self.context.run_end(MAIN_LANE);
             let waiting = context_lane::pending_count(&lock_session(&self.session));
             let placed = self.branches.place(true);
@@ -1765,7 +1722,6 @@ impl Core {
         } else {
             Ended::Completed
         };
-        // Detached work the run leaves running keeps the worker alive: reported before the run's end is.
         self.report_activity();
         self.emit(WatchEvent::RunEnd {
             lane: MAIN_LANE.into(),
@@ -1785,7 +1741,6 @@ impl Core {
         }
         self.nudger.run_ended(&run.id);
         self.skill_nudger.run_ended(&run.id);
-        // What the run counted is in the session file when its end is reported.
         self.lane.stack.stats.flush();
         self.lane.stack.cell_hints().run_ended(MAIN_LANE);
         if let Some(waiter) = run.waiter {
@@ -1877,7 +1832,6 @@ impl Core {
 
     fn stop(&mut self, hand_over: bool) {
         self.observer.shutdown();
-        // A successor keeps the session going; a run in progress resumes when the session opens again.
         if !hand_over && self.run.is_none() {
             self.retain_tail(false);
         }
@@ -1885,15 +1839,10 @@ impl Core {
             run.signal.abort();
         }
         self.turn_guard_cancel();
-        // A successor takes the session: what this worker's hosts would still journal (a subagent's wait failing
-        // as the runtime closes) is dropped, so its tasks stay unfinished for the successor to reattach.
         if hand_over && let Some(values) = &self.runtime.services.values {
             values.hand_over();
         }
-        // The durable runtime stops without settling anything: a run in progress resumes when the session opens.
         self.durable.stop.abort();
-        // `cleanupSessionResources(sessionId)` of AgentSession.dispose: the provider connections cached under this
-        // session's provider session IDs (the Codex WebSockets) are closed with it.
         for id in self.durable.chat.provider_session_ids().unwrap_or_default() {
             ai::openai_codex_responses::close_openai_codex_websocket_sessions(Some(&id));
         }
@@ -1961,7 +1910,6 @@ impl Core {
                     let _ = tx.send(Input::BugSummaryEnded(number));
                 });
             }
-            // AgentSession `compact`: `await this.abort()` first, then compact once the session is idle.
             compact @ Op::Compact { .. } if self.run.is_some() => {
                 self.abort();
                 self.after_run.push(Input::Op(compact, reply));
@@ -1997,7 +1945,6 @@ impl Core {
     }
 
     fn sync_op(&mut self, op: Op) -> OpResult {
-        // `/usage` reads the session file it describes: the counters still in memory are saved first.
         if matches!(op, Op::Describe) {
             self.lane.stack.stats.flush();
         }
@@ -2033,7 +1980,6 @@ impl Core {
             }
             Op::State => Ok(Some(self.state())),
             Op::AvailableModels => {
-                // The registry is read now (credentials change while the session runs).
                 self.models = lane::available_models(&self.env);
                 Ok(Some(Value::Array(
                     self.models
@@ -2126,7 +2072,6 @@ impl Core {
                     .unwrap_or_else(|e| e.into_inner()) = Some(theme);
                 Ok(None)
             }
-            // `abort_retry`: a run waiting to retry its generation is aborted (`requestAbort` of the operation).
             Op::AbortRetry => {
                 if self
                     .run
@@ -2219,7 +2164,6 @@ impl Core {
                 "sessionFile": self.session_file(),
                 "name": lock_session(&self.session).name(),
                 "messages": view::messages(&self.pi()),
-                // The lane's own entries (compactions and branch summaries as entries), as the TUI draws them.
                 "entries": lock_session(&self.session).branch_entries(MAIN_LANE).unwrap_or_default(),
                 "model": serde_json::to_value(&self.model).unwrap_or(Value::Null),
                 "thinkingLevel": self.thinking,
@@ -2240,7 +2184,6 @@ impl Core {
             Op::KeepGoing { args } => self.persona_command("keepgoing", &args).map(Some),
             Op::ContinueFrom { session } => self.continue_from(&session).map(Some),
             Op::RestoreFiles { entry_id, checkpoint } => self.restore_files(entry_id, checkpoint).map(Some),
-            // `rlm.list_subagents` with each subagent's name, model and times, for the agent hub and the RLM views.
             Op::Agents => self.lane.stack.delegation.subagent_views(MAIN_LANE).map(Some),
             Op::KillAgent { id } => self
                 .lane
@@ -2257,11 +2200,9 @@ impl Core {
             Op::AsyncPending => Ok(Some(self.async_pending())),
             Op::Commands => Ok(Some(Value::Array(self.lane.stack.commands()))),
             Op::Inspect { request, .. } if request == "async.pending" => Ok(Some(self.async_pending())),
-            // The root lane's detached cells (`rlm.cells` lists them to a cell, without their times).
             Op::Inspect { request, .. } if request == "rlm.detached" => Ok(Some(
                 json!({ "cells": self.lane.stack.lanes.detached_cells(MAIN_LANE) }),
             )),
-            // The worker answers the pool itself (session-worker.ts `inspect`): kernels and guard statistics.
             Op::Inspect { request, .. } if request == "rlm.pool" => Ok(Some(self.lane.stack.pool_stats())),
             Op::Inspect { request, payload } => {
                 let runtime = self.lane.stack.cell_handler(MAIN_LANE, None);
@@ -2421,7 +2362,6 @@ impl Core {
         state.insert("thinkingLevel".into(), self.thinking.clone().into());
         state.insert("isStreaming".into(), self.run.is_some().into());
         state.insert("isCompacting".into(), self.compacting.is_some().into());
-        // Only while turn-end checks run (core::turn_guard): they may continue the turn.
         if self.turn_guard_checking() {
             state.insert("isChecking".into(), true.into());
         }
@@ -2615,7 +2555,6 @@ impl Core {
     ///
     /// `take_queued`: the admission also takes the steering and follow-up messages queued while the lane was idle
     /// (by the queue modes); messages queued for the next run are always taken.
-    #[allow(clippy::result_large_err)]
     fn prompt_with(&mut self, prompt: Value, waiter: Option<Reply>, take_queued: bool) -> Result<(), (String, Reply)> {
         let fail = |error: String, waiter: Option<Reply>| -> Result<(), (String, Reply)> {
             match waiter {
@@ -2623,17 +2562,13 @@ impl Core {
                 None => Err((error, Box::new(|_| {}))),
             }
         };
-        // A stored OAuth credential may authenticate by header alone (Kimi's bearer): no key, but `getAuth` resolves.
         let api_key = self.api_key();
         if api_key.is_none() && !lane::header_auth(&self.env, &self.model.provider) {
             return fail(format!("No API key found for {}", self.model.provider), waiter);
         }
         let text = message_text(&prompt);
         let continuation = prompt.get(crate::recovery::RECOVERY_DEPTH).is_some();
-        // Name a new conversation from its first prompt; the model's title may replace it before the run ends.
         let mut naming_request = None;
-        // RPC clients see the session as TypeScript's RPC mode does: unnamed until they name it.
-        // A completion event's run (a custom message) never names the session.
         let auto_name = self.auto_name
             && !continuation
             && prompt["role"] != "custom"
@@ -2649,8 +2584,6 @@ impl Core {
                 self.name_changed();
                 let naming = naming::naming_settings(&self.runtime.config.settings);
                 if naming.enabled {
-                    // A `provider/id` setting names a built-in or models.json model; else the provider's
-                    // cheapest, which models.json may override (its URL, headers).
                     let named = naming
                         .model
                         .as_deref()
@@ -2670,10 +2603,6 @@ impl Core {
             Ok(None) => {}
             Err(error) => return fail(error, waiter),
         }
-        // The messages the run opens with: Loki's setup note for the first root turn that follows it
-        // (`installLokiNotice`) and the memory-paused notice for the first root turn; for a user message, the long-term memory recalled for it (crate::auto_memory), in
-        // engineering mode the rigor playbook that fits it (crate::playbook_route), and the active instruction
-        // refinements when the context does not show them as they are (crate::auto_refine).
         let mut opening: Vec<Value> = self
             .loki_notice
             .take(crate::loki_notice::NOTICE_WAIT)
@@ -2705,8 +2634,6 @@ impl Core {
             .unwrap_or(Value::Null);
         let started_tip = self.tip().map_or(Value::Null, Value::from);
         let settings = self.run_settings();
-        // The run takes the messages queued while the lane was idle, placed before its prompt in the order they were
-        // queued (`selectAcceptedInbox`); the rest wait in the inbox and the run delivers them.
         let captured: Vec<(String, Value)> = select_accepted(&sync::lock(&self.queues), take_queued);
         let mut inbox = self.lane_state()["inbox"].clone();
         if let Some(items) = inbox.as_array_mut() {
@@ -2731,7 +2658,6 @@ impl Core {
             self.queue_update();
         }
         let captured: Vec<Value> = captured.into_iter().map(|(_, message)| message).collect();
-        // The title call runs beside the turn and is applied whenever it answers (while the name is automatic).
         if let Some((naming_model, key, text)) = naming_request {
             let (tx, provider) = (self.tx.clone(), self.provider.clone());
             std::thread::spawn(move || {
@@ -2747,7 +2673,6 @@ impl Core {
                 }
             });
         }
-        // Work the turn admits is charged to a usage root of its own; the ledger counts its responses.
         journal.ledger_counts_turns();
         journal.set_retry_policy(self.summary_retry().journal_value());
         if let Some(options) = self.provider.stream_options() {
@@ -2762,8 +2687,6 @@ impl Core {
                     .usage_root_for_lane(MAIN_LANE, run.operation_id()),
             );
         }
-        // `prepareGeneration`: a model that does not resolve fails the run at its first generation, before any
-        // request (generation.ts `configurationError("model_unavailable", identity)`).
         if self.model_unavailable {
             let identity = json!({"provider": self.model.provider, "modelId": self.model.id});
             let result = journal.fail_configuration(
@@ -2775,7 +2698,6 @@ impl Core {
             self.announce();
             return fail(result.err().unwrap_or_else(|| MODEL_UNAVAILABLE.to_string()), waiter);
         }
-        // The turn runs in the durable runtime; its prompt is the entry the run just admitted.
         let prompt_entry = self.tip().unwrap_or_default();
         if !continuation && prompt["role"] == "user" {
             self.checkpoint_turn(&prompt_entry);
@@ -2790,8 +2712,6 @@ impl Core {
         let signal = AbortSignal::new();
         let id = jsrt::random::uuid_v7(now_ms());
         self.branches.run_started();
-        // Per-turn guard times start from zero (`fileHooks.beginTurn()` on the root lane's `run_start`), and a
-        // session in which the root ran keeps its counters, even when they are all zero.
         self.lane.stack.begin_turn();
         self.lane.stack.stats.touch();
         self.run = Some(Running {
@@ -2813,7 +2733,6 @@ impl Core {
             ending: false,
         });
         self.persona_run_started();
-        // Checks of an earlier turn's end are not this run's.
         self.turn_guard_cancel();
         self.emit(WatchEvent::RunStart {
             run_id: id,
@@ -2840,7 +2759,6 @@ impl Core {
                 json!({"resumed": resumed, "runId": run, "reason": reason, "recovered": summary}),
             ))
         };
-        // A run of the durable runtime was resumed when the session opened.
         if let Some(run) = self.resumed.take() {
             return answer(true, json!(run), "durable run resumed");
         }
@@ -2848,9 +2766,6 @@ impl Core {
             return answer(false, Value::Null, "a run is in progress");
         }
         let resume_off = self.env.flag_off(RECOVERY_RESUME_ENV);
-        // The interrupted run continues first; queued messages stay queued and the loop delivers them as it would
-        // have (steering during the run, follow-ups when it would end). Without one, the first queued message runs.
-        // A message queued for the next run waits for one; it never starts it.
         let first = sync::lock(&self.queues)
             .items
             .iter()
@@ -2862,7 +2777,6 @@ impl Core {
                 prompt[crate::recovery::RECOVERY_DEPTH] = json!(recovered.depth + 1);
                 Some((prompt, "interrupted run"))
             }
-            // An aborted run's queue waits for the user, as it would have after a live abort.
             Some(queued) if recovered.status.as_deref() != Some("aborted") => {
                 self.remove_queued(std::slice::from_ref(&queued.entry_id))?;
                 let mut prompt = queued.message;
@@ -2918,7 +2832,6 @@ impl Core {
             turn: 0,
             submission: None,
         });
-        // During a run the message waits in the durable runtime's inbox for its boundary.
         if self.run.is_some() {
             self.submit_queued()?;
         }
@@ -2964,7 +2877,6 @@ impl Core {
                     .collect()
             };
             let cleared: Vec<String> = queues.items.iter().map(|q| q.entry_id.clone()).collect();
-            // A next-run message is listed with the follow-ups, as RPC's `queue_update` lists it.
             let mut follow_up = pick(QueueKind::FollowUp);
             follow_up.extend(pick(QueueKind::NextRun));
             (pick(QueueKind::Steer), follow_up, cleared)
@@ -2981,8 +2893,6 @@ impl Core {
         self.bash = Some(signal.clone());
         let host = self.lane.host.clone();
         let tx = self.tx.clone();
-        // session-control-provider.ts `bash`: the `shellCommandPrefix` setting runs first; the message keeps the
-        // command as typed.
         let prefix = self
             .runtime
             .config
@@ -2990,7 +2900,6 @@ impl Core {
             .as_object()
             .and_then(config::keys::shell_command_prefix);
         std::thread::spawn(move || {
-            // Off the actor: the actor keeps serving while the command runs.
             let result = user_bash::run(&host, &command, prefix.as_deref(), &signal, &mut |delta| {
                 let _ = tx.send(Input::BashOutput {
                     id: id.clone(),

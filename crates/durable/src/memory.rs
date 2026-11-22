@@ -627,7 +627,6 @@ impl Storage for MemoryStorage {
     fn scan_entries(&self, query: &EntryQuery, limit: usize, cursor: Option<&Cursor>) -> Result<Page<EntryRecord>> {
         self.assert_open()?;
         let ScanStart { order, after } = scan_start(query.order, cursor, ScanOrder::Descending)?;
-        // The cursor narrows the bound on the side the scan moves away from.
         let mut min = query.min_entry_id.map_or(i64::MIN, |id| id.0 as i64);
         let mut max = query.max_entry_id.map_or(i64::MAX, |id| id.0 as i64);
         if let Some(after) = after {

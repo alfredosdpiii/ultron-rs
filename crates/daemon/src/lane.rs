@@ -15,7 +15,6 @@ pub struct Lane {
 impl Lane {
     pub fn new(snapshot: Value) -> Lane {
         Lane {
-            // The provider starts at `{ snapshot: null }` and publishes the lane snapshot once on activation.
             transcript: State::with_sequence(json!({"snapshot": snapshot, "event": null}), 1),
         }
     }

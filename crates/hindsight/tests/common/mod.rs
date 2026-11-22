@@ -1,6 +1,6 @@
 //! The fake Hindsight server (fixtures/fake_hindsight.py, the one the TypeScript generator recorded against) and
 //! the fixture's normalization.
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};

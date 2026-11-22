@@ -4,7 +4,7 @@
 //! `CONNECT` 403 and everything else (OAuth discovery, registration, tokens) 404. Every answer closes the connection.
 //! [`FakeProxy::requiring_auth`] answers MCP requests without an `Authorization` header with 401.
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};

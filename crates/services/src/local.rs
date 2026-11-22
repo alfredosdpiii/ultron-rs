@@ -162,7 +162,6 @@ fn escalation(value: &Value) -> Option<String> {
             let (front, _) = frontmatter(text.trim_start_matches(jsrt::string::is_space), false)?;
             for line in front.split('\n') {
                 let line = line.strip_suffix('\r').unwrap_or(line);
-                // /^\s*([A-Za-z][\w-]*)\s*:/
                 let rest = line.trim_start_matches(jsrt::string::is_space);
                 let mut chars = rest.char_indices();
                 if !chars.next().is_some_and(|(_, ch)| ch.is_ascii_alphabetic()) {
@@ -438,7 +437,6 @@ fn apply(records: &mut Vec<Record>, event: &Value) -> Result<usize, String> {
             records[index].transition("active", at, id);
         }
         "approve" => {
-            // Approval never overrides validation: activation still runs every check.
             if records[index].state != "proposed" {
                 return Err("Only a proposed refinement can be approved".into());
             }
@@ -615,8 +613,6 @@ impl LocalServices {
             if let Some(key) = escalation(&data["content"]) {
                 return Err(format!("Refinement content cannot request capabilities ({key})"));
             }
-            // An equivalent pending or active proposal, or a rejected one resubmitted without new evidence, is a
-            // duplicate rather than a new proposal.
             let duplicate = records.iter().find(|record| {
                 record.kind == data["kind"]
                     && record.target == data["target"]

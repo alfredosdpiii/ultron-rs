@@ -231,7 +231,7 @@ fn daemon_session_control_trust_round_trips_through_read_settings() {
     let read = f.call("readSettings", json!([])).unwrap().unwrap();
     assert_eq!(read["savedTrust"], json!({"path": parent, "decision": true}));
     let trust: Value = serde_json::from_str(&std::fs::read_to_string(f.agent.join("trust.json")).unwrap()).unwrap();
-    assert_eq!(trust, json!({ parent.clone(): true }));
+    assert_eq!(trust, json!({ parent: true }));
     // A later "Do not trust" for the project wins below the parent.
     f.call(
         "setProjectTrust",

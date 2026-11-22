@@ -1078,7 +1078,7 @@ mod migration {
         let refused = ledger
             .reserve(&delegation::usage::ReserveRequest {
                 kind: "task".into(),
-                root_id: Some(usage_root.clone()),
+                root_id: Some(usage_root),
                 ..Default::default()
             })
             .unwrap_err();

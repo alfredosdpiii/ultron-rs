@@ -209,7 +209,7 @@ fn host(runs: Runs) -> Delegation {
     let runner = Arc::new(move |run: ChildRun| {
         runs.lock()
             .unwrap()
-            .push((run.name.clone(), run.level, run.allowance, run.model.clone()));
+            .push((run.name.clone(), run.level, run.allowance, run.model));
         Ok("ok".to_string())
     });
     Delegation::new(DelegationOptions::new(runner)).0

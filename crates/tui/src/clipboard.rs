@@ -199,7 +199,6 @@ impl ClipboardService {
             for job in jobs {
                 let reply = match job {
                     Job::Copy(text) => {
-                        // A yank's copy has no one to answer.
                         let _ = clipboard.set_text(&text);
                         continue;
                     }

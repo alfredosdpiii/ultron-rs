@@ -125,7 +125,6 @@ fn run_command(
     match kind {
         "prompt" => {
             let (message, images) = prompt_request(command, kind)?;
-            // `/goal ...` is the session goal's command, as in the TUI: answered with its text, never a turn.
             if let Some(rest) = message.trim().strip_prefix("/observer")
                 && (rest.is_empty() || rest.starts_with(char::is_whitespace))
             {
@@ -134,7 +133,6 @@ fn run_command(
             if let Some(args) = goal_arguments(&message) {
                 return done(Some(json!({"text": session.goal(args)?})));
             }
-            // `/persona ...` and `/keepgoing ...` are the session's toggles, never a turn.
             if let Some((command, args)) =
                 resources::keep_going::toggle_command(&message).filter(|_| message.trim_start().starts_with('/'))
             {
@@ -202,7 +200,6 @@ fn run_command(
             done(None)
         }
         "compact" => {
-            // Answered when the compaction ends: an `abort` or `get_state` sent meanwhile is served at once.
             let reply = Reply {
                 id: command.get("id").cloned(),
                 command: kind.into(),
@@ -283,12 +280,10 @@ fn run_command(
             let args = str_field("args").unwrap_or_default();
             done(Some(json!({"text": session.goal(args)?})))
         }
-        // Ultron extension: the session's persona toggle and keep-going mode (`args`: on|off|auto, empty reports).
         "persona" => done(Some(session.persona("persona", str_field("args").unwrap_or_default())?)),
         "keep_going" => done(Some(
             session.persona("keepgoing", str_field("args").unwrap_or_default())?,
         )),
-        // Ultron extension: the read-only inspector behind /agents, /memory why, /skills why, /experiments.
         "inspect" => {
             let request = str_field("request").ok_or("inspect requires a request type")?;
             let payload = command.get("payload").cloned().unwrap_or_else(|| json!({}));
@@ -318,7 +313,6 @@ pub fn handle_line(session: &mut Remote, line: &str, out: &Output) {
     };
     let kind = command.get("type").and_then(Value::as_str);
     if kind == Some("extension_ui_response") {
-        // Fire-and-forget, as in Pi: unknown ids are ignored and nothing is written back.
         let answer = if command["cancelled"] == true {
             Some(json!({"cancelled": true}))
         } else if let Some(confirmed) = command["confirmed"].as_bool() {

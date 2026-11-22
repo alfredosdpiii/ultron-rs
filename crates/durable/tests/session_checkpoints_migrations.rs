@@ -1,7 +1,7 @@
 //! Port of upstream `test/session-checkpoints-migrations.test.ts`, run against every backend.
 //! Not ported: strict-JSON checks of migration results (a `serde_json::Value` is always strict JSON).
 
-#![allow(clippy::type_complexity)]
+#![allow(clippy::type_complexity, reason = "test helper callback signatures")]
 
 use crate::session_support;
 

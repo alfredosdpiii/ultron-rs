@@ -119,7 +119,6 @@ pub fn strip_prompt_zones(rows: &[String]) -> Vec<String> {
             let mut rest = row.as_str();
             while let Some(at) = rest.find("\x1b]133;") {
                 let tail = &rest[at + 6..];
-                // `[^\x07\x1b]*(?:\x07|\x1b\\)`: no terminator means no match; keep the text as is.
                 let stop = tail.find(['\x07', '\x1b']);
                 match stop {
                     Some(i) if tail.as_bytes()[i] == 0x07 => {
@@ -211,7 +210,10 @@ pub struct ComposedColumn {
 
 /// `composeOutlineColumn`: gutter-prefixed rows of `child_rows[from..to]` with a dotted outline around
 /// `targets[selected]` (only its non-blank core; edge spacers stay outside).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal wiring helper; parameters match distinct caller inputs"
+)]
 pub fn compose_outline_column(
     paint: &OutlinePaint,
     child_rows: &[Vec<String>],

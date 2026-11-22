@@ -233,7 +233,6 @@ impl ImagesModule {
                 text_signature: None,
             })],
         };
-        // The cell's signal aborts the request (a cancelled or timed-out cell).
         let (cell, done) = (signal.clone(), kernel::Signal::new());
         let finished = done.clone();
         let watcher = std::thread::spawn(move || {

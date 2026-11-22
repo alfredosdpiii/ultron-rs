@@ -55,13 +55,10 @@ impl ToolRunner for SessionTools {
         else {
             return Err(format!("Unknown tool \"{name}\""));
         };
-        // `prepareToolArguments`: validated and coerced against the tool's schema, as the harness does for a model's
-        // call; a failure fails the call with TypeBox's message.
         let params = jsonschema::prepare_tool_arguments(name, &tool.parameters, params)?;
         let token = mcp::CancelToken::new();
         let (watched, signal) = (token.clone(), cancel.clone());
         let (done_tx, done) = std::sync::mpsc::channel::<()>();
-        // The call's cancel signal reaches the server as `notifications/cancelled`.
         let watcher = std::thread::spawn(move || {
             loop {
                 if signal.wait(Duration::from_millis(100)) {

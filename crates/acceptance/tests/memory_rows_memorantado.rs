@@ -44,7 +44,7 @@ fn acceptance_memorantado_a16_skip_sends_nothing_secrets_never_leave_and_scopes_
     let fake = FakeMemorantado::new();
     let store = durable_store();
     let log = GateLog::default();
-    let skipping = open(&fake, &store, gate(false, log.clone()));
+    let skipping = open(&fake, &store, gate(false, log));
     let skipped = skipping
         .prepare(&p(json!({"query": "anything", "taskId": "t"})), &sig())
         .unwrap();

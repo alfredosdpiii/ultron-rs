@@ -66,7 +66,6 @@ fn bounded(value: &str, limit: usize) -> String {
 pub fn validate_verdict(payload: &Map<String, Value>, workspace: Option<&str>) -> Result<Value, Vec<String>> {
     let mut problems = Vec::new();
     for key in payload.keys() {
-        // `left` is Rust's (the message is TypeScript's, as recorded).
         if !["status", "summary", "outputs", "evidence", "changed_files", "left"].contains(&key.as_str()) {
             problems.push(format!(
                 "unknown field \"{key}\" (use status, summary, outputs, evidence, changed_files)"
@@ -169,7 +168,6 @@ pub fn validate_verdict(payload: &Map<String, Value>, workspace: Option<&str>) -
         }
         _ => problems.push("changed_files must be a list of file paths (relative to the working directory)".into()),
     }
-    // What the child left undone or found broken outside its brief: its parent settles each ([`left_items`]).
     let mut left: Vec<String> = Vec::new();
     match payload.get("left").unwrap_or(&null) {
         Value::Null => {}
@@ -228,7 +226,6 @@ pub fn verdict_tag(result: &Value) -> Option<String> {
     };
     let check = &result["check"];
     let list = |key: &str| check[key].as_array().cloned().unwrap_or_default();
-    // A spawn contract's verdict (Rust only: `rlm.spawn(contract=...)`), e.g. "contract contract_failed".
     let contract = check["contract"]["verdict"]
         .as_str()
         .map_or(String::new(), |verdict| format!("contract {verdict}"));

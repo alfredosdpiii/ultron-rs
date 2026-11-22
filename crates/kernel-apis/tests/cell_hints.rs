@@ -285,7 +285,7 @@ fn kernel_apis_hints_poll_loop_repeated_status_calls_or_sleeping_in_a_loop_aroun
         &[
             ("shell.get", json!({"id": "job-1"}), running.clone(), 10),
             ("shell.get", json!({"id": "job-1"}), running.clone(), 10),
-            ("shell.get", json!({"id": "job-1"}), running.clone(), 10),
+            ("shell.get", json!({"id": "job-1"}), running, 10),
         ],
         OK,
     );

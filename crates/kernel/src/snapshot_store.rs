@@ -141,7 +141,6 @@ impl SnapshotKeyring for SecretToolKeyring {
         let run = self.run(&args, None)?;
         match run.code {
             Some(0) => Some(Some(run.stdout)),
-            // secret-tool exits 1 silently when nothing matches, and 1 with a message when the service fails.
             Some(1) if run.stderr.trim().is_empty() => Some(None),
             _ => None,
         }
@@ -241,7 +240,6 @@ pub fn load_snapshot_key(
             warning: None,
         });
     }
-    // Nothing stored yet: move the file key into the keyring (so existing snapshots keep verifying), or make one.
     let key = if path.exists() {
         parse_key(&std::fs::read_to_string(&path).map_err(|e| e.to_string())?, &shown)?
     } else {

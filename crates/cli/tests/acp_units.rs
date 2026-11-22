@@ -129,7 +129,7 @@ fn cli_acp_events_become_updates() {
         end,
         vec![Action::CellEnded {
             id: "c1".into(),
-            args: args.clone(),
+            args,
             result: json!({"content": [{"type": "text", "text": "1"}]}),
             is_error: true
         }]

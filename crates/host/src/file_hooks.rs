@@ -347,7 +347,6 @@ fn re(pattern: &str) -> Regex {
     Regex::new(pattern).expect("static pattern")
 }
 
-// JavaScript's `\b` after `null` is "no ASCII word character next"; `\d` is ASCII.
 static DEV_NULL: LazyLock<Regex> = LazyLock::new(|| re(r"[0-9]*>>?\s*/dev/null(?![A-Za-z0-9_])"));
 static FD_DUP: LazyLock<Regex> = LazyLock::new(|| re(r"[0-9]*>&[0-9]+"));
 static WRITERS: LazyLock<[Regex; 5]> = LazyLock::new(|| {
@@ -533,7 +532,6 @@ impl FileHooks {
         let mut protected = Vec::new();
         for path in paths {
             let named = path.strip_prefix(home).unwrap_or(&path).to_string_lossy().into_owned();
-            // Through a symlinked home or profile, too.
             if let Ok(real) = std::fs::canonicalize(&path).or_else(|_| {
                 let parent = std::fs::canonicalize(path.parent().unwrap_or(&path))?;
                 Ok::<_, std::io::Error>(parent.join(path.file_name().unwrap_or_default()))
@@ -647,8 +645,6 @@ impl FileHooks {
         }
         if !watched {
             if sync::lock(&inner.latest).is_none() {
-                // No picture yet (a guard became interested mid-session): this cell's changes cannot be told apart;
-                // the next cell's are.
                 let picture = inner.picture();
                 let mut latest = sync::lock(&inner.latest);
                 if latest.is_none() {
@@ -656,7 +652,6 @@ impl FileHooks {
                 }
                 return;
             }
-            // Its start was not seen: compared with the latest picture.
             self.send(CellEvent::Started(lane.to_string(), None));
         }
         self.send(CellEvent::Ended(lane.to_string()));
@@ -812,7 +807,6 @@ impl Inner {
                 modified.retain(|relative| !unchanged(relative));
                 deleted.retain(|relative| !unchanged(relative));
             }
-            // Leave files matching another lane's checked write for that lane before claiming them.
             let owned_by_other = |relative: &String| {
                 let path = resolve_lexical(&after.root, relative);
                 let checked = sync::lock(&self.checked);
@@ -846,8 +840,6 @@ impl Inner {
             modified.retain(|relative| !theirs(relative));
             deleted.retain(|relative| !theirs(relative));
         }
-        // Checked writes outside the session directory (a sibling worktree) are in no snapshot; they are changes too,
-        // attributed only to the lane that performed them.
         let elsewhere: Vec<PathBuf> = {
             let mut checked = sync::lock(&self.checked);
             match checked.get_mut(lane) {
@@ -910,7 +902,6 @@ impl Inner {
             .map(|path| self.display(path))
             .collect();
         let changes = Arc::new(changes);
-        // Every watching guard starts at once; each is awaited with its own limit.
         let calls: Vec<_> = guards
             .into_iter()
             .map(|registered| {
@@ -1099,7 +1090,6 @@ impl Guard for FileHooks {
                     self.inner.cwd.clone(),
                     lane.to_string(),
                 );
-                // Started together; each answer is awaited below with its own limit.
                 let (sender, receiver) = channel();
                 std::thread::spawn(move || {
                     let _ = sender.send(timed(timeout, move || guard.before_write(&path, &content, &cwd, &lane)));
@@ -1156,7 +1146,6 @@ impl Guard for FileHooks {
             notes.extend(note);
         }
         if reasons.is_empty() {
-            // The write will happen with this content; an after-cell diff need not report it again.
             sync::lock(&self.inner.checked)
                 .entry(lane.to_string())
                 .or_default()

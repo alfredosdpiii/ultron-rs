@@ -50,7 +50,6 @@ pub fn parse_osc11_background_color(data: &str) -> Option<(u8, u8, u8)> {
         let channel = |i: usize| hex_channel(&hex[i * width..(i + 1) * width]);
         return Some((channel(0)?, channel(1)?, channel(2)?));
     }
-    // `replace(/^rgba?:/i, "")`.
     let strip = |prefix: &str| {
         value
             .get(..prefix.len())

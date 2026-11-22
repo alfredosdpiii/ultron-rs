@@ -82,7 +82,6 @@ fn render(lines: &mut Vec<String>, item: &Value, indent: &str, label: Option<&st
             }
         }
         Value::Object(map) => {
-            // `Object.entries`: array-index keys first, ascending, then insertion order.
             for (key, child) in jsrt::json::object_entries(map) {
                 render(lines, child, &inner, Some(key));
             }

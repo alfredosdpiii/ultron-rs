@@ -38,7 +38,6 @@ pub fn durable(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Wr
     match args.first().map(String::as_str) {
         Some("start") => {
             let session_dir = crate::session::session_directory_of(None, env, &instance);
-            // `--offline` and the `httpProxy` setting hold for the server it starts and its workers.
             let model = WorkerModel {
                 env: crate::startup::worker_env(&crate::startup::proxy_env(env)),
                 ..WorkerModel::default()

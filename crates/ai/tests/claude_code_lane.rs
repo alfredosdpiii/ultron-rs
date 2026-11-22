@@ -116,7 +116,7 @@ struct Recording(Mutex<Vec<String>>);
 
 impl ai::Transport for Recording {
     fn send(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, String>> {
-        self.0.lock().unwrap().push(request.url.clone());
+        self.0.lock().unwrap().push(request.url);
         Box::pin(async { Err("no network in tests".to_string()) })
     }
 }
@@ -172,7 +172,7 @@ fn ai_claude_code_lane_out_of_usage_never_spends_api_credits() {
     let router = router(&fake, &[("FAKE_NATIVE_ERROR", HIT_LIMIT)], &api, &agent);
     let (message, events) = on_router(&router, &claude_code("claude-haiku-5-5"), &with_tools()).expect("rerouted");
     assert_eq!(message.stop_reason, StopReason::Error);
-    let error = message.error_message.clone().unwrap_or_default();
+    let error = message.error_message.unwrap_or_default();
     assert!(error.contains("You've hit your session limit"), "{error}");
     assert!(!error.contains(KEY_HINT), "{error}");
     assert_eq!(kinds(&events), ["start", "error"]);

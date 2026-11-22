@@ -140,7 +140,7 @@ fn acceptance_a18_crash_during_dispatch_reopens_as_unknown_with_no_replay() {
     });
     let crashed = Arc::new(MemoryService::new(store.clone(), backend, keep_gate()).unwrap());
     let pending = {
-        let crashed = crashed.clone();
+        let crashed = crashed;
         std::thread::spawn(move || {
             crashed.propose(
                 &p(json!({"text": "in flight", "evidence": [{"ref": "task:1"}]})),

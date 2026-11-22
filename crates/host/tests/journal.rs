@@ -77,7 +77,7 @@ fn host_journal_job_done_events_follow_session_worker() {
             "fetch": "await rlm.job(\"job-0000abcd\")", "lane": "w1", "rootId": "root-7",
         }))
     );
-    let mut no_root = record.clone();
+    let mut no_root = record;
     no_root.root_id = None;
     assert!(job_event(&no_root, false, false).unwrap().get("rootId").is_none());
 }

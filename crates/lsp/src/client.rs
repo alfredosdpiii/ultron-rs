@@ -251,7 +251,6 @@ impl Client {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            // Its own group, so the server's helpers end with it.
             .process_group(0)
             .spawn()
             .map_err(|error| format!("{program}: {error}"))?;
@@ -374,7 +373,6 @@ impl Client {
 
     fn request(&self, method: &str, params: Value, deadline: Instant) -> Result<Value, Unready> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        // One request is out at a time: an answer still here belongs to a request that was given up on.
         sync::lock(&self.shared.state).responses.clear();
         let _ = self.out.send(frame(
             &json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }),
@@ -392,7 +390,6 @@ impl Client {
         *sync::lock(&self.settings) = settings.clone();
         let asked = {
             let mut state = sync::lock(&self.shared.state);
-            // Computed with the old settings.
             state.published.clear();
             state.configured
         };
@@ -456,10 +453,7 @@ impl Client {
         deadline: Instant,
     ) -> Result<Vec<Diagnostic>, Unready> {
         let mut docs = sync::lock(&self.docs);
-        // The other open documents follow the disk: `bash` may have changed one, and a write another guard
-        // refused never reached it.
         // ponytail: files the server has not open are left to the server's own watcher (gopls has none); send
-        // workspace/didChangeWatchedFiles from after-cell changes if stale answers show up.
         let others: Vec<PathBuf> = docs.keys().filter(|open| *open != path).cloned().collect();
         let reset = others.len() + 1 >= MAX_OPEN;
         for other in others {
@@ -494,7 +488,6 @@ impl Client {
             let response = self.request("textDocument/diagnostic", params, deadline)?;
             return match response.get("result") {
                 Some(result) => Ok(errors(result.get("items"))),
-                // "Content modified", "server cancelled": no answer, not a clean file.
                 None => Err(Unready::Slow),
             };
         }
@@ -509,8 +502,6 @@ impl Client {
             deadline
         };
         // ponytail: a publish without a version counts once it arrives after the change was sent; one computed
-        // for the text before it and delivered after would be taken for the answer. Servers that version their
-        // publishes (pyright, gopls) cannot be misread this way.
         let answer = self.wait(deadline, |state| {
             let last = state.published.get(path)?;
             let fresh = match last.version {
@@ -541,7 +532,6 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        // An exited server's pid may be someone else's by now.
         if !sync::lock(&self.shared.state).exited
             && let Some(pid) = i32::try_from(self.pid).ok().and_then(Pid::from_raw)
         {

@@ -280,7 +280,7 @@ fn kernel_tree_memory_watchdog_counts_and_kills_a_double_forked_hog() {
         tree_memory_limit_message(120, TreeMemoryBackend::Watchdog)
     );
     let pid = daemon_pid(&pid_file);
-    let _reaper = Reaper(pid, pid_file.clone());
+    let _reaper = Reaper(pid, pid_file);
     assert!(gone(pid), "the escaped daemon outlived the tree");
     assert_eq!(value(&kernel, "1 + 1"), "2");
 }
@@ -293,7 +293,7 @@ fn kernel_tree_memory_double_forked_daemon_is_adopted_and_stopped_with_the_kerne
     let cell = format!("{}\n'started'", double_fork(&pid_file, "import time\ntime.sleep(60)"));
     assert_eq!(value(&kernel, &cell), "'started'");
     let pid = daemon_pid(&pid_file);
-    let _reaper = Reaper(pid, pid_file.clone());
+    let _reaper = Reaper(pid, pid_file);
     // The kernel is a child subreaper, so the orphaned daemon is its child rather than init's.
     let kernel_pid = value(&kernel, "__import__('os').getpid()");
     assert_eq!(kernel_pid, stat(pid).unwrap().1.to_string());

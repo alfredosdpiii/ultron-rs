@@ -47,28 +47,24 @@ struct Shape {
 }
 
 const SHAPES: [Shape; 4] = [
-    // A subagent: about 20 model turns, each re-sending a transcript that grows to tens of thousands of tokens.
     Shape {
         kind: "child",
         requests: 20.0,
         input: 30_000.0,
         output: 1_500.0,
     },
-    // One `rlm.infer` / `rlm.map` frame: one request over the views it is given.
     Shape {
         kind: "frame",
         requests: 1.0,
         input: 4_000.0,
         output: 500.0,
     },
-    // One completion without tools (a predict task, a judge escalation).
     Shape {
         kind: "chat",
         requests: 1.0,
         input: 4_000.0,
         output: 1_000.0,
     },
-    // One judge decision: a short state and closed questions.
     Shape {
         kind: "judge",
         requests: 1.0,

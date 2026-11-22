@@ -88,7 +88,6 @@ impl SwarmOps {
         payload: &Map<String, Value>,
         signal: &Signal,
     ) -> Option<Result<Value, String>> {
-        // A kept child's verdict, when it was spawned with a contract (others go to the delegation host).
         if kind == "rlm.finish" {
             return self.contracts.as_ref()?.finish(lane, payload);
         }

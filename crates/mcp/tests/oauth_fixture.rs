@@ -162,8 +162,8 @@ fn mcp_oauth_sign_in_refresh_and_sign_out_match_typescript() {
         project_trusted: false,
         servers: None,
         env: ConnectionEnv {
-            cwd: cwd.clone(),
-            home: base.clone(),
+            cwd,
+            home: base,
             client_version: config::version().to_string(),
             provider_token: Some(Arc::new(move |provider: &str| {
                 (provider == "fakeprov").then(|| token.lock().unwrap().clone())

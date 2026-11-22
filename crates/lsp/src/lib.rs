@@ -135,8 +135,6 @@ impl Inner {
             });
         }
         if let Some(mise) = on_path("mise") {
-            // mise starts in `/`, and the server it runs changes into the project. Started in the project,
-            // `mise exec` marks the project's own mise.toml as trusted and runs the commands in it, unasked.
             let enter = ["--", "/bin/sh", "-c", r#"cd "$1" && shift && exec "$@""#, "sh"].map(String::from);
             let argv = [mise, "exec".into()]
                 .into_iter()
@@ -146,7 +144,6 @@ impl Inner {
                 .chain(args)
                 .collect();
             let mut env = self.env.clone();
-            // Install what is missing, whatever the user's mise settings say.
             env.push(("MISE_EXEC_AUTO_INSTALL".into(), "1".into()));
             out.push(Candidate {
                 argv,
@@ -204,7 +201,6 @@ impl LspGuard {
                 Ok(client) => Slot::Ready(Arc::new(client), 0),
                 Err(reason) => Slot::Failed(reason),
             };
-            // Unless it was given up on meanwhile.
             if let Some(known) = sync::lock(&inner.slots).by_key.get_mut(&key) {
                 *known = slot;
             }
@@ -269,13 +265,10 @@ impl LspGuard {
             }
         };
         drop(slots);
-        // Only the write that started a server waits for it to load the project.
         if !first && client.loading() {
             return Report::Starting { server, root };
         }
-        // An environment made after the server started (`uv sync` in a new worktree) is found by a later write.
         // ponytail: looked for only while none is known (the lookup runs `python`); one that moves or goes away
-        // needs a new session.
         let known = client.settings();
         if !first && server == "pyright" && known.pointer("/python/pythonPath").is_none() {
             let found = servers::settings(spec, &root, &|name| self.inner.var(name));
@@ -293,7 +286,6 @@ impl LspGuard {
             Err(Unready::Exited) => {
                 let mut slots = sync::lock(&self.inner.slots);
                 if slots.restarted.insert(key.clone()) {
-                    // The next write starts it again, once.
                     slots.by_key.remove(&key);
                     return Report::Unanswered { server };
                 }
@@ -320,7 +312,6 @@ impl LspGuard {
                 "{server} did not answer within {} s: {file} was not checked for errors.",
                 BUDGET.as_secs()
             )),
-            // Shown once, under a key no project root has.
             Report::Failed { server, reason } => once(server, PathBuf::new()).then(|| {
                 format!("no language server errors for files like {file}: {server} did not start ({reason}).")
             }),

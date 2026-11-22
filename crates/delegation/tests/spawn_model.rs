@@ -24,7 +24,7 @@ fn host(model_check: Option<ModelCheck>) -> (Delegation, Arc<Mutex<Vec<Option<St
     let models: Arc<Mutex<Vec<Option<String>>>> = Arc::default();
     let seen = models.clone();
     let runner: ChildRunner = Arc::new(move |run| {
-        seen.lock().unwrap().push(run.model.clone());
+        seen.lock().unwrap().push(run.model);
         Ok("done".into())
     });
     let mut options = DelegationOptions::new(runner);

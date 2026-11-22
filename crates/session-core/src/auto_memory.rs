@@ -40,7 +40,6 @@ use std::time::{Duration, Instant};
 
 use protocol::custom_types::RECALLED_MEMORY;
 /// How long a run waits for its recall.
-// Hindsight's local cross-encoder takes 1-6 s on a loaded machine; 2 s timed out nearly every recall.
 pub const RECALL_TIMEOUT: Duration = Duration::from_secs(5);
 /// After [`PAUSE_AFTER`] failed or slow recalls in a row, how long recall is skipped (a server that is down costs
 /// no turn its timeout): the memory clients' own outage pause.
@@ -146,7 +145,6 @@ impl AutoMemory {
         let (tx, rx) = std::sync::mpsc::channel();
         let signal = Signal::new();
         let (stack, query, cancel, brief) = (stack.clone(), text.to_string(), signal.clone(), !shown.digest);
-        // More than the limit, so memories already shown leave room for new ones.
         let wanted = RECALL_LIMIT + shown.ids.len().min(RECALL_LIMIT);
         std::thread::spawn(move || {
             if let Some(memory) = stack.memory() {
@@ -215,7 +213,6 @@ pub fn shown(entries: &[Value]) -> Shown {
                 shown.ids.insert(id.to_string());
             }
         }
-        // A string before the user's brief, the list of brief ids since.
         shown.digest |= details["digest"].is_string() || details["digest"].is_array();
     }
     shown

@@ -655,8 +655,6 @@ async fn drive(
             connect_timeout_ms,
             cache_session_id,
             account_id: &account_id,
-            // The continuation is used only where the caller asked for `auto` or `websocket-cached` (upstream reads
-            // `options.transport`, not its default).
             transport_kind: base.transport.as_deref().unwrap_or_default(),
             signal,
         };
@@ -717,9 +715,6 @@ async fn drive(
             break;
         }
     }
-    // The SSE body goes out zstd-compressed (`compressRequestBodyZstd`; the backend decodes `Content-Encoding:
-    // zstd`); the WebSocket frame above stays uncompressed, as the official Codex client sends it. The request
-    // carries the JSON and names the encoding; the transport encodes the bytes it sends (crate::http::wire_body).
     let mut headers = headers;
     headers.insert("content-encoding".into(), "zstd".into());
     let request = HttpRequest {

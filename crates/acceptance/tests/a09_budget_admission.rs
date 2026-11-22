@@ -36,7 +36,7 @@ fn budget(limits: UsageLimits) -> Budget {
     let nested: Arc<Mutex<Vec<Result<Value, String>>>> = Arc::default();
     let running = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
-    let (open, results, now, high) = (gate.clone(), nested.clone(), running.clone(), peak.clone());
+    let (open, results, now, high) = (gate.clone(), nested.clone(), running, peak.clone());
     let fixture = fixture(Options {
         usage: Some(usage.clone()),
         script: Some(Arc::new(move |lane, prompt, signal, host| {

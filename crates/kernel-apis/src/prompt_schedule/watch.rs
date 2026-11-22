@@ -184,7 +184,6 @@ impl GitHub {
                 let count = node["comments"]["totalCount"]
                     .as_u64()
                     .ok_or("missing thread comment count")?;
-                // Only unresolved thread metadata is needed. No comment bodies or instructions are included.
                 if !resolved {
                     threads.push(json!({"id": id, "comments": count}));
                 }

@@ -79,7 +79,6 @@ impl SessionsModule {
             .into_iter()
             .take(limit)
             .map(|metadata| {
-                // A session over the bound is listed from its header alone: its name and messages are not read.
                 let skipped = search::over_bound(&metadata, self.max_bytes).is_some();
                 let listing = (!skipped).then(|| session_journal::names::listing(metadata.clone()));
                 let m = &metadata;

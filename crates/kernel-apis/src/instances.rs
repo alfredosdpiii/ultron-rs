@@ -162,7 +162,6 @@ impl ApiModule for InstancesModule {
                 if host.strategy(&definition)? != "rlm" {
                     return Err("Only RLM tasks have a lane to retain".into());
                 }
-                // Lane names are deterministic, so a retained lane survives an owner restart.
                 let lane = host
                     .task_lane(&task_id)
                     .unwrap_or_else(|| format!("ultron.{}.{task_id}", definition.split('@').next().unwrap_or("")));
@@ -221,7 +220,7 @@ impl ApiModule for InstancesModule {
                     .as_array()
                     .is_some_and(|items| items.iter().any(|item| item["task_id"] == task["id"]));
                 if !invoked {
-                    let mut next = current.clone();
+                    let mut next = current;
                     if let Some(Value::Array(items)) = next["instances"][index].get_mut("invocations") {
                         items.push(json!({
                             "task_id": task["id"],

@@ -188,7 +188,6 @@ fn type_matches(name: &str, value: &Value) -> bool {
         "number" => value.is_number(),
         "null" => value.is_null(),
         "string" => value.is_string(),
-        // typebox's own type names, which no JSON value has.
         "bigint" | "constructor" | "function" | "symbol" | "undefined" | "void" => false,
         _ => true,
     }

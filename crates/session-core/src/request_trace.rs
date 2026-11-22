@@ -103,7 +103,6 @@ pub fn delta(previous: Option<(&str, &[Value])>, model: &str, current: &[Value])
         || previous[at + 1..].contains(c)
         || mentions_omission(c)
     {
-        // The same message with other content (`ctx.forget` stubs, context edits), or messages dropped.
         "context_edit"
     } else {
         "prefix_changed"
@@ -213,7 +212,6 @@ impl RequestTrace {
         lane_state.messages = messages;
         let mut text = Value::Object(line).to_string();
         text.push('\n');
-        // Never append after a possibly partial line: a failed write ends the trace.
         let failed = state
             .file
             .as_mut()
@@ -296,7 +294,6 @@ mod tests {
         assert_eq!(delta(None, M, &first), Delta::Start);
         let second = [system("S", &["rlm"]), user("a", 2), user("b", 3)];
         assert_eq!(delta(Some((M, &first)), M, &second), Delta::Append { base: 2 });
-        // A repeated request (a retry) appends nothing.
         assert_eq!(delta(Some((M, &second)), M, &second), Delta::Append { base: 3 });
     }
 
@@ -343,7 +340,6 @@ mod tests {
                 at: 2
             }
         );
-        // `ctx.forget`: the tool result's content replaced by the omission stub (same message, same timestamp).
         assert_eq!(
             reset(
                 &[
@@ -359,7 +355,6 @@ mod tests {
                 at: 2
             }
         );
-        // A message dropped from the middle.
         assert_eq!(
             reset(&[base[0].clone(), base[1].clone(), base[3].clone()], M),
             Delta::Reset {

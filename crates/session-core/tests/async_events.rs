@@ -442,7 +442,7 @@ fn session_core_async_events_aborted_roots_and_chain_budgets_survive_the_worker(
     assert!(next.dispatcher.root_aborted(Some(&aborted)));
     next.dispatcher.publish(RuntimeEvent {
         kind: "task_done".into(),
-        root_id: Some(aborted.clone()),
+        root_id: Some(aborted),
         ..event("t1")
     });
     next.dispatcher.drain();

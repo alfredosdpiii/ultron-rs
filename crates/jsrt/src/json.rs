@@ -460,11 +460,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // Literals printed by node 26.
-
     #[test]
     fn jsrt_json_preview_counts_utf16_units() {
-        // `"😀😀ab".length` is 6: four units of emoji, then two letters.
         assert_eq!(preview(&json!("😀😀ab"), 6), "😀😀ab");
         assert_eq!(preview(&json!("😀😀abc"), 6), "😀😀a…");
         assert_eq!(preview(&json!({"a": " x\n\ty "}), 100), r#"{"a":" x\n\ty "}"#);
@@ -473,8 +470,6 @@ mod tests {
 
     #[test]
     fn jsrt_json_preview_flattens_javascript_whitespace() {
-        // `text.replace(/\s+/g, " ").trim()` treats U+FEFF as whitespace and U+0085 as text (node:
-        // "a﻿b\u0085c" -> "a b\u0085c").
         assert_eq!(preview(&json!(" a\u{feff}b\u{85}c\n"), 100), "a b\u{85}c");
     }
 

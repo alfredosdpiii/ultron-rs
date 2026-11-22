@@ -237,7 +237,6 @@ fn acceptance_a56_print_mode_follows_the_run_a_completion_event_starts_and_print
     // The job may end only after the first turn's answer was requested: the test releases it then.
     let watcher = {
         let requests = provider.requests.clone();
-        let go = go.clone();
         std::thread::spawn(move || {
             common::wait_until("the first turn answered", || requests.lock().unwrap().len() >= 2);
             std::fs::write(go, "").unwrap();

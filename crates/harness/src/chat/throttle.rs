@@ -43,7 +43,6 @@ impl<T: Send + 'static> Throttle<T> {
                     if guard.stopped {
                         return;
                     }
-                    // The first mark of a window waits out the interval; later marks replace the value.
                     let deadline = Instant::now() + interval;
                     loop {
                         let now = Instant::now();

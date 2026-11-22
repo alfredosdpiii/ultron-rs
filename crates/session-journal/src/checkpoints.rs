@@ -46,7 +46,6 @@ pub fn for_entry(session: &Session, entry_id: &str) -> Option<(String, Value)> {
     let all = list(session);
     let state = session.state();
     let mut current = Some(entry_id.to_string());
-    // A cycle cannot occur in a valid journal; the bound only guards a corrupt one.
     for _ in 0..=state.entries().len() {
         let id = current?;
         if let Some(found) = all.iter().rev().find(|(_, value)| value["entryId"] == id.as_str()) {

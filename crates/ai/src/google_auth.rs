@@ -160,7 +160,6 @@ pub async fn request_headers(env: Option<&ProviderEnv>, transport: &dyn Transpor
     }
     .map_err(|f| f.message)?;
     let token = match &credential {
-        // `JWT.getRequestMetadataAsync`: outside the default universe, a self-signed JWT with the scopes.
         Credential::ServiceAccount {
             email,
             key,
@@ -278,7 +277,6 @@ fn impersonated(json: &Value) -> Result<Credential, Fail> {
             format!("Target principal is too long: {url}"),
         ));
     }
-    // `/(?<target>[^/]+):(generateAccessToken|generateIdToken)$/`
     let target = ["generateAccessToken", "generateIdToken"].iter().find_map(|method| {
         let head = url.strip_suffix(method)?.strip_suffix(':')?;
         let name = head.rsplit('/').next().unwrap_or(head);
@@ -290,7 +288,6 @@ fn impersonated(json: &Value) -> Result<Credential, Fail> {
             format!("Cannot extract target principal from {url}"),
         ));
     };
-    // `new Impersonated`: the source's universe, unless one is set explicitly, which must then match it.
     let universe = match external::camel_option(json, "universe_domain").filter(|v| jsrt::value::truthy(Some(v))) {
         None => source.universe(),
         Some(explicit) => {
@@ -525,7 +522,6 @@ async fn metadata_available(env: Option<&ProviderEnv>, transport: &dyn Transport
     if explicit_host {
         return Ok(primary.await.is_ok());
     }
-    // `fastFailMetadataRequest`: the first of the two hosts to answer.
     let secondary = metadata_get(
         transport,
         format!("{}/instance", metadata_base(env, Some(METADATA_SECONDARY_HOST))),

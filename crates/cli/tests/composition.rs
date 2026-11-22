@@ -436,7 +436,7 @@ fn cli_composition_cell_calls_the_memory_api_on_the_injected_backend() {
     let repo = session_journal::SessionRepo::new(&root, session_journal::SystemClock::shared());
     let created = repo.create(&sandbox.cwd.display().to_string(), None, None).unwrap();
     let open = session_core::core::OpenOptions {
-        env: env.clone(),
+        env,
         flags: session_core::ModelFlags {
             model: Some(MODEL.into()),
             ..Default::default()
@@ -574,7 +574,7 @@ fn cli_composition_auto_memory_recalls_before_a_user_message() {
     let repo = session_journal::SessionRepo::new(&root, session_journal::SystemClock::shared());
     let created = repo.create(&sandbox.cwd.display().to_string(), None, None).unwrap();
     let open = session_core::core::OpenOptions {
-        env: env.clone(),
+        env,
         flags: session_core::ModelFlags {
             model: Some(MODEL.into()),
             ..Default::default()

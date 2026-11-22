@@ -12,7 +12,6 @@ const NO_MATCH: FuzzyMatch = FuzzyMatch {
     score: 0.0,
 };
 
-// Indices are UTF-16 code units, as in TS, because they feed the score.
 fn match_query(query: &[u16], text: &[u16]) -> FuzzyMatch {
     if query.is_empty() {
         return FuzzyMatch {

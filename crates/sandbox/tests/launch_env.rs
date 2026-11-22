@@ -86,7 +86,7 @@ fn sandbox_w17e_the_launcher_binary_is_found_on_the_session_path_and_started_wit
         command_env(&command),
         vec![
             ("DOCKER_HOST".to_string(), Some("unix:///fake.sock".to_string())),
-            ("PATH".to_string(), Some(path.clone())),
+            ("PATH".to_string(), Some(path)),
         ]
     );
     let persistent = launcher.command_persistent(&["true".into()], project.path()).unwrap();

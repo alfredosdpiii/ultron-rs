@@ -39,7 +39,10 @@ fn harness_error(error: harness::scheduler::HarnessError) -> String {
 }
 
 /// Open the durable runtime over the session journal; its turns report to the actor through `tx`.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal wiring helper; parameters match distinct caller inputs"
+)]
 pub(super) fn open_durable(
     session: &SharedSession,
     tx: &Sender<Input>,
@@ -63,7 +66,6 @@ pub(super) fn open_durable(
         .map_err(|e| e.message().to_string())?;
     let auto_retry = Arc::new(AtomicBool::new(true));
     let retry = auto_retry.clone();
-    // settings.json's `retry` (`getRetrySettings`); `set_auto_retry` turns it off for the session.
     let retry_settings = config::settings::SettingsManager::for_worker(&env.cwd, &env.agent_dir(), &env.home)
         .settings()
         .get("retry")
@@ -81,8 +83,6 @@ pub(super) fn open_durable(
         settings.follow_up_mode = mode(follow_up);
     });
     let root_session = Arc::new(std::sync::OnceLock::new());
-    // A subagent's model cost (`task.cost`: what its lane's responses reported), for the line its end leaves on the
-    // cell that returns it (`onTaskEnd` -> `contextControl.taskEnded`, root-level subagents only).
     let child_costs: ChildCosts = Arc::default();
     let (ended_costs, ended_stack) = (child_costs.clone(), Arc::downgrade(&lane.stack));
     lane.stack.delegation.on_task_end(Arc::new(move |task: &Value| {
@@ -94,7 +94,6 @@ pub(super) fn open_durable(
         }
     }));
     let context = child_context.clone();
-    // Subagent lanes get clock lines and result footers as the root does (`clockLane`); typed agents and frames do not.
     let clock = lane::clock_enabled(env).then(|| lane::clock_zone(env));
     let started = lock_session(session).metadata().created_at;
     let footers = (lane.stack.config().result_footer && started > 0).then_some(started);
@@ -134,15 +133,13 @@ pub(super) fn open_durable(
             fallback_system: crate::compose::Stack::system,
         },
     );
-    // A subagent stopped by the gate fails with its root's limit text (`withLimitReason`).
     let (limit_children, limit_stack) = (children.clone(), Arc::downgrade(&lane.stack));
     lane.stack.delegation.set_limit_reason(Arc::new(move |task: &str| {
         let stack = limit_stack.upgrade()?;
         let root = limit_children.usage_root_of_lane(&lanes::lane_names::child_lane(task), &stack.agents);
         stack.usage.turn_budget_exhausted(root.as_deref()).ok().flatten()
     }));
-    // `ctx` may trim a child conversation instead of compacting it (`before_compaction`).
-    let trims = child_context.clone();
+    let trims = child_context;
     options.hooks.before_compaction = Some(Arc::new(move |conversation, tokens, threshold| {
         trims.before_compaction(conversation, tokens, threshold)
     }));
@@ -170,8 +167,6 @@ pub(super) fn open_durable(
 /// `withClockLines` over a request's messages: a clock line before each user message that opens the conversation or
 /// follows a gap (derived from the messages' own timestamps, never stored).
 fn add_clock_lines(messages: &mut Vec<ai::Message>, zone: &jsrt::localtime::Zone) {
-    // The positional system prompt sections are no message of the conversation (TypeScript's system prompt is
-    // not in the lane's messages): they neither get a line nor count as the message before one.
     let values: Vec<Value> = messages
         .iter()
         .map(|message| match message {
@@ -248,8 +243,6 @@ pub fn child_chat_options(
     let stream_provider = provider.clone();
     let settings: harness::chat::SettingsSource = Arc::new(move || {
         let mut settings = Settings {
-            // A generation's checkpoint pins the stream options requests carry now, as the operation journal's
-            // `streamOptions` (`providerRequestOptions`).
             stream: stream_provider
                 .stream_options()
                 .and_then(|options| options.as_object().cloned())
@@ -260,7 +253,6 @@ pub fn child_chat_options(
             },
             partial_interval_ms: NO_PARTIALS_MS,
             tool_execution: ToolExecution::Parallel,
-            // As the TypeScript agent loop: a steer continues the run before any follow-up is taken.
             follow_up_after_steer: true,
             ..Settings::default()
         };
@@ -303,7 +295,6 @@ pub fn child_chat_options(
         stack: lane.stack.clone(),
         children: children.clone(),
     };
-    // A child conversation's system prompt is its subagent's (the root's request is built by its owner).
     let (section_children, section_stack) = (children.clone(), lane.stack.clone());
     let sections: harness::chat::SectionSource = Arc::new(move |conversation, _| {
         let mut sections = indexmap::IndexMap::new();
@@ -323,8 +314,6 @@ pub fn child_chat_options(
     let request_gate = gate.clone();
     options.hooks.gate_request = Some(Arc::new(move |run| request_gate.before_request(run)));
     options.hooks.gate_tool = Some(Arc::new(move |run, call| gate.before_tool(run, call)));
-    // A child conversation compacts at its threshold as a TypeScript lane does (the harness's default policy; the
-    // root's compactions are its owner's).
     options.hooks.compaction = Some(Arc::new(|conversation| {
         Some(CompactionPolicy {
             enabled: conversation != ROOT_CONVERSATION_ID,
@@ -389,7 +378,6 @@ impl Core {
 
     /// Queue every queued message that is not waiting in the runtime's inbox yet (a run is in progress).
     pub(super) fn submit_queued(&mut self) -> Result<(), String> {
-        // A message queued for the next run waits for it in the lane's inbox, never in the runtime's.
         let pending: Vec<Queued> = sync::lock(&self.queues)
             .items
             .iter()
@@ -507,8 +495,6 @@ impl Core {
             when_busy: WhenBusy::FollowUp,
             request_id: Some(prompt_entry.to_string()),
         };
-        // The agent loop polls steering once before its first request (`runLoop`): the first queued steer (every
-        // one when steering is `all`) is placed after the prompt, in the run's first request.
         let steering: Vec<(String, SubmissionDraft)> = {
             let queues = sync::lock(&self.queues);
             let steers = queues
@@ -562,7 +548,6 @@ impl Core {
             self.spawn_waiter();
             return;
         }
-        // The run may finish: its last checkpoint compacts first when the context crossed the threshold.
         if self.may_finish() {
             let _ = self.checkpoint_compaction();
         }
@@ -580,7 +565,6 @@ impl Core {
         let Some(operation) = run.journal.run().map(|r| r.operation_id().to_string()) else {
             return false;
         };
-        // At the checkpoint, or in a compaction there that a dead worker left (it compacts again).
         lock_session(&self.session)
             .value(session_journal::ns::OP_STATE, &operation)
             .is_some_and(|state| {
@@ -638,8 +622,6 @@ impl Core {
     /// progress (`fromTipId`): the run is split by entry, so a context edit that omits or replaces an entry on
     /// either side never moves the boundary.
     fn context_entries(&self, source_tip: Option<&str>) -> Result<(Vec<Value>, usize), String> {
-        // Borrowed walks: this runs before every request, and a long session's branch from the root is far larger
-        // than its context (only the entries from the newest compaction are copied).
         let session = lock_session(&self.session);
         let before: std::collections::HashSet<&str> = session
             .state()
@@ -652,7 +634,6 @@ impl Core {
             .iter()
             .take_while(|entry| entry["id"].as_str().is_some_and(|id| before.contains(id)))
             .count();
-        // A compaction during the run: its summary and kept messages are the history, the run goes on after it.
         if split == 0 && entries.first().is_some_and(|entry| entry["type"] == "compaction") {
             split = 1;
         }
@@ -701,8 +682,6 @@ impl Core {
         if let Ok(Some(kept)) = self.context.transform_context(MAIN_LANE, &history) {
             history = kept;
         }
-        // The clock lines are placed over the history and the run's first message (a compaction during the run
-        // leaves the run nothing before its next answer).
         let first = run.first().cloned();
         history.extend(first.clone());
         if lane::clock_enabled(&self.env)
@@ -724,7 +703,6 @@ impl Core {
         if self.runtime.config.result_footer && started > 0 {
             lane::add_result_footers(&mut messages, started);
         }
-        // Old view_image results beyond the image budget leave the request (image-budget.ts).
         crate::view_images::apply_image_budget(&mut messages, self.runtime.config.context_images);
         Ok(messages)
     }
@@ -750,10 +728,7 @@ impl Core {
         let Some(run) = self.run.as_ref() else {
             return answer.give(Err(StartError::Request("No run is in progress".into())));
         };
-        // The run's prompt (admitted with the run) is announced first, then the checkpoint before the request
-        // compacts when due (crate::core::auto_compact).
         if run.prompt_pending {
-            // The queued messages its admission placed come first, as they are on the branch (already committed).
             let (captured, run_id) = (run.captured.clone(), run.id.clone());
             for message in captured {
                 self.emit(WatchEvent::MessageStart {
@@ -785,8 +760,6 @@ impl Core {
             return answer.give(Err(StartError::Request("No run is in progress".into())));
         };
         let source_tip = run.journal.run().and_then(|r| r.source_tip().map(str::to_string));
-        // Placed users the transcript already holds (the prompt, or what an earlier attempt of this request took),
-        // also when a compaction during the run keeps them in its retained tail (a retried request).
         let mut committed: Vec<String> = match self.context_messages(source_tip.as_deref()) {
             Ok(messages) => {
                 let start = messages
@@ -812,7 +785,6 @@ impl Core {
             }
         }
         let turn = self.run.as_ref().map_or(0, |r| r.turns) + 1;
-        // The queued messages the runtime placed for this request are the newest fresh users, in placement order.
         let placed = self.take_placed(turn);
         let queued_from = fresh.len().saturating_sub(placed.len());
         let skip = placed.len().saturating_sub(fresh.len());
@@ -824,7 +796,6 @@ impl Core {
             self.on_agent_event(AgentEvent::MessageStart { message });
             self.user_message_end(value, queued);
         }
-        // The root lane's context reminder follows its model and compaction settings as of this request.
         let settings = self.compaction_settings();
         self.lane.stack.context_reminders.set_limit(
             MAIN_LANE,
@@ -875,7 +846,6 @@ impl Core {
             .map(|entry| entry["message"].clone())
             .unwrap_or(Value::Null);
         let cancelled = state["control"]["status"] == "cancel_requested";
-        // An overflow compaction the worker died in compacts again at the next checkpoint, before the request.
         let resume_overflow = session_journal::run::Run::open_compaction(&lock_session(&self.session), operation_id)
             .filter(|open| open.reason == "overflow")
             .map(|open| open.resume_after);
@@ -893,7 +863,6 @@ impl Core {
             .children
             .set_root(self.lane.stack.agents.usage_root_for_lane(MAIN_LANE, operation_id));
         self.branches.run_started();
-        // Per-turn guard times start from zero (`fileHooks.beginTurn()` on the root lane's `run_start`).
         self.lane.stack.host.begin_turn();
         self.run = Some(Running {
             id: id.clone(),
@@ -920,13 +889,12 @@ impl Core {
             started_at: now_ms(),
             lane: MAIN_LANE.into(),
         });
-        // A prompt admitted to the transcript but not to the runtime is submitted now (idempotent by its entry).
         if submission.is_none() && !cancelled {
             self.durable.bridge.clear();
             let draft = SubmissionDraft::Input {
                 content: prompt["content"].clone(),
                 when_busy: WhenBusy::FollowUp,
-                request_id: Some(prompt_entry.clone()),
+                request_id: Some(prompt_entry),
             };
             let submitted = self.durable.root.submit(draft).map_err(harness_error)?;
             if let Some(run) = self.run.as_mut() {
@@ -963,8 +931,6 @@ impl Core {
         let bridge = self.durable.bridge.clone();
         let mut position = 0;
         let mut pending_users: Vec<Message> = Vec::new();
-        // The round whose answer the transcript holds: its calls, the results reported before the worker died, and
-        // whether the bridge knows the round yet.
         let mut round: Option<HeldRound> = None;
         for (kind, message) in harness_messages {
             let role = message["role"].as_str().unwrap_or_default().to_string();
@@ -994,7 +960,6 @@ impl Core {
                         round = Some((calls, Vec::new()));
                         continue;
                     }
-                    // The answer of a generation whose start the transcript never saw.
                     round = None;
                     bridge.request(Request::Generation {
                         users: std::mem::take(&mut pending_users),
@@ -1010,7 +975,6 @@ impl Core {
                     let call_id = message["toolCallId"].as_str().unwrap_or_default().to_string();
                     if let Some((calls, mut done)) = round.take() {
                         if !unreported.contains(&call_id) {
-                            // Reported before the worker died: its result is pending in the operation's batch.
                             done.push((
                                 call_id,
                                 AgentToolResult {

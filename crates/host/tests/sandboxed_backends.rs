@@ -259,7 +259,7 @@ fn host_sandboxed_backends_worktree_variables_reach_the_command() {
                 "ultron/s1/child".to_string(),
             ),
         ];
-        let host = host(&tree, mechanism, false).with_env(worktree.clone());
+        let host = host(&tree, mechanism, false).with_env(worktree);
         let print = r#"printf '%s|%s|%s' "$ULTRON_WORKTREE" "$ULTRON_PARENT_REPO" "$ULTRON_WORKTREE_BRANCH""#;
         let expected = format!("{}|/parent/repo|ultron/s1/child", tree.project.display());
         let result = call(&host, "bash", json!({ "command": print }));

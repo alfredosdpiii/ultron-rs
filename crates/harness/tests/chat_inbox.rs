@@ -168,7 +168,7 @@ fn harness_chat_inbox_reads_queue_modes_when_the_final_boundarys_commit_runs_on_
             .define()
             .unwrap();
         let occupying = {
-            let root = root.clone();
+            let root = root;
             spawn(move || {
                 root.commit(|tx| {
                     let doc = tx.doc(&marker, Owner::Session)?;

@@ -1,7 +1,7 @@
 //! A one-shot latch for tests that must hold a fake (a slow clipboard, a blocked sink) until the test releases it,
 //! instead of sleeping and hoping the caller wins the race. The wait is bounded only by a hang guard.
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;

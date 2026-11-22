@@ -291,7 +291,7 @@ fn durable_session_tables_create_conversations_entries_and_tasks_with_minted_ids
         assert_eq!(kinds, ["conversation", "entry", "entry", "task"]);
         assert!(
             changes.contains(&durable::CommitChange::Table(durable::StorageWrite::Conversation {
-                value: conversation.clone()
+                value: conversation
             }))
         );
         assert!(

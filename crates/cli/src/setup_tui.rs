@@ -55,9 +55,6 @@ struct Screen {
 impl Screen {
     fn start(env: &Env) -> std::io::Result<Screen> {
         let (sender, events) = mpsc::channel();
-        // One stdin reader for the process, feeding the screen started last: the first-run selector's screen and
-        // the wizard's that follows it must not both read the terminal (the first would swallow the wizard's keys).
-        // It stops reading while no setup screen runs (`stop`), so the session TUI that may follow owns stdin.
         *INPUT_SINK.lock().unwrap_or_else(|e| e.into_inner()) = Some(sender.clone());
         INPUT_PAUSED.store(false, std::sync::atomic::Ordering::SeqCst);
         INPUT_PUMP.call_once(|| {
@@ -406,7 +403,6 @@ impl TuiSetupUi {
                 }
             }
             self.paint(Slot::Dialog(&mut dialog));
-            // Ctrl+C stops the login as Esc does (`quit` cancels the dialog).
             let data = match self.screen.next(Duration::from_millis(100)) {
                 Some(Ev::Input(data)) => data,
                 Some(Ev::Closed) => return Err(SetupQuit),
@@ -432,7 +428,6 @@ impl TuiSetupUi {
 impl SetupUi for TuiSetupUi {
     fn heading(&mut self, title: &str) {
         self.transcript.push(Entry::Heading(title.into()));
-        // Painted with the next frame: TS coalesces notes into one render.
     }
 
     fn note(&mut self, text: &str, tone: Tone) {
@@ -452,7 +447,6 @@ impl SetupUi for TuiSetupUi {
             let data = match data {
                 Ok(data) => data,
                 Err(quit) => {
-                    // Ctrl+C: TS paints the cleared slot and what follows in one frame.
                     return Err(quit);
                 }
             };
@@ -780,7 +774,6 @@ fn start_oauth(env: Env, provider: String, reach: String, signal: AbortSignal, s
             config::auth::AuthStorage::create(auth)
                 .modify(&provider, |_| Some(credential.to_json()))
                 .map(|_| ())
-                .map_err(|e| e.to_string())
         })();
         let _ = send.send(Ev::Login(LoginMsg::Done(outcome)));
     });
@@ -832,7 +825,6 @@ pub fn show_startup_selector(env: &Env, title: &str, options: &[&str]) -> std::i
             break None;
         }
     };
-    // `clearStartupTui`: an empty frame, then stop.
     screen.paint(Vec::new());
     screen.stop();
     Ok(answer)

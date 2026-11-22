@@ -126,7 +126,6 @@ impl Converter {
         if index < content.len() {
             content[index] = block;
         } else {
-            // Upstream assigns into a sparse array; the protocol always appends in order.
             content.push(block);
         }
     }
@@ -309,8 +308,6 @@ impl Converter {
                         partial: partial(self),
                     }
                 }
-                // Upstream passes an unknown event on (`{ ...event, partial }`); the closed event type here has no
-                // place for it, and no consumer acts on one.
                 _ => return Ok(None),
             },
         ))
@@ -340,7 +337,6 @@ async fn read_events(
     let mut decoder = Utf8Stream::default();
     let mut buffer = String::new();
     loop {
-        // The body errors once the request is aborted; frames already read are still delivered.
         let (text, done) = match next_chunk::<Failure>(response.body.as_mut(), signal).await? {
             Some(bytes) => (decoder.push(&bytes), false),
             None => (decoder.finish(), true),

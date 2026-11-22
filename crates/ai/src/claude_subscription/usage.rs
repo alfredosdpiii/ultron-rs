@@ -36,7 +36,6 @@ pub fn rate_limits_from_event(event: &Value) -> Option<ClaudeRateLimits> {
                 num(window.get("utilization")),
                 num(window.get("resetsAt")),
             );
-            // An object key appears once; a repeated name keeps its first position (JS property order).
             match windows.iter_mut().find(|(n, _, _)| n == name) {
                 Some(slot) => *slot = entry,
                 None => windows.push(entry),

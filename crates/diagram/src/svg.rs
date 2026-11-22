@@ -190,7 +190,6 @@ impl VarScope<'_> {
             out.push_str(&rest[..at]);
             let inner_start = at + 4;
             let Some(end) = closing_paren(rest, inner_start) else {
-                // Unbalanced: keep the text as it is.
                 out.push_str(&rest[at..]);
                 return out;
             };
@@ -398,7 +397,6 @@ fn flatten_tag(tag: &str, scope: &VarScope<'_>) -> String {
         return tag.to_string();
     }
     let resolved = replace_color_mix(&scope.resolve(tag));
-    // Drop the custom-property declarations from style attributes (and a style left empty).
     let mut out = String::with_capacity(resolved.len());
     let mut rest = resolved.as_str();
     while let Some(at) = rest.find(" style=\"") {

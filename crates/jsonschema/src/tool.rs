@@ -31,7 +31,6 @@ pub fn prepare_tool_arguments(
 pub fn validate_tool_arguments(name: &str, schema: &Value, args: &Value) -> Result<Value, String> {
     let mut value = args.clone();
     normalize_optional_nulls(&mut value, schema);
-    // TypeScript discards `Convert`'s return value: only the in-place conversion of an object schema's object counts.
     if value.is_object()
         && schema["type"] == "object"
         && schema["properties"].is_object()

@@ -53,7 +53,6 @@ pub fn read_line(input: &mut dyn Input, echo: &mut dyn Write, stop: &dyn Fn() ->
                 }
                 0x03 => return LineRead::Cancelled,
                 0x1b => match bytes.get(i) {
-                    // An escape sequence (an arrow or function key): skipped. CSI ends at a final byte, SS3 after one.
                     Some(b'[') => {
                         i += 1;
                         while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
@@ -65,7 +64,6 @@ pub fn read_line(input: &mut dyn Input, echo: &mut dyn Write, stop: &dyn Fn() ->
                     _ => return LineRead::Cancelled,
                 },
                 0x7f | 0x08 => {
-                    // One character back: a UTF-8 sequence's continuation bytes go with it.
                     while line.last().is_some_and(|b| b & 0xc0 == 0x80) {
                         line.pop();
                     }

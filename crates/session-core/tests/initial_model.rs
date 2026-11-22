@@ -152,7 +152,7 @@ fn session_core_model_flag_resolves_fuzzy_patterns_and_a_thinking_suffix() {
     assert_eq!(config["thinkingLevel"], "high");
     let explicit = ModelFlags {
         thinking: Some("low".into()),
-        ..fuzzy.clone()
+        ..fuzzy
     };
     assert_eq!(lane_config(&explicit, &env, None).unwrap().0["thinkingLevel"], "low");
     // No suffix: the settings' level.

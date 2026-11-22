@@ -346,7 +346,6 @@ fn text_runs(svg: &str, tag: (usize, usize), close: usize, parent: &Inherited) -
         lines: Vec::new(),
     };
     let mut own_runs: Vec<Run> = Vec::new();
-    // The current line, and which run it belongs to (None: the text element's).
     let mut line = Line {
         x: number(text_tag, "x").unwrap_or(0.0),
         y: number(text_tag, "y").unwrap_or(0.0),
@@ -429,7 +428,6 @@ fn line_box(line: &Line) -> (f64, f64, f64, f64) {
         "end" => line.x - width,
         _ => line.x,
     };
-    // The middle of the glyphs: a little in from each side, from the x-height to the baseline.
     let (x0, x1) = (left + width * 0.1, left + width * 0.9);
     let (y0, y1) = (line.y - size * 0.7, line.y - size * 0.1);
     let corners = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)].map(|(x, y)| line.style.transform.apply(x, y));

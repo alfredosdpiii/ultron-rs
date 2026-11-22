@@ -67,7 +67,6 @@ impl<R: Read> LineReader<R> {
             return Ok(None);
         }
         if line.last() != Some(&b'\n') {
-            // An unterminated final line is dropped, as the TypeScript readers never see its newline.
             if line.len() > MAX_CONTROL_LINE_BYTES {
                 return Err(io::Error::other("Control message is too large"));
             }

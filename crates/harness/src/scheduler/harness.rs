@@ -118,7 +118,6 @@ pub fn safe_now(now: Option<FallibleClock>, report: Report) -> Clock {
         match read {
             Ok(value) => value,
             Err(error) => {
-                // Set first: a report handler that reads the clock again must not report again.
                 if !reported.swap(true, Ordering::SeqCst) {
                     report(&error);
                 }
@@ -154,7 +153,6 @@ impl Harness {
                 .unwrap_or_else(|| Arc::new(withdraw_queued_inputs)),
         });
         if let Err(error) = scheduler.open() {
-            // A failing Storage close fails the Session, which reports it.
             let _ = session.close();
             scheduler.join();
             return Err(error);
@@ -293,7 +291,6 @@ impl Harness {
     pub fn close(&self) -> Result<()> {
         let result = self.session.close();
         self.scheduler.join();
-        // A Storage that cannot close is a failed one; an earlier failure stays the cause and is what is reported.
         self.scheduler.report_failure();
         result.map_err(HarnessError::Session)
     }

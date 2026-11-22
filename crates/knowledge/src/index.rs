@@ -45,7 +45,6 @@ fn blobs_at(repo_dir: &Path, rev: &str) -> Result<Vec<(String, String, u64)>, Er
     let mut entries = Vec::new();
     for record in listing.split(|&byte| byte == 0).filter(|record| !record.is_empty()) {
         let record = String::from_utf8_lossy(record);
-        // `<mode> SP <type> SP <object> SP+ <size> TAB <path>`
         let Some((meta, path)) = record.split_once('\t') else {
             continue;
         };
@@ -85,7 +84,6 @@ fn read_blobs(repo_dir: &Path, oids: &[String]) -> Result<Vec<Vec<u8>>, Error> {
         .take()
         .ok_or_else(|| Error("git cat-file: no stdin".into()))?;
     let input = oids.join("\n") + "\n";
-    // Written from a thread: git answers while it reads, and a full pipe either way would deadlock.
     let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
     let stdout = child
         .stdout
@@ -145,7 +143,6 @@ pub fn index_tree(db: &Path, repo: &str, repo_dir: &Path, rev: &str) -> Result<I
     let unread_oids: Vec<String> = unread.iter().map(|(_, oid)| oid.clone()).collect();
     for ((path, oid), body) in unread.iter().zip(read_blobs(repo_dir, &unread_oids)?) {
         let Some(lang) = language(path) else { continue };
-        // A file that is not UTF-8 is not source anyone reads; it is stored with nothing extracted.
         let extracted = match String::from_utf8(body) {
             Ok(text) => extractor.extract(lang, &text),
             Err(_) => Default::default(),
@@ -242,7 +239,6 @@ pub fn relations(
     let unread_oids: Vec<String> = unread.iter().map(|(_, oid)| oid.clone()).collect();
     let mut read = Vec::with_capacity(unread.len());
     for ((path, oid), body) in unread.iter().zip(read_blobs(repo_dir, &unread_oids)?) {
-        // Text that is not UTF-8 is not source: recorded as read, with nothing in it.
         let proposed = String::from_utf8(body)
             .map(|text| crate::relations::propose(path, &text))
             .unwrap_or_default();

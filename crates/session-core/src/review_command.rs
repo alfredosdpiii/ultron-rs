@@ -9,7 +9,6 @@
 /// `reviewPrompt`: the model-facing prompt for `/review <args>`.
 pub fn review_prompt(args: &str) -> String {
     let trimmed = jsrt::string::trim(args);
-    // A JSON string literal is a valid Python string literal for any argument text.
     let literal = serde_json::to_string(trimmed).unwrap_or_else(|_| "\"\"".into());
     let mut lines = vec![
         if trimmed.is_empty() {

@@ -264,7 +264,6 @@ mod tests {
         std::fs::write(&keep, b"real-snapshot").unwrap();
         std::fs::write(&log, br#"{"type":"session"}"#).unwrap();
 
-        // Dry run with 0-second orphan grace and 30-day stale cutoff only targets the orphan.
         let dry = collect(agent, Duration::from_secs(30 * 86_400), Duration::ZERO, true);
         assert_eq!(dry.orphan_files, 1);
         assert_eq!(dry.orphan_bytes, 11);
@@ -272,14 +271,12 @@ mod tests {
         assert_eq!(dry.stale_sessions, 0);
         assert!(orphan.exists());
 
-        // Real run with 0-second orphan grace removes only the orphan; keeps recent snapshot and log.
         let live = collect(agent, Duration::from_secs(30 * 86_400), Duration::ZERO, false);
         assert_eq!(live.orphan_files, 1);
         assert!(!orphan.exists());
         assert!(keep.exists());
         assert!(log.exists());
 
-        // Real run with 0-second stale cutoff removes the snapshot dir and session log too.
         let all = collect(agent, Duration::ZERO, Duration::ZERO, false);
         assert_eq!(all.stale_dirs, 1);
         assert_eq!(all.stale_sessions, 1);

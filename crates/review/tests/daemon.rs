@@ -870,7 +870,7 @@ fn review_daemon_records_reviewing_and_waiting_queue_lines() {
         assert!(*open && !timeout.timed_out());
     }));
     let (instance, outcomes) = daemon(&context);
-    let store = context.deps.store.clone();
+    let store = context.deps.store;
     let worker = std::thread::spawn(move || instance.once());
     starts.recv_timeout(GUARD).expect("a review started");
     wait_until("the queue lines", || {
@@ -1061,7 +1061,7 @@ fn review_daemon_a_finished_decision_starts_its_review() {
     let told = Mutex::new(told);
     let instance = Daemon::new(DaemonDeps {
         reviewer: context.deps.clone(),
-        accounts: vec![context.account.clone()],
+        accounts: vec![context.account],
         sleep: None,
         on_outcome: Some(Arc::new(move |candidate, outcome: &Reported| {
             let _ = told
@@ -1167,7 +1167,7 @@ fn review_daemon_large_reviews_leave_a_slot_to_the_rest() {
             .push(Notification::new("review_requested", number));
     }
     let gated = Arc::new(SizeGatedEngine {
-        inner: engine.clone(),
+        inner: engine,
         large: vec!["o/r#1".into(), "o/r#2".into()],
         gate: Mutex::new(SizeGate::default()),
         changed: Condvar::new(),

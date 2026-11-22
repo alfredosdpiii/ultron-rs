@@ -239,7 +239,6 @@ pub fn toggle_command(prompt: &str) -> Option<(&'static str, String)> {
         "persona" => matches!(args.as_str(), "on" | "off" | "auto" | ""),
         _ => matches!(args.as_str(), "on" | "off" | ""),
     };
-    // Without the slash only an explicit argument makes it a command ("persona" alone is a word).
     (known && (prompt.trim().starts_with('/') || !args.is_empty())).then_some((command, args))
 }
 
@@ -309,11 +308,9 @@ pub fn after_run(state: &mut SessionPersona, end: &RunEnd, now: i64, limits: Lim
         return Next::Stop;
     }
     if end.pending_input {
-        // The waiting input runs next; a user's message ends the mode when it arrives.
         return Next::Stop;
     }
     if end.tool_calls == 0 && !stretch.worked {
-        // A run that only reported: the final report.
         state.keep_going = None;
         return Next::Stop;
     }
@@ -370,18 +367,13 @@ fn patterns() -> &'static [Regex; 5] {
     static PATTERNS: OnceLock<[Regex; 5]> = OnceLock::new();
     PATTERNS.get_or_init(|| {
         [
-            // "don't stop", "do not stop", "don't ever stop": what follows is checked by `stop_tail`.
             Regex::new(r"\b(?:don'?t|do not)(?: ever)? stop\b").expect("pattern"),
-            // "keep going", "keep on going".
             Regex::new(r"\bkeep (?:on )?going\b").expect("pattern"),
-            // "continue until you're done", "keep working till it's finished", "work until done".
             Regex::new(
                 r"\b(?:continue|carry on|go on|keep working|work|keep at it) (?:until|till|til|'til|untill) (?:(?:you(?:'re| are)?|it(?:'s| is)|everything(?:'s| is)|the (?:work|task|job)s? (?:is|are)) )?(?:all )?(?:done|finished|complete|completed|finish|finishing|through)\b",
             )
             .expect("pattern"),
-            // "work through the night", "work overnight".
             Regex::new(r"\bwork (?:through the night|all night|overnight)\b").expect("pattern"),
-            // The user says they will be away: "I'm going to sleep", "im gonna sleep", "I'll be away".
             Regex::new(
                 r"\bi(?:'m| am|m) (?:going to|gonna|off to|about to|heading to) (?:go to )?(?:sleep|bed)\b|\bi(?:'m| am|m) (?:going|heading) to bed\b|\bi(?:'ll| will|ll) be (?:away|afk|offline|asleep|gone|out)\b|\bi(?:'m| am|m) (?:away|afk|stepping away|heading out|logging off)\b",
             )
@@ -473,7 +465,6 @@ pub fn trigger(prompt: &str) -> Option<String> {
             let (before, rest) = (&clause[..found.start()], &clause[found.end()..]);
             let ok = match index {
                 0 => addressed(before) && stop_tail(rest),
-                // The user's own away message is about them, not an instruction.
                 4 => true,
                 _ => addressed(before),
             };

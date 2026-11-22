@@ -89,7 +89,6 @@ fn nonempty_json(value: &Value) -> bool {
 }
 
 fn evidence_value(value: Option<&Value>) -> Result<Value, String> {
-    // As for refinement activation, a skill needs nonempty evidence of the decomposition that worked.
     let value = value
         .filter(|value| nonempty_json(value))
         .ok_or("evidence must be nonempty JSON (what worked, and where)")?;
@@ -369,7 +368,6 @@ impl CodeSkills {
             .tempdir()
             .map_err(|error| error.to_string())?;
         let report_path = work.path().join(format!(".report-{}.json", jsrt::random::uuid_v4()));
-        // A copy, so the test can never alter the version it is judging.
         let dir = work.path().join("candidate");
         std::fs::create_dir(&dir).map_err(|error| error.to_string())?;
         std::fs::write(dir.join("skill.py"), source).map_err(|error| error.to_string())?;
@@ -504,14 +502,14 @@ impl CodeSkills {
             let record = object(vec![
                 ("version", next.into()),
                 ("kind", kind.as_str().into()),
-                ("family", family.clone()),
+                ("family", family),
                 ("state", "proposed".into()),
                 ("createdAt", at().into()),
                 (
                     "sha256",
                     json!({"skill": jsrt::hash::sha256_hex(source.as_bytes()), "test": jsrt::hash::sha256_hex(test_source.as_bytes())}),
                 ),
-                ("evidence", evidence.clone()),
+                ("evidence", evidence),
                 ("previous", Value::Null),
                 ("secretCheck", secret_check.clone()),
                 ("test", Value::Null),
@@ -538,7 +536,6 @@ impl CodeSkills {
             .position(|item| item["version"] == version)
             .ok_or_else(|| format!("Code skill {name} lost version {version}"))?;
         entries[index]["test"] = report.clone();
-        // Regenerate SKILL.md now that the docstring is known.
         let directory = base.join(".versions").join(version.to_string());
         std::fs::write(directory.join("SKILL.md"), skill_markdown(&name, &entries[index]))
             .map_err(|error| error.to_string())?;

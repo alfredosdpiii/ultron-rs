@@ -309,7 +309,7 @@ fn delegation_cell_outliving_its_budget_detaches_or_cancels() {
             .run("main", "time.sleep(3600)", Duration::from_millis(50))
             .unwrap(),
     );
-    let (lanes, id) = (r.lanes.clone(), cell.clone());
+    let (lanes, id) = (r.lanes.clone(), cell);
     let started = Instant::now();
     let cancelled = std::thread::spawn(move || lanes.cancel(&id, "stop"))
         .join()
@@ -384,7 +384,7 @@ fn delegation_in_cell_collect_holds_the_cell_unparked_and_honours_timeout_ms() {
             "rlm.collect: timed out after 50 ms with 1 subagent(s) still running ({id}); they keep running. `await rlm.results()` returns the results of those that ended and the ids still running; collect again to wait more.\n"
         )
     );
-    assert_eq!(r.host.running("main"), vec![id.clone()]);
+    assert_eq!(r.host.running("main"), vec![id]);
     let started = r
         .lanes
         .start_routed(

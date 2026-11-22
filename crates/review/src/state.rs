@@ -304,7 +304,6 @@ fn normalize(value: &Value) -> AutoreviewState {
         for (key, pull) in pulls {
             let Value::Object(fields) = pull else { continue };
             let mut fields = fields.clone();
-            // attempts and findings of the wrong type read as empty.
             if !matches!(fields.get("attempts"), Some(Value::Object(_))) {
                 fields.insert("attempts".into(), Value::Object(Default::default()));
             }
@@ -405,8 +404,6 @@ impl StateStore {
         }
         let local = process_lock(&self.path);
         let _local = local.lock().unwrap_or_else(|e| e.into_inner());
-        // Another process (another `ultron autoreview`) may hold it: retried as proper-lockfile does (50 times,
-        // 20 ms apart).
         let _lock = match take_lock(&format!("{}.lock", self.path), STATE_STALE_MS, 51, None) {
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 return Err(Error::Other(format!("Lock file is already being held: {}", self.path)));
@@ -430,8 +427,6 @@ impl StateStore {
             let excess = pull.attempts.len().saturating_sub(MAX_ATTEMPT_SHAS);
             pull.attempts.drain(..excess);
         }
-        // Nothing changed (a poll re-marking a closed pull request, say): no write. Each poll updates the state of
-        // every pull request it sees, ~70 whole-file rewrites of 0.3 MB on 2026-10-21, about 15 GB a day.
         let text = format!("{}\n", to_json_1(&state));
         if before.as_deref() == Some(text.as_str()) {
             return Ok(result);
@@ -456,7 +451,6 @@ impl StateStore {
         change: impl FnOnce(&mut PullState, &mut AutoreviewState) -> T,
     ) -> Result<T, Error> {
         self.update(|state| {
-            // A new entry goes last; an existing one keeps its place (as a JavaScript object key does).
             let mut pull = std::mem::take(state.pulls.entry(key.into()).or_default());
             let result = change(&mut pull, state);
             state.pulls.insert(key.into(), pull);

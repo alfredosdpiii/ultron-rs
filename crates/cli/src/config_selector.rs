@@ -223,7 +223,10 @@ pub struct ConfigSelector {
 }
 
 impl ConfigSelector {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal wiring helper; parameters match distinct caller inputs"
+    )]
     pub fn new(
         global: &ResolvedPaths,
         project: &ResolvedPaths,

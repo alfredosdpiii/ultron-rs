@@ -46,8 +46,6 @@ pub trait MemoryBackend: Send + Sync {
     fn get(&self, document_id: &str, signal: &Signal) -> std::result::Result<Value, String>;
     fn delete(&self, document_id: &str, signal: &Signal) -> std::result::Result<Value, String>;
     fn operation(&self, operation_id: &str, signal: &Signal) -> std::result::Result<Value, String>;
-    // Rust-only calls past memory.ts's document endpoints (automatic memory, `memory.reflect`,
-    // `memory.invalidate`); a backend without them answers UNSUPPORTED_API.
     /// One memory unit (a fact or an observation) by id.
     fn unit(&self, _unit_id: &str, _signal: &Signal) -> std::result::Result<Value, String> {
         Err("UNSUPPORTED_API".into())
@@ -67,8 +65,6 @@ pub trait MemoryBackend: Send + Sync {
     fn create_mental_model(&self, _request: &Value, _signal: &Signal) -> std::result::Result<Value, String> {
         Err("UNSUPPORTED_API".into())
     }
-    // Claim curation (memorantado; Hindsight answers UNSUPPORTED_API). A claim is `{id, key, kind, text, tags,
-    // metadata, status, lastConfirmedAt, createdAt}`; `curate` above is the invalidation.
     /// The claims of exactly `tags` (`{tags, status?, confirmedBefore?, sort?: "confirmed", limit?}`):
     /// `{claims: [claim]}`, least recently confirmed first with `sort: "confirmed"`.
     fn list(&self, _request: &Value, _signal: &Signal) -> std::result::Result<Value, String> {
@@ -115,8 +111,6 @@ pub fn worker_gate() -> MemoryGate {
             return Ok(json!({"retrieve": true, "probability": 1}));
         }
         let text = request["text"].as_str().unwrap_or_default();
-        // A typed record's situation, key and globs are checked too (they reach later sessions as pointers), and
-        // so are the quotes of its evidence (kept beside it in Hindsight).
         let typed = request["situation"].as_str().unwrap_or_default();
         let action =
             if host::secrets::contains_sensitive_memory(text) || host::secrets::contains_sensitive_memory(typed) {
@@ -366,7 +360,6 @@ fn evidence_refs(value: &Value) -> Result<Vec<Value>> {
         .map(|item| {
             let map = item.as_object().ok_or(MemoryError::code(ErrorCode::InvalidInput))?;
             let sha = map.get("sha256");
-            // A session span (`session://<id>#<from>..<to>`) must parse: dreaming reads it back.
             let span = map
                 .get("ref")
                 .and_then(Value::as_str)
@@ -669,7 +662,6 @@ fn read_journal(value: &Value, namespace: &str) -> Result<Vec<Value>> {
                 return Err(INVALID);
             }
             if let Some(supersedes) = op.get("supersedes") {
-                // Only an earlier claim on the same document can be superseded.
                 let target = operations.iter().find(|other| other.get("id") == Some(supersedes));
                 let valid = kind == "correct"
                     && supersedes.as_str().is_some_and(|id| ids.contains(id))
@@ -1213,7 +1205,6 @@ impl MemoryService {
         } else {
             jsrt::sync::lock(&self.inner).reuse.get(&key).cloned()
         };
-        // A cache hit is still scope-checked and returns the one recorded decision, not a new one.
         if let Some(reused) = reused {
             let tags = self.tags(scope)?;
             let recorded = &reused["operation"]["tags"];
@@ -1230,7 +1221,6 @@ impl MemoryService {
             ],
         )?;
         let prepared = self.attempt(&id, signal, || {
-            // Resolved inside the attempt so an unconfigured scope is a recorded denial.
             let tags = self.tags(scope)?;
             let request = json!({"action": "recall", "query": query, "scope": scope, "taskId": task_id});
             let decision = gate_decision(&(self.gate)(&request, signal).map_err(|_| MemoryError::code(ErrorCode::OperationError))?, true)?;
@@ -1253,7 +1243,6 @@ impl MemoryService {
             check_abort(signal)?;
             let items = response.get("results").and_then(Value::as_array).ok_or(MemoryError::code(ErrorCode::InvalidResponse))?;
             let records = jsrt::sync::lock(&self.inner).records.clone();
-            // A backend index or cache can lag a delete: never re-inject a document the user asked to forget.
             let forgotten: HashSet<String> = records
                 .iter()
                 .filter(|op| op["kind"] == "forget" && matches!(op["state"].as_str(), Some("forgotten" | "unknown")))
@@ -1287,7 +1276,6 @@ impl MemoryService {
                     .filter(|class| EVIDENCE_CLASSES.contains(class))
                     .map(str::to_string);
                 if let (Some(_), Some(memory_id)) = (owned, memory_id) {
-                    // The local journal outranks a backend that still returns forgotten or replaced text.
                     if Self::withdrawn(&records, memory_id) {
                         excluded.push(json!({"id": item_id, "memoryId": memory_id, "reason": "forgotten"}));
                         continue;
@@ -1654,7 +1642,6 @@ impl MemoryService {
                 "trigger": {
                     "refresh_after_consolidation": true, "min_refresh_interval_seconds": 3600, "mode": "delta",
                     "budget": "low", "tags_match": "any_strict",
-                    // From memories only: a brief that reads briefs keeps their stale lines after the facts go.
                     "exclude_mental_models": true,
                 },
             });
@@ -1665,7 +1652,6 @@ impl MemoryService {
         }
         let content = model.get("content").and_then(Value::as_str).map(jsrt::string::trim);
         Ok(content.filter(|content| !content.is_empty()).map(|content| {
-            // A backend without a model of its own names who wrote it (`writer`: dreaming); Hindsight names none.
             let mut brief = json!({"id": id, "content": content, "refreshedAt": model.get("last_refreshed_at").cloned().unwrap_or(Value::Null)});
             if let Some(writer) = model.get("writer").and_then(Value::as_str) {
                 brief["writer"] = writer.into();
@@ -1685,7 +1671,6 @@ impl MemoryService {
         let tags = self.tags(scope)?;
         self.load()?;
         let text = text.as_str().unwrap_or("");
-        // A key names one record per scope: proposing it again replaces that record.
         let existing = match typed.as_ref().and_then(|typed| typed.key.as_deref()) {
             Some(key) => self
                 .records
@@ -1695,7 +1680,7 @@ impl MemoryService {
         };
         let written = match existing {
             Some(entry) if self.journal_owns(&entry.id) => {
-                let memory_id = entry.id.clone();
+                let memory_id = entry.id;
                 self.locked(&memory_id, || {
                     self.retain(
                         "correct",
@@ -1711,9 +1696,8 @@ impl MemoryService {
                     )
                 })?
             }
-            // A record another session wrote: a new claim on the same document replaces its text.
             Some(entry) => {
-                let memory_id = entry.id.clone();
+                let memory_id = entry.id;
                 self.locked(&memory_id, || {
                     self.retain(
                         "propose",
@@ -1751,13 +1735,11 @@ impl MemoryService {
         require_text(&text)?;
         let (evidence, quotes) = split_evidence(payload.get("evidence").unwrap_or(&Value::Null))?;
         let refs = evidence_refs(&evidence)?;
-        // A user correction is a user statement, not independently verified tool evidence.
         let class = evidence_class_of(payload.get("evidenceClass"), "user_statement")?;
         self.load()?;
         let (scope, tags) = self.owned(&id)?;
         let memory_id = id.as_str().unwrap_or("").to_string();
         let text = text.as_str().unwrap_or("");
-        // A typed record keeps its type, and with it its content cap.
         let typed = self.indexed(&memory_id).map(|entry| entry.typed);
         if typed
             .as_ref()
@@ -1782,7 +1764,10 @@ impl MemoryService {
         Ok(self.index_written(written, typed.as_ref(), text))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal wiring helper; parameters match distinct caller inputs"
+    )]
     fn retain(
         &self,
         kind: &str,
@@ -1838,7 +1823,6 @@ impl MemoryService {
                 return Err(MemoryError::code(ErrorCode::UnsupportedApi));
             }
             let memory_id = memory_id.map(str::to_string).unwrap_or_else(jsrt::random::uuid_v4);
-            // Persist the document handle and deduplication key BEFORE dispatch.
             self.update(
                 &id,
                 vec![
@@ -1863,7 +1847,6 @@ impl MemoryService {
                     .iter()
                     .map(|quote| json!({"path": quote.path, "quote": quote.quote}))
                     .collect();
-                // Hindsight metadata values are strings.
                 metadata["ultron_quotes"] = Value::Array(quotes).to_string().into();
             }
             let spans: Vec<&Value> = evidence
@@ -1881,7 +1864,6 @@ impl MemoryService {
                     "content": text,
                     "document_id": memory_id,
                     "tags": tags,
-                    // Hindsight consolidates only within exactly these tags, never across scopes.
                     "observation_scopes": [tags],
                     "update_mode": "replace",
                     "metadata": metadata,
@@ -1903,7 +1885,6 @@ impl MemoryService {
                 return self.update(&id, vec![("state", "stored".into()), ("operationIds", json!([]))]);
             }
             let response_id = response["operation_id"].as_str();
-            // Hindsight sends `operation_ids: null` for a single-group retain.
             let ids: Vec<Value> = match response.get("operation_ids") {
                 None | Some(Value::Null) => response_id.map(|id| vec![Value::from(id)]).unwrap_or_default(),
                 Some(Value::Array(ids)) => ids.clone(),
@@ -1934,7 +1915,6 @@ impl MemoryService {
         let (scope, tags) = self.owned(&id)?;
         let memory_id = id.as_str().unwrap_or("").to_string();
         let outcome = self.forget_owned(&memory_id, scope, tags, signal);
-        // A requested forget outranks the backend (see `withdrawn`): the typed record stops pointing at it too.
         if Self::withdrawn(&jsrt::sync::lock(&self.inner).records, &memory_id) && self.indexed(&memory_id).is_some() {
             let _ = self.records.remove(&memory_id);
         }
@@ -1981,8 +1961,6 @@ impl MemoryService {
         let entry = self.indexed(&memory_id);
         let (scope, tags) = match (self.owned(&id), &entry) {
             (Ok(owned), _) => owned,
-            // A typed record another session (or `ultron memory import`) wrote: read from the backend by its index
-            // entry, which this session's journal cannot record (it holds only its own documents).
             (Err(error), Some(entry)) if error.code == ErrorCode::UnknownMemory => {
                 return self.get_indexed(entry, signal);
             }
@@ -2052,7 +2030,6 @@ impl MemoryService {
                         receipts.push((operation_id.clone(), status.to_string()));
                     }
                     let has = |status: &str| receipts.iter().any(|(_, s)| s == status);
-                    // A failed member cannot release an edit while another write might run.
                     let state = if has("not_found") {
                         "unknown"
                     } else if has("pending") || has("processing") {
@@ -2231,8 +2208,6 @@ pub fn handle(
     if !payload_valid(kind, payload) {
         return Err(format!("Invalid memory request: {kind}"));
     }
-    // Over a curating backend (memorantado) a call's claim is at most tool evidence: only the host (dreaming's
-    // checks) marks one verified. Over Hindsight the TypeScript contract stands: a caller may name any class.
     if service.backend.supports("claims") && payload.get("evidenceClass").and_then(Value::as_str) == Some("verified") {
         return Err(format!(
             "{kind}: evidenceClass \"verified\" is set only by the host's checks (dreaming), not by a call"

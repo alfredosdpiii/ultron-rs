@@ -172,7 +172,6 @@ fn link_target(target: &str, tag: &str) -> String {
 /// `normalizeChangelogLinks`: every inline link `[text](target)` (and image) pinned to `v<version>`.
 pub fn normalize_links(markdown: &str, version: (u64, u64, u64)) -> String {
     let tag = format!("v{}.{}.{}", version.0, version.1, version.2);
-    // `(!?\[[^\]\n]+\]\()([^\s)]+)((?:\s+[^)]*)?\))`
     let re = fancy_regex::Regex::new(r"(!?\[[^\]\n]+\]\()([^\s)]+)((?:\s+[^)]*)?\))").expect("link pattern");
     let mut out = String::new();
     let mut last = 0;

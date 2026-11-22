@@ -3,7 +3,7 @@
 //! on it (and the close frame the relay sends before the gateway closed), and lets a test send text, binary and close
 //! frames or drop the connection. Waits are on channels with a 120 s hang guard; nothing sleeps.
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use serde_json::{Value, json};
 use std::io::{Read, Write};

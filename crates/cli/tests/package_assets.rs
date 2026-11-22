@@ -695,7 +695,7 @@ fn cli_package_runs_that_read_no_package_files_install_nothing() {
     });
     assert_eq!(listed.status.code(), Some(0));
     assert!(assets::verified(&outside.installed()));
-    daemon_common::assert_none_mentioning(&[outside.root.clone(), writer.root.clone()], HANG_GUARD);
+    daemon_common::assert_none_mentioning(&[outside.root, writer.root], HANG_GUARD);
 }
 
 /// A provider whose first non-naming request is answered only once `release` is sent; `received` reports it.

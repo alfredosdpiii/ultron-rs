@@ -39,8 +39,6 @@ pub fn lane_events(event: &WatchEvent) -> Vec<LaneEvent> {
                     Queued {
                         entry_id: item.entry_id.clone(),
                         kind: item.kind,
-                        // client-tui-chat.ts `#syncQueues`: a message's user text (none for another role), else
-                        // `<customType>`.
                         text: match &item.message {
                             Some(m) if user => protocol::pi_message::text(m),
                             _ if message => String::new(),
@@ -55,7 +53,6 @@ pub fn lane_events(event: &WatchEvent) -> Vec<LaneEvent> {
         WatchEvent::CompactionStart { reason, .. } => LaneEvent::CompactionStarted {
             reason: reason_or_manual(reason),
         },
-        // A manual compaction's failure answers its operation; an automatic one that left no entry ends here.
         WatchEvent::CompactionEnd {
             reason, status, error, ..
         } if reason != "manual" && *status != Ended::Completed => LaneEvent::CompactionEnded {
@@ -105,7 +102,6 @@ pub fn lane_events(event: &WatchEvent) -> Vec<LaneEvent> {
             Some(level) => LaneEvent::Thinking(level.to_string()),
             None => return Vec::new(),
         },
-        // An aborted run is not a failure the TUI reports.
         WatchEvent::RunEnd { status, error, .. } => LaneEvent::OperationEnded {
             error: (*status == Ended::Failed)
                 .then(|| error.as_ref().map(|e| e.message.clone()))

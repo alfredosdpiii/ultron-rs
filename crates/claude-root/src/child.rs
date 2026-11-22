@@ -172,7 +172,6 @@ pub fn fold_stream_line(line: &str, stats: &mut StreamStats) -> Option<Map<Strin
         && let Some(body) = message.get("message")
         && let Some(content) = body.get("content").and_then(Value::as_array)
     {
-        // Claude Code streams one message per content block; blocks of one response share its id.
         let messages = stats.messages.get_or_insert_with(HashSet::new);
         let id = body
             .get("id")
@@ -306,12 +305,10 @@ pub fn run_claude_child(
     for name in PARENT_ONLY_ENV {
         command.env_remove(name);
     }
-    // A subagent server's own verdict token never reaches its children (TypeScript deletes it from the env).
     command.env_remove(host::PARENT_TOKEN_ENV);
     let mut child = command.spawn().map_err(|e| e.to_string())?;
     if let Some(mut stdin) = child.stdin.take() {
         let prompt = run.prompt.clone();
-        // A child that stops reading must not block the run (child.ts `stdin.end(prompt)`).
         std::thread::spawn(move || {
             let _ = stdin.write_all(prompt.as_bytes());
         });

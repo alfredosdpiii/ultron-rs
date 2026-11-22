@@ -48,7 +48,6 @@ pub fn cap_output_tokens(mut payload: Value, limit: u64, api: &str, provider: &s
             capped |= cap_field(holder, "maxTokens", limit_f, 1.0);
         }
     }
-    // Anthropic requires max_tokens above the thinking budget (itself at least 1024).
     let max_tokens = number(body.get("max_tokens"));
     if let (Some(Value::Object(thinking)), Some(max_tokens)) = (body.get_mut("thinking"), max_tokens)
         && thinking.get("type").and_then(Value::as_str) == Some("enabled")

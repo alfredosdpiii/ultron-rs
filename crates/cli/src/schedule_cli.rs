@@ -115,7 +115,6 @@ fn list_schedules(env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result
     let mut rows: Vec<(bool, i64, String)> = Vec::new();
     for (meta, schedules) in scan_sessions(&dir) {
         for s in schedules {
-            // A failure recorded for the slot still pending; one for an earlier slot is stale.
             let error = errors
                 .get(&(meta.id.clone(), s.id.clone()))
                 .filter(|(_, _, due)| s.active() && s.next_due == Some(*due))
@@ -168,7 +167,6 @@ fn cancel_schedule(env: &Env, target: &str, out: &mut dyn Write) -> Result<i32, 
             }
         }
     }
-    // An id names one schedule; a name may be in use in several sessions.
     if let Some(i) = matches.iter().position(|(_, s)| s.id == target) {
         matches = vec![matches.swap_remove(i)];
     }

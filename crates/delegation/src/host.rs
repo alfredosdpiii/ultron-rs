@@ -297,7 +297,6 @@ fn worktree_changes(record: &WorktreeRecord, baseline: Option<&WorkspaceSnapshot
                 } else {
                     path.strip_prefix(&format!("{prefix}/"))
                 };
-                // Outside the pictured directory nothing is known: keep it.
                 inside.is_none_or(|inside| baseline.entries.get(inside) != now.entries.get(inside))
             })
             .collect(),
@@ -691,9 +690,7 @@ impl Delegation {
                     }
                     return Ok(out);
                 }
-                // `timeout_ms` (0 or absent: no bound) ends the wait with the children still running named.
                 let timeout = collect_timeout(payload.get("timeout_ms"))?;
-                // An in-cell wait is never parked: the cell is not detached, so its result reaches the model.
                 let outcomes = self.wait_until(&ids, timeout, cancel);
                 if outcomes.len() < ids.len() {
                     if let Some(reason) = cancel.and_then(Signal::reason) {
@@ -839,13 +836,12 @@ impl Delegation {
                         return Err(format!("Unknown RLM child: {id}"));
                     }
                 }
-                selectors.clone()
+                selectors
             }
         };
         if (1..children.len()).any(|i| children[..i].contains(&children[i])) {
             return Err("rlm.merge: a child is listed twice".into());
         }
-        // Every child ends first: parked (the lane detaches the cell) unless the lane waits in its cell.
         let running = self.unfinished(&children);
         let park = cell
             .park
@@ -961,7 +957,6 @@ impl Delegation {
                 base: info["base"].as_str().unwrap_or_default().to_string(),
                 commit: info["commit"].as_str().map(String::from),
             };
-            // A child spawned with `cwd=` merges into the repository its worktree branched from.
             let target = info["repo"].as_str().map_or(target, Path::new);
             let outcome = match wt::merge_child_worktree(target, &source, on_conflict == "markers") {
                 Ok(outcome) => outcome,
@@ -1026,7 +1021,6 @@ impl Delegation {
                     }
                 }
                 other => {
-                    // Merged or empty: its worktree and branch have done their job.
                     let record_error = record.and_then(|mut record| {
                         if !self.inner.keep_worktrees {
                             wt::remove_child_worktree(&record, true);
@@ -1186,7 +1180,6 @@ impl Delegation {
                 "rlm.spawn depth={child_depth} is too deep here: at most {max_child_depth} (ULTRON_SPAWN_DEPTH={limit} levels in all)."
             ));
         }
-        // A named model must be `provider/model` and one the session can run: never silently the root's model.
         let model = match kwargs.get("model") {
             Some(value @ Value::String(_)) => {
                 let model = model_scope::model_ref(value)?;
@@ -1197,7 +1190,6 @@ impl Delegation {
             }
             _ => self.child_model(),
         };
-        // A `timeout_ms` that is not a number is the default (native-host.ts `typeof === "number"`).
         let timeout_ms = crate::timeout_ms(kwargs.get("timeout_ms").filter(|t| t.is_number()))?;
         let fork_at = match fork_hook.filter(|_| fork) {
             Some(hook) => {
@@ -1205,7 +1197,6 @@ impl Delegation {
             }
             None => None,
         };
-        // The worktree branches from the spawner's tree (or `cwd=`'s) as it is now, before the child is admitted.
         let worktree = self.new_worktree(mode, &name, setup.as_ref(), cwd.clone().or(spawner_dir))?;
         let thinking = match kwargs.get("thinking").map(model_scope::thinking_level) {
             None => None,
@@ -1223,7 +1214,6 @@ impl Delegation {
             "model": model,
             "timeout_ms": timeout_ms,
         });
-        // A contract is part of what was asked (a spawn without one keeps the TypeScript fingerprint).
         if let Some(contract) = &contract {
             fingerprinted["contract"] = contract.describe();
         }
@@ -1248,12 +1238,9 @@ impl Delegation {
                 }
             };
             let id = record["id"].as_str().unwrap_or_default().to_string();
-            // Running in the journal before it exists in memory: a child whose start could not be written is never
-            // listed as running with nothing to run it (rlm.collect and the turn would wait on it until close).
             let record = match state.journal.transition(&id, "running", None) {
                 Ok(running) => running,
                 Err(error) => {
-                    // The failed write poisons the journal; reopening it records the admitted task interrupted.
                     if let Some(record) = &worktree {
                         wt::remove_child_worktree(record, true);
                     }
@@ -1300,7 +1287,6 @@ impl Delegation {
             let state = sync::lock(&self.inner.state);
             let inherited = state.worktree_of(Some(&task_id));
             let note = worktree.as_ref().map(wt::worktree_brief_note);
-            // The role and the checks the host will run lead the brief.
             let prompt = match &contract {
                 Some(contract) => contract.prompt(&prompt),
                 None => prompt,
@@ -1469,7 +1455,6 @@ impl Delegation {
             let Some(again) = run.as_mut() else {
                 return Some(None);
             };
-            // Again, with what failed appended to its brief, on a verdict of its own.
             if let Some(task) = sync::lock(&self.inner.state).task_mut(id) {
                 task.verdict = None;
                 task.verdict_rejections = 0;
@@ -1534,7 +1519,6 @@ impl Delegation {
                 state.worktree_of(Some(id)).map(wt::worktree_env).unwrap_or_default(),
             )
         };
-        // The snapshot of its start, else (a child reattached after a restart) the kept Git baseline.
         let diff = match (&before, &baseline, &workspace) {
             (Some(before), _, Some(_)) => diff_snapshots(before, &snapshot_workspace(&before.root)).ok(),
             (None, Some(baseline), Some(workspace)) => baseline.changes(workspace, &self.inner.command_env).ok(),
@@ -1566,7 +1550,6 @@ impl Delegation {
         if let Some(record) = &own {
             wt::run_setup_command(record, Some(signal)).map_err(|e| e.message)?;
         }
-        // Workspace checks keep a Git baseline too, for a host that reattaches the child after a restart.
         let git_baseline = match (&workspace, needs_baseline) {
             (Some(w), true) => GitBaseline::capture(w, &self.inner.command_env),
             _ => None,
@@ -1756,7 +1739,6 @@ impl Delegation {
             }
             let task = state.task_mut(id).ok_or("Unknown Ultron task")?;
             task.finishing = true;
-            // Only the first party to end a task aborts its work, and before finalizing it, as cancel() does in TS.
             if result["status"] == "cancelled" {
                 task.signal.abort(result["error"].as_str().unwrap_or("cancelled"));
             }
@@ -1812,9 +1794,6 @@ impl Delegation {
                 Ok(_) => None,
                 Err(error) => return Err(error),
             };
-            // Queued in the critical section that ends the task: to anyone holding the state lock a child is
-            // either running or has its end queued. Sent after the lock, the session's activity check could run
-            // in between, see neither, and retire an unattached worker with the child's end never delivered.
             if let Some(event) = &event {
                 let _ = self
                     .inner
@@ -2011,7 +1990,6 @@ impl Delegation {
 
     /// `rlm.progress`: each of `ids` still running, with its level and forecasts ([`crate::progress::report`]).
     fn progress(&self, ids: &[String]) -> Vec<Value> {
-        // Read under the lock; the transcripts are read after it (the runtime has locks of its own).
         let running: Vec<Value> = {
             let state = sync::lock(&self.inner.state);
             ids.iter()
@@ -2037,7 +2015,6 @@ impl Delegation {
                     (Some(hook), Some(lane)) => hook(lane).unwrap_or_default(),
                     _ => Vec::new(),
                 };
-                // A reattached child's start is not known here: its elapsed time counts from its first message.
                 let started = task["started"]
                     .as_f64()
                     .filter(|at| *at > 0.0)
@@ -2088,7 +2065,6 @@ impl Delegation {
             if let Some(model) = &task.model {
                 view["model"] = json!(model);
             }
-            // A host without a clock (`now` 0) knows no times.
             for (key, at) in [("startedAt", task.started_at), ("endedAt", task.ended_at)] {
                 if let Some(at) = at.filter(|at| *at > 0.0) {
                     view[key] = json!(at);
@@ -2140,8 +2116,6 @@ impl Delegation {
         timeout: Option<Duration>,
         cancel: Option<&Signal>,
     ) -> Vec<(String, Result<Value, String>)> {
-        // Wakes this wait when the signal is aborted (from a thread of its own: the aborting thread may hold the
-        // state).
         let listener = cancel.and_then(|cancel| {
             let inner = self.inner.clone();
             cancel.on_abort(move |_| {
@@ -2201,7 +2175,6 @@ impl Delegation {
     }
 
     fn finish_request(&self, mut payload: Map<String, Value>, parent: Option<&str>) -> Result<Value, String> {
-        // A root that is itself a subagent (an `ultron mcp --child` server) gives its verdict to its parent's host.
         if parent.is_none() {
             let finish = self
                 .inner
@@ -2230,7 +2203,6 @@ impl Delegation {
         if task.verdict_invalid {
             return Err("rlm.finish: no attempts left; end your turn, your reply is returned unverified".into());
         }
-        // A worktree child may name files by their path in its parent's checkout: they mean its own copies.
         if let (Some(worktree), Some(Value::Array(files))) = (&worktree, payload.get_mut("changed_files")) {
             for file in files.iter_mut() {
                 if let Value::String(path) = file {
@@ -2238,7 +2210,6 @@ impl Delegation {
                 }
             }
         }
-        // A contract's `returns` shape is checked here, so the child can fix its outputs like any rejected verdict.
         let checked = validate_verdict(&payload, workspace.as_deref()).and_then(|verdict| {
             let problems = task
                 .contract
@@ -2296,8 +2267,6 @@ impl Delegation {
         for id in open {
             let _ = self.cancel(&id, "Ultron task host closed");
         }
-        // This session's finished, unmerged children: the directory goes, the branch keeps the work. Conflicted and
-        // failed ones stay for inspection until a later session prunes them.
         if let Some(workspace) = self.inner.workspace.as_deref().filter(|_| !self.inner.keep_worktrees) {
             let (session, pid) = (self.inner.session_id.clone(), std::process::id());
             let select = |r: &WorktreeRecord| r.session_id == session && r.owner.pid == pid && r.state == "ended";

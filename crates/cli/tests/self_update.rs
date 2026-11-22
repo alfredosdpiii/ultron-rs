@@ -173,7 +173,7 @@ fn cli_self_update_package_commands_and_targets_are_not_supported() {
         cwd: root.clone(),
         home: root.clone(),
         var: Arc::new(move |k| (k == config::paths::ENV_AGENT_DIR).then(|| agent.clone())),
-        package: root.to_path_buf(),
+        package: root,
     };
     let (port, count) = registry(vec![json!({"status": 200, "body": {"version": "999.0.0"}})]);
     let endpoints = cli::update_cli::Endpoints {

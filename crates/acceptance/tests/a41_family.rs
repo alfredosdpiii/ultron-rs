@@ -682,7 +682,7 @@ fn acceptance_a41_derives_identity_from_real_task_lanes_and_steers_a_live_child_
         .iter()
         .map(|m| m["sender_id"].clone())
         .collect();
-    assert_eq!(senders, vec![a.clone()]);
+    assert_eq!(senders, vec![a]);
 
     rejects(
         host.call_in(

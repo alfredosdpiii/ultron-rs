@@ -124,7 +124,6 @@ impl Runner for ProcessRunner {
         };
         if let Some(mut stdin) = child.stdin.take() {
             let input = options.input.clone().unwrap_or_default();
-            // A child that does not read its input must not block the run.
             std::thread::spawn(move || {
                 let _ = stdin.write_all(input.as_bytes());
             });
@@ -145,7 +144,6 @@ impl Runner for ProcessRunner {
         let mut open = usize::from(stdout.is_some()) + usize::from(stderr.is_some());
         let mut timed_out = false;
         let mut killed = false;
-        // Like Node's `close`: the run ends when the output pipes have closed, then the exit status is read.
         while open > 0 {
             let event = if killed {
                 received.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected)

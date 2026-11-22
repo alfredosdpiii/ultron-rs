@@ -564,8 +564,6 @@ async fn run_with(
                 };
                 let _ = done.send(process::run(&config, env, &prepared, &worker, &mut forward));
             });
-            // Streaming, then (once aborted) cancelling until the worker returns: cancelled once, since an aborted
-            // signal stays ready and a loop that cancelled on every turn would spin without yielding.
             let mut cancelling = false;
             let result = loop {
                 tokio::select! {

@@ -342,7 +342,7 @@ fn herdr_connect_gives_up_on_a_stuck_herdr_instead_of_waiting_forever() {
     let socket = dir.path().join("herdr.sock");
     let _stuck = stuck_herdr(&socket);
     let (tx, rx) = mpsc::channel();
-    let path = socket.clone();
+    let path = socket;
     std::thread::spawn(move || {
         let connected = herdr::connect(&path).map(|_| ());
         let sent = herdr::SocketTransport { path }.send("{}");

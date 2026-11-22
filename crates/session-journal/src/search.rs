@@ -197,7 +197,6 @@ pub fn entry_text(entry: &Value, tool_chars: usize) -> Option<EntryText> {
             let role = str_field(message, "role");
             let mut text = match message.get("content") {
                 Some(content) => content_text(content, tool_chars),
-                // A `!` command's record: what ran and what it printed.
                 None => [str_field(message, "command"), str_field(message, "output")]
                     .iter()
                     .filter(|part| !part.is_empty())
@@ -318,7 +317,6 @@ impl Matcher {
             }
             Matcher::Terms(terms) => {
                 let lower = text.to_lowercase();
-                // Lowercasing can change byte lengths: offsets index the lowercased text only when it kept them.
                 let same = lower.len() == text.len();
                 let mut first = usize::MAX;
                 let mut count = 0;

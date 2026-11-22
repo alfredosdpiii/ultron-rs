@@ -252,7 +252,7 @@ fn cli_service_run_serves_the_durable_instance_until_signalled_and_status_report
     )
     .unwrap();
     assert_eq!(served.wait().unwrap().code(), Some(0));
-    assert_none_mentioning(&[home.root.clone(), daemon::instance::socket_dir(&durable)], HANG_GUARD);
+    assert_none_mentioning(&[home.root, daemon::instance::socket_dir(&durable)], HANG_GUARD);
 }
 
 #[test]

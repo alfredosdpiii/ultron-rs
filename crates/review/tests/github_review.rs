@@ -1514,7 +1514,7 @@ fn review_github_a_promotion_named_in_the_description_reads_what_differs_and_lis
     pull.base_ref = "soc2-staging".into();
     pull.default_branch = "dev".into();
     pull.diff = format!("{SOURCE}{DIFF}");
-    pull.source_diffs.insert(merge_sha.clone(), with_test);
+    pull.source_diffs.insert(merge_sha, with_test);
     context.hub.add_pull(pull);
     context.hub.add_pull(source);
     posted(requested(&context));

@@ -49,7 +49,6 @@ pub fn extract_version_number(id: &str) -> f64 {
     let b = id.as_bytes();
     let at_sep = |i: usize| i == 0 || b[i - 1] == b'-' || b[i - 1] == b'_';
     let digits = |from: usize| (from..b.len()).take_while(|&j| b[j].is_ascii_digit()).count();
-    // Dot form: (?:^|[-_])(\d+\.\d+)
     for i in 0..b.len() {
         if at_sep(i) {
             let int = digits(i);
@@ -61,12 +60,10 @@ pub fn extract_version_number(id: &str) -> f64 {
             }
         }
     }
-    // Dash form: (?:^|[-_])(\d{1,2})-(\d{1,2})(?=-|$)
     for i in 0..b.len() {
         if !at_sep(i) {
             continue;
         }
-        // The regex backtracks over \d{1,2}: try the longest prefix first.
         for major in (1..=digits(i).min(2)).rev() {
             if b.get(i + major) != Some(&b'-') {
                 continue;
@@ -82,7 +79,6 @@ pub fn extract_version_number(id: &str) -> f64 {
             }
         }
     }
-    // Single number: (?:^|[-_])(\d+)
     for i in 0..b.len() {
         if at_sep(i) {
             let n = digits(i);
@@ -95,7 +91,6 @@ pub fn extract_version_number(id: &str) -> f64 {
 }
 
 fn date_suffix(id: &str) -> &str {
-    // `-(\d{8})$`
     let b = id.as_bytes();
     if b.len() >= 9 && b[b.len() - 9] == b'-' && b[b.len() - 8..].iter().all(u8::is_ascii_digit) {
         &id[id.len() - 8..]
@@ -589,7 +584,6 @@ impl ModelHub {
             }
             return self.activate();
         }
-        // Typing anywhere searches and focuses the model list.
         let before = self.query.value().to_string();
         self.query.handle_input(data);
         if self.query.value() != before {
@@ -682,7 +676,6 @@ impl ModelHub {
                 text
             });
         }
-        // Browser pane: search row, blank, list, blank, detail.
         let mut right: Vec<String> = Vec::new();
         let search = self
             .query

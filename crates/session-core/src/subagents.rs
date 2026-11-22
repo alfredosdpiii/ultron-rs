@@ -169,14 +169,13 @@ impl DurableChildren {
                 Arc::new(move |run: ChildRun| children.run(&stack, run))
             }),
             agents: Some(AgentStores {
-                // One host per journal: the typed agents' tasks are a document of their own beside the subagents'.
                 tasks: value(ns::TASKS, "agents"),
                 definitions: value(DEFINITIONS_ROOT.namespace, DEFINITIONS_ROOT.key),
                 usage: Box::new(SessionUsageStore::new(session.clone())),
                 lanes: Box::new(move |stack: Weak<Stack>| -> LaneRunner {
                     Arc::new(move |run: LaneRun| lanes.run_lane(&stack, run))
                 }),
-                frames: Arc::new(crate::frames::SessionTraceStore(session.clone())),
+                frames: Arc::new(crate::frames::SessionTraceStore(session)),
             }),
         }
     }
@@ -192,7 +191,6 @@ impl DurableChildren {
         {
             let session = values.session();
             let mut writes = vec![Write::set(NAMES_NAMESPACE, &run.task_id, run.name.clone().into())];
-            // Kept before the child conversation exists, so a worker that dies after starting it leaves both.
             if let Some(contract) = run.host.contract_of(&run.task_id) {
                 writes.push(Write::set(CONTRACTS_NAMESPACE, &run.task_id, contract));
             }
@@ -230,7 +228,6 @@ impl DurableChildren {
     pub fn run_lane(&self, stack: &Weak<Stack>, run: LaneRun) -> Result<LaneReply, String> {
         let chat = self.chat.get().cloned().ok_or("The durable runtime is not open")?;
         let stack = stack.upgrade().ok_or("The session is closed")?;
-        // A reused lane (a retained instance) continues its conversation.
         if run.reuse
             && let Some(conversation) = crate::lane_reuse::lane_conversation(&chat, &run.lane)?
         {
@@ -240,7 +237,6 @@ impl DurableChildren {
             Some((provider, id)) => ModelRef::new(provider, id),
             None => ModelRef::new(&stack.model().provider, &stack.model().id),
         };
-        // A typed agent's lane is never woken: it gets the subagent guide (crate::wake), for its model's tier.
         let lane_model = stack
             .config()
             .model(&model.provider, &model.model_id)
@@ -294,7 +290,6 @@ impl DurableChildren {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("rlm.spawn fork=True: lane {lane} has no conversation"))?;
         let entries = handle.entries().map_err(|e| e.to_string())?;
-        // From the conversation's newest context start: what came before a reset is not its context.
         let start = entries
             .iter()
             .rposition(|e| e.kind == harness::chat::entries::RESET)
@@ -375,7 +370,7 @@ impl DurableChildren {
                         | durable::TaskState::Waiting { checkpoint, .. } => checkpoint["conversation"].as_u64(),
                         _ => None,
                     };
-                    let input = serde_json::from_value::<ChildInput>(task.input.clone()).ok();
+                    let input = serde_json::from_value::<ChildInput>(task.input).ok();
                     return Ok(input.map(|input| (input, conversation.map(ConversationId))));
                 }
                 match page.next {
@@ -445,7 +440,6 @@ impl DurableChildren {
             let Some(record) = tx.conversation(conversation)? else {
                 return Ok(None);
             };
-            // Another root conversation of the session has a REPL lane of its own.
             let Some(owner) = record.owner else {
                 return Ok((conversation != ROOT_CONVERSATION_ID)
                     .then(|| format!("{CONVERSATION_LANE_PREFIX}{}", conversation.0)));
@@ -484,14 +478,13 @@ impl DurableChildren {
             }
             let run = self.restore_lane(stack, id, &input);
             let chat = chat.clone();
-            let (lanes, lane) = (stack.lanes.clone(), input.name.clone());
+            let (lanes, lane) = (stack.lanes.clone(), input.name);
             let contract = self
                 .session()
                 .and_then(|session| lock(&session).value(CONTRACTS_NAMESPACE, id).cloned());
             Some(Reattached {
                 waiter: Box::new(move |signal: Signal| {
                     let reply = wait_child(&chat, task, &signal);
-                    // The lane closes when its run ends, as a fresh child's does.
                     let _ = lanes.close_lane(&lane);
                     reply
                 }) as ChildWaiter,

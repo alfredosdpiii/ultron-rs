@@ -63,7 +63,6 @@ impl Bridge {
             cancels: Default::default(),
         });
         let task = tokio::spawn(async move {
-            // Connections live in the set, so aborting this task drops every held `tools/call` with it.
             let mut connections = JoinSet::new();
             while let Ok((stream, _)) = listener.accept().await {
                 connections.spawn(serve(stream, shared.clone()));
@@ -138,7 +137,6 @@ async fn read_request(reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>) ->
             reader.read_line(&mut line).await.ok().filter(|n| *n > 0)?;
             let size = usize::from_str_radix(line.trim().split(';').next()?, 16).ok()?;
             if size == 0 {
-                // Consume trailer headers through the empty line.
                 loop {
                     line.clear();
                     if reader.read_line(&mut line).await.ok()? <= 2 {
@@ -249,7 +247,6 @@ async fn serve(stream: TcpStream, inventory: std::sync::Arc<Inventory>) {
             Reply::Json(value) => (200, value.to_string()),
             Reply::Status(status) => (status, String::new()),
             Reply::Hold(id, answer, cancelled) => {
-                // Dropping `answer` on agy's cancellation closes `Captured::reply`, which marks the session stale.
                 let result = tokio::select! {
                     result = answer => result,
                     _ = cancelled => return,

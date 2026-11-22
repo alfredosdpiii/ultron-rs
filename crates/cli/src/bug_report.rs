@@ -263,7 +263,6 @@ pub fn provider_info(env: &Env, provider: &str, runtime_key: bool) -> telemetry:
         provider: definition,
         auth_status,
         using_oauth: stored.is_some_and(|kind| kind == "oauth"),
-        // Pi extensions (whose `registerProvider` this is) are not supported by ultron-rs.
         registered_by_extension: false,
     }
 }
@@ -302,7 +301,6 @@ pub fn build_bundle(link: &SessionLink, env: &Env, request: &Request) -> Result<
         model,
         provider: provider.as_ref(),
         thinking_level: &thinking,
-        // Pi extensions are not supported by ultron-rs: the report lists none.
         extensions: &[],
         extension_errors: &[],
         global_settings: &global,
@@ -445,7 +443,6 @@ fn export_and_record(
         Err(error) => return BugReportOutcome::Failed(format!("Failed to write bug report: {error}")),
     };
     let shown = path.display().to_string();
-    // A report that was written stays reported when recording it fails (TypeScript's write cannot fail).
     let _ = record(op, env, bundle, json!({"delivery": "zip", "path": shown}));
     BugReportOutcome::Exported {
         path: shown,

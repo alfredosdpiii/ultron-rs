@@ -10,7 +10,7 @@ fn models() -> Vec<Model> {
     let anthropic = ai::models::builtin_model("anthropic", "claude-opus-4-6")
         .unwrap()
         .clone();
-    let mut opus = anthropic.clone();
+    let mut opus = anthropic;
     opus.id = "claude-opus-5-5".into();
     let subscription = ai::claude_subscription::catalog::model("claude-opus-5-5").unwrap();
     let mut claude_code = subscription.clone();

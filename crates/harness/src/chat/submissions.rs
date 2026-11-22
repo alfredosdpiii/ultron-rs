@@ -160,7 +160,6 @@ pub fn admit_submission(
     {
         return Err(HarnessError::Session(SessionError::Busy(conversation_id)));
     }
-    // A boundary reads the table, so it is prepared before the first table write; a busy one needs none.
     let mut boundary = if busy {
         None
     } else {
@@ -385,7 +384,6 @@ impl Submissions {
 
     /// Wait until the submission is `done` or `unanswered`; cancelling `ctx` cancels only the wait.
     pub(crate) fn wait(&self, id: SubmissionId, ctx: &Ctx) -> Result<SubmissionRecord> {
-        // Check and register on the line so no settling publication falls between them.
         let slot = self.commit(|tx| {
             let record = tx.submission(id)?.ok_or_else(|| not_found(id))?;
             if is_settled(&record) {

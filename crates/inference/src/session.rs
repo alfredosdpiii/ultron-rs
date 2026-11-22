@@ -231,7 +231,10 @@ impl FrameSession {
 
     /// `newFrame`: a frame under `budget`. Its first request's call is claimed now, in admission order, so a shared
     /// pool decides deterministically which frames run; without depth or a call it is already incomplete.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal wiring helper; parameters match distinct caller inputs"
+    )]
     pub(crate) fn admit(
         &self,
         budget: &Arc<Budget>,
@@ -307,8 +310,6 @@ impl FrameSession {
         if cell.is_aborted() {
             return Some(Outcome::Error("cancelled: the calling cell was aborted".into()));
         }
-        // A frame naming another model calls it through the same provider dispatch (the session's model
-        // resolution); one this host cannot resolve is refused.
         match live.engine().for_model(live.options.model.as_deref()) {
             Ok(engine) => *lock(&live.engine) = engine,
             Err(refused) => return Some(Outcome::Error(refused)),
@@ -514,7 +515,6 @@ impl FrameSession {
         let mut agent_options = AgentOptions::new(engine.model.clone());
         agent_options.system_prompt = Some(system.clone());
         agent_options.tools = vec![tool];
-        // A spent tree's cells are refused (`before_tool` of the frame's lane).
         let (gate_tasks, gate_lane, gate_root) = (tasks.clone(), run.lane.clone(), run.usage_root.clone());
         agent_options.before_tool_call = Some(Arc::new(move |_, _| {
             let decision = gate_tasks.gate_tool(&gate_lane, gate_root.as_deref());
@@ -536,7 +536,6 @@ impl FrameSession {
             Ok(runtime) => runtime,
             Err(error) => return Outcome::Error(error.to_string()),
         };
-        // The frame's cancellation aborts the agent's run (an already cancelled frame stops at its first attempt).
         let control = agent.control();
         let listener = run.signal.on_abort(move |_| control.abort());
         let mut conversation_chars = jsrt::utf16::len(&system) as u64;
@@ -566,7 +565,6 @@ impl FrameSession {
                 };
                 let before = agent.messages.len();
                 runtime.block_on(agent.prompt_text(&message, Vec::new()));
-                // A hold the prompt never used is released (`settlePrompt`).
                 if let Some((held, _)) = lock(&pending).take() {
                     self.release(live, held);
                 }
@@ -721,7 +719,6 @@ impl FrameSession {
         };
         lock(&self.traces).write(&live.id, &document, summary);
         lock(&self.live).retain(|other| !Arc::ptr_eq(other, live));
-        // Keep the metadata for the observation; drop the materialized text.
         for view in &mut lock(&live.frame).views {
             view.text = String::new();
         }
@@ -938,7 +935,6 @@ impl StreamFn for BudgetedStream {
             let session = &self.session;
             let live = &self.live;
             let engine = &live.engine();
-            // A spent tree: one final request without tools, then nothing more.
             let mut options = options.clone();
             let gated;
             let context = match self.tasks.gate_request(&self.lane, self.root.as_deref()) {

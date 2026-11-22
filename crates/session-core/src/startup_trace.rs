@@ -35,7 +35,6 @@ fn origin() -> f64 {
     *ORIGIN.get_or_init(|| {
         let start = || -> Option<f64> {
             let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
-            // Fields after the parenthesized command name; starttime is field 22 overall.
             let rest = &stat[stat.rfind(')')? + 2..];
             let ticks: f64 = rest.split(' ').nth(19)?.parse().ok()?;
             let boot = std::fs::read_to_string("/proc/stat").ok()?;

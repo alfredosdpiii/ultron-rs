@@ -82,13 +82,11 @@ pub fn load_prompt_resources(env: &RunEnv, bundled: Option<&Path>, flags: Resour
     let agent_dir_path = env.agent_dir();
     let trusted = config::trust::worker_project_trusted(&env.cwd, &agent_dir_path, &env.home);
     let settings = config::settings::SettingsManager::create(&env.cwd, &agent_dir_path, trusted);
-    // The persona does not depend on the context-file and skill flags; an unreadable file gives no section.
     let persona = if resources::persona::enabled(settings.settings()) {
         resources::persona::read_personality(&agent_dir_path).ok().flatten()
     } else {
         None
     };
-    // SYSTEM.md and APPEND_SYSTEM.md shape the prompt whatever the context-file and skill flags say (native Ultron).
     let files = resources::prompt_files::load_prompt_files(
         &env.cwd.display().to_string(),
         &agent_dir_path.display().to_string(),
@@ -117,8 +115,6 @@ pub fn load_prompt_resources(env: &RunEnv, bundled: Option<&Path>, flags: Resour
         let bundled = bundled.map(|dir| dir.display().to_string());
         let mut skills =
             session_core::session_resources::skills(&cwd, &agent_dir, &resources, false, bundled.as_deref());
-        // `alwaysSkills` carry their text into the prompt as in native Ultron (session_core::lane); outside
-        // engineering mode the prompt lists them only (resources::system_prompt).
         let always = session_core::lane::PromptMode::from_settings(&settings).always_skills;
         for diagnostic in resources::skills::apply_always_skills(&mut skills, &always) {
             eprintln!("Warning: {}", diagnostic.message);
@@ -226,7 +222,6 @@ pub fn claude_runtime_guide_for(apis: Option<&RuntimeGuideOptions>, hints: bool,
         },
         external_root: true,
         hints,
-        // A woken root's rlm.collect never waits (the server's `--wake`, session_core::wake).
         host_waits: wake,
         ..apis.cloned().unwrap_or_default()
     };
@@ -294,8 +289,6 @@ fn environment(options: &GuideOptions) -> Option<String> {
 /// Claude Code's whole system prompt for an Ultron root (`Claude`) or subagent (`ClaudeChild`).
 pub fn claude_system_prompt(audience: Audience, options: &GuideOptions, hints: bool) -> String {
     let resources = options.resources;
-    // SYSTEM.md: the user's own base prompt, in place of the root's working rules (a subagent has none: it gets the
-    // text after its identity, as a native subagent gets the root's prompt). APPEND_SYSTEM.md follows the base.
     let custom = resources.and_then(|r| r.system_prompt.clone());
     let addendum = resources
         .map(|r| r.append_system_prompt.join("\n\n"))
@@ -318,11 +311,6 @@ pub fn claude_system_prompt(audience: Audience, options: &GuideOptions, hints: b
         } else {
             delegation_allowance(allowance)
         };
-        // A Claude Code subagent's server serves neither persistent children nor `schedule`
-        // (crate::unavailable::child_refusal); its swarm, board and notes reach the root's (crate::shared_world), but
-        // the guide names them in one paragraph with persistent children: an external root's subagent reader leaves
-        // that paragraph out (its contracts stay). The TypeScript guide's set (`ULTRON_GUIDE=ts`) names none of them
-        // and keeps TypeScript's wording.
         let apis = options.apis.map(|apis| RuntimeGuideOptions {
             reader: if apis.durable_apis {
                 resources::runtime_guide::GuideReader::Subagent { swarm: true }

@@ -113,11 +113,9 @@ fn process_image(path: &Path, bytes: &[u8], mime: &str) -> Result<(Value, Vec<St
     }
     let processed = images.images.pop().ok_or("[Image omitted: could not be read.]")?;
     let mut hints = Vec::new();
-    // `conversionHint`: only an image that was not an inline type (BMP) was converted.
     if mime == "image/bmp" {
         hints.push(format!("[Image converted from {mime} to {}.]", processed.mime_type));
     }
-    // `formatDimensionNote`: only when the image was re-encoded to fit.
     let normalized_unchanged = processed.data == bytes || (mime == "image/bmp" && processed.mime_type == "image/png");
     let original = dimensions(bytes, mime);
     let shown = dimensions(&processed.data, processed.mime_type);
@@ -190,8 +188,6 @@ mod tests {
 
     #[test]
     fn cli_file_args_resize_hint_ratio_is_to_fixed_2() {
-        // node 26.12.1: (9 / 8).toFixed(2) === "1.13", (4000 / 2000).toFixed(2) === "2.00",
-        // (2230 / 2000).toFixed(2) === "1.11" (the double 1.115 lies below the tie; `(x * 100).round()` gave 1.12).
         let ratio = |ow, w| {
             resize_hint(ow, 1, w, 1)
                 .split(" by ")

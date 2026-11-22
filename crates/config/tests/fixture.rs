@@ -310,7 +310,7 @@ fn config_paths_match_typescript() {
         let p = AgentPaths::new(&dir);
         let s = |p: PathBuf| p.to_string_lossy().into_owned();
         let got = json!({
-            "env": case["env"], "agentDir": s(dir.clone()), "auth": s(p.auth()), "settings": s(p.settings()),
+            "env": case["env"], "agentDir": s(dir), "auth": s(p.auth()), "settings": s(p.settings()),
             "models": s(p.models()), "themes": s(p.custom_themes_dir()), "bin": s(p.bin_dir()),
             "sessions": s(p.sessions_dir()), "debugLog": s(p.debug_log()),
         });

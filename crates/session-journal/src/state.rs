@@ -296,7 +296,6 @@ impl State {
     pub fn apply(&mut self, writes: Vec<Value>) -> Value {
         for mut write in writes {
             let seq = seq_of(&write);
-            // Classified first, so no field is copied out just to outlive the borrow `take_value` needs.
             let action = match (str_of(&write, "kind"), str_of(&write, "op")) {
                 ("entry", _) => Action::Entry,
                 ("usage", _) => Action::Usage,

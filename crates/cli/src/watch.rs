@@ -264,7 +264,10 @@ fn header_line(status: &Value, style: &RlmStyle) -> String {
 
 /// `renderWatchFrame`: header, the docked panel (at most 40% of `height`), a blank line, then the pane (the rest,
 /// at least six rows). `pane_height` is the pane's own height, `focused` whether it takes keys.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal wiring helper; parameters match distinct caller inputs"
+)]
 pub fn render_watch_frame(
     pane: &mut RlmPane,
     keys: &tui::KeybindingsManager,

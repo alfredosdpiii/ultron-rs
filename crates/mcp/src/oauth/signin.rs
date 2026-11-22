@@ -63,7 +63,6 @@ fn callback_settings(settings: &OAuthSettings) -> CallbackSettings {
         .to_string();
     let explicit_port = url.port();
     let port = explicit_port.or(settings.callback_port);
-    // A configured URI with a port is sent exactly as written, since servers compare it as a string.
     let fixed_redirect_url = match (explicit_port, port) {
         (Some(_), _) => configured,
         (None, Some(port)) => {
@@ -181,7 +180,6 @@ fn wait_for_response(
         let first = rx
             .recv()
             .unwrap_or_else(|_| Err(OAuthError::Other("OAuth callback server closed".into())));
-        // The losing side ends: the prompt is cancelled, the callback server closes.
         cancel.cancel(None);
         callback.close();
         let _ = user.join();
@@ -227,7 +225,6 @@ pub fn sign_in(
     let stored = store.load()?;
     let step_up = challenge.and_then(|c| c.error.as_deref()) == Some("insufficient_scope");
     let callback_options = callback_settings(settings);
-    // Reuse the port of the registered redirect URI so the registered client stays valid.
     let registered = registered_redirect_urls(stored.as_ref().and_then(|s| s.get("clientInformation")));
     let preferred_port = callback_options.port.or_else(|| {
         registered
@@ -238,18 +235,14 @@ pub fn sign_in(
     let callback = listen_for_callback(&callback_options, preferred_port, callback_options.port.is_some())?;
     let redirect_url = callback_options
         .fixed_redirect_url
-        .clone()
         .unwrap_or_else(|| callback.redirect_url.clone());
     let result = (|| {
         if let Some(Value::Object(_)) = &stored {
-            // Changed as it is now, not as it was read before the callback server started.
             store.update(|current| {
                 let Some(Value::Object(mut next)) = current else {
                     return None;
                 };
-                // Every sign-in gets a fresh `state` parameter.
                 next.shift_remove("oauthState");
-                // A registered client cannot use another redirect URI, and its tokens belong to it.
                 if settings.client_id.is_none() && !registered.contains(&redirect_url) {
                     next.shift_remove("clientInformation");
                     next.shift_remove("tokens");
@@ -272,7 +265,6 @@ pub fn sign_in(
         );
         let granted = stored.as_ref().and_then(|s| s["tokens"]["scope"].as_str());
         let challenged = challenge.and_then(|c| c.scope.as_deref());
-        // A server asking for more scope gets it on top of the configured scope and of the scope granted so far.
         let scope = if step_up {
             merge_scopes(&[settings.scope.as_deref(), step_up_scope(granted, challenged).as_deref()])
         } else {
@@ -430,7 +422,6 @@ impl AuthProvider for OAuthAuth {
         if !expired || !refreshable {
             return Ok(token);
         }
-        // Failures fall through: the request goes out with the old token and a 401 decides what happens.
         let _ = self.refresh(token.as_deref(), None);
         Ok(token_of(&self.store.load().map_err(transport_error)?))
     }
@@ -438,7 +429,6 @@ impl AuthProvider for OAuthAuth {
     fn on_unauthorized(&self, context: &Unauthorized) -> Result<(), Error> {
         let challenge = parse_www_authenticate(context.challenge.as_deref());
         *self.challenge.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(challenge.clone());
-        // A refresh keeps the granted scope, so more scope needs a new sign-in.
         if challenge.error.as_deref() == Some("insufficient_scope") {
             return Err(transport_error(OAuthError::AuthorizationRequired));
         }

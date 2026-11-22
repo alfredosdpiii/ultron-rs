@@ -368,7 +368,6 @@ impl SpawnContract {
     /// is checked as it was spawned). Parsed as a spawn's options again, so a kept contract is held to the same rules.
     pub fn from_described(described: &Value) -> Result<SpawnContract, String> {
         let map = described.as_object().ok_or("a kept contract must be an object")?;
-        // `baseline`: the workspace baseline kept beside it ([`crate::git_baseline`]), read by the host itself.
         only(map, &["role", "checks", "returns", "hop", "baseline"], "kept contract")?;
         let mut kwargs = Map::new();
         kwargs.insert("role".into(), map.get("role").cloned().unwrap_or(Value::Null));
@@ -619,7 +618,7 @@ fn run_check(check: &HostCheck, place: &CheckPlace<'_>, runner: &CheckRunner) ->
                 (None, false, None) => "stopped before it ended".to_string(),
             };
             let (ok, evidence) = match expect {
-                Expect::Exit(code) => (outcome.error.is_none() && outcome.exit == Some(*code), ended.clone()),
+                Expect::Exit(code) => (outcome.error.is_none() && outcome.exit == Some(*code), ended),
                 Expect::Fail => (
                     outcome.error.is_none() && outcome.exit.is_some_and(|code| code != 0),
                     format!("{ended} (expected to fail)"),
@@ -633,7 +632,6 @@ fn run_check(check: &HostCheck, place: &CheckPlace<'_>, runner: &CheckRunner) ->
             let mut entry = json!({ "ok": ok, "evidence": evidence, "exit_code": outcome.exit, "stdout": stdout,
                                     "stderr": stderr });
             if !ok {
-                // A failure names the deciding output: the end of stderr, else of stdout.
                 let shown = if outcome.stderr.trim().is_empty() {
                     &outcome.stdout
                 } else {
@@ -798,7 +796,6 @@ pub fn enforce_after(
         let report = (enforcer.check)()?;
         attempts.push(report.clone());
         let attempt = used + attempts.len() as u32;
-        // A retry the child answered is checked again; with nothing to repeat the failure is reported.
         if let Hop::Retry(retries) = contract.hop
             && report["verdict"] != "verified"
             && attempt <= retries
@@ -859,7 +856,6 @@ fn contract_result(
         result["status"] = json!("failed");
         result["error"] = json!(error);
     }
-    // Under `check` (free-form in the task journal's result shape, which TypeScript reads too).
     if !result["check"].is_object() {
         result["check"] = json!({});
     }

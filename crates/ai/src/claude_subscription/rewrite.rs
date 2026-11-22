@@ -199,7 +199,6 @@ fn restore_block(sent: &Value, host: &Value) -> Result<Value, QueriedTurnMismatc
     };
     let mut restored = host_map.clone();
     if kind(host) == Some("tool_result") {
-        // Missing means false; numeric 0, null or "false" are not protocol booleans.
         let flag = |map: &Map<String, Value>| map.get("is_error").cloned().unwrap_or(Value::Bool(false));
         match (flag(sent_map), flag(host_map)) {
             (Value::Bool(left), Value::Bool(right)) if left == right => {}
@@ -243,7 +242,6 @@ fn restore_sequence(sent: &[Value], host: &[Value]) -> Result<Vec<Value>, Querie
             }
             let original = joined(&host[i..host_end]);
             let actual = joined(&sent[j..sent_end]);
-            // Extensions before a protected host block are insertions, not suffixes.
             let ok = if host_end == host.len() {
                 actual.starts_with(&original)
             } else {

@@ -253,7 +253,6 @@ impl TreeList {
     fn flatten(&mut self, roots: &[usize]) {
         let mut result = Vec::new();
         self.tool_calls.clear();
-        // Which subtrees hold the active leaf (post-order).
         let mut contains: HashMap<usize, bool> = HashMap::new();
         let mut order = Vec::new();
         let mut stack: Vec<usize> = roots.to_vec();
@@ -274,7 +273,6 @@ impl TreeList {
         }
         let multiple = roots.len() > 1;
         let mut ordered: Vec<usize> = roots.to_vec();
-        // Stable: the root holding the active leaf first.
         ordered.sort_by_key(|r| !contains.get(r).copied().unwrap_or(false));
         type Item = (usize, usize, bool, bool, bool, Vec<Gutter>, bool);
         let mut stack: Vec<Item> = Vec::new();
@@ -979,7 +977,6 @@ impl TreeList {
 
 /// `formatLabelTimestamp`: the label's local time (UTC here), with the date when not today.
 fn format_label_timestamp(ts: &str) -> String {
-    // ISO `YYYY-MM-DDTHH:MM...`; the TUI process runs with the user's zone, shown as stored.
     let date = ts.get(..10).unwrap_or("");
     let time = ts.get(11..16).unwrap_or("");
     let today = date::iso_string(date::now_ms())[..10].to_string();

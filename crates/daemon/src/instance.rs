@@ -141,7 +141,6 @@ pub fn socket_dir(server_dir: &Path) -> PathBuf {
         temp.join(format!("ultron-{}", rustix::process::getuid().as_raw()))
             .join(hex)
     };
-    // A long TMPDIR would put the sockets past the limit again.
     Some(under(std::env::temp_dir()))
         .filter(|dir| dir.as_os_str().len() + 1 + protocol::sockets::LONGEST_NAME <= MAX_SOCKET_PATH)
         .unwrap_or_else(|| under(PathBuf::from("/tmp")))

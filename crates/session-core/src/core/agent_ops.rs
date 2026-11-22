@@ -39,7 +39,6 @@ impl Core {
                 "Subagent {id} worked in its own worktree: start a new one instead"
             ));
         }
-        // The revived subagent keeps the name it was spawned with (a session older than that record: named after it).
         let name = crate::subagents::subagent_name(&self.session, id).unwrap_or_else(|| format!("revived-{id}"));
         let mut kwargs = Map::new();
         kwargs.insert("name".into(), name.into());

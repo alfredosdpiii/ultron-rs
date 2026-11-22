@@ -315,7 +315,6 @@ fn prepare_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) 
         Some(_) => None,
         None => threshold_compaction(&view, &planned, model.context_window, &policy)?,
     };
-    // `before_compaction`: entries the hook gives decline a blocking threshold compaction (placed with this request).
     let mut declined: Vec<EntryDraft> = Vec::new();
     if threshold == Some(Threshold::Blocking)
         && let Some(hook) = &services.hooks.before_compaction
@@ -331,7 +330,6 @@ fn prepare_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) 
     }
     let task_id = runtime.task_id();
     if threshold == Some(Threshold::Blocking) {
-        // Compact first and prepare again; the transcript is unchanged until the compaction appends.
         return runtime.commit(&runtime.ctx(), |tx, _| {
             let child = create_compaction(tx, conversation_id, "threshold", None, Some(task_id))?;
             Ok(Some(NextState::Waiting {
@@ -365,7 +363,6 @@ fn prepare_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) 
                 conversation_id.0
             )));
         };
-        // Checked in this commit, so a compaction admitted during preparation counts.
         if threshold == Some(Threshold::Background) && get(&live(tx, conversation_id)?, &["compactions"])?.is_none() {
             create_compaction(tx, conversation_id, "threshold", None, None)?;
         }
@@ -489,7 +486,6 @@ fn stream_response(
             set(&live, &["generation", "message"], partial)?;
             Ok(None)
         });
-        // Rejections after an abort mark or close are expected; the committed state stays consistent.
         if let Err(error) = result
             && !committer.signal().is_cancelled()
         {
@@ -498,8 +494,6 @@ fn stream_response(
     });
     let context = ai::TranscriptContext { messages };
     let mut on_event = |event: &AssistantMessageEvent| {
-        // A partial without content, such as the opening `start` event, shows nothing; a deferred response never gets
-        // past it, so it never leaves a partial.
         if let Some(partial) = partial_of(event)
             && !partial.content.is_empty()
         {
@@ -510,7 +504,6 @@ fn stream_response(
         .models
         .stream(model, &context, request, runtime.signal(), &mut on_event);
     throttle.stop();
-    // An abort mark or close: the abort invocation or the reopened run handles the committed state.
     runtime.signal().check()?;
     result
 }
@@ -549,7 +542,7 @@ fn classify(services: &Services, runtime: &TaskRuntime, request: Request, messag
             .and_then(|ms| u64::try_from(ms).ok())
             .unwrap_or(DEFAULT_POLL_AFTER_MS);
         let poll_at = (runtime.now()? + after).max(request.poll_at.map_or(0, |previous| previous + 1));
-        let model = request.model.clone();
+        let model = request.model;
         return runtime.commit(&runtime.ctx(), |tx, _| {
             let live = live(tx, conversation_id)?;
             set(
@@ -580,7 +573,6 @@ fn classify(services: &Services, runtime: &TaskRuntime, request: Request, messag
     ) {
         return answer(services, runtime, message);
     }
-    // The retry and compaction policies govern the next attempt, so they are read now.
     let settings = (services.settings)();
     let overflow = message.stop_reason == StopReason::Error && is_context_overflow(&message);
     let stored = strict(to_value(&message));
@@ -588,10 +580,7 @@ fn classify(services: &Services, runtime: &TaskRuntime, request: Request, messag
     if overflow && compacted.is_none() && policy.enabled {
         let view = runtime.read(|tx| read_context(tx, conversation_id, Some(cutoff)))?;
         if select_cut(&view, policy.keep_recent_tokens).is_some() {
-            let text = message
-                .error_message
-                .clone()
-                .unwrap_or_else(|| "Context overflow".into());
+            let text = message.error_message.unwrap_or_else(|| "Context overflow".into());
             return runtime.commit(&runtime.ctx(), |tx, _| {
                 let live = live(tx, conversation_id)?;
                 append_assistant(tx, conversation_id, &stored)?;
@@ -609,7 +598,6 @@ fn classify(services: &Services, runtime: &TaskRuntime, request: Request, messag
             });
         }
     }
-    // An overflow is never retried: only a compaction can make the next request fit.
     let retry = match settings.retry.retry_delay(attempt, &message).filter(|_| !overflow) {
         Some(delay) => Some(runtime.now()? + delay),
         None => None,
@@ -658,7 +646,6 @@ fn answer(services: &Services, runtime: &TaskRuntime, message: AssistantMessage)
     let task_id = runtime.task_id();
     let stored = strict(to_value(&message));
     runtime.commit(&runtime.ctx(), |tx, _| {
-        // Queue modes are read on the Session line, when the boundary is decided.
         let mut boundary = prepare_boundary(tx, conversation_id, (services.settings)().queue_modes())?;
         let live = live(tx, conversation_id)?;
         let entry = append_assistant(tx, conversation_id, &stored)?;
@@ -850,7 +837,6 @@ fn finish_tool_round(services: &Services, runtime: &TaskRuntime, assistant: Entr
                 .as_u64()
                 .is_some_and(|id| control_of(TaskId(id)).is_some_and(|control| control.terminate == Some(true)))
         });
-    // The last handoff in call order wins.
     let handoff = controls
         .iter()
         .rev()
@@ -879,7 +865,6 @@ fn finish_tool_round(services: &Services, runtime: &TaskRuntime, assistant: Entr
         } else {
             let placed = apply_boundary(tx, &mut boundary, At::PostTools, now)?;
             if placed.reset {
-                // The queued reset cut the run's context before an answer.
                 end_run(
                     tx,
                     &live,

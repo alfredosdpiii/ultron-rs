@@ -153,7 +153,6 @@ pub fn migrate(mut settings: Settings) -> Settings {
     if let Some(Value::Object(retry)) = settings.get_mut("retry") {
         let provider: Option<Map<String, Value>> = match retry.get("provider") {
             Some(Value::Object(p)) => Some(p.clone()),
-            // `{ ...array }` spreads the indices.
             Some(Value::Array(items)) => Some(
                 items
                     .iter()

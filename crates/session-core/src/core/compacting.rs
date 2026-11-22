@@ -258,7 +258,6 @@ fn wait_until(not_before: i64, signal: &AbortSignal) {
         return;
     }
     if let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
-        // The timer is made inside the runtime (it needs its reactor).
         let _ = runtime.block_on(async {
             tokio::time::timeout(std::time::Duration::from_millis(delay), signal.cancelled()).await
         });
@@ -288,7 +287,6 @@ impl Core {
             let _wake = wake;
             work()
         });
-        // Without its input (a core driven directly, not by `run_loop`), the actor just waits.
         if let Some(inputs) = self.inputs.take() {
             while let Ok(input) = inputs.recv() {
                 match input {
@@ -313,8 +311,6 @@ impl Core {
                 reply(self.observer_command(&args).map(|text| Some(json!(text))));
             }
             Input::Op(Op::Prompt { .. } | Op::PromptAndWait { .. }, reply) if self.run.is_none() => {
-                // AgentSession runs a prompt alongside a branch summary; the lane admits one operation at a time
-                // (harness `acceptRun`: `LaneBusy`), and the navigation is the lane's operation.
                 reply(Err(if self.navigating {
                     LANE_BUSY.into()
                 } else {
@@ -322,14 +318,12 @@ impl Core {
                 }));
             }
             Input::Op(Op::Navigate { .. }, reply) => reply(Err(NAVIGATE_WHILE_COMPACTING.into())),
-            // `compact` awaits `abort()` (the compaction, branch summary and run in progress) before it compacts.
             Input::Op(compact @ Op::Compact { .. }, reply) => {
                 self.abort();
                 self.deferred.push_back(Input::Op(compact, reply));
             }
             Input::ActivityTick => self.report_activity(),
             Input::MemoryKept(outcome) => self.memory_kept(outcome),
-            // Closing cancels the compaction; the close itself runs once it has ended.
             close @ (Input::Close(_) | Input::HandOver(_)) => {
                 self.cancel_compaction();
                 self.deferred.push_back(close);
@@ -346,7 +340,6 @@ impl Core {
             && !signal.aborted()
         {
             self.cancel_compaction();
-            // A failed write leaves the operation running in the journal: its terminal transaction still ends it.
             if self.run.is_none() {
                 let _ = compaction_op::request_cancel(&mut lock_session(&self.session), now_ms());
             }
@@ -436,8 +429,6 @@ impl Core {
                 not_before,
                 error_message: error.clone(),
             });
-            // AgentSession's `onRetryScheduled` (`retryAssistantCall`): the retry's number, the retries allowed
-            // (`maxRetries`), the delay and the provider's error.
             let provider_error = last
                 .as_ref()
                 .and_then(|m| m.error_message.clone())
@@ -466,7 +457,6 @@ impl Core {
                 break (Err(write), None);
             }
         };
-        // AgentSession's `onRetryFinished`: the retries ended, however they did.
         if scheduled {
             self.emit(WatchEvent::SummarizationRetryFinished { lane: MAIN_LANE.into() });
         }
@@ -487,7 +477,6 @@ impl Core {
         let id = match outcome {
             Ok(id) => id,
             Err(error) => {
-                // AgentSession clears its compaction state before `compaction_end`.
                 self.compacting = None;
                 let cancelled = error == CANCELLED;
                 self.emit(WatchEvent::CompactionEnd {

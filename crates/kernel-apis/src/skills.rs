@@ -59,7 +59,6 @@ struct Skill {
 fn parse_skill(source: &SkillSource) -> Skill {
     let (frontmatter, body) = match resources::frontmatter::parse(&source.content) {
         Ok(parsed) => (parsed.frontmatter, parsed.body),
-        // Pi's loader already rejected unparseable skills; tolerate them here as plain bodies.
         Err(_) => (Yaml::Null, source.content.clone()),
     };
     let mut ignored = Map::new();
@@ -298,7 +297,6 @@ impl SkillsModule {
             }
             json!({"generation": generation, "changes": changes})
         })?;
-        // Install only after the catalog record is durable.
         *jsrt::sync::lock(&self.snapshot) = Some(Arc::new(Snapshot {
             generation: outcome["generation"].as_i64().unwrap_or(0),
             skills,

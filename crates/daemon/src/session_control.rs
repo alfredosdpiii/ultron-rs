@@ -236,7 +236,6 @@ pub fn members(service: Service, core: CoreCall, context: Arc<ControlContext>) -
         .method(
             "setLabel",
             with(|core, _, args| {
-                // `null` or an empty label clears it.
                 let label = args
                     .get(1)
                     .and_then(Value::as_str)
@@ -250,8 +249,6 @@ pub fn members(service: Service, core: CoreCall, context: Arc<ControlContext>) -
                 .map(|_| None)
             }),
         )
-        // Pi's `session_before_fork` asked the session's extensions; Pi extensions are not supported by ultron-rs, so
-        // nothing cancels a fork (the member stays for the clients that call it).
         .method("beforeFork", |_| Ok(Some(json!({"cancelled": false}))))
         .method(
             "readSettings",
@@ -277,7 +274,6 @@ pub fn members(service: Service, core: CoreCall, context: Arc<ControlContext>) -
         )
         .method(
             "reloadAuth",
-            // Credentials are read from `auth.json` per request; availability is computed again now.
             with(|_, context, _| Ok(Some(json!({"availableModels": (context.available_models)()})))),
         )
         .method("debugInfo", with(|core, context, _| debug_info(core, context)))
@@ -288,7 +284,6 @@ pub fn members(service: Service, core: CoreCall, context: Arc<ControlContext>) -
 /// lane's message.
 pub fn resume_response(recovered: &Value, running: Option<String>) -> Value {
     let run = recovered["runId"].as_str().map(str::to_string).or_else(|| {
-        // A run already in progress is the active operation `resume` drives.
         (recovered["reason"] == "a run is in progress")
             .then_some(running)
             .flatten()

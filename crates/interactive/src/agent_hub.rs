@@ -880,7 +880,6 @@ impl AgentHub {
             v.chat.set_tools_expanded(v.expanded);
             return HubEvent::Render;
         }
-        // Once the reader starts typing, the input owns every key.
         if v.input.value().trim().is_empty() {
             let body = &mut v.browser.body;
             let scrolled = if keys.matches(data, "tui.altScreen.pageUp") {
@@ -933,7 +932,6 @@ impl AgentHub {
         let content_rows = height.saturating_sub(4).max(1);
         let mut body: Vec<String> = Vec::new();
         let mut hits: Vec<Option<usize>> = Vec::new();
-        // Summary: projection toggle and status counts.
         let active = |s: &str| bold(&t.fg(Fg::Accent, &format!(" {s} ")));
         let inactive = |s: &str| t.fg(Fg::Muted, &format!(" {s} "));
         let projection = match self.view {

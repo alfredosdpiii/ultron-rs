@@ -87,15 +87,11 @@ pub fn open(
     sink: Arc<RootSink>,
 ) -> Result<Arc<DurableApis>, String> {
     let stack = lane.stack.clone();
-    // The children's session (their contracts are values of it, session_core::kept_contracts). This server's
-    // subagents are Claude Code processes or in-memory loops.
     children.attach_session(session);
     let storage = session_core::durable_store::open(session.clone(), None).map_err(|e| e.message().to_string())?;
-    // Nothing reaches an actor: the root conversation never runs, and children's requests never use the bridge.
     let bridge = Bridge::new(Arc::new(|_| {}));
     let provider = Arc::new(session_core::lane::Provider::new().with_live_settings(runtime.config.settings_reader()));
     let retry = RetryPolicy::from_settings(&runtime.config.settings["retry"], true);
-    // Requests of no conversation carry this provider session: every request is a child's.
     let root_session = Arc::new(std::sync::OnceLock::new());
     let _ = root_session.set(format!("ultron-claude-root-{}", jsrt::random::random_hex(8)));
     let options = child_chat_options(
@@ -112,19 +108,16 @@ pub fn open(
             charged: None,
             transform: None,
             image_budget: runtime.config.context_images,
-            // A child conversation's system prompt is a subagent's.
             fallback_system: |stack: &Stack| stack.child_system(stack.model()),
         },
     );
     let chat = ChatHarness::open(storage, options).map_err(|e| e.to_string())?;
     let root = chat.root(None).map_err(|e| e.to_string())?;
-    // A persistent child spawned without `model=` runs on its parent conversation's model.
     root.configure(&AgentChange::model(model.clone()))
         .map_err(|e| e.to_string())?;
     children.attach(chat.clone());
     let swarm = Arc::new(SwarmOps::new(children.clone()).with_contracts(Arc::downgrade(&stack)));
     let _ = stack.swarm.set(swarm.clone());
-    // Whatever the runtime holds (persistent children of an earlier server) continues now.
     chat.resume().map_err(|e| e.to_string())?;
     Ok(Arc::new(DurableApis {
         chat,
@@ -190,7 +183,6 @@ impl DurableApis {
         }
         let to = payload.get("to").and_then(Value::as_str)?;
         let agents = self.chat.commit(harness::chat::swarm::agents).unwrap_or(Value::Null);
-        // The root's name: what it registered, else `root` (its name in the swarm until it registers another).
         let root = match agents.get(to) {
             Some(entry) => entry["conversation"].as_u64() == Some(ROOT_CONVERSATION_ID.0),
             None => to == "root",

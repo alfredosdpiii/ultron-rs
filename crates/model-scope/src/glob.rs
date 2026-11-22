@@ -209,7 +209,6 @@ fn match_segment(text: &str, pattern: &str, nocase: bool) -> bool {
     if text.is_empty() {
         return nodes.is_empty();
     }
-    // A wildcard never matches a leading dot; `.` and `..` only match themselves.
     if text[0] == '.' && !matches!(nodes.first(), Some(Node::Lit('.'))) {
         return false;
     }

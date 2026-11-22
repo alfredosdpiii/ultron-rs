@@ -14,8 +14,6 @@ pub fn open(parsed: &Args, env: &Env, target: &Target, mode: &str, events: Watch
     let options = server_options(parsed, env, mode)?;
     let start = server_start(env, &options);
     let started = open_route(env, &start)?;
-    // rpc-native.ts's milestones: the client runtime opens after the server started, its services are ready once
-    // connected, then the session is selected and attached.
     let rpc_trace = |label: &str| {
         if mode == "rpc" {
             crate::print_mode::trace_startup(env, label);
@@ -41,7 +39,6 @@ pub fn open(parsed: &Args, env: &Env, target: &Target, mode: &str, events: Watch
             None => json!({}),
         })),
         Target::Fork(metadata) => link.create(named(json!({"forkFromSessionId": metadata.id}))),
-        // `--no-session --name x`: the session is removed when the run ends, but named while it lasts.
         Target::Ephemeral => link.create(named(json!({}))),
     };
     let attached = selected.and_then(|id| {

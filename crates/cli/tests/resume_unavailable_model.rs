@@ -133,7 +133,7 @@ fn cli_resume_with_an_unavailable_model_opens_and_select_model_fixes_it() {
         .collect();
     let options = RpcClientOptions {
         program: env!("CARGO_BIN_EXE_ultron").into(),
-        cwd: Some(sandbox.cwd.clone()),
+        cwd: Some(sandbox.cwd),
         env_clear: true,
         env,
         args: ["--mode", "rpc", "-c", "--model", "anthropic/claude-sonnet-4-5"]

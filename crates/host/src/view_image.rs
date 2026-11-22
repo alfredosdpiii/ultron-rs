@@ -322,7 +322,6 @@ impl CellImages {
             .ok_or("view_image: not a supported image (png, jpeg, gif or webp, detected by content)")?;
         let original = dimensions(&bytes, mime);
         let detail = payload.get("detail").and_then(Value::as_str);
-        // normalizeImage: BMP becomes PNG first.
         let normalized = if mime == "image/bmp" {
             let png = decode(&bytes)
                 .and_then(|image| encode_png(&image))

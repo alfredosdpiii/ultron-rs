@@ -187,7 +187,6 @@ pub fn classify_notes(notes: &mut [knowledge::Note], state: &AutoreviewState, r:
 /// Records the review threads of a closed pull request, by every reviewer, as notes in the knowledge graph: the
 /// investigators' `review_notes` and `rules_for` lookups read them. Never fails a review: an error is logged.
 pub fn record_notes(deps: &ReviewerDeps, r: &PullRef, github: &GitHub, name: &str) {
-    // Only for a repository the graph indexes: the lookups need its tree.
     let db = std::path::Path::new(&deps.paths.knowledge);
     let indexed = db.exists()
         && knowledge::Store::open(db)
@@ -230,8 +229,6 @@ fn backfill_notes(deps: &ReviewerDeps, r: &PullRef, github: &GitHub, name: &str)
     let Ok(mut store) = knowledge::Store::open(db) else {
         return;
     };
-    // Once per repository and schema (a migration clears the marker): one whose pull requests have no review threads
-    // stays without notes. Notes recorded since are updated in place.
     let marker = format!("notes_backfilled:{repo}");
     if store.meta(&marker).map_or(true, |done| done.is_some()) {
         return;
@@ -785,8 +782,6 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
             status: 0,
         });
     }
-    // A banned author's pull request is never reviewed, however it got here; asked for on the command line, that is
-    // said rather than skipped.
     let bans = deps.bans.refresh();
     if let Some(rule) = bans.banned(account, &pull.author) {
         if options.force {
@@ -797,7 +792,6 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
     let head = pull.head_sha.clone();
     let reviews = github.reviews(r)?;
     let saved: PullState = deps.store.read().pulls.get(&key).cloned().unwrap_or_default();
-    // A dry-run "review" counts only while still in dry-run: switching to posting reviews the commit for real.
     let saved_counts = saved.last_reviewed_sha.is_some() && (dry_run || saved.last_review_dry_run != Some(true));
     let own = latest_own_review(&reviews, &account.login);
     let mut last_sha = own.map(|review| review.commit_id.clone());
@@ -821,7 +815,6 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
     let decided = if options.force {
         decision(true, "asked for on the command line")
     } else {
-        // A requested team counts only when this account is a member of it.
         let mut through_team = None;
         if !requested && pull.state == "open" && !pull.draft {
             for team in &pull.requested_teams {
@@ -839,8 +832,6 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
                 }
             }
         }
-        // A review request or a mention by a banned login asks for nothing. Who requested is read from the issue's
-        // events, only when a ban applies to this account.
         let banned = |login: &str| bans.banned(account, login).is_some();
         let mut ignored = Vec::new();
         if requested
@@ -851,7 +842,6 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
             requested = false;
             ignored.push(format!("the review request by {actor}"));
         }
-        // After giving up on the head, a mention asks to try again even where a request alone would review it.
         if gave_up || !(requested && last_sha.is_none() && pull.state == "open" && !pull.draft) {
             let mut comments = github.issue_comments(r)?;
             comments.extend(github.review_comments(r)?);
@@ -899,7 +889,6 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
         decided
     };
     if !decided.review {
-        // Nothing more to watch for once the pull request is closed: what was still open then is its findings' fate.
         if pull.state != "open" && saved.last_verdict.is_some() {
             if saved.closed != Some(true)
                 && deps.config.learn
@@ -939,7 +928,6 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
         return Ok(Preparation::Done(Outcome::Skipped(decided.reason)));
     }
 
-    // The "could not review" comment promises another try on a mention.
     let mut attempts = saved.head_attempts(&head);
     if !options.force
         && attempts == HeadAttempts::GaveUp
@@ -979,7 +967,6 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
         ))));
     }
 
-    // Acknowledge once per head commit, as soon as the review is known to be due.
     let mut ack = None;
     let mut ack_at = if saved.last_ack_sha.as_deref() == Some(head.as_str()) {
         saved.last_ack_at.as_deref().and_then(jsrt::date::parse_date)
@@ -1022,9 +1009,6 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
         }
         ack = Some(body);
     }
-    // A mention or a new request about a commit this account already reviewed in full asks it to look again at what
-    // it said (boost-capital/aqua-parser#90: each "please approve" started a whole new review, which found new
-    // things in the same code and requested changes again).
     let recheck_only = !options.force
         && last_sha.as_deref() == Some(head.as_str())
         && saved.last_reviewed_sha.as_deref() == Some(head.as_str())
@@ -1197,14 +1181,11 @@ pub fn run_review(deps: &ReviewerDeps, prepared: &Prepared) -> Result<Outcome, E
     let key = pull_state_key(account, r);
     let name = format!("{} as {}", pull_key(r), account.login);
     let head = prepared.pull.head_sha.clone();
-    // Banned while it waited for a slot: dropped before anything starts.
     if let Some(reason) = banned_now(deps, prepared) {
         return Ok(Outcome::Skipped(reason));
     }
     let saved: PullState = deps.store.read().pulls.get(&key).cloned().unwrap_or_default();
     (deps.log)(&format!("{name}: reviewing {} ({})", short(&head), prepared.reason));
-    // Counted when the review fails or panics, not when it starts: a daemon stopped or killed mid-review (a restart
-    // during a long review) has not failed.
     let failed = FailedAttempt {
         deps,
         key: &key,
@@ -1218,7 +1199,6 @@ pub fn run_review(deps: &ReviewerDeps, prepared: &Prepared) -> Result<Outcome, E
     let mut checkout: Option<Checkout> = None;
     let outcome = review_in(deps, prepared, &saved, &scratch, &mut checkout);
     match &outcome {
-        // Waiting for a rate limit is not a failed attempt.
         Err(Error::RateLimit { .. }) | Ok(_) => {}
         Err(_) => failed.record(),
     }
@@ -1280,7 +1260,6 @@ fn unapproved_sources(github: &GitHub, r: &PullRef, sources: &[PromotionSource],
         else {
             return false;
         };
-        // Each reviewer's latest verdict; comments are no verdict.
         let mut latest: HashMap<String, &str> = HashMap::new();
         for review in &reviews {
             if matches!(review.state.as_str(), "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED") {
@@ -1346,7 +1325,6 @@ fn promotion_sources(github: &GitHub, r: &PullRef, pull: &PullRequest, checkout:
         .filter_map(|(label, sha, number)| {
             let parent = format!("{sha}^1");
             let diff = checkout.diff(&parent, &sha).ok()?;
-            // Unknown context reads as different: the pull request's changes are read in full.
             let context_differs = match checkout.changed_paths(&checkout.merge_base, &parent) {
                 Ok(paths) => paths.into_iter().collect(),
                 Err(_) => changes_paths(&diff),
@@ -1402,7 +1380,6 @@ fn review_in(
     let now = || (deps.now)();
     let io = |e: std::io::Error| Error::Other(e.to_string());
 
-    // Source for the verifier; without it the review reads the diff alone and cannot approve.
     let heads = PullHeads {
         head_sha: head.clone(),
         base_ref: pull.base_ref.clone(),
@@ -1458,7 +1435,6 @@ fn review_in(
         if let Some(last) = last_sha.as_deref().filter(|last| *last != head)
             && checkout.is_ancestor(last, &head)
         {
-            // The head moved forward: review what is new. After a force-push the whole diff is reviewed again.
             since_sha = Some(last.to_string());
             review_diff = checkout.diff(last, &head)?;
             earlier_diff = Some(review_diff.clone());
@@ -1472,7 +1448,6 @@ fn review_in(
             earlier_diff = Some(String::new());
         }
     }
-    // What changed since this account's last review; a new finding elsewhere is on code that review already read.
     let fresh_lines = if prepared.forced {
         None
     } else if last_sha.as_deref() == Some(head.as_str()) {
@@ -1487,7 +1462,6 @@ fn review_in(
         ));
         review_diff = String::new();
     }
-    // A cherry-pick or promotion: what matches the merged pull requests it carries was reviewed there.
     let mut promotion: Option<PromotionDelta> = None;
     let mut promotion_inputs: Vec<PromotionSource> = Vec::new();
     if let Some(checkout) = checkout.filter(|_| !prepared.recheck_only) {
@@ -1520,7 +1494,6 @@ fn review_in(
     if let Some(earlier_diff) = &earlier_diff {
         std::fs::write(&earlier_diff_path, earlier_diff).map_err(io)?;
     }
-    // Tests of the reviewed project run only where this account could push anyway, or the owner is trusted.
     let run_tests = checkout.is_some()
         && !prepared.recheck_only
         && deps.config.mode != "fast"
@@ -1531,7 +1504,6 @@ fn review_in(
         .test_env
         .get(&format!("{}/{}", r.owner, r.repo).to_lowercase())
         .cloned();
-    // Without an explicit environment: a prepared one, else an existing local checkout of this repository.
     let prepared_env = match (checkout, &deps.environments) {
         (Some(checkout), Some(environments)) if run_tests && test_env.is_none() && deps.config.prepare_envs => {
             let log = |line: &str| (deps.log)(&format!("{}: {line}", pull_key(r)));
@@ -1563,8 +1535,6 @@ fn review_in(
             }
         ));
     }
-    // A partial environment is used: one sub-package that does not build (fisher-ki-saas: `ml/content_extractor`)
-    // left every test of the repository without its dependencies. Its failures go to the kernel for the report.
     let use_prepared = prepared_env.as_ref().filter(|env| !env.prepared.is_empty());
     let test_checkout = match use_prepared {
         Some(env) => Some(env.dir.clone()),
@@ -1585,8 +1555,6 @@ fn review_in(
             }
         }
     }
-    // Every changed line was reviewed in the pull requests it carries: an empty diff is a complete review, not one
-    // that read nothing, when those were approved.
     if let Some(delta) = promotion.as_ref().filter(|delta| changed_lines(&delta.diff) == 0) {
         let unapproved = unapproved_sources(&github, r, &promotion_inputs, &delta.sources);
         if unapproved.is_empty() {
@@ -1649,7 +1617,6 @@ fn review_in(
         spec.insert("lessons".into(), serde_json::to_value(&lessons).unwrap_or(Value::Null));
     }
     if !earlier.is_empty() {
-        // The replies in each finding's thread: the author's answer, for the re-check to weigh against the source.
         let replies = |finding: &PostedFinding| -> Vec<Value> {
             let Some(root) = finding.comment_id else {
                 return Vec::new();
@@ -1677,7 +1644,6 @@ fn review_in(
             spec.insert("earlierDiffPath".into(), json!(earlier_diff_path));
         }
     }
-    // Banned during the preparation (checkout, environment): the model turn is not started.
     if let Some(reason) = banned_now(deps, prepared) {
         (deps.log)(&format!("{name}: {reason}; the review was not started"));
         return Ok(Outcome::Skipped(reason));
@@ -1686,7 +1652,6 @@ fn review_in(
     let result = EngineResult::parse(&raw).map_err(Error::Other)?;
     let reviewed_at_ms = now();
 
-    // A review of a commit that is no longer the head would be stale: drop it and come back.
     let current = github.pull(r)?;
     if current.head_sha != head {
         (deps.log)(&format!(
@@ -1695,7 +1660,6 @@ fn review_in(
         ));
         return Ok(Outcome::Requeue("the head commit moved during the review".into()));
     }
-    // Banned during the model turn: nothing is posted.
     if let Some(reason) = banned_now(deps, prepared) {
         (deps.log)(&format!("{name}: {reason}; the finished review was discarded"));
         return Ok(Outcome::Skipped(reason));
@@ -1714,7 +1678,7 @@ fn review_in(
             self_authored: pull.author.to_lowercase() == me,
             state: state.into(),
             head_sha: head.clone(),
-            since_sha: since_sha.clone(),
+            since_sha,
             signature: deps.config.signature,
             block_at: Some(deps.config.block_at.clone()),
             never_request_changes: deps.config.never_request_changes,
@@ -1730,7 +1694,6 @@ fn review_in(
             fresh_lines,
         },
     );
-    // Nothing that names a private review guide is posted.
     let guide_names: Vec<String> = match raw.get("guideNames") {
         Some(Value::Array(names)) => names.iter().filter_map(|n| n.as_str().map(String::from)).collect(),
         _ => Vec::new(),
@@ -1750,8 +1713,6 @@ fn review_in(
         _ => Vec::new(),
     };
     let mut posted: Vec<PostedFinding> = Vec::new();
-    // Ids are `<short sha>-<n>`, numbered on from an earlier review of the same commit (a mention after an incomplete
-    // review reviews it again): two findings with one id would share a status, a thread and a fate.
     let numbered = next_finding_number(&saved.findings, &short_sha);
     let mut track = |index: usize| -> usize {
         let finding = &result.findings[index];
@@ -1759,7 +1720,6 @@ fn review_in(
             .get(index)
             .and_then(|f| f.get("kind"))
             .and_then(Value::as_str);
-        // The rules the finding cited: credited with its fate.
         let mut extra = indexmap::IndexMap::new();
         if let Some(Value::Array(ids)) = raw_findings.get(index).and_then(|f| f.get("rules"))
             && ids.iter().all(Value::is_i64)
@@ -1822,9 +1782,6 @@ fn review_in(
     } else {
         let id = match github.post_review(r, &review_input(&head, &plan)) {
             Ok(id) => id,
-            // GitHub rejects the whole review when one inline comment cannot be placed: post it without them. It
-            // can also create the review and still answer 422 (AtticAIInc/attic-proving-ground#25 got the same
-            // review twice): one already there is this review.
             Err(Error::GitHub { message, status: 422 }) if !plan.comments.is_empty() => {
                 let created = github.reviews(r)?.into_iter().find(|review| {
                     review.user.to_lowercase() == me && review.commit_id == head && review.body == plan.body
@@ -1855,7 +1812,6 @@ fn review_in(
         for index in &plan.in_summary {
             track(*index);
         }
-        // Read the review back: an inline comment GitHub dropped is posted again on its own.
         if !plan.comments.is_empty() {
             let read_back = (|| -> Result<(), Error> {
                 let kept = github.comments_of_review(r, id)?;
@@ -1902,8 +1858,6 @@ fn review_in(
                 (deps.log)(&format!("{name}: the posted review could not be read back: {error}"));
             }
         }
-        // What the re-review settled about earlier findings: fixed ones were accepted; a thread a human resolved
-        // without a fix, or a thumbs-down, rejected one. Read before our own resolutions below.
         if deps.config.learn && !earlier.is_empty() {
             let learned = (|| -> Result<(), Error> {
                 let threads = github.review_threads(r)?;
@@ -1930,8 +1884,6 @@ fn review_in(
     }
 
     if !dry_run {
-        // What the review was given and did (the brief, frames, investigators, drops, the posted plan), for reading
-        // back why it said what it said; the dry run writes its own.
         let mut record = Map::new();
         record.insert("account".into(), json!(account_key(account)));
         record.insert("pull".into(), json!(pull_key(r)));
@@ -1967,7 +1919,6 @@ fn review_in(
         pull_state.last_reviewed_sha = Some(head.clone());
         pull_state.last_reviewed_at = Some(reviewed_at.clone());
         pull_state.last_verdict = Some(verdict.clone());
-        // A re-check alone keeps the coverage of the full review it re-checks.
         pull_state.last_review_complete = Some(result.complete || prepared.recheck_only);
         pull_state.closed = None;
         pull_state.last_review_dry_run = dry_run.then_some(true);
@@ -2010,17 +1961,10 @@ fn review_in(
             extra: Default::default(),
         });
     })?;
-    // Recorded first, then the steps that act on what was recorded: a crash before the record leaves at most the
-    // review on GitHub (seen as this account's review next time), never threads resolved for findings the state
-    // still has open (which the next fates would read as resolved by a human: rejected).
     if !dry_run {
-        // A COMMENT leaves an earlier request for changes in force on GitHub: once none of its blocking findings is
-        // left, it is dismissed (boost-capital/aqua-parser#91: "Your change request from 17:04 still blocks the
-        // merge. Can you approve #91, or dismiss that change request?").
         if plan.verdict == Verdict::Comment && state == "open" && pull.author.to_lowercase() != me {
             lift_own_blocks(deps, &github, r, &me, &head, &name);
         }
-        // Resolve our own threads whose finding is fixed, by the thread id stored when the comment was posted.
         for status in statuses.iter().filter(|status| status.status == "fixed") {
             let Some(finding) = saved.findings.iter().find(|item| item.id == status.id) else {
                 continue;

@@ -197,7 +197,6 @@ impl ControlServer {
             let _ = std::fs::remove_file(registry);
         }
         let _ = std::fs::remove_file(&self.socket);
-        // Wake the accept loop so it sees `closed`.
         let _ = UnixStream::connect(&self.socket);
     }
 }

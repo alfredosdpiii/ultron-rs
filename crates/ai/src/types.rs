@@ -312,7 +312,10 @@ pub struct ToolResultMessage {
 /// A transcript message; each variant's struct carries its own `role` tag.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
-#[allow(clippy::large_enum_variant)] // transcripts are mostly assistant messages; boxing them would cost more than it saves
+#[expect(
+    clippy::large_enum_variant,
+    reason = "transcripts are mostly assistant messages; boxing them would cost more than it saves"
+)]
 pub enum Message {
     System(SystemMessage),
     User(UserMessage),

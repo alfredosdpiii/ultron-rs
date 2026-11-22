@@ -140,7 +140,6 @@ pub fn install_pele(cache_dir: &Path) -> Result<PathBuf, String> {
         return Err(failed(error));
     }
     if dir.exists() && !complete(&dir) {
-        // A damaged directory (an interrupted older write) is replaced.
         let _ = std::fs::remove_dir_all(&dir);
     }
     if let Err(error) = std::fs::rename(&staging, &dir) {
@@ -167,7 +166,6 @@ pub fn parse_runner_output(stdout: &str) -> Result<PeleOutput, String> {
         serde_json::from_str(line).map_err(|_| "diagram.mermaid: the renderer answered no JSON".to_string())?;
     if answer["ok"] != true {
         let message = answer["error"].as_str().unwrap_or("Pele failed").to_string();
-        // Pele's message usually names the line itself ("Parse error on line 3: ...").
         let line = answer["line"]
             .as_u64()
             .filter(|l| *l > 0 && !message.contains(&format!("line {l}")));
@@ -344,7 +342,6 @@ impl DiagramModule {
         let palette = self.palette(theme)?;
         let output = self.render(text, request.signal)?;
         let svg = svg::flatten_svg(&output.svg, &palette);
-        // Labels Pele coloured for its own palette stay readable on the Ultron theme's fills.
         let svg = crate::contrast::ensure_contrast(&svg, &palette);
         let fonts = self.config.fonts.clone().unwrap_or_else(svg::system_fonts);
         let png = svg::rasterize(&svg, PNG_SCALE, palette.background(), fonts)?;

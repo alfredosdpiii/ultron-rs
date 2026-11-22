@@ -39,7 +39,6 @@ pub fn to_string(x: f64) -> String {
         return "0".into();
     }
     let sign = if x < 0.0 { "-" } else { "" };
-    // Rust's `{:e}` prints the shortest round-tripping digits, as ECMAScript's Number::toString chooses them.
     let sci = format!("{:e}", x.abs());
     let (mantissa, exponent) = sci.split_once('e').unwrap_or((&sci, "0"));
     let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
@@ -96,7 +95,6 @@ pub fn to_fixed(x: f64, digits: usize) -> String {
     if !x.is_finite() || x.abs() >= 1e21 {
         return to_string(x);
     }
-    // A double has at most 1074 fractional binary digits, so 1100 decimal places are its exact expansion.
     let exact = format!("{:.1100}", x.abs());
     let (int, frac) = exact.split_once('.').unwrap_or((&exact, ""));
     let mut kept: Vec<u8> = format!("{int}{}", &frac[..digits]).into_bytes();
@@ -150,7 +148,6 @@ pub fn parse(text: &str) -> f64 {
             if rest.is_empty() || !rest.chars().all(|c| c.is_digit(radix)) {
                 return f64::NAN;
             }
-            // Exact while it fits in a u128 (then one correctly rounded conversion), as JavaScript reads it.
             return match u128::from_str_radix(rest, radix) {
                 Ok(n) => n as f64,
                 Err(_) => rest.chars().fold(0.0, |acc, c| {
@@ -238,8 +235,6 @@ mod tests {
         assert!(parse_float(".").is_nan());
     }
 
-    // Literals printed by node 26.
-
     #[test]
     fn jsrt_number_to_string_matches_number_prototype_to_string() {
         let cases: [(f64, &str); 20] = [
@@ -288,7 +283,6 @@ mod tests {
 
     #[test]
     fn jsrt_number_to_fixed_rounds_the_exact_value_with_ties_away_from_zero() {
-        // From node: (2.25).toFixed(1), (0.125).toFixed(2), (1.005).toFixed(2), (9.95).toFixed(1), ...
         assert_eq!(to_fixed(2.25, 1), "2.3");
         assert_eq!(to_fixed(0.125, 2), "0.13");
         assert_eq!(to_fixed(1.005, 2), "1.00");
@@ -308,7 +302,6 @@ mod tests {
         assert_eq!(to_fixed(123.456, 0), "123");
         assert_eq!(to_fixed(0.0, 2), "0.00");
         assert_eq!(to_fixed(1e-10, 3), "0.000");
-        // Sign, non-finite and huge values.
         assert_eq!(to_fixed(-0.0, 1), "0.0");
         assert_eq!(to_fixed(-0.001, 1), "-0.0");
         assert_eq!(to_fixed(f64::NAN, 2), "NaN");

@@ -94,7 +94,6 @@ pub(crate) fn recovery_report(
     let (restored, mut lost, restore_error) = match restore {
         Ok(Some(report)) if !report.missing => {
             let mut lost = lost_from(&report.skipped, |name| report.reason(name).map(String::from));
-            // A name the checkpoint saved but the restore did not bring back (another writer replaced the file).
             if let Some(checkpoint) = checkpoint {
                 for name in &checkpoint.saved {
                     if !report.restored.contains(name) && !report.skipped.contains(name) {

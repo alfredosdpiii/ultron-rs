@@ -80,7 +80,7 @@ impl SessionRepo {
         let mut header = Map::new();
         header.insert("v".into(), JSONL_FORMAT_VERSION.into());
         header.insert("kind".into(), "header".into());
-        header.insert("id".into(), id.clone().into());
+        header.insert("id".into(), id.into());
         header.insert("storageVersion".into(), JSONL_STORAGE_VERSION.into());
         header.insert("createdAt".into(), created_at.into());
         header.insert("cwd".into(), cwd.into());
@@ -183,7 +183,7 @@ impl SessionRepo {
         let mut header = Map::new();
         header.insert("v".into(), JSONL_FORMAT_VERSION.into());
         header.insert("kind".into(), "header".into());
-        header.insert("id".into(), id.clone().into());
+        header.insert("id".into(), id.into());
         header.insert("storageVersion".into(), JSONL_STORAGE_VERSION.into());
         header.insert("createdAt".into(), created_at.into());
         header.insert("cwd".into(), cwd.into());

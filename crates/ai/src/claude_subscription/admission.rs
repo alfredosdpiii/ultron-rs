@@ -112,7 +112,6 @@ impl Capture {
             "content_block_stop" => {
                 let index = event.get("index").and_then(Value::as_u64).ok_or("KeyError")?;
                 if let Some(raw) = self.arguments.remove(&index) {
-                    // A no-argument tool call streams one input_json_delta with an empty partial_json.
                     let input = if raw.trim().is_empty() {
                         json!({})
                     } else {
@@ -449,7 +448,6 @@ impl Admission {
     pub fn close(&mut self) {
         if let Some(listener) = self.listener.take() {
             self.stop.store(true, Ordering::SeqCst);
-            // Wake the accept loop so it sees `stop`.
             let _ = std::net::TcpStream::connect(("127.0.0.1", self.port));
             let _ = listener.join();
         }
@@ -614,7 +612,6 @@ fn forward(
     let payload = match restore_queried_turn(&payload, queried) {
         Ok(restored) => restored,
         Err(mismatch) => {
-            // Restoration is hygiene, not a gate: a frame it cannot prove lossless forwards as native built it.
             jsrt::sync::lock(&gate.outcome).unrestored = Some(mismatch.to_string());
             payload
         }
@@ -668,7 +665,6 @@ async fn exchange(
     url.set_path(&format!("{}/v1/messages", gate.upstream.path().trim_end_matches('/')));
     url.set_query(query);
     let mut request = client.post(url).body(payload);
-    // Request identity stays native's; only the HTTP transfer encoding changes.
     const DROPPED: &[&str] = &[
         "host",
         "connection",

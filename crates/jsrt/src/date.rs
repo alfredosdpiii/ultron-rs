@@ -199,7 +199,6 @@ pub fn parse_date(input: &str) -> Option<i64> {
 mod tests {
     use super::*;
 
-    // Ported from session-file/tests/upstream.rs `session_file_dates_parse_and_print_like_v8` (checked against V8).
     #[test]
     fn jsrt_date_parse_accepts_the_iso_forms_v8_does() {
         let cases: [(&str, Option<i64>); 18] = [
@@ -227,7 +226,6 @@ mod tests {
         }
     }
 
-    // Ported from review/tests/ledger.rs `parse_iso_ms` cases.
     #[test]
     fn jsrt_date_parse_reads_github_and_ledger_times() {
         assert_eq!(parse_date("2026-10-10T00:00:00.000Z"), Some(1_791_590_400_000));
@@ -239,36 +237,28 @@ mod tests {
         assert_eq!(parse_date("2026-13-01"), None);
     }
 
-    // Values from `TZ=UTC node -e 'Date.parse(s)'`; each one was misread by one of the copies jsrt replaces.
     #[test]
     fn jsrt_date_parse_matches_v8_where_the_copies_disagreed() {
-        // review/ledger and services/local accepted these; V8 is NaN.
         assert_eq!(parse_date("2026-10-07T24:30Z"), None);
         assert_eq!(parse_date("2026-10-07T24:00:30Z"), None);
         assert_eq!(parse_date("2026-10-07T19:43:49+25:00"), None);
-        // ai/model_refresh dropped the offset after a fraction (two hours off) and refused it without one.
         assert_eq!(parse_date("2026-10-07T19:43:49.517+02:00"), Some(1_791_395_029_517));
         assert_eq!(parse_date("2026-10-07T19:43:49-05:30"), Some(1_791_422_029_000));
         assert_eq!(parse_date("2026-10-07T19:43:49+00:00"), Some(1_791_402_229_000));
-        // ...accepted a leap second, a doubled `Z`, an empty fraction and a signed hour.
         assert_eq!(parse_date("2026-10-07T23:59:60Z"), None);
         assert_eq!(parse_date("2026-10-07T19:43:49ZZ"), None);
         assert_eq!(parse_date("2026-10-07T19:43:49.Z"), None);
         assert_eq!(parse_date("2026-10-07T+1:00:00"), None);
-        // ...and refused a date or a minute-precision time.
         assert_eq!(parse_date("2026-10-07"), Some(1_791_331_200_000));
         assert_eq!(parse_date("2026-10-07T19:43Z"), Some(1_791_402_180_000));
-        // The ledger refused the `±HHmm` offset and the short forms.
         assert_eq!(parse_date("2026-10-07T19:43:49+0200"), Some(1_791_395_029_000));
         assert_eq!(parse_date("2026-1-5"), Some(1_767_571_200_000));
         assert_eq!(parse_date("2026-10"), Some(1_790_812_800_000));
-        // Neither form is in V8's ISO grammar.
         assert_eq!(parse_date("Thu, 08 Oct 2026 19:43:49 GMT"), None);
         assert_eq!(parse_date("2026-10-07T19:43:49UTC"), None);
         assert_eq!(parse_date("-000000-01-01T00:00:00Z"), None);
     }
 
-    // Ported from session-file/tests/upstream.rs and tui/tests/render_debug.rs.
     #[test]
     fn jsrt_date_iso_string_matches_to_iso_string() {
         let cases = [
@@ -324,7 +314,6 @@ mod tests {
         }
     }
 
-    // `fs.statSync(p).mtimeMs` from Node 26 for files touched to these times.
     #[test]
     fn jsrt_date_mtime_ms_matches_node_stats() {
         use std::time::Duration;

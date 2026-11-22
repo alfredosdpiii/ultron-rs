@@ -2,7 +2,7 @@
 //! (cells named by their code: `hold` waits for its gate and returns its scripted result), live settings, and
 //! transcript helpers. Every conversation's model is `faux/faux-1`.
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

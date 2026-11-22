@@ -94,7 +94,6 @@ impl FooterBranch {
                 *current = next;
                 changed
             };
-            // Stamped before the first read: a checkout right after it is a change, not the baseline.
             let files = paths.as_ref().map(watched).unwrap_or_default();
             let mut last = stamp(&files);
             set(read_branch(paths.as_ref(), path_var.as_deref()));

@@ -98,7 +98,6 @@ impl CallbackServer {
         for (_, tx) in sync::lock(&self.pending).drain() {
             let _ = tx.send(Err(OAuthError::Other("OAuth callback server closed".into())));
         }
-        // Wakes the accept loop so it sees the close.
         let _ = TcpStream::connect(self.address);
     }
 }
@@ -125,7 +124,6 @@ impl PendingCallback {
                 if sync::lock(&self.pending).remove(&self.state).is_some() {
                     return Err(OAuthError::Other("OAuth callback timed out".into()));
                 }
-                // The callback took the state just now.
                 self.rx.recv().unwrap_or_else(|_| Err(closed()))
             }
         }
@@ -163,7 +161,6 @@ fn handle(mut stream: TcpStream, path: &str, base: &str, pending: &Mutex<Pending
     if reader.read_line(&mut line).is_err() || line.is_empty() {
         return;
     }
-    // The rest of the request head.
     let mut header = String::new();
     while reader.read_line(&mut header).is_ok_and(|n| n > 0) && header.trim() != "" {
         header.clear();

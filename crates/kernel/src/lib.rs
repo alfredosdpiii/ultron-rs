@@ -966,7 +966,6 @@ impl Shared {
                     self.cell_completed(&mut state);
                 }
             }
-            // Not delivered: the next cell reports it, unless a newer recovery replaced it.
             Err(_) => {
                 if state.continuity.notice.is_none() {
                     state.continuity.notice = recovery;
@@ -994,7 +993,6 @@ impl Shared {
             .map(|last| last + policy.min_interval)
             .filter(|due| *due > Instant::now());
         match due {
-            // Ahead of any queued cell: a crash in the next cell must find this cell's state saved.
             None => self.queue_checkpoint(state, true),
             Some(due) if !continuity.idle_flush_scheduled => {
                 continuity.idle_flush_scheduled = true;
@@ -1045,7 +1043,6 @@ impl Shared {
         ]);
         let shared = self.clone();
         std::thread::spawn(move || {
-            // The outcome is recorded by signed_snapshot; a failed checkpoint keeps `dirty` for the next cell.
             let _ = shared.run(op, frame);
             let mut state = jsrt::sync::lock(&shared.state);
             state.ops.remove(&op);
@@ -1068,7 +1065,6 @@ impl Shared {
                 return;
             }
             if !entry.running {
-                // Still queued: the process serving the preceding cell is left alone.
                 entry.outcome = Some(Err(error));
                 state.queue.retain(|queued| *queued != op);
                 return;
@@ -1109,7 +1105,6 @@ impl Shared {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        // An explicit restore can also recover from a broken configured snapshot.
         let generation = self.ensure_started(&mut state, kind != "restore")?;
         let state = self.wait_started(state, generation, Some(op))?;
         drop(state);
@@ -1187,7 +1182,6 @@ impl Shared {
             let now = Instant::now();
             let mut timeout = WATCHDOG_INTERVAL;
             if let Some(current) = state.current(generation) {
-                // A startup restore is bounded by the startup timeout.
                 if !current.initialized {
                     let deadline = current.startup_deadline;
                     if deadline <= now {
@@ -1251,7 +1245,6 @@ impl Shared {
             }
             TreeMemoryBackend::Cgroup => {
                 if generation.cgroup_dir.is_none() {
-                    // Before systemd-run execs the runtime the pid may still sit in the caller's cgroup.
                     let dir = tree_memory::process_cgroup_dir(generation.pid)
                         .filter(|dir| tree_memory::is_foreign_scope(dir));
                     let Some(dir) = dir.filter(|_| generation.ready_received) else {
@@ -1337,7 +1330,6 @@ impl Shared {
                 return Ok(state);
             }
             if current.ready_received && !current.completing {
-                // This caller completes startup: restore the configured snapshot, report a recovery.
                 current.completing = true;
                 let restore_path = current.restore_path.clone();
                 drop(state);
@@ -1414,7 +1406,6 @@ impl Shared {
             .as_ref()
             .and_then(|crash| crash.restore_error.clone());
         let restore: Result<Option<RestoreReport>, String> = match restored {
-            // Continuity skips a checkpoint whose restore failed or killed the kernel; that failure is reported.
             None => skipped_restore.map_or(Ok(None), Err),
             Some(Ok(reply)) if reply.result.status == Status::Error => Err(reply
                 .result
@@ -1528,7 +1519,6 @@ impl Shared {
                 continuity.checkpoint_cells = continuity.cells;
                 continuity.last_checkpoint = Some(Instant::now());
                 continuity.dirty = false;
-                // A good checkpoint may be restored again, even after a refused one.
                 if self.options.continuity.is_some() {
                     state.no_auto_restore = false;
                 }
@@ -1545,7 +1535,6 @@ impl Shared {
         let shown = path.to_string_lossy().into_owned();
         let raw = match std::fs::read(path) {
             Ok(raw) => raw,
-            // A missing snapshot is reported by the kernel as `missing`; nothing is loaded.
             Err(error)
                 if matches!(
                     error.kind(),
@@ -1596,7 +1585,6 @@ impl Shared {
                     .backend
                     .clone()
                     .or_else(|| options.var(crate::env::RLM_TREE_MEMORY_BACKEND_ENV));
-                // Under a sandbox the scope would have to wrap the sandbox's launcher: the watchdog caps the tree.
                 tree_memory::tree_memory_backend(self.tree_memory_mb, requested.as_deref(), || {
                     mechanism.is_none() && tree_memory::cgroup_scope_available(tree.launcher.as_os_str())
                 })
@@ -1637,7 +1625,6 @@ impl Shared {
             }),
             _ => {
                 let mut command = match (&options.tree_memory, tree_backend) {
-                    // systemd-run execs the kernel itself inside the capped scope.
                     (Some(tree), TreeMemoryBackend::Cgroup) => {
                         let mut command = Command::new(&tree.launcher);
                         command
@@ -1677,11 +1664,9 @@ impl Shared {
             ])
             .map_err(|error| KernelError::new(error.to_string()))?;
         let mut child = if mechanism.is_some() {
-            // Spawned (and the command dropped) on the process-lifetime spawner thread: see `sandboxed`.
             sandboxed::spawn(command).map_err(spawn_error)?
         } else {
             let child = command.spawn().map_err(spawn_error)?;
-            // The command holds the kernel's ends of the protocol pipes; close them so the host sees end of file.
             drop(command);
             child
         };
@@ -1798,8 +1783,6 @@ impl Shared {
             exit.changed.notify_all();
             shared.with_state(|state| {
                 if state.current(id).is_some() {
-                    // A cgroup OOM kill of the kernel itself arrives as SIGKILL; the scope still exists while its
-                    // other processes live, so its memory.events says whether the tree cap did it.
                     let killed = status
                         .as_ref()
                         .ok()
@@ -1818,7 +1801,6 @@ impl Shared {
                     shared.fail(state, id, error);
                 }
             });
-            // Continuity: a kernel that died while serving is replaced and restored now, not at the next call.
             let mut state = jsrt::sync::lock(&shared.state);
             if std::mem::take(&mut state.continuity.restart)
                 && !state.closed
@@ -1834,7 +1816,6 @@ impl Shared {
     fn exit_error(&self, state: &State, status: Option<ExitStatus>) -> KernelError {
         let mut code = status.and_then(|status| status.code());
         let mut signal = status.and_then(|status| status.signal());
-        // bubblewrap reports a command killed by a signal as exit code 128 + the signal.
         if state.generation.as_ref().and_then(|generation| generation.sandbox) == Some(sandbox::Mechanism::Bwrap)
             && let Some(number) = code.filter(|code| (129..=192).contains(code))
         {
@@ -1846,7 +1827,6 @@ impl Shared {
         if code == Some(EXIT_CPU) || signal == Some(SIGXCPU) {
             return KernelError::new(cpu_limit_message(&self.limits));
         }
-        // The host's own kills happen after fail(), so a SIGKILL seen here came from elsewhere.
         let hint = if signal == Some(SIGKILL) {
             "; the system out-of-memory killer may have stopped it"
         } else {
@@ -1876,7 +1856,6 @@ impl Shared {
                 let interrupted_cell = failed.active_cell.is_some();
                 let restoring = failed.completing && !failed.initialized;
                 match continuity.crash.as_mut() {
-                    // Died again before reporting: keep the first cause, add what this failure adds.
                     Some(crash) => {
                         crash.interrupted_cell |= interrupted_cell;
                         crash.unsaved_cells = unsaved_cells;
@@ -1891,7 +1870,6 @@ impl Shared {
                     }
                 }
                 if restoring && failed.restore_path.is_some() {
-                    // Restoring the checkpoint killed the kernel: do not try it again.
                     state.no_auto_restore = true;
                     if let Some(crash) = state.continuity.crash.as_mut() {
                         crash.restore_error = Some(format!("the kernel failed while restoring: {}", error.message()));
@@ -1900,8 +1878,6 @@ impl Shared {
                 state.continuity.restart = failed.initialized;
             }
         } else if failed.initialized {
-            // A failed startup keeps reporting a bad configured snapshot on retry; once user code could have run,
-            // an older checkpoint is never silently resurrected.
             state.no_auto_restore = true;
         }
         for waiter in failed.pending.values() {
@@ -1921,7 +1897,6 @@ impl Shared {
                 cgroup_dir: failed.cgroup_dir.as_deref(),
             },
         );
-        // Dropping the generation closes the writer channel, which closes the kernel's input.
     }
 
     fn send(&self, state: &mut State, generation: u64, line: String) -> Result<(), KernelError> {
@@ -1947,7 +1922,6 @@ impl Shared {
                 .position(|&byte| byte == b'\n')
                 .map(|index| offset + index);
             let end = newline.unwrap_or(chunk.len());
-            // Bounded before decoding, including unterminated frames split across many chunks.
             if current.buffer.len() + (end - offset) > MAX_FRAME_BYTES {
                 let error = format!("RLM kernel protocol frame exceeds 1 MiB ({MAX_FRAME_BYTES} bytes)");
                 self.fail(state, generation, KernelError::new(error));
@@ -1992,7 +1966,6 @@ impl Shared {
                 }
                 current.ready_received = true;
                 current.initialized = !current.host_completes_startup;
-                // Resolve the scope and its OOM baseline now that systemd-run has exec'd the runtime.
                 if current.tree_backend == TreeMemoryBackend::Cgroup {
                     self.tree_memory_exceeded(current);
                 }
@@ -2033,7 +2006,6 @@ impl Shared {
                 let Some(Value::String(id)) = frame.get("id") else {
                     return Err("host_cancel requires an id".into());
                 };
-                // A request that already finished (or was refused) has nothing to cancel.
                 if let Some(request) = current.host_requests.get(id) {
                     request.abort("RLM host request cancelled");
                 }
@@ -2048,8 +2020,6 @@ impl Shared {
                 if event == "done" && status.is_some_and(|status| status != Some("ok") && status != Some("error")) {
                     return Err("done event has invalid status".into());
                 }
-                // A subprocess killed by the scope's OOM killer may let the cell finish; report the cap, not a stray
-                // error.
                 if event == "done"
                     && current.tree_backend == TreeMemoryBackend::Cgroup
                     && current.pending.contains_key(&id)
@@ -2080,8 +2050,6 @@ impl Shared {
             self.fail(state, generation, error);
             return;
         }
-        // A request names the cell that made it; one from a task a finished cell left running is refused, so it never
-        // runs under the next cell's handler, signal and output. A request without a cell belongs to the active one.
         let waiter = match &cell {
             Some(cell) if current.active_cell.as_ref() != Some(cell) => {
                 self.send_host_error(state, generation, &id, "RLM host request from a cell that has finished");
@@ -2101,8 +2069,6 @@ impl Shared {
         }
         let handler = waiter.handler.clone().unwrap_or_else(|| self.handler.clone());
         let cell_signal = waiter.controller.clone();
-        // The request's signal ends with its cell for good, not only while the handler runs: handlers keep it
-        // (a shell job remembers the signal of the request that started it, to tell its cell ending from a cancel).
         let signal = Signal::new();
         let request = signal.clone();
         if cell_signal.on_abort(move |reason| request.abort(reason)).is_none() {
@@ -2114,9 +2080,6 @@ impl Shared {
             let result =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler.handle(&kind, payload, &signal)))
                     .unwrap_or_else(|_| Err(format!("RLM host handler for {kind} panicked")));
-            // Every request is answered while its kernel lives, also after its cell completed or it was cancelled:
-            // whatever still awaits it gets the outcome instead of waiting forever, and Python drops a reply nobody
-            // waits for.
             shared.with_state(|state| {
                 if state.current(generation).is_some() {
                     match result {
@@ -2232,7 +2195,6 @@ fn route_execution_frame(
             if frame.get("status") == Some(&Value::from("error")) {
                 result.status = Status::Error;
             }
-            // Snapshot and restore failures arrive only on the done frame.
             if result.status == Status::Error
                 && result.error.is_none()
                 && let Some(error) = frame.get("error").filter(|error| !error.is_null())
@@ -2260,8 +2222,6 @@ fn route_execution_frame(
                 state.resolve(waiter);
                 return Ok(());
             };
-            // fd 1 and fd 2 are separate pipes from the protocol: wait (bounded) for the flush markers the runtime
-            // wrote after the cell's raw output, so the result is complete.
             let flush = frame.get("flush").and_then(Value::as_object);
             let flushed = |name: &str| flush.and_then(|flush| flush.get(name)) == Some(&Value::Bool(true));
             output.awaiting = Some([flushed("stdout"), flushed("stderr")]);
@@ -2309,7 +2269,6 @@ fn handle_raw(state: &mut State, generation: u64, index: usize, chunk: &[u8]) {
     data.extend_from_slice(chunk);
     let mut data = &data[..];
     if !stream.started {
-        // Before the startup marker: stderr only feeds the diagnostic tail, stdout is dropped.
         let startup = flush_marker("ready");
         let found = find(data, &startup);
         let end = found.unwrap_or_else(|| data.len() - marker_prefix_len(data, &startup));
@@ -2401,7 +2360,6 @@ fn finish_cell(state: &mut State, generation: u64) {
     let Some(output) = current.output.take() else {
         return;
     };
-    // A held partial marker was output after all.
     for (index, stream) in current.raw.iter_mut().enumerate() {
         if stream.started {
             let held = std::mem::take(&mut stream.held);

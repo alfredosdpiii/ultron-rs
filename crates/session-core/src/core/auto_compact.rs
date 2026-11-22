@@ -96,7 +96,6 @@ impl Core {
                 if path.last().is_some_and(|e| e["type"] == "compaction") {
                     return Err("Already compacted".into());
                 }
-                // After an earlier compaction: what it kept onwards, and its summary to update.
                 let previous = path.iter().rposition(|e| e["type"] == "compaction");
                 let first = match previous {
                     Some(index) => path[index]["firstKeptEntryId"].as_str(),
@@ -158,7 +157,6 @@ impl Core {
         self.compacting = None;
         let message = match work {
             Work::Done => {
-                // A compacted context starts a new approach to the limit and re-arms situational skills.
                 self.lane.stack.rearm_after_compaction(MAIN_LANE);
                 self.announce();
                 self.compaction_event(reason, Some((Ended::Completed, None)));
@@ -174,10 +172,8 @@ impl Core {
             }
             Work::Failed(message) => message,
         };
-        // The run fails with the compaction's error (`summarization_failed`).
         if let Some(run) = self.run.as_mut() {
             run.journal.abandon_compaction();
-            // Its error replaces the overflowed answer's: the run ends with the compaction's.
             run.error = Some(message.clone());
             run.compaction_failed = true;
         }
@@ -242,7 +238,6 @@ impl Core {
         let result = match result {
             Ok(result) => result,
             Err(message) => {
-                // A failed summary response's usage is recorded before the run fails with it.
                 if let (Some(usage), Some(run)) = (last_usage, self.run.as_mut()) {
                     let usage = serde_json::to_value(&usage).unwrap_or(Value::Null);
                     run.journal.compaction_usage(&mut lock_session(&self.session), &usage);
@@ -269,12 +264,10 @@ impl Core {
     /// waited for the boundary is placed, `compaction_end` `declined`. `waiting`: the context entries pending
     /// before the hook.
     fn decline(&mut self, reason: Reason, waiting: usize) {
-        // The trim's edit waits for the run's next boundary, as a queued write does.
         let pending = context_lane::pending_count(&lock_session(&self.session));
         if pending > waiting {
             self.queue_update();
         }
-        // Before a request, the boundary is now: what waited for it is placed with the resumed checkpoint.
         let placement = {
             let session = lock_session(&self.session);
             let tip = session.branch_tip(MAIN_LANE).flatten();
@@ -309,8 +302,6 @@ impl Core {
         }
         let resumed = run.resume_overflow.take();
         let settings = self.compaction_settings();
-        // The checkpoint runs before every request, and preparing converts the whole session: not when nothing can
-        // be due.
         if resumed.is_none() && !crate::auto_compaction::may_be_due(&settings, self.model.context_window) {
             return Ok(false);
         }
@@ -348,7 +339,6 @@ impl Core {
             );
         }
         self.compaction_event(reason, None);
-        // `before_compaction`: ContextControl may trim old tool results instead of a threshold compaction.
         let waiting = context_lane::pending_count(&lock_session(&self.session));
         let window = i64::try_from(self.model.context_window).ok();
         let tokens = i64::try_from(prepared.preparation.tokens_before).unwrap_or(i64::MAX);

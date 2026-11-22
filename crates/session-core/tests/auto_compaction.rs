@@ -188,7 +188,7 @@ fn session_core_auto_compaction_overflow_commits_as_an_error() {
         error.error_message.as_deref(),
         Some("Assistant request exceeded the context window")
     );
-    let mut provider = silent.clone();
+    let mut provider = silent;
     provider.stop_reason = ai::StopReason::Error;
     provider.error_message = Some("prompt is too long".into());
     assert_eq!(

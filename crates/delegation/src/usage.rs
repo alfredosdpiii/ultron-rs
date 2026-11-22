@@ -57,7 +57,6 @@ pub struct UsageLimits {
 /// ([`MAX_TASK_CALLS_ENV`], [`MAX_MODEL_CALLS_ENV`]; `off` removes it).
 pub fn limits_from_env(var: &dyn Fn(&str) -> Option<String>, settings: &Value) -> UsageLimits {
     let unlimited = |raw: &str| ["none", "off", "unlimited"].contains(&raw.to_lowercase().as_str());
-    // The variable's value, None when it is off, else the fallback (None: off).
     let integer = |name: &str, fallback: Option<u64>, minimum: u64| -> Option<u64> {
         let text = var(name).map(|t| t.trim().to_string()).unwrap_or_default();
         if text.is_empty() {
@@ -903,7 +902,6 @@ impl UsageLedger {
                     Some(wall) => json::number(now + wall as f64),
                     None => Value::Null,
                 };
-                // TS mutates a root already in the document in place: its start stays even if admission is refused.
                 if state.document["roots"].get(&root_id).is_some() {
                     state.document["roots"][&root_id] = root.clone();
                 }
@@ -1038,7 +1036,6 @@ impl UsageLedger {
                 "reservations": root["reservations"],
                 "session": self.session_totals(&state.document),
             });
-            // Call ceilings (Rust only) show beside the other limits, with what the root has used of each.
             if !self.limits.max_calls.is_empty() {
                 status["limits"]["maxCalls"] = json!(self.limits.max_calls);
                 status["calls"] = RESERVABLE_KINDS
@@ -1264,7 +1261,6 @@ impl UsageLedger {
             .enumerate()
             .map(|(i, root)| (last_activity(root), i))
             .collect();
-        // A stable sort by activity, newest first (Array.prototype.sort is stable).
         ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         let recent: Vec<&str> = ranked
             .iter()

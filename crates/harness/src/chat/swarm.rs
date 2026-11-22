@@ -189,7 +189,6 @@ pub fn send(tx: &mut Tx<'_>, from: &str, to: &str, text: &str, now: u64) -> Resu
     }
     let message = json!({ "id": id, "from": from, "text": text, "at": now, "read": false });
     d(doc.push(&path(&["boxes", to]), vec![message]))?;
-    // Bound the box: drop the oldest read messages first, then the oldest.
     let messages = d(doc.get(&path(&["boxes", to])))?.unwrap_or(json!([]));
     let count = messages.as_array().map_or(0, Vec::len);
     if count > MAX_MAIL {
@@ -538,7 +537,6 @@ fn wake_recipient(chat: &ChatHarness, caller: &Caller, to: &str, body: &str) -> 
     let agents = chat.commit(agents)?;
     let target = agents.get(to).map(|entry| entry["conversation"].as_u64());
     if let Some(root_inbox) = caller.root_inbox {
-        // The root: the name it registered, else `root` (until it registers another).
         let root = target.map_or(to == "root", |conversation| {
             conversation == Some(ROOT_CONVERSATION_ID.0)
         });

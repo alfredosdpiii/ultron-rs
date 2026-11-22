@@ -379,7 +379,7 @@ fn memory_notes(text: &str, file: &Path) -> Vec<Note> {
         };
         for bullet in section.bullets() {
             let mut situation = String::from("from the user's Codex task memory");
-            let mut content = bullet.clone();
+            let mut content = bullet;
             while let Some((number, start)) = trailing_task_tag(&content) {
                 if let Some(title) = tasks.get(&number) {
                     situation = format!("Codex task: {title}");

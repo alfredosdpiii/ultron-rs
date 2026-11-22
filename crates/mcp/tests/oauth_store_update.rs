@@ -22,7 +22,7 @@ fn mcp_oauth_provider_change_keeps_tokens_another_process_wrote_meanwhile() {
     let rotate: Arc<Mutex<Option<mcp::oauth::store::ServerStore>>> = Arc::new(Mutex::new(Some(other.clone())));
     let sink: mcp::connection::SecretSink = {
         let rotated = rotated.clone();
-        let rotate = rotate.clone();
+        let rotate = rotate;
         Arc::new(move |_| {
             if let Some(other) = rotate.lock().unwrap().take() {
                 let mut state = other.load().unwrap().unwrap();

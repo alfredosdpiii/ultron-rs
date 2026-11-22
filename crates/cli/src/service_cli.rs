@@ -146,7 +146,6 @@ fn run_systemctl(binary: &Path, env: &Env, args: &[&str]) -> Result<String, Stri
 pub fn durable_options(env: &Env) -> Result<ServerOptions, String> {
     let instance = crate::instance(env, true);
     let session_dir = crate::session::session_directory_of(None, env, &instance);
-    // `--offline` and the `httpProxy` setting (already in `env`) hold for its workers.
     let model = WorkerModel {
         env: crate::startup::worker_env(env),
         ..WorkerModel::default()
@@ -163,7 +162,6 @@ pub fn run(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
         [help] if matches!(help.as_str(), "--help" | "-h" | "help") => {
             return Some(out.write_all(HELP.as_bytes()).map(|()| 0).map_err(io));
         }
-        // The unit's command: the durable instance's server in this process until a signal.
         [run] if run == "run" => return Some(durable_options(env).and_then(|o| serve(&o)).map(|()| 0)),
         [action] if matches!(action.as_str(), "install" | "uninstall" | "status" | "restart") => action.as_str(),
         [verb, ..] if matches!(verb.as_str(), "install" | "uninstall" | "status" | "restart" | "run") => {
@@ -199,8 +197,6 @@ fn manage(action: &str, env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> 
             let enabled = run_systemctl(&binary, env, &["daemon-reload"])
                 .and_then(|_| run_systemctl(&binary, env, &["enable", "--now", &name]));
             if let Err(error) = enabled {
-                // `enable --now` may have enabled the unit before its start failed: undo the enable (its
-                // `default.target.wants` link) before the file goes, and reload so systemd forgets the unit.
                 let _ = run_systemctl(&binary, env, &["disable", &name]);
                 let _ = std::fs::remove_file(&unit);
                 let _ = run_systemctl(&binary, env, &["daemon-reload"]);
@@ -247,7 +243,6 @@ fn manage(action: &str, env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> 
             let installed = unit.exists();
             let state = if installed { "installed" } else { "missing" };
             writeln!(out, "Unit: {} ({state})", unit.display()).map_err(io)?;
-            // `is-enabled` / `is-active` exit non-zero for a disabled or inactive unit; their output is the state.
             let query = |verb: &str| {
                 run_systemctl(&binary, env, &[verb, &name])
                     .unwrap_or_else(|error| error.rsplit_once(": ").map_or(error.clone(), |(_, s)| s.to_string()))

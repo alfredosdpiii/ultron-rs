@@ -260,7 +260,6 @@ impl HindsightBackend {
         signal: &Signal,
     ) -> Result<Value, MemoryError> {
         if self.ensure_bank {
-            // Callers arriving during the creation wait for it, as they share its promise in TS.
             let mut ready = jsrt::sync::lock(&self.bank_ready);
             if !*ready {
                 self.request("", "PUT", Some(&json!({})), signal)?;
@@ -321,8 +320,6 @@ impl MemoryBackend for HindsightBackend {
     fn operation(&self, operation_id: &str, signal: &Signal) -> Result<Value, String> {
         self.document("operations", operation_id, "GET", signal)
     }
-
-    // Rust-only: Hindsight 1.1 memory units, reflect and mental models.
 
     fn unit(&self, unit_id: &str, signal: &Signal) -> Result<Value, String> {
         self.document("memories", unit_id, "GET", signal)

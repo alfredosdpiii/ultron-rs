@@ -207,8 +207,6 @@ pub fn context_image_budget(value: Option<&str>) -> usize {
     if raw.is_empty() {
         return DEFAULT_CONTEXT_IMAGES;
     }
-    // `Number(raw)`: a whole number, possibly written with a fraction of zero, an exponent, or as a hex, octal or
-    // binary literal.
     match jsrt::number::parse(raw) {
         n if n.is_finite() && n >= 0.0 && n.fract() == 0.0 => n as usize,
         _ => DEFAULT_CONTEXT_IMAGES,

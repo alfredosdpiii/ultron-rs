@@ -47,7 +47,6 @@ pub fn is_punctuation(c: char) -> bool {
 }
 
 fn is_ws(s: &str) -> bool {
-    // TS `/\s/.test(segment)`: any whitespace character.
     s.chars().any(char::is_whitespace)
 }
 

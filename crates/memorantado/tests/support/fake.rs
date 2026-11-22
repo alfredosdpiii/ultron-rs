@@ -3,7 +3,7 @@
 //! It is the client's [`Transport`] (every request captured), or a loopback HTTP server ([`FakeMemorantado::serve`])
 //! for a process that builds its own client. Shared by the memorantado, acceptance and cli tests (`#[path]`).
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use kernel::Signal;
 use memorantado::{HttpRequest, HttpResponse, Transport, TransportError};

@@ -245,7 +245,7 @@ fn cli_autoreview_doctor_repo_lists_bound_environments_from_the_script() {
                     "/fake/python3".to_string(),
                     script(),
                     "environments".to_string(),
-                    checkout.clone()
+                    checkout
                 ],
                 Some(60_000)
             ),

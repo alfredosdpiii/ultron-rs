@@ -79,7 +79,6 @@ impl JsonlStorage {
                 state.apply(writes);
                 Ok(())
             });
-            // TypeScript keeps the cause out of the message (`{ cause }`).
             if replay.is_err() {
                 return Err(format!("Invalid JSONL storage {}: line {}", path.display(), index + 1));
             }
@@ -87,9 +86,6 @@ impl JsonlStorage {
         if let Some(next) = codec::header_i64(&header, "nextSeq") {
             state.advance_next_seq(next)?;
         }
-        // The complete lines are the file's first bytes: cutting the torn tail off leaves the bytes TypeScript's
-        // republication writes, without rewriting a large journal (a 98 MB one outlasted the worker's startup
-        // deadline on a busy disk, and every restart was killed mid-rewrite with the tail still torn).
         if torn {
             io::truncate(path, content.rfind('\n').map_or(0, |last| last + 1))?;
         }

@@ -1322,7 +1322,6 @@ impl Lexer {
         let same_prev = prev_char.as_bytes() == [delim];
         let hay_start = masked.len() - src.len() + l_len;
         let runs = runs.get(masked, delim);
-        // marked's emStrongRDelim regex starts with a branch anchored at the search start that skips one delimiter.
         let skip_to = exec(
             if delim == b'*' {
                 &rules::EM_R_AST_SKIP
@@ -1433,7 +1432,6 @@ fn inline_text_len(s: &str) -> Option<usize> {
     };
     let mut spaces = RunEnd::default();
     let mut email = RunEnd::default();
-    // `(?= {2,}\n)` and `(?=[email]+@)` at byte `i`.
     let mut break_ahead = |i: usize| {
         b.get(i) == Some(&b' ') && {
             let e = spaces.get(b, i, |c| c == b' ');
@@ -1535,7 +1533,6 @@ impl CloserSearch {
         let mut kinds = vec![0u8; n];
         for (i, run) in runs.iter().enumerate() {
             let r_len = run.len as isize;
-            // 0: neither, 1: subtracts, 2: skip (adds to `mid`), 3: stop.
             kinds[i] = match run.class {
                 Some(5 | 6) if l_mod != 0 && (l_mod as isize + r_len) % 3 == 0 => 2,
                 Some(5 | 6) if same_prev => 3,

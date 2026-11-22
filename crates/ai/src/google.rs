@@ -279,7 +279,6 @@ async fn drive(
     }
     let mut headers = headers.build();
     if let EndpointAuth::Google(env) = &endpoint.auth {
-        // `NodeAuth.addGoogleAuthHeaders`: a header the caller already set wins.
         let auth = tokio::select! {
             auth = crate::google_auth::request_headers(env.as_ref(), transport) => auth.map_err(Failure::plain)?,
             () = cancelled(signal) => return Err(Failure::plain(REQUEST_ABORTED)),
@@ -400,7 +399,6 @@ async fn read_google_stream(
     mut handle: impl FnMut(&Value) -> Result<(), Failure>,
 ) -> Result<(), Failure> {
     let mut buffer: Vec<u8> = Vec::new();
-    // A body errored by the abort rejects the next read.
     while let Some(chunk) = next_chunk::<Failure>(response.body.as_mut(), signal).await? {
         if let Ok(Value::Object(object)) = serde_json::from_slice::<Value>(&chunk)
             && let Some(error) = object.get("error")

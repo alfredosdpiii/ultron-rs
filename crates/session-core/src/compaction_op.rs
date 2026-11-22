@@ -251,7 +251,6 @@ impl CompactionOp {
         let mut extra = vec![("targetId", json!(op.target))];
         if let Some(label) = &op.label {
             extra.push(("label", json!(label)));
-            // AgentSession labels the selected entry; the tip goes before it when it is a user message.
             if op.label_entry != op.target {
                 extra.push(("labelEntryId", json!(op.label_entry)));
             }
@@ -406,7 +405,6 @@ impl CompactionOp {
             Write::delete(OP_META, &self.operation_id),
             Write::delete(OP_STATE, &self.operation_id),
         ];
-        // A navigation without a summary has no preparation.
         if !self.task.is_null() {
             writes.push(Write::delete(OP_PREPARATION, &self.preparation_key()));
         }

@@ -44,7 +44,6 @@ fn usage_row(values: &services::SessionValues, receipt: &Receipt) {
         "cost": spend.cost,
     });
     let mut session = crate::durable_store::lock(values.session());
-    // A journal that cannot take the row is the session's to report; the decision stands.
     let _ = crate::core::record_usage_row(&mut session, usage, details);
 }
 
@@ -72,7 +71,6 @@ impl judge::SpendLedger for SessionLedger {
             cost: spend.cost,
             wall_ms: Some(wall_ms),
         };
-        // A ledger that cannot record is the session's to report; the decision stands.
         let _ = self
             .0
             .settle(&Reservation(reservation.clone()), Some(status), Some(&measured));

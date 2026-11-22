@@ -157,13 +157,11 @@ impl Socket {
     async fn poll_open(&mut self) -> bool {
         let mut buffer = vec![0u8; 64 * 1024];
         while self.state == State::Open {
-            // Nobody listens between requests: what arrived is dropped (control frames are still handled).
             match self.take_queued().await {
                 Some(WsEvent::Closed { .. }) => return false,
                 Some(_) => continue,
                 None => {}
             }
-            // One look at the connection without waiting (`timeout` polls the read once before its deadline).
             match tokio::time::timeout(Duration::ZERO, self.read.read(&mut buffer)).await {
                 Err(_) => return true,
                 Ok(Ok(0)) | Ok(Err(_)) => {

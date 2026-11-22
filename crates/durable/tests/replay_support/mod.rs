@@ -5,7 +5,7 @@
 //! (IDs minted but never stored are not reserved again). The real journal storage over a session file is checked
 //! against the upstream conformance cases and the kill tests in `crates/session-core/tests`.
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use durable::{MemoryStorage, PreparedCommit, Seq, StorageWrite};
 use std::sync::{Arc, Mutex, PoisonError};

@@ -21,7 +21,6 @@ pub fn failed_turn_tail(messages: &[Value]) -> bool {
     }
     match last["stopReason"].as_str() {
         Some("error") | Some("aborted") => true,
-        // A completed tool call whose result failed because the user aborted it mid-run.
         Some("toolUse") => errored_result && i < messages.len(),
         _ => false,
     }

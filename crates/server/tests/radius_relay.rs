@@ -289,7 +289,7 @@ fn server_radius_relay_data_frame_round_trips() {
     let mut wrong_type = frame.clone();
     wrong_type[1] = 2;
     assert_eq!(parse_relay_data_frame(&wrong_type), None);
-    let mut not_v4 = frame.clone();
+    let mut not_v4 = frame;
     not_v4[8] = 0x10;
     assert_eq!(parse_relay_data_frame(&not_v4), None);
 }

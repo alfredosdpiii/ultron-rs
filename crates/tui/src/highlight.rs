@@ -355,7 +355,6 @@ pub struct HighlightStream {
 
 impl HighlightStream {
     pub fn new(lang: Option<&str>, colors: HighlightColors) -> Self {
-        // Pin the set: a parse state only works with the syntax set it came from.
         let ss = syntax_set();
         let state = lang
             .and_then(|l| find_syntax(ss, l))

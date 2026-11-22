@@ -130,7 +130,6 @@ pub fn is_date(value: &str) -> bool {
 /// `IsTime` (time zone required): leap seconds only at 23:59:60 UTC.
 pub fn is_time(value: &str) -> bool {
     let b = value.as_bytes();
-    // A multibyte character across byte 8 (`00:00:0é`) is not a time, and must not split the slice below.
     if b.len() < 8 || b[2] != b':' || b[5] != b':' || !value.is_char_boundary(8) {
         return false;
     }
@@ -198,7 +197,6 @@ fn is_iri(value: &str) -> bool {
     if value.chars().any(|c| (c as u32) <= 0x20 || "<>^`{|}\\".contains(c)) || bad_percent(value) {
         return false;
     }
-    // An IPvFuture host (`[v1.x]`), which URL parsing rejects, is checked as `[::1]`.
     let narrowed = if value.encode_utf16().count() < 2048 {
         narrow_ipv_future(value)
     } else {
@@ -229,7 +227,6 @@ fn narrow_ipv_future(value: &str) -> String {
 
 fn is_iri_reference(value: &str) -> bool {
     let invalid = value.chars().any(|c| (c as u32) <= 0x20 || c == '\u{7f}' || c == '\\') || bad_percent(value);
-    // A scheme followed directly by `//` (`http//x`).
     let scheme = value.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) && {
         let rest: String = value
             .chars()
@@ -285,7 +282,6 @@ pub fn js_regex(pattern: &str) -> Option<fancy_regex::Regex> {
                 if in_class && !inside.is_empty() {
                     out.push_str(inside);
                 } else if in_class {
-                    // A negated shorthand inside a class keeps fancy-regex's (Unicode) meaning.
                     out.push('\\');
                     out.push(next);
                 } else {
@@ -299,7 +295,6 @@ pub fn js_regex(pattern: &str) -> Option<fancy_regex::Regex> {
                     out.push(chars.next().unwrap_or('^'));
                 }
                 if chars.peek() == Some(&']') {
-                    // `[]` matches nothing and `[^]` anything in ECMAScript.
                     chars.next();
                     in_class = false;
                     if out.ends_with("[^") {
@@ -315,7 +310,6 @@ pub fn js_regex(pattern: &str) -> Option<fancy_regex::Regex> {
                 in_class = false;
                 out.push(c);
             }
-            // `.` excludes the four ECMAScript line terminators.
             '.' if !in_class => out.push_str(r"[^\n\r\u{2028}\u{2029}]"),
             _ => out.push(c),
         }

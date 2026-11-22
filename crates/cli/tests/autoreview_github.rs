@@ -226,7 +226,7 @@ fn cli_autoreview_daemon_log_masks_the_gh_token() {
     hub.fail("GET repos/o/r/pulls/1", 500, &[], &format!("upstream echoed {token}"));
     let engine = FakeEngine::new(vec![]);
     let overrides = Overrides {
-        runner: Some(hub.clone()),
+        runner: Some(hub),
         engine: Some(engine),
     };
     let (code, _, err) = run(&env, &overrides, &["once", "--json", "--dry-run"]);

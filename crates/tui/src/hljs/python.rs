@@ -167,7 +167,6 @@ fn build() -> Grammar {
     let mut d = Defs(Vec::new());
     let t = Some(true);
 
-    // Core modes (frozen in highlight.js).
     let backslash = d.add(Def {
         begin: Some(r"\\[\s\S]"),
         frozen: true,

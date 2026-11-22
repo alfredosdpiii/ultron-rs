@@ -203,7 +203,6 @@ impl Server {
             }
         };
         let Some(method) = message["method"].as_str() else {
-            // This agent sends no requests, so a response answers nothing.
             if message.get("id").is_none() {
                 self.respond(&Value::Null, Err(RpcError::new(INVALID_REQUEST, "Invalid request")));
             }
@@ -343,7 +342,6 @@ impl Server {
                 }
             }
         });
-        // `--name` names the first new session only (never a loaded one).
         let named = self.name_pending && !matches!(target, Target::Open(_));
         let args = if named { self.parsed } else { self.unnamed };
         let remote = Remote::open(args, env, target, remote_tx).map_err(internal)?;
@@ -527,8 +525,6 @@ impl Server {
         slot.remote
             .prompt(message.text, message.images)
             .map_err(|e| RpcError::new(INTERNAL_ERROR, e))?;
-        // `/goal`, `/persona`, `/keepgoing`: the worker answered the session's command; its reply is the agent's
-        // message and the turn ends at once.
         if let Some(reply) = slot.remote.take_command_reply() {
             slot.tracker.end();
             let text = reply["text"].as_str().unwrap_or_default().to_string();
@@ -581,7 +577,6 @@ impl Server {
         match action {
             Action::Update(update) => {
                 let slot = &mut self.slots[index];
-                // Outside a turn only a rename is news to the client.
                 let to = match (&session, &slot.turn) {
                     (Some(session), Some(_)) => Some(session.clone()),
                     _ => (update["sessionUpdate"] == "session_info_update").then(|| slot.attached.clone()),

@@ -534,7 +534,6 @@ fn connect_oauth(entry: &ServerEntry, env: &Env) -> Connection {
                 .iter()
                 .filter_map(|t| t.get("name").and_then(Value::as_str).map(str::to_string))
                 .collect(),
-            // `connection.hasResources`: the counts listed at connect, zero included.
             resources: connection.listed_resource_counts(),
             error: None,
         },
@@ -542,7 +541,6 @@ fn connect_oauth(entry: &ServerEntry, env: &Env) -> Connection {
             state: connection.state().as_str(),
             tools: Vec::new(),
             resources: None,
-            // A server that needs sign-in reports no error (the list says how to sign in).
             error: match connection.state() {
                 mcp::connection::ServerState::NeedsAuth => None,
                 _ => connection.error().or(Some(message)),
@@ -591,7 +589,6 @@ fn connect(entry: &ServerEntry, env: &Env) -> Connection {
             (t.clone(), Some(t))
         }
         TransportSpec::Http(options) => {
-            // The run's proxies, never this process's own environment.
             let options = mcp::http::HttpOptions {
                 proxy: Some(ai::net::ProxyEnv::from_lookup(&*env.var)),
                 ..options

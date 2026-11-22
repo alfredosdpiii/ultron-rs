@@ -225,7 +225,6 @@ impl Lifetime {
             let Some(me) = me.upgrade() else { return };
             let fire = {
                 let mut state = me.lock();
-                // A stale timer (called off, then another armed) leaves the newer one's mark alone.
                 if state.armed != Some(token) {
                     return;
                 }
@@ -348,15 +347,13 @@ pub fn start_server(options: &ServerOptions) -> io::Result<Arc<RunningServer>> {
     paths::ensure_private_directory(&options.directory)?;
     let profile = paths::acquire_profile(&options.directory, options.server_id.as_deref())?;
     match start_generation(options, &profile.server_id) {
-        Err(Ok(RegistrationRejected(_))) => {
-            // Another release's coordinator owns this ID (and its live sessions): run beside it under a derived ID.
-            start_generation(options, &paths::fallback_server_id(&profile.server_id)).map_err(|e| match e {
+        Err(Ok(RegistrationRejected(_))) => start_generation(options, &paths::fallback_server_id(&profile.server_id))
+            .map_err(|e| match e {
                 Ok(RegistrationRejected(path)) => {
                     io::Error::other(format!("Coordinator at {path} rejected the server registration"))
                 }
                 Err(e) => e,
-            })
-        }
+            }),
         Err(Err(e)) => Err(e),
         Ok(server) => Ok(server),
     }
@@ -411,16 +408,12 @@ fn start_generation(
         error_log_path(&options.directory, server_id),
         Box::new(move |count| connections_lifetime.set_connections(count)),
     );
-    // Every session of the durable instance has the Ultron persona on by default (a settings default under the
-    // user's files, which an explicit `persona` value overrides).
-    // They also start on `durable.model` (the Claude subscription by default) and save a chosen model there.
     if is_durable_directory(&options.directory) {
         manager.set_settings_defaults(json!({config::keys::PERSONA_KEY: config::keys::PERSONA_ULTRON}));
         manager.set_durable();
     }
     let log_path = error_log_path(&options.directory, server_id);
     manager.set_logger(Box::new(move |label, message| record_error(&log_path, label, message)));
-    // Scheduled prompts: one timer per generation over the store's sessions; workers report their changes.
     let schedule_log = error_log_path(&options.directory, server_id);
     let schedule_clock = kernel_apis::prompt_schedule::clock_for(&|key| std::env::var(key).ok());
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
@@ -440,15 +433,11 @@ fn start_generation(
     );
     let reports = schedules.clone();
     manager.on_schedules(Box::new(move |meta, active| reports.update(meta, active)));
-    // A server holding a pending schedule stays up until it is done or cancelled.
     schedules.record_errors(options.directory.join(crate::prompt_schedules::ERRORS_FILE));
     let held = lifetime.clone();
     schedules.on_hold(Box::new(move |pending| held.set_schedules(pending)));
     let listener = sockets::listen(&endpoint_path).map_err(Err)?;
     hub.serve(listener);
-    // The lease connects before the coordinator has accepted (and counted) it, so a coordinator whose empty
-    // shutdown fires just then still exits: its control socket is gone (registration finds no socket, or is closed
-    // unanswered). That coordinator is not another release's; start or find a live one and register again.
     let mut attempts = 0;
     let coordinator = loop {
         let events = manager.clone();
@@ -531,7 +520,6 @@ fn start_generation(
         relay: Mutex::new(relay),
         schedules,
     });
-    // Only losing the coordinator itself ends a generation early.
     let lost = Arc::downgrade(&running);
     std::thread::spawn(move || {
         coordinator.wait_lost();
@@ -593,8 +581,6 @@ pub fn activate_server(options: &ServerOptions, keep_alive: bool) -> io::Result<
         }
         args.push(selection.to_string());
     }
-    // The run environment the activating client set for itself (`--offline`, the `httpProxy` setting): the server
-    // process and so every worker it starts run with it.
     let mut env = options.model.env.clone();
     if keep_alive {
         env.push((KEEP_ALIVE_ENV.to_string(), "1".to_string()));
@@ -665,7 +651,6 @@ pub fn run_server_process(args: &[String], relay: Option<server::radius_relay::R
     let session_dir = args.get(2).filter(|d| Path::new(d).is_absolute());
     let session_dir = session_dir.ok_or("Internal server requires an absolute Session directory")?;
     let model = parse_model(args.get(3))?;
-    // The durable instance works in the home directory (its sessions are created there), wherever it was activated.
     durable_home(Path::new(directory));
     let server = start_server(&ServerOptions {
         directory: PathBuf::from(directory),
@@ -677,7 +662,6 @@ pub fn run_server_process(args: &[String], relay: Option<server::radius_relay::R
         relay,
     })
     .map_err(|e| e.to_string())?;
-    // A signal closes the generation (busy workers keep running detached) and removes its endpoint.
     let signalled = server.clone();
     signals::set_handler(Arc::new(move |_| {
         signalled.close();

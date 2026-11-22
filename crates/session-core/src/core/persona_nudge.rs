@@ -29,7 +29,6 @@ impl Core {
     fn persona_save(&mut self) {
         self.runtime.system.set_persona(self.persona_session.prompt_override());
         let value = self.persona_session.to_json();
-        // A state that cannot be written stays in memory; the next change writes it again.
         let _ = match &self.runtime.services.values {
             Some(values) => values.set(MODULE, STATE_KEY, &value),
             None => lock_session(&self.session)
@@ -84,7 +83,6 @@ impl Core {
         let calls = message["content"]
             .as_array()
             .is_some_and(|blocks| blocks.iter().any(|b| b["type"] == "toolCall"));
-        // Keep-going remembers the run's work in the session, so a run resumed after a restart still counts it.
         if calls && self.persona_session.worked() {
             self.persona_save();
         }
@@ -131,23 +129,19 @@ impl Core {
         match next {
             Next::Persona => {}
             Next::Stop => {
-                // An abort still ends the persona's own chain until the user's next input.
                 self.persona.run_ended(false, aborted, failed, pending);
                 return;
             }
             Next::Continue { .. } | Next::Final { .. } => {
                 if matches!(next, Next::Final { .. }) {
-                    // After the final report nothing continues until the user's next input.
                     self.persona.nudges = resources::persona::MAX_NUDGES;
                 }
                 if let Some(message) = keep_going::nudge_message(&next, limits, jsrt::date::now_ms()) {
-                    // A nudge that cannot start is dropped, as the persona's is.
                     let _ = self.prompt_with(message, None, true);
                 }
                 return;
             }
         }
-        // Settings are read only when the turn would otherwise be nudged.
         let candidate = !aborted
             && !failed
             && !pending
@@ -157,7 +151,6 @@ impl Core {
             return;
         };
         let message = resources::persona::nudge_message(n, jsrt::date::now_ms());
-        // A nudge that cannot start (no key, a journal error) is dropped; the user's next input starts over.
         let _ = self.prompt_with(message, None, true);
     }
 

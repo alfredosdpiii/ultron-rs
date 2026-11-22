@@ -189,7 +189,6 @@ pub fn normalize_adapter_server_config(raw: &Value, defaults: &Value) -> Value {
             .cloned()
             .unwrap_or_default();
         let has_authorization = headers.keys().any(|h| h.eq_ignore_ascii_case("authorization"));
-        // A `!command` value runs as a whole, so it cannot take the `Bearer ` prefix.
         if !has_authorization && !bearer.starts_with('!') {
             headers.insert("Authorization".into(), json!(format!("Bearer {bearer}")));
             value.insert("headers".into(), Value::Object(headers));
@@ -383,8 +382,6 @@ fn read_config_file(path: &Path, scope: Scope, loaded: &mut LoadedConfig) {
             .push(format!("{shown}: expected an object with an \"mcpServers\" object"));
         return;
     }
-    // config.ts validates `autoEnableCodemode`; its value only turns on a codemode tool, and the model's one tool
-    // is `rlm`, so nothing reads it.
     if parsed
         .get("autoEnableCodemode")
         .is_some_and(|value| !value.is_boolean())
@@ -393,7 +390,6 @@ fn read_config_file(path: &Path, scope: Scope, loaded: &mut LoadedConfig) {
             .errors
             .push(format!("{shown}: autoEnableCodemode must be a boolean"));
     }
-    // pi-mcp-adapter's top-level `settings` carry defaults for its per-server fields.
     let defaults = parsed
         .get("settings")
         .filter(|s| s.is_object())
@@ -407,7 +403,6 @@ fn read_config_file(path: &Path, scope: Scope, loaded: &mut LoadedConfig) {
                 continue;
             }
         };
-        // Names that differ only in `-` and `_` would share a namespace.
         let namespace = mcp_namespace(name);
         if let Some(clash) = loaded
             .servers

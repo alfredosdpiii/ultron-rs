@@ -181,7 +181,6 @@ pub(crate) fn create_documents(tx: &mut Tx<'_>, conversation_id: ConversationId,
     for doc in [&docs::LIVE, &docs::INBOX, &docs::USAGE, &docs::PROVIDER] {
         tx.doc(doc, owner)?;
     }
-    // A fork copies `ultron.agent` as of its fork entry.
     if !fork {
         tx.doc(&docs::AGENT, owner)?;
     }
@@ -426,9 +425,7 @@ impl ChatHarness {
     }
 
     fn submit(&self, conversation_id: ConversationId, draft: &SubmissionDraft) -> Result<Submission> {
-        // Submitting asks for progress.
         let _ = self.harness.resume();
-        // Queue modes and the clock are read on the Session line, when admission decides.
         let id = self.harness.commit(|tx| {
             admit_submission(
                 tx,

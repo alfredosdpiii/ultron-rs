@@ -314,7 +314,6 @@ pub fn system_prompt_with_resources(
     let mut skills = crate::session_resources::skills(cwd, &agent_dir, extra, mode.no_skills, bundled.as_deref());
     let mut warnings = Vec::new();
     if !mode.no_skills {
-        // Skills the user set always on carry their text into the prompt (resource-loader.ts `applyAlwaysSkills`).
         warnings = resources::skills::apply_always_skills(&mut skills, &mode.always_skills)
             .into_iter()
             .map(|d| d.message)
@@ -355,7 +354,6 @@ pub fn system_prompt_with_resources(
         },
         skills,
         bundled_skills_dir: bundled,
-        // SYSTEM.md replaces Pi's preamble, tools and rules; APPEND_SYSTEM.md is the addendum (`resourceLoader`).
         custom_prompt: extra.system_prompt.clone(),
         append_system_prompt: extra.append_system_prompt.join("\n\n"),
         sections: [("runtime".to_string(), runtime)]
@@ -366,7 +364,6 @@ pub fn system_prompt_with_resources(
                     .filter(|_| guide.durable_apis)
                     .map(|note| ("herdr".to_string(), note)),
             )
-            // The TypeScript guide (`ULTRON_GUIDE=ts`, its recorded replays) keeps TypeScript's prompt.
             .chain(
                 resources::model_notes::model_notes(&mode.model)
                     .filter(|_| guide.durable_apis)
@@ -376,8 +373,6 @@ pub fn system_prompt_with_resources(
             .collect(),
         engineering: mode.engineering,
         persona,
-        // Engineering mode with the Rust guide: the bundled skills are used without being asked (the TypeScript
-        // guide keeps TypeScript's wording).
         proactive_skills: mode.engineering && guide.durable_apis,
         ..BuildOptions::new(cwd)
     };
@@ -455,7 +450,6 @@ fn stored_oauth(env: &Env, provider: &str) -> bool {
 /// as TypeScript's `getAuth` per request does.
 fn prepare(registry: &ModelRegistry, model: Model, env: &Env) -> Model {
     let mut model = registry.for_requests(model, env.var.clone());
-    // Claude Code's own login authenticates its CLI providers; nothing stored in auth.json reaches them.
     if [
         ai::claude_code::PROVIDER,
         ai::claude_subscription::PROVIDER,
@@ -466,8 +460,6 @@ fn prepare(registry: &ModelRegistry, model: Model, env: &Env) -> Model {
         return model;
     }
     let (env, provider) = (env.clone(), model.provider.clone());
-    // Whether the provider needs it is read per request too (auth.json now), so a provider with nothing stored runs
-    // its models.json `!command` key once per request, as before.
     model.request.get_or_insert_default().stored_auth = Some(Arc::new(move || {
         crate::stored_auth::has_request_auth(&env, &provider)
             .then(|| crate::stored_auth::request_auth(&env, &provider))
@@ -586,7 +578,6 @@ fn initial_choice(flags: &ModelFlags, env: &Env, continuing: bool) -> Option<Mod
     };
     if !continuing && !patterns.is_empty() {
         let (scoped, _) = ai::model_resolver::resolve_model_scope(&patterns, &available);
-        // `buildSessionOptions`: the saved default when it is in scope, else the first scoped model.
         let saved = scoped.iter().find(|s| {
             default_provider.as_deref() == Some(s.model.provider.as_str())
                 && default_model.as_deref() == Some(s.model.id.as_str())
@@ -616,14 +607,12 @@ fn initial_choice(flags: &ModelFlags, env: &Env, continuing: bool) -> Option<Mod
     let configured: Vec<String> = available.iter().map(|m| m.provider.clone()).collect();
     let has_auth = |p: &str| configured.iter().any(|c| c == p);
     let mut models = registry.all_models();
-    // A saved default on the dynamic claude-subscription catalog lists no models of its own.
     if let (Some(p), Some(id)) = (&initial.default_provider, &initial.default_model_id)
         && let Some(found) = registry.find(p, id)
         && !models.iter().any(|m| m.provider == found.provider && m.id == found.id)
     {
         models.push(found);
     }
-    // sdk.ts takes only the model: its thinking level comes from the settings, as for any other start.
     let (model, _) = ai::model_resolver::find_initial_model(&[], continuing, &initial, &models, &available, &has_auth);
     model.map(|model| choice(model, None))
 }
@@ -967,16 +956,12 @@ impl StreamFn for Provider {
                 return error_message(model, error);
             }
             let options = &keyed;
-            // A stored OAuth credential may name the request's base URL (Copilot's token endpoint) and headers
-            // (Kimi's bearer); models.json headers (and `authHeader`'s bearer) go out over them, under the caller's.
             let (routed, prepared) = match ai::model_registry::prepare_request(model, options) {
                 Ok(prepared) => prepared,
                 Err(error) => return error_message(model, error),
             };
             let model = routed.as_ref().unwrap_or(model);
             let options = prepared.as_ref().unwrap_or(options);
-            // Every API the TypeScript session streams (`streamSimple` over the API registry), the Claude ones through
-            // this provider's router.
             match &self.router {
                 Some(router) => {
                     ai::dispatch::stream_simple_routed(router, model, context, options, &*transport, sink).await
@@ -1218,12 +1203,9 @@ impl Rlm {
                 hints.begin_cell(&self.lane, &code);
             }
             self.images.begin(&self.lane);
-            // Files a cell changes by other means than checked writes are handed to the hooks after it, in the
-            // background; what they find arrives with this lane's next cell result.
             if let Some(host) = &self.host {
                 host.cell_started(&self.lane);
             }
-            // A busy lane never refuses the cell: it runs in a side lane (crates/delegation `Lanes::start_routed`).
             let (lanes, lane, source) = (self.lanes.clone(), self.lane.clone(), code.clone());
             let started = tokio::task::spawn_blocking(move || lanes.start_routed(&lane, &source))
                 .await
@@ -1263,27 +1245,22 @@ impl Rlm {
                 (Err(error), _) => Ok(Err(error)),
                 (Ok(_), None) => Err("cell vanished".into()),
             };
-            // A cell that could not run, or ended without a result, is counted as failed now; one with a result
-            // when its text is made (below).
             let has_result = matches!(outcome, Ok(Ok(CellOutcome::Done(Ok(_)))));
             if !has_result {
                 let left_running = matches!(outcome, Ok(Ok(CellOutcome::Running { .. })));
                 self.count_cell(&code, !left_running, 0);
             }
             let findings = self.end_cell();
-            // Findings follow the result text (and an error's hint), as session-worker.ts `withFindings`.
             let with_findings = |text: String| match &findings {
                 Some(findings) => format!("{text}\n{findings}"),
                 None => text,
             };
-            // What the cell attached ends with its tool call (a cell that keeps running loses later ones).
-            let outcome = outcome.map_err(|e| self.with_reminder(with_findings(e.to_string())));
+            let outcome = outcome.map_err(|e| self.with_reminder(with_findings(e)));
             let images = self.images.take(&self.lane);
             let shown = self.images.take_display(&self.lane);
-            let outcome = outcome?.map_err(|e| self.with_reminder(with_findings(e.to_string())))?;
+            let outcome = outcome?.map_err(|e| self.with_reminder(with_findings(e)))?;
             if signal.aborted() {
                 if has_result {
-                    // It ran to its end; the turn was aborted meanwhile.
                     self.count_cell(&code, false, 0);
                 }
                 return Err(with_findings(ABORT_REQUESTED.into()));
@@ -1318,7 +1295,6 @@ impl Rlm {
             let output = output.map_err(|failure| {
                 self.with_reminder(with_findings(self.with_hint(failure.message, Some(&failure.ename))))
             })?;
-            // Only a hint is appended: output that itself starts with a newline stays as it is.
             let hint = self.hint(&output.text, None);
             let text = with_findings(crate::view_images::with_display_lines(
                 match output.text.is_empty() {
@@ -1331,12 +1307,10 @@ impl Rlm {
                 Some(hint) => format!("{text}\n{hint}"),
                 None => text,
             };
-            // The budget line comes last, after the hint, as `[text, hint, line].join("\n")`.
             let text = match self.budget_line() {
                 Some(line) => format!("{text}\n{line}"),
                 None => text,
             };
-            // The context reminder ends it, once per approach to the lane's limit.
             let image_count = images.as_ref().map_or(0, |i| i.images.len());
             let text = match self.context_reminder(&text, image_count) {
                 Some(line) => format!("{text}\n{line}"),
@@ -1454,7 +1428,6 @@ pub(crate) fn rlm_over(
     host: Option<Arc<Host>>,
 ) -> Rlm {
     let mut tool = rlm_tool();
-    // `codeSkillsToolSection`: the tool description lists the profile's active code skills.
     let listing = kernel_apis::CodeSkills::new(kernel_apis::CodeSkillsOptions::new(
         &config.skills_dir,
         &config.runtime_path,

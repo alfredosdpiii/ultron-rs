@@ -59,7 +59,6 @@ impl LokiNotice {
         if config.loki == host::loki_guard::LokiMode::Off {
             return LokiNotice::known(None);
         }
-        // loki-guardrails 0.2.2 omits loki.py, so auto_setup::setup alone misses an initialized .loki/loki.json.
         if config
             .loki_root
             .as_deref()
@@ -83,9 +82,6 @@ impl LokiNotice {
             loki::auto_setup::Setup::Commit(root) => {
                 let notice = LokiNotice::pending();
                 let committing = notice.clone();
-                // The commit's hooks may rewrite what it commits (a formatter on .loki/loki.json): that is not a
-                // change of the cell running beside it. After-cell checks wait for the commit from now. Only .loki/
-                // is pictured, so what the cell writes elsewhere meanwhile stays the cell's.
                 let outside = config.outside_changes.begin();
                 std::thread::spawn(move || {
                     let context = loki::auto_setup::SetupContext {
@@ -153,7 +149,6 @@ mod tests {
         assert_eq!(notice.take(Duration::ZERO), None);
         let committing = notice.clone();
         let commit = std::thread::spawn(move || committing.settle(Some("committed".into())));
-        // Waits for the commit (the hang guard is the product's 5 s; the settle is immediate).
         assert_eq!(notice.take(Duration::from_secs(120)).as_deref(), Some("committed"));
         commit.join().unwrap();
         assert_eq!(notice.take(Duration::from_secs(120)), None);

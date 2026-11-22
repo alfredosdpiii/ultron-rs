@@ -105,7 +105,7 @@ fn acceptance_a14_every_task_result_path_is_unverified_and_a_stored_verified_res
     for result in &results {
         assert_eq!(result["verification"], "unverified", "{result}");
     }
-    let reader = store.clone();
+    let reader = store;
     let document = reader.read().unwrap().unwrap();
     for task in document["tasks"].as_array().unwrap() {
         assert_eq!(task["result"]["verification"], "unverified", "{task}");
@@ -136,7 +136,7 @@ fn acceptance_a14_every_task_result_path_is_unverified_and_a_stored_verified_res
     reopened.close();
     // A journal claiming verified completion is rejected outright.
     let forged = Memory::default();
-    let mut completed = running.clone();
+    let mut completed = running;
     completed["state"] = json!("completed");
     completed["result"] = json!({ "status": "succeeded", "value": "done", "verification": "verified" });
     forged.write(&json!({ "version": 1, "tasks": [completed] })).unwrap();

@@ -3,7 +3,7 @@
 //! and reopens. It runs over a MemoryStorage kept across reopen, or over one that reopens by replaying its
 //! acknowledged commits, the way the product's journal-backed storage reopens (`replay_support`).
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use durable::TaskOptions;
 use durable::{

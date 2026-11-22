@@ -1,7 +1,7 @@
 //! The product's durable store for the kill/reopen process tests: a format-4 session file whose durable runtime
 //! records go through the journal storage (`durable_store::open`), opened anew from the file the way a restarted worker opens it.
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use session_core::durable_store::{SharedSession, stored_commits};
 use session_journal::catalog::read_metadata;

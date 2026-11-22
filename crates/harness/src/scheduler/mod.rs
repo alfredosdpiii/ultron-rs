@@ -772,14 +772,12 @@ impl Scheduler {
             }
         }));
         *lock(&self.unsubscribe_registry) = Some(unsubscribe);
-        if self.is_closing() {
-            // A Session that failed while subscribing has already sealed; release what it could not.
-            if let Some(unsubscribe) = lock(&self.unsubscribe_registry).take() {
-                unsubscribe();
-            }
+        if self.is_closing()
+            && let Some(unsubscribe) = lock(&self.unsubscribe_registry).take()
+        {
+            unsubscribe();
         }
         self.commit(|tx| {
-            // Every table read before the first write.
             let mut scans = Vec::new();
             for status in LIVE_STATUSES {
                 let query = TaskQuery {
@@ -826,7 +824,6 @@ impl Scheduler {
             }
             Ok(())
         })?;
-        // Derive abort marks a crash left unapplied below cancelled owners, and finalize held outcomes.
         {
             let mut st = self.st();
             st.cascade_pending = true;
@@ -870,7 +867,6 @@ impl Scheduler {
                 return Ok((AbortResult::Terminal, None));
             }
             let invocation = self.st().invocations.get(&id).cloned();
-            // A restart-marked task has no run invocation; it only waits for its abort.
             if keep_restart && current.abort_reason == Some(AbortReason::Restart) {
                 return Ok((AbortResult::Marked, None));
             }
@@ -894,8 +890,6 @@ impl Scheduler {
             let run = invocation.filter(|invocation| invocation.mode == Mode::Run);
             Ok((AbortResult::Marked, run))
         })?;
-        // The commit listener signalled the run; join it. A run that ignores its signal can outlive a failed Session,
-        // which ends the wait instead.
         if let Some(run) = run {
             let caller = ctx.signal().cloned().unwrap_or_default();
             let (index, reason) = wait_any(&[&run.done, &self.failed, &caller]);
@@ -907,7 +901,6 @@ impl Scheduler {
     }
 
     pub(crate) fn wait_for_task(&self, id: TaskId, ctx: &Ctx) -> Result<TaskRecord> {
-        // Check and register on the line so no terminal publication falls between them.
         let slot = self.commit(|tx| {
             if self.is_closing() {
                 return Err(closed_error(&self.session));
@@ -1018,20 +1011,17 @@ impl Scheduler {
                         st.settled.insert(record.id, node_of(record));
                     }
                     resolved.push(record.clone());
-                    // Its owner may finalize now.
                     st.schedule_reconcile();
                     continue;
                 }
                 if record.abort_requested && previous.as_ref().is_none_or(|previous| !previous.abort_requested) {
                     st.cascade_pending = true;
-                    // Signal a run invocation of the newly marked task; its next step ends it.
                     if let Some(invocation) = st.invocations.get(&record.id)
                         && invocation.mode == Mode::Run
                     {
                         signal.push(invocation.controller.clone());
                     }
                 }
-                // A request replacing a `restart` mark upgrades the marks of the work below.
                 if previous
                     .as_ref()
                     .is_some_and(|previous| previous.abort_reason.is_some())
@@ -1081,7 +1071,6 @@ impl Scheduler {
                 }
             }
             for change in &publication.changes {
-                // A queued input below a cancelled owner is withdrawn, even after its cascade.
                 let CommitChange::Table(StorageWrite::Submission { value }) = change else {
                     continue;
                 };
@@ -1094,7 +1083,6 @@ impl Scheduler {
                 }
             }
             for record in &updated {
-                // Work created below a cancelled owner, even after its cascade, is aborted too.
                 let parent = record_parent(record);
                 if !st.chain_known(parent, None) {
                     st.schedule_reconcile();
@@ -1102,7 +1090,6 @@ impl Scheduler {
                     st.cascade_pending = true;
                 }
             }
-            // A cascade that a reservation or step found pending runs with the next commit of any kind.
             if st.cascade_pending {
                 st.schedule_reconcile();
             }
@@ -1172,7 +1159,6 @@ impl Scheduler {
                             self.start(reservation);
                         }
                     }
-                    // As in `reconcile`: the reservation commit runs no task code.
                     Err(error) => self.fail_session(error),
                 },
             }
@@ -1196,8 +1182,6 @@ impl Scheduler {
                 return Ok(());
             }
             let queued = self.load_scopes(tx, cascade)?;
-            // A cascade from an abandoned owner passes its `restart` reason on; any other intent marks, or upgrades a
-            // `restart` mark, as a request. Collected first, so a request wins over a `restart` mark of the same pass.
             let mut marks: IndexMap<TaskId, (TaskRecord, Option<AbortReason>)> = IndexMap::new();
             fn mark(
                 marks: &mut IndexMap<TaskId, (TaskRecord, Option<AbortReason>)>,
@@ -1216,7 +1200,6 @@ impl Scheduler {
             }
             let fail_fast: Vec<(TaskId, Vec<TaskId>)> = {
                 let st = self.st();
-                // Loading edges can reveal a cancelled owner, so marks are derived on every pass.
                 for record in st.live.values() {
                     if record.background {
                         continue;
@@ -1224,7 +1207,6 @@ impl Scheduler {
                     let Some(owner) = st.cancelling_owner(record_parent(record)) else {
                         continue;
                     };
-                    // Only an owner abandoned after a restart, and nothing else, passes its reason on.
                     let restart = owner.abort_reason == Some(AbortReason::Restart) && !failed_outcome(owner);
                     mark(&mut marks, record, restart.then_some(AbortReason::Restart));
                 }
@@ -1240,7 +1222,6 @@ impl Scheduler {
                 if !self.any_failed(tx, &on)? {
                     continue;
                 }
-                // Every other live task: the failed one keeps its own outcome.
                 let st = self.st();
                 for member in &on {
                     if let Some(record) = st.live.get(member)
@@ -1266,8 +1247,6 @@ impl Scheduler {
             self.finalize(tx)
         });
         if let Err(error) = result {
-            // No extension code runs in this commit: a throw is a storage failure, a host callback, or a bug. None is
-            // fixed by running the pass again, so it fails the Session.
             self.fail_session(error);
         }
         self.settle_idle();
@@ -1316,7 +1295,6 @@ impl Scheduler {
                         outcome: outcome.clone(),
                     },
                 ))?;
-                // Only the scheduler writes `faulted` and `orphaned`; their cleanup waits for this commit.
                 let scheduler_outcome = match outcome {
                     TaskOutcome::Faulted { error } => Some(SchedulerOutcome::Faulted { message: error.message }),
                     TaskOutcome::Orphaned { reason } => Some(SchedulerOutcome::Orphaned { reason }),
@@ -1488,7 +1466,6 @@ impl Scheduler {
                 let st = self.st();
                 (st.live.values().cloned().collect::<Vec<_>>(), st.owned_live(None))
             };
-            // Taken once per pass, and only when some task is a candidate.
             let mut snapshot: Option<Arc<RegistrySnapshot>> = None;
             for record in candidates {
                 let mode = if record.abort_requested { Mode::Abort } else { Mode::Run };
@@ -1500,8 +1477,6 @@ impl Scheduler {
                     if record.state.status() == TaskStatus::Completing {
                         continue;
                     }
-                    // Work below an owner with cancellation intent waits for its cascade mark instead of running a
-                    // phase; schedule the cascade, which may not have run yet.
                     if mode == Mode::Run && !record.background && st.below_cancelled(record_parent(&record)) {
                         st.cascade_pending = true;
                         st.schedule_reconcile();
@@ -1511,7 +1486,6 @@ impl Scheduler {
                 let snapshot = snapshot.get_or_insert_with(|| self.registry.snapshot()).clone();
                 let (task, resolved) = match self.resolve(&record, &snapshot) {
                     Resolution::Blocked(reason) => {
-                        // An abandoned task waits for its definition, so its abort handler can clean up.
                         if mode == Mode::Abort && record.abort_reason.is_none() {
                             let outcome = SchedulerOutcome::Orphaned {
                                 reason: reason.as_str().into(),
@@ -1526,7 +1500,6 @@ impl Scheduler {
                     let checkpoint = checkpoint_of(&resolved).cloned().unwrap_or(Value::Null);
                     tx.set_task(with_state(&resolved, TaskState::Running { checkpoint }))?;
                 }
-                // Registered on the line, so marks and later reservations see it and close joins it.
                 let invocation = self.create_invocation(&record, mode);
                 reservations.push(Reservation {
                     invocation,
@@ -1551,7 +1524,6 @@ impl Scheduler {
             }
             return Err(error);
         }
-        // Marked, or already marked or gone: done with them. Reserve again, now seeing the marks.
         let mut st = self.st();
         for id in &abandoned {
             st.abandoned.shift_remove(id);
@@ -1718,7 +1690,6 @@ impl Scheduler {
             let current = self.step(&invocation, |tx, current| {
                 self.decide(tx, current, previous.as_ref(), &phase)
             });
-            // Close may seal between the decision and dispatch.
             let Some(current) = current else { return Ok(()) };
             if self.is_closing() {
                 return Ok(());
@@ -1749,11 +1720,9 @@ impl Scheduler {
         previous: Option<&PhaseResult>,
         phase: &Mutex<PhaseState>,
     ) -> Result<Decision> {
-        // 3. abort mark: end; a fresh abort invocation starts once the task's ordinary owned work is gone.
         if current.abort_requested {
             return Ok(Decision::End);
         }
-        // An owner's cancellation intent ends it too, before its cascade marks it; reservation then holds it back.
         {
             let mut st = self.st();
             if !current.background && st.below_cancelled(record_parent(current)) {
@@ -1767,11 +1736,9 @@ impl Scheduler {
         let Some(previous) = previous else {
             return Ok(Decision::Continue);
         };
-        // 4. uncaught error.
         if let Some(failure) = &previous.failure {
             return Ok(Decision::Fault(failure.clone()));
         }
-        // 6. no durable progress.
         let checkpoint = checkpoint_of(current).cloned().unwrap_or(Value::Null);
         if json_equal(&checkpoint, &previous.checkpoint) {
             let name = previous
@@ -1784,7 +1751,6 @@ impl Scheduler {
                 current.kind, name
             ))));
         }
-        // 5. progress: refresh the snapshot; hand over to a replacement definition that can take the task.
         let snapshot = self.registry.snapshot();
         let next = snapshot.task(&current.kind).cloned();
         let report = {
@@ -1891,8 +1857,6 @@ impl Scheduler {
         match result {
             Ok(current) => current,
             Err(error) => {
-                // The step writes the scheduler's own decision; a throw there would otherwise leave the task running,
-                // to be reserved and run again.
                 self.end(invocation);
                 self.fail_session(error);
                 None
@@ -2027,7 +1991,6 @@ impl Scheduler {
                 st.invocations.remove(&invocation.task_id);
             }
         }
-        // Pending waits bound to the invocation, such as a waitForTask(), reject with its ended error.
         invocation.controller.cancel(invocation.ended_error());
     }
 

@@ -1,6 +1,6 @@
 //! Fakes for the judge's tests: a scripted transport (what Jev and d1 answer), a scripted chat model, a loopback
 //! HTTP server for the real transport, and keys built at run time.
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use ai::{AssistantMessage, TranscriptContext};
 use blocking_http::{HttpRequest, HttpResponse, Transport, TransportError};

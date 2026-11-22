@@ -284,7 +284,6 @@ fn memory(run: &mut Run) -> Result<Vec<Measured>, String> {
         if live {
             point.mode = "live";
         } else {
-            // The reference backend runs in process: it costs nothing.
             point.cost_usd = Some(0.0);
         }
         measured.push((name, config, point));
@@ -337,7 +336,6 @@ fn autoreview(run: &mut Run) -> Result<Vec<Measured>, String> {
             optimize::autoreview::parse_report(&text, &stem).map_err(|e| format!("{}: {e}", path.display()))?;
         reports.push((path.clone(), report));
     }
-    // Without named reports: those of the newest report's case set.
     if run.options.files.is_empty() {
         let newest = reports.last().map(|(_, r)| r.hash.clone()).ok_or("no reports found")?;
         reports.retain(|(_, r)| r.hash == newest);

@@ -169,7 +169,6 @@ impl TuiReport {
             track.session = Some(session.session_id.clone());
             track.transcript = session.messages.clone();
             track.compacted = false;
-            // A fold from +0.0: an empty f64 `sum` is -0.0, which prints as `$-0.000`.
             track.cost = session.messages.iter().map(message_cost).fold(0.0, |a, b| a + b);
             track.first_prompt = session
                 .messages

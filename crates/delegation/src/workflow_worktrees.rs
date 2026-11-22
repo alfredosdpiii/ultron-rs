@@ -10,7 +10,10 @@ use serde_json::{Map, Value, json};
 impl Delegation {
     /// Admit a worktree node's child for `lane` (`rlm.spawn(prompt, name=, model=, timeout_ms=, worktree=, **extra)`,
     /// `extra` holding the node's `role`, `contract`, `hop`); its id.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal wiring helper; parameters match distinct caller inputs"
+    )]
     pub(crate) fn spawn_worktree_node(
         &self,
         lane: &str,
@@ -43,7 +46,6 @@ impl Delegation {
             return outcome
                 .unwrap_or_else(|error| json!({ "status": "failed", "error": error, "verification": "unverified" }));
         }
-        // The requesting cell was cancelled: so is the node's subagent (TS: the request context's abort).
         let reason = cell
             .and_then(Signal::reason)
             .unwrap_or_else(|| "the calling cell was aborted".into());

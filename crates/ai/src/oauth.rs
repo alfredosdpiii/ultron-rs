@@ -294,7 +294,6 @@ pub fn codex_account_id(access_token: &str) -> Option<String> {
     if parts.len() != 3 {
         return None;
     }
-    // `atob` yields one char per byte; JSON.parse reads that Latin-1 string.
     let decoded = crate::jsutil::latin1(&jsrt::base64::atob(parts[1])?);
     let payload = parse_json(&decoded).ok()?;
     let id = payload.get(CODEX_JWT_CLAIM_PATH)?.get("chatgpt_account_id")?.as_str()?;
@@ -405,7 +404,6 @@ async fn refresh_copilot(
     signal: Option<&AbortSignal>,
 ) -> Result<OAuthCredential, String> {
     let mut credential = copilot_access_token(transport, refresh, enterprise_domain, signal).await?;
-    // fetchGitHubCopilotModels with maxRetries 0: one request, no 429 retry.
     let base_url = copilot_base_url(Some(&credential.access), enterprise_domain);
     let bearer = format!("Bearer {}", credential.access);
     let mut headers = copilot_headers(&bearer);

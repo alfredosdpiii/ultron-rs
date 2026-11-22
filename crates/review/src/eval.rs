@@ -102,7 +102,6 @@ fn git(runner: &dyn Runner, repo: &str, args: &[&str]) -> Result<String, String>
     parts.extend_from_slice(args);
     let mut env = Env::new();
     env.insert("GIT_OPTIONAL_LOCKS".into(), "0".into());
-    // History lookups never reach the network.
     env.insert("GIT_NO_LAZY_FETCH".into(), "1".into());
     let result = runner.run(
         &argv(&parts),
@@ -168,7 +167,6 @@ fn removed_ranges(diff: &str) -> Vec<(String, i64, i64)> {
     let mut path: Option<String> = None;
     for line in diff.lines() {
         if let Some(old) = line.strip_prefix("--- ") {
-            // A quoted path (unusual characters) or a new file is skipped.
             path = old
                 .strip_prefix("a/")
                 .filter(|p| !p.starts_with('"'))
@@ -256,9 +254,7 @@ pub fn build_cases(runner: &dyn Runner, repo: &str, options: &EvalOptions) -> Re
     let commits = history(runner, repo, options.scan)?;
     let by_sha: BTreeMap<&str, &Commit> = commits.iter().map(|commit| (commit.sha.as_str(), commit)).collect();
     let reverts = Regex::new(r"This reverts commit ([0-9a-f]{40})").expect("static pattern");
-    // culprit -> (kind, by, lines)
     let mut found: BTreeMap<String, (CaseKind, Vec<String>, Vec<BugLine>)> = BTreeMap::new();
-    // Reverting commits are never cases; fix commits are never controls.
     let mut excluded: HashSet<String> = HashSet::new();
     for commit in &commits {
         let message = format!("{}\n{}", commit.subject, commit.body);
@@ -276,8 +272,6 @@ pub fn build_cases(runner: &dyn Runner, repo: &str, options: &EvalOptions) -> Re
         .filter(|commit| commit.parents.len() == 1 && !excluded.contains(&commit.sha) && fix_subject(&commit.subject))
         .collect();
     let fixing: HashSet<&str> = fixes.iter().map(|fix| fix.sha.as_str()).collect();
-    // With more fixes than are blamed, a commit older than the oldest blamed one may have been fixed by one that
-    // was not: controls come only from the history the blamed fixes cover.
     let covered = if fixes.len() > options.max_fixes {
         match options.max_fixes.checked_sub(1).map(|last| &fixes[last]) {
             Some(last) => commits
@@ -321,7 +315,6 @@ pub fn build_cases(runner: &dyn Runner, repo: &str, options: &EvalOptions) -> Re
         }
     }
     let mut cases = Vec::new();
-    // Newest first: the history's order.
     for commit in &commits {
         if cases.len() == options.limit {
             break;
@@ -347,7 +340,6 @@ pub fn build_cases(runner: &dyn Runner, repo: &str, options: &EvalOptions) -> Re
             lines,
         });
     }
-    // Controls: every k-th of the rest, so they span the same stretch of history.
     let rest: Vec<&Commit> = commits[..covered]
         .iter()
         .filter(|commit| {

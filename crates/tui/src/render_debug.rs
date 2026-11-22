@@ -91,7 +91,6 @@ impl Default for FileWriter {
         let (tx, rx) = channel::<FileOp>();
         let thread = std::thread::spawn(move || {
             for write in rx {
-                // Debug logging never affects the TUI: errors are ignored, as in TS.
                 let (path, data, append) = match write {
                     FileOp::Append(path, data) => (path, data, true),
                     FileOp::Create(path, data) => (path, data, false),

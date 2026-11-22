@@ -66,8 +66,6 @@ pub fn flags(parsed: &Args) -> ModelFlags {
         model: parsed.model.clone(),
         api_key: parsed.api_key.clone(),
         thinking: parsed.thinking.clone(),
-        // `--models` chooses a new session's model (Pi's `buildSessionOptions`; TypeScript's native command drops
-        // it, decisions row "scoped models ... accepted"); without it the settings' `enabledModels` apply.
         models: parsed.models.clone(),
     }
 }
@@ -83,11 +81,8 @@ fn preflight(parsed: &Args, env: &Env, target: &Target) -> Result<(), String> {
     let model = match resolve_model(parsed, env) {
         Ok(model) => model,
         Err(error) if matches!(target, Target::New { .. } | Target::Ephemeral) => return Err(error),
-        // A resumed session keeps its own model; the worker reports its problems.
         Err(_) => return Ok(()),
     };
-    // A models.json key that does not resolve reports why (`$VAR` unset, `!command` failing).
-    // A stored OAuth credential may authenticate by header alone (Kimi For Coding's bearer, `getAuth`'s headers).
     if session_core::lane::request_key(&flags(parsed), env, &model.provider)?.is_none()
         && !session_core::lane::header_auth(env, &model.provider)
     {
@@ -125,7 +120,6 @@ pub fn server_options(parsed: &Args, env: &Env, extension_mode: &str) -> Result<
 pub fn session_flags(parsed: &Args, env: &Env) -> session_core::session_flags::SessionFlags {
     session_core::session_flags::SessionFlags {
         system_prompt: parsed.system_prompt.clone(),
-        // A file of the caller's directory is read here (the worker gets its text); anything else is the text itself.
         append_system_prompt: parsed.append_system_prompt.as_ref().map(|inputs| {
             inputs
                 .iter()
@@ -275,15 +269,12 @@ pub fn run_prompt(
         session_options: session_options(env, &options),
         on_event,
         interrupt: Some(interrupt.clone()),
-        // The server generation went away with its coordinator: start a new one (and coordinator).
         reconnect: Some(Arc::new(move || {
             let started = start()?;
             restarted.lock().unwrap_or_else(|e| e.into_inner()).extend(started.stop);
             Ok(started.route)
         })),
     };
-    // The session's file before the run: its route notices are read from what the run adds. An ephemeral session is
-    // removed here, once they are read, not by the client.
     let offset = match &target {
         Target::Open(metadata) => std::fs::metadata(&metadata.path).map_or(0, |m| m.len()),
         _ => 0,

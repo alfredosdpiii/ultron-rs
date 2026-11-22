@@ -27,13 +27,11 @@ fn field<'a>(frontmatter: &'a str, key: &str) -> Option<&'a str> {
         let Some(rest) = frontmatter[start..].strip_prefix(&prefix) else {
             continue;
         };
-        // `\s*` is greedy and crosses lines; `(.+)` then takes the rest of a line.
         let skipped = rest.trim_start_matches(jsrt::string::is_space);
         let line_end = skipped.find(line_terminator).unwrap_or(skipped.len());
         if line_end > 0 {
             return Some(jsrt::string::trim(&skipped[..line_end]));
         }
-        // Nothing after the spaces: backtracking leaves `(.+)` a run of spaces when one exists on a line.
         let spaces = &rest[..rest.len() - skipped.len()];
         if spaces.chars().any(|ch| !line_terminator(ch)) {
             return Some("");

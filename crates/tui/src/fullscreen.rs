@@ -466,7 +466,6 @@ impl FullscreenViewport {
         let before = self.flashes.len();
         self.flashes.retain(|f| f.until > now);
         changed |= self.flashes.len() != before;
-        // `setInterval`: one tick when due, however late (missed ticks are not caught up).
         if self.auto_next.is_some_and(|at| at <= now) {
             self.auto_next = Some(now + AUTO_SCROLL_INTERVAL);
             changed |= self.auto_scroll_tick();
@@ -560,8 +559,6 @@ impl FullscreenViewport {
             return ViewportInput::Consumed;
         }
         if let Some((direction, x, y, button)) = parse_wheel(data) {
-            // The component under the pointer gets the wheel first (a list moves its selection); unhandled, it
-            // scrolls (tui-alt-screen.ts `handleViewportInput`, then `routeWheel`).
             let lines = direction * self.wheel_scroll_lines(button);
             let mut event = self.mouse_event(MouseEventType::Wheel, button, x, y, None);
             event.wheel_delta = Some(lines);
@@ -1354,12 +1351,6 @@ pub fn is_mouse_sequence(data: &str) -> bool {
 pub fn is_focus_report(data: &str) -> bool {
     data == FOCUS_IN || data == FOCUS_OUT
 }
-
-// Right-click paste in fullscreen on Windows terminals (`handleRightClickPaste` of packages/tui/src/tui-alt-screen.ts
-// and of modes/interactive/interactive-mode.ts). Fullscreen captures the mouse, so a Windows console's own
-// right-click paste never happens; a right-button press the viewport would otherwise give to text selection pastes
-// the clipboard's text instead, as a bracketed paste into the focused editor. VS Code's terminal (`TERM_PROGRAM`
-// `vscode`, any case) keeps its own context menu, and every other platform keeps selection.
 
 /// Whether right-click paste is on (`process.platform === "win32"` and `TERM_PROGRAM` not `vscode`); `platform` is
 /// the Node platform name ([`jsrt::process::platform`]) and `var` reads the environment.

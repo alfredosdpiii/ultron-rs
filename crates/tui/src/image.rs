@@ -645,10 +645,6 @@ pub fn crop_kitty_image_line(line: &str, hidden_rows: i64, visible_rows: i64) ->
     format!("{}\x1b_G{};{}", &line[..at], kept.join(","), &line[payload..])
 }
 
-// terminal-image.ts `getCapabilities` under `setCapabilityOverrides` (the `terminal.trueColor`,
-// `terminal.hyperlinks` and `terminal.images` settings): the detected capabilities with each configured one forced.
-// A configured `hyperlinks` also stands in for the tmux probe, so a forced value is never second-guessed by it.
-
 /// What the settings force; `None` keeps the detected value. `images: Some(None)` turns inline images off.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CapabilityOverrides {

@@ -51,7 +51,6 @@ pub fn load(env: &crate::Env, mode: ColorMode) -> LoadedThemes {
             .filter(|r| r.enabled)
             .map(|r| r.path)
             .fold(Vec::new(), |mut paths, path| {
-                // `mergePaths`: each path once.
                 if !paths.contains(&path) {
                     paths.push(path);
                 }
@@ -71,7 +70,6 @@ pub fn load_paths(paths: &[String], mode: ColorMode) -> LoadedThemes {
         if !path.exists() {
             loaded.diagnostics.push(("warning".into(), path.display().to_string()));
         } else if path.is_dir() {
-            // `loadThemesFromDir`: its `.json` files (symlinks followed), in name order.
             let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(path)
                 .map(|dir| dir.flatten().map(|e| e.path()).collect())
                 .unwrap_or_default();
@@ -96,7 +94,7 @@ pub fn load_paths(paths: &[String], mode: ColorMode) -> LoadedThemes {
         {
             loaded
                 .diagnostics
-                .push(("collision".into(), theme.source_path.clone().unwrap_or_default()));
+                .push(("collision".into(), theme.source_path.unwrap_or_default()));
         } else {
             kept.push(theme);
         }

@@ -295,8 +295,7 @@ impl ProgressModule {
             state.document = saved;
             return Ok(());
         }
-        // A verifier that was still running when the owner ended produced no evidence of success.
-        let mut next = saved.clone();
+        let mut next = saved;
         next["decisions"] = decisions
             .into_iter()
             .map(|mut decision| {
@@ -658,7 +657,6 @@ impl ProgressModule {
             self.record_decision(&decision)?;
             return Ok(decision);
         };
-        // Record the intent first so an owner crash mid-verification leaves an unverified trace.
         decision["claim"] =
             json!({"claim": "complete", "decision": "pending", "reason": "Verifier running", "verifier": verifier});
         self.record_decision(&decision)?;

@@ -21,7 +21,6 @@ use protocol::watch::QueueKind;
 /// What the chat shows for a nudge: `auto-continue (n/max)`.
 pub fn nudge_line(message: &Value) -> String {
     let details = &message["details"];
-    // Keep-going mode's nudges (resources::keep_going in the engine).
     if details["keepGoing"] == true {
         if details["final"] == true {
             return "keep-going: limit reached, final report".into();
@@ -32,7 +31,6 @@ pub fn nudge_line(message: &Value) -> String {
             details["max"].as_u64().unwrap_or(100)
         );
     }
-    // The turn guards' (session_core::core::turn_guard in the engine) name what continued the turn.
     if let Some(guard) = details["guard"].as_str() {
         return match (details["nudge"].as_u64(), details["max"].as_u64()) {
             (Some(n), Some(max)) => format!("auto-continue: {guard} ({n}/{max})"),
@@ -108,7 +106,6 @@ pub fn assistant_view(message: &Value) -> AssistantView {
 }
 
 fn tool_result_view(message: &Value) -> ToolResultView {
-    // `details.displayImages` (a shown `diagram.mermaid`) are drawn after the content: they never reached the model.
     let display = message["details"]["displayImages"].as_array().into_iter().flatten();
     let content = message["content"]
         .as_array()
@@ -467,30 +464,25 @@ impl ChatView {
                 );
                 self.push(Kind::Bash(Box::new(bash)));
             }
-            // The persona's auto-nudge (resources::persona in the engine): one line, not the nudge's text.
             Some("custom") if message["customType"] == custom_types::NUDGE => {
                 let line = nudge_line(message);
                 let t = Rc::clone(&self.style.theme);
                 self.append_notice_text(&t.fg(Fg::Muted, &line));
             }
-            // A fired schedule (kernel_apis::prompt_schedule in the engine): one line, not its prompt.
             Some("custom") if message["customType"] == custom_types::SCHEDULE => {
                 let line = schedule_line(message);
                 let t = Rc::clone(&self.style.theme);
                 self.append_notice_text(&t.fg(Fg::Muted, &line));
             }
-            // Recalled memories (session_core::auto_memory in the engine): one line, not their text.
             Some("custom") if message["customType"] == custom_types::RECALLED_MEMORY => {
                 let line = memory_line(message);
                 let t = Rc::clone(&self.style.theme);
                 self.append_notice_text(&t.fg(Fg::Muted, &line));
             }
-            // The outcome of an automatic memory keep (session_core::auto_memory): one muted line.
             Some("custom") if message["customType"] == custom_types::MEMORY_KEPT => {
                 let t = Rc::clone(&self.style.theme);
                 self.append_notice_text(&t.fg(Fg::Muted, message["content"].as_str().unwrap_or_default()));
             }
-            // Other injected context is shown muted, so what reached the model is visible.
             Some("custom") if message["display"] == true => {
                 let text = match &message["content"] {
                     Value::String(s) => s.clone(),
@@ -772,7 +764,6 @@ impl ChatView {
         for item in &mut self.items {
             match &mut item.kind {
                 Kind::Bash(bash) => bash.expanded = expanded,
-                // `setExpanded(expanded)` on every tool: a click's toggle gives way.
                 Kind::Tool(tool) => tool.expanded = None,
                 _ => {}
             }

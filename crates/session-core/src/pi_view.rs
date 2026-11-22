@@ -223,8 +223,6 @@ pub(crate) fn native_session_as_pi(session: &Session, tip_items: bool) -> Native
         let items = if let Some(original) = original.get(id) {
             vec![original.clone()]
         } else if str_of(entry, "type") == Some("compaction") {
-            // The Pi entries of the compaction's branch, root first (borrowed: a session with many compactions
-            // copied its whole history once per compaction).
             let mut ids = Vec::new();
             let mut at = str_of(entry, "parentId");
             while let Some(parent) = at {

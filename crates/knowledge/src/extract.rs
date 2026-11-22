@@ -260,8 +260,6 @@ impl Extractor {
     }
 }
 
-// --- SQL ---------------------------------------------------------------------------------------------------------
-
 /// The text with comments and single-quoted literals blanked (newlines kept, so offsets keep their lines).
 /// Dollar-quoted bodies stay: they are PL/pgSQL, where `RAISE EXCEPTION` and the guarded statements live.
 fn sql_code(text: &str) -> String {
@@ -308,7 +306,6 @@ fn sql_code(text: &str) -> String {
             i += 1;
         }
     }
-    // Only ASCII bytes were replaced, by ASCII, so the result is still UTF-8.
     String::from_utf8(out).unwrap_or_default()
 }
 
@@ -394,8 +391,6 @@ fn sql(text: &str) -> Extracted {
             kinds.add((*kind).to_string(), line_at(&code, found.start()));
         }
     }
-    // A trigger: when it fires, on which events, per row or per statement. A trigger statement holds no `;` of its
-    // own (its function is a separate statement), so it ends at the next one.
     for found in TRIGGER.find_iter(&code) {
         let line = line_at(&code, found.start());
         let statement = &code[found.start()..];
@@ -422,8 +417,6 @@ fn sql(text: &str) -> Extracted {
         ..Extracted::default()
     }
 }
-
-// --- Tree-sitter languages ---------------------------------------------------------------------------------------
 
 type Visit = fn(&Node, &[u8], &mut Kinds, &mut Graph);
 
@@ -527,7 +520,6 @@ fn typescript_node(node: &Node, source: &[u8], kinds: &mut Kinds, graph: &mut Gr
         "import_statement" | "export_statement" => {
             if let Some(source_node) = node.child_by_field_name("source") {
                 let module = text_of(&source_node, source).trim_matches(|c| c == '"' || c == '\'' || c == '`');
-                // Relative imports name this repository's own files; the symbols carry those.
                 if node.kind() == "import_statement"
                     && !module.is_empty()
                     && !module.starts_with('.')
@@ -596,7 +588,6 @@ fn typescript_imported(node: &Node, source: &[u8]) -> Vec<String> {
         stack.extend(children.into_iter().rev());
     }
     if node.kind() == "export_statement" && names.is_empty() {
-        // `export * from 'm'`
         let mut cursor = node.walk();
         if node.children(&mut cursor).any(|child| child.kind() == "*") {
             names.push("*".into());

@@ -220,7 +220,6 @@ pub fn http_idle_timeout_ms(settings: &Settings) -> Result<u64, String> {
 /// `getProviderRetrySettings` over merged settings.
 pub fn provider_retry_settings(settings: &Settings) -> ProviderRetrySettings {
     let provider = settings.get("retry").and_then(|r| r.get("provider"));
-    // `?.` reads: a `null` value is kept (only `??` skips it).
     let field = |key: &str| provider.and_then(|p| p.get(key)).cloned();
     ProviderRetrySettings {
         timeout_ms: field("timeoutMs"),

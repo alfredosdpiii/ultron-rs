@@ -357,7 +357,6 @@ impl ToolCalls {
                 "startedAt": self.now(),
                 "endedAt": null,
             });
-            // The gate is taken in start order: a call queued behind a sequential one says so.
             state.next_ticket += 1;
             ticket = state.next_ticket;
             if !state
@@ -422,8 +421,6 @@ impl ToolCalls {
                 self.inner.changed.notify_all();
                 return Err(cancel.reason().unwrap_or_else(|| "tool call cancelled".into()));
             }
-            // Only [`ToolCalls::cancel`] aborts `cancel`, holding this lock, and it notifies `changed` before
-            // releasing it.
             state = self
                 .inner
                 .changed
@@ -502,7 +499,6 @@ impl ToolCalls {
         if let Some(end) = end {
             let observer = jsrt::sync::lock(&self.inner.on_end).clone();
             if let Some(observer) = observer {
-                // Observers never affect a call.
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer(end)));
             }
         }
@@ -513,7 +509,6 @@ impl ToolCalls {
         let raw = result_text(result);
         let mut budget = self.inner.output_bytes;
         let mut text = host::cell::truncate_tool_output(&raw, budget, None);
-        // JSON escaping can grow text (control characters six-fold): keep the reply within the kernel's frame.
         while jsrt::json::stringify(&Value::from(text.as_str())).len() > REPLY_TEXT_MAX_BYTES && budget > 1024 {
             budget /= 2;
             text = host::cell::truncate_tool_output(&raw, budget, None);
@@ -742,8 +737,6 @@ impl ToolCalls {
                 Ok(Value::Object(item))
             }
             "tools.call" => {
-                // Wait up to `yield_after` seconds (absent: until the call ends). A call still running when a
-                // waiting cell is stopped is cancelled, unless the kernel asked for a handle (`detach`).
                 kernel::ops::fields("tools.call", payload)?;
                 let tool = self.tool(payload.get("name"))?;
                 let params = match payload.get("params") {

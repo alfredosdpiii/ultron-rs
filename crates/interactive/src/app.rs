@@ -301,7 +301,6 @@ impl AppMouse<'_> {
     fn slot_mouse(&mut self, event: &tui::MouseEvent) -> Option<tui::MouseResult> {
         match (self.selection.as_mut(), self.panel.as_mut()) {
             (Some(selection), _) => {
-                // The title (`Text` with padding 1) above the list.
                 let title = Text::new(&bold(&selection.title), 1, 1, None).render(event.width).len() as i64;
                 let local = tui::MouseEvent {
                     y: event.y - title,
@@ -318,7 +317,6 @@ impl AppMouse<'_> {
                 Some(result)
             }
             (None, None) => self.editor.handle_mouse(event),
-            // The dialogs and selectors whose components read the mouse (input.ts, editor.ts in a `Container`).
             (None, Some(Panel::OAuthLogin(dialog, _))) => dialog.handle_mouse(self.theme, event),
             (
                 None,
@@ -328,7 +326,6 @@ impl AppMouse<'_> {
                     input,
                 }),
             ) => {
-                // The rows `LoginDialogComponent` shows its prompt on: border, title, spacer, the message.
                 let text = |s: &str| Text::new(s, 1, 0, None).render(event.width).len() as i64;
                 let title = text(&self.theme.fg(Fg::Accent, &bold(&format!("Login to {}", provider.name))));
                 let top = 1 + title + 1 + text(&self.theme.fg(Fg::Text, &format!("Enter {method}")));
@@ -348,7 +345,6 @@ impl AppMouse<'_> {
             (None, Some(Panel::Login(selector, ..) | Panel::Logout(selector))) => selector.handle_mouse(event),
             (None, Some(Panel::ScopedModels { selector, .. })) => selector.handle_mouse(event),
             (None, Some(Panel::BugReport(flow))) => flow.handle_mouse(event, self.rows),
-            // The rest render text rows only in TypeScript (`TreeList`, `UserMessageList`, the RLM views, ...).
             (None, Some(_)) => None,
         }
     }
@@ -700,7 +696,6 @@ fn slash_commands(models: &[ModelInfo], qol: &QolSettings) -> Vec<SlashCommand> 
             )
         }));
     }
-    // `/engineering` and `/autoreview`: their fixed arguments, by prefix (client-tui-pi-commands.ts).
     let fixed: [(&str, &'static [&'static str]); 4] = [
         ("engineering", &["true", "false"]),
         ("autoreview", &["on", "off", "ban", "unban"]),
@@ -751,7 +746,6 @@ impl App {
         let keys = options.keys;
         let style = ChatStyle {
             theme: Rc::clone(&theme),
-            // `rlm` cells always use TS's highlighter (highlight.js Python); QoL highlighting covers code blocks.
             highlight: options.highlight,
             code_highlight: qol.highlight.then(|| code_highlighter(&theme)),
             expand_key: key_text(&keys, "app.tools.expand"),
@@ -860,8 +854,6 @@ impl App {
             pending_reads: std::collections::VecDeque::new(),
             viewport: {
                 let mut viewport = tui::FullscreenViewport::default();
-                // The frames keep the OSC 133 marks the TUI always painted (the qol_parity byte guard); TS strips
-                // them, which no terminal shows differently.
                 viewport.keep_zone_marks = true;
                 viewport
             },
@@ -987,12 +979,10 @@ impl App {
     /// clear-on-shrink, the double-Esc action, `quietStartup` (no splash), `rlmPaneAutoOpen` (with
     /// `ULTRON_RLM_PANE_AUTO`); and an explicitly set `editorPaddingX` and `autocompleteMaxVisible`.
     pub fn apply_startup_settings(&mut self, settings: &Value, var: &dyn Fn(&str) -> Option<String>) {
-        // `getShowHardwareCursor`: the setting, else (`??`) `PI_HARDWARE_CURSOR=1`.
         self.show_hardware_cursor = match &settings["showHardwareCursor"] {
             Value::Null => var(config::keys::HARDWARE_CURSOR_ENV).as_deref() == Some("1"),
             value => jsrt::value::truthy(Some(value)),
         };
-        // `getClearOnShrink`: a present setting (even null), else `PI_CLEAR_ON_SHRINK=1`.
         self.clear_on_shrink = match settings["terminal"].get("clearOnShrink") {
             None => var(config::keys::CLEAR_ON_SHRINK_ENV).as_deref() == Some("1"),
             Some(value) => jsrt::value::truthy(Some(value)),
@@ -1029,13 +1019,11 @@ impl App {
             }
             "showHardwareCursor" => self.show_hardware_cursor = *value == true,
             "terminal.clearOnShrink" => self.clear_on_shrink = *value == true,
-            // `setPaddingX`: a finite number, floored, at least 0.
             "editorPaddingX" => {
                 if let Some(padding) = value.as_f64().filter(|p| p.is_finite()) {
                     self.editor.set_padding_x(padding.max(0.0).floor() as usize);
                 }
             }
-            // `setAutocompleteMaxVisible`: floored, 3..=20.
             "autocompleteMaxVisible" => {
                 if let Some(visible) = value.as_f64().filter(|v| v.is_finite()) {
                     self.editor
@@ -1192,8 +1180,6 @@ impl App {
         context_usage(after, window).map(|(tokens, percent)| (Some(tokens), Some(percent)))
     }
 
-    // ---- Rust-only additions (see crate::qol) ----
-
     pub fn qol(&self) -> &QolSettings {
         &self.qol
     }
@@ -1267,15 +1253,12 @@ impl App {
                         self.show_status(&done);
                     }
                     (Some(_), Err(error)) => self.show_status(&format!("Error: {error}")),
-                    // `copySelection`: "Copied!", or the clipboard's error, as a flash.
                     (None, Ok(osc52)) => {
                         self.terminal_writes.extend(osc52);
                         self.viewport.copied(Ok(()), self.now());
                     }
                     (None, Err(error)) => self.viewport.copied(Err(error), self.now()),
                 },
-                // interactive-mode.ts `handleRightClickPaste`: the clipboard's text as a bracketed paste into the
-                // editor, unless it is empty or an overlay took the focus meanwhile; errors are ignored.
                 reply if self.pending_reads.pop_front() == Some(true) => {
                     if let ClipboardReply::Text(text) = reply
                         && !text.is_empty()
@@ -1302,7 +1285,6 @@ impl App {
                     }
                 }
                 ClipboardReply::Error(e) if self.qol.attachments => self.show_status(&format!("Error: {e}")),
-                // Clipboard access can be unavailable (no display, no permission): Pi pastes nothing.
                 ClipboardReply::Error(_) => {}
             }
             self.update_editor_border();
@@ -1673,7 +1655,6 @@ impl App {
         if let Some(Panel::BugReport(flow)) = self.panel.as_mut() {
             flow.tick();
         }
-        // The portraits play their frames at their own rate (`setInterval(…, 1000 / fps)`), whatever the tick rate.
         let now = self.now();
         let chat = &mut self.chat;
         self.armin.retain_mut(|(id, armin, started, played)| {
@@ -1802,10 +1783,8 @@ impl App {
                 self.session_id = Some(opened.session_id);
                 self.session_file = opened.session_file;
                 self.session_name = opened.name;
-                // A `/name` still unconfirmed named the session this one replaced.
                 self.pending_name = None;
                 self.reset_run_status();
-                // A resumed session's own prompts join this project's history by time.
                 let prompts: Vec<TimedPrompt> = self
                     .transcript
                     .iter()
@@ -1821,7 +1800,6 @@ impl App {
                     .set_history(&history.iter().map(String::as_str).collect::<Vec<_>>());
                 if !switched {
                     self.status.clear();
-                    // `init`: the changelog of a session without messages, then the subscription-auth check.
                     if self.transcript.is_empty() {
                         self.send(LaneCommand::StartupChangelog);
                     }
@@ -1838,15 +1816,12 @@ impl App {
                 self.operation = Some(id);
                 self.aborting = false;
                 self.turn_started = Some(self.now());
-                // A woken turn may start with work's ends (`cell_done`, `child_done`): the running-work panel
-                // reads them on the next pass.
                 self.rlm_polled = None;
                 self.chat.set_working(true);
             }
             LaneEvent::Streaming(message) => self.chat.set_streaming(&message),
             LaneEvent::Message(message) => {
                 self.chat.add_message(&message);
-                // A Claude turn that switched to API credits (or back) says so once, under its answer.
                 if let Some(notice) = crate::lane::route_notice(&message) {
                     self.notice(&self.theme.fg(Fg::Warning, &notice));
                 }
@@ -1856,7 +1831,6 @@ impl App {
                 self.chat.tool_started(&name, &id, args);
                 self.refresh_rlm();
             }
-            // The task tree changes on tool boundaries (`#refreshRlm` on tool_start / tool_end).
             LaneEvent::ToolEnded { .. } => self.refresh_rlm(),
             LaneEvent::Queues(queues) => self.chat.set_queues(queues),
             LaneEvent::OperationEnded { error } => {
@@ -1865,7 +1839,6 @@ impl App {
                 }
                 self.turn_ended(error.is_some());
                 self.operation = None;
-                // What the turn left running in the background shows on the next pass.
                 self.rlm_polled = None;
                 self.chat.set_working(false);
                 self.chat.set_queues(Vec::new());
@@ -1881,7 +1854,6 @@ impl App {
             }
             LaneEvent::Model(model) => {
                 self.model = model;
-                // A model change (selector, cycling, /model) checks the new model's credential.
                 if self.session_id.is_some() {
                     self.check_subscription_auth();
                 }
@@ -1901,8 +1873,6 @@ impl App {
             }
             LaneEvent::CompactionEnded { status, error } => self.auto_compaction_ended(&status, error),
             LaneEvent::Compacted(result) => self.compacted(result),
-            // interactive-mode.ts: the error in the transcript and the retry countdown; the summary's own indicator
-            // again when the retry starts; the countdown cleared when the retries end.
             LaneEvent::SummarizationRetryScheduled {
                 attempt,
                 max_attempts,
@@ -1921,8 +1891,6 @@ impl App {
                 }
             }
             LaneEvent::SummarizationRetryFinished => self.chat.clear_retry_indicator(),
-            // interactive-mode.ts `auto_retry_start` / `auto_retry_end`: the countdown, Esc stops the retry; the
-            // error only when the last attempt failed too.
             LaneEvent::AutoRetryStart {
                 attempt,
                 max_attempts,
@@ -1943,7 +1911,6 @@ impl App {
             LaneEvent::RlmStatus(listed) => {
                 self.rlm_agents = listed;
                 self.auto_open_rlm_pane();
-                // The wave summary is live: poll at the visible rate while it shows.
                 self.wave_active = !self.wave_summary(200).is_empty();
                 self.update_work_active();
             }
@@ -1984,7 +1951,6 @@ impl App {
                 themes,
                 terminal_theme,
             } => {
-                // The client's own theme registry and terminal appearance, when it has them (`getAvailableThemes`).
                 let (themes, terminal_theme) = match &self.theme_controller {
                     Some(controller) => (controller.available(), controller.terminal_theme().to_string()),
                     None => (themes, terminal_theme),
@@ -2062,7 +2028,6 @@ impl App {
             LaneEvent::SessionDeleted(result) => {
                 if let Some(Panel::Sessions(selector)) = self.panel.as_mut() {
                     match result {
-                        // The server removed the file, so Pi's trash step finds it gone and reports the trash.
                         Ok(()) => selector.set_status(false, "Session moved to trash", Duration::from_secs(2)),
                         Err(error) => selector.set_status(true, &error, Duration::from_secs(3)),
                     }
@@ -2075,11 +2040,10 @@ impl App {
                         if self.operation.is_some() {
                             self.send(LaneCommand::Abort);
                         }
-                        self.send(LaneCommand::Fork(entry.to_string()));
+                        self.send(LaneCommand::Fork(entry));
                     }
                 }
                 Err(error) => {
-                    // The conversation stays where it is when its files could not be restored.
                     self.rewind_after_restore = None;
                     self.show_status(&format!("Error: {error}"));
                 }
@@ -2088,7 +2052,6 @@ impl App {
                 self.chat.set_navigating(false);
                 let summarized = self.summarizing_branch.take();
                 match result {
-                    // The summary was cancelled: the tree selector again, on the same entry (interactive-mode.ts).
                     Err(error) if error == BRANCH_SUMMARY_ABORTED => {
                         self.show_status(BRANCH_SUMMARY_ABORTED);
                         if let (Some(entry), Some((tree, leaf))) = (summarized, self.tree.clone()) {
@@ -2434,8 +2397,6 @@ impl App {
     }
 
     pub fn handle_input(&mut self, data: &str) {
-        // `consumeOsc11BackgroundResponse`: the background reply is the terminal's, never a key, wherever it arrives
-        // (also split across reads while a query is outstanding).
         let expecting = self.theme_controller.as_ref().is_some_and(|c| c.expects_background());
         let read = self.osc11.input(data, expecting);
         if let Some(rgb) = read.reply {
@@ -2447,7 +2408,6 @@ impl App {
     }
 
     fn handle_terminal_input(&mut self, data: &str) {
-        // `consumeCellSizeResponse`: `CSI 6 ; height ; width t`; a usable size re-renders the images with it.
         if let Some((height, width)) = parse_cell_size_response(data) {
             if height > 0 && width > 0 {
                 let mut images = self.chat.image_settings();
@@ -2459,7 +2419,6 @@ impl App {
             }
             return;
         }
-        // `consumeTerminalColorSchemeReport`: a scheme report is the terminal's, never a key.
         if let Some(scheme) = crate::theme_setup::parse_color_scheme_report(data) {
             if let Some(theme) = self
                 .theme_controller
@@ -2476,15 +2435,12 @@ impl App {
     }
 
     fn handle_key(&mut self, data: &str) {
-        // `TuiAltScreen`'s input listener runs before the focused component.
         if self.fullscreen_input(data) {
             return;
         }
-        // tui.ts `handleInput`: Kitty key releases never reach a component (none wants them).
         if tui::is_key_release(data) {
             return;
         }
-        // `handleInput` while `#busy`: only Ctrl+C, and Ctrl+D on an empty editor, are read.
         if self.recovering {
             if self.keys.matches(data, "app.clear") {
                 self.handle_ctrl_c();
@@ -2505,7 +2461,6 @@ impl App {
             self.handle_panel_input(data);
             return;
         }
-        // The focused RLM pane takes the keys; its toggle moves the focus back to the chat.
         if self.rlm_pane_focused && self.rlm_pane_shown() {
             if self.keys.matches(data, "app.rlm.pane") {
                 self.rlm_pane();
@@ -2521,7 +2476,6 @@ impl App {
         if self.qol.overlays && self.handle_overlay_keys(data) {
             return;
         }
-        // A quick Esc-Esc can arrive as one read (Alt+Escape): the rewind selector, like two taps.
         if self.qol.overlays && data == "\x1b\x1b" && self.operation.is_none() && self.editor.text().trim().is_empty() {
             self.fork_messages(true);
             return;
@@ -2530,8 +2484,6 @@ impl App {
             return;
         }
         let k = |id: &str| self.keys.matches(data, id);
-        // Pi's Ctrl+V (`clipboardPasteText`): a clipboard image is saved to a temp file and its path inserted, else the
-        // clipboard's text (with the attachments, an image becomes an attachment instead).
         if k("app.clipboard.pasteImage") {
             if let Some(clipboard) = &self.clipboard {
                 self.pending_reads.push_back(false);
@@ -2539,7 +2491,6 @@ impl App {
             }
             return;
         }
-        // Pi's Ctrl+Z (`suspendTui`): the run loop gives the terminal back and suspends the process.
         if k("app.suspend") {
             self.suspend_request = true;
             return;
@@ -2689,19 +2640,15 @@ impl App {
             self.send(LaneCommand::AbortBash);
             return;
         }
-        // A run waiting to retry its request: Esc stops the retry (interactive-mode.ts `abortRetry`).
         if self.retrying {
             self.retrying = false;
             self.send(LaneCommand::AbortRetry);
             return;
         }
-        // A branch summary in progress: Esc cancels it (interactive-mode.ts `abortBranchSummary`).
         if self.summarizing_branch.is_some() {
             self.send(LaneCommand::Abort);
             return;
         }
-        // A manual compaction (no run): Esc cancels it (interactive-mode.ts `abortCompaction`). During a run the
-        // abort below cancels the run's compaction with the run.
         if self.compacting && self.operation.is_none() {
             self.status = "Cancelling compaction…".into();
             self.send(LaneCommand::Abort);
@@ -2717,14 +2664,12 @@ impl App {
             return;
         }
         let now = self.now();
-        // With the overlays, idle on an empty editor a second Esc opens the rewind selector (omp's Esc-Esc).
         if self.qol.overlays {
             if self.escapes.tap(now) {
                 self.fork_messages(true);
             }
             return;
         }
-        // Pi's `doubleEscapeAction`: the tree or fork selector on a second Esc within the window.
         if self.double_escape_action == "none" {
             return;
         }
@@ -2782,7 +2727,6 @@ impl App {
         for q in &ordered {
             self.send(LaneCommand::CancelQueued(q.entry_id.to_string()));
         }
-        // The next queue_update answers the cancels; until then only the host items stay pending.
         self.chat.set_queues(all.into_iter().filter(|q| !q.user).collect());
         ordered.len()
     }
@@ -2799,7 +2743,6 @@ impl App {
             return;
         }
         self.record_history(&prompt);
-        // Pi's `!command` runs in the Session cwd and is recorded for the model; `!!command` is not.
         if let Some(rest) = prompt.strip_prefix('!') {
             let excluded = rest.starts_with('!');
             let command = rest.strip_prefix('!').unwrap_or(rest).trim();
@@ -2874,7 +2817,6 @@ impl App {
                 self.chat.append_notice(Box::new(notice));
             }
             Slash::Quit => self.exit = true,
-            // `/clear` is `/new` (as Claude Code's `/clear`): the running turn aborted, a new session in this TUI.
             Slash::New | Slash::Clear => {
                 if self.operation.is_some() {
                     self.send(LaneCommand::Abort);
@@ -2900,9 +2842,8 @@ impl App {
                         Path::new(&self.cwd).join(path).display().to_string()
                     };
                     self.show_status(&format!("Importing {path}…"));
-                    self.send(LaneCommand::ImportPi(path.to_string()));
+                    self.send(LaneCommand::ImportPi(path));
                 }
-                // Pi's picker of its own sessions for this project (client-tui-sessions.ts `showPiSessionPicker`).
                 None => self.send(LaneCommand::ListPiSessions),
             },
             Slash::Thinking => self.thinking_command(args),
@@ -2921,8 +2862,6 @@ impl App {
                 Some(Some(enabled)) => self.request_mode(crate::modes::ModeRequest::Set(enabled)),
                 None => self.show_status("Usage: /engineering true|false"),
             },
-            // The persona (resources::persona in the engine): written like `/engineering`, applied from the next
-            // message.
             Slash::Persona => match crate::modes::persona_arg(args) {
                 Some(crate::modes::PersonaArg::Report) => self.send(LaneCommand::ReadPersona),
                 Some(crate::modes::PersonaArg::Global(on)) => {
@@ -2936,16 +2875,13 @@ impl App {
                     });
                     self.show_status(&crate::modes::persona_changed(on));
                 }
-                // The session's own toggle (resources::keep_going in the engine), kept in the session.
                 Some(crate::modes::PersonaArg::Session(arg)) => self.send(LaneCommand::Persona(arg.to_string())),
                 None => self.show_status(crate::modes::PERSONA_USAGE),
             },
-            // Keep-going mode of the session (resources::keep_going in the engine).
             Slash::KeepGoing => match args.trim().to_lowercase().as_str() {
                 arg @ ("" | "on" | "off") => self.send(LaneCommand::KeepGoing(arg.to_string())),
                 _ => self.show_status("Usage: /keepgoing on|off"),
             },
-            // The session's scheduled prompts (kernel_apis::prompt_schedule in the engine), one line each.
             Slash::Schedules => self.send(LaneCommand::Inspect {
                 title: "/schedules".into(),
                 request: "schedule.list".into(),
@@ -2991,7 +2927,6 @@ impl App {
             Slash::Settings => self.send(LaneCommand::ReadSettings),
             Slash::Trust => self.send(LaneCommand::ReadTrust),
             Slash::Debug => {
-                // `host.renderedLines()`: the frame at the terminal's size.
                 let (width, height) = (self.cols.max(1), self.rows.max(1));
                 let lines = self.render(width, height);
                 self.send(LaneCommand::WriteDebugLog(crate::debug_log::DebugCapture {
@@ -3006,12 +2941,8 @@ impl App {
                 self.show_status("Reloading plugins…");
                 self.send(LaneCommand::ReloadPlugins);
             }
-            // `/mcp` runs in the session's worker; its dialogs and notices come back as extension UI.
             Slash::Mcp => self.send(LaneCommand::Mcp(args.trim().to_string())),
-            // TypeScript's `legacyExtensionCommand`: Pi extensions are not supported by ultron-rs.
             Slash::Extension => self.show_status(&format!("Error: {EXTENSIONS_UNSUPPORTED}")),
-            // `reviewCommand` (slash-commands-provider.ts): sent as typed; the worker's agent controller expands it
-            // (session_core::review_command), as it does for queued messages.
             Slash::Review => {
                 self.show_status("Reviewing changes…");
                 let message = format!("/review {args}").trim().to_string();
@@ -3026,7 +2957,6 @@ impl App {
                 }
             }
             Slash::Bug => self.open_bug_report(args),
-            // `handleArminSaysHi` and `handleDementedDelves` (only the bare commands are easter eggs).
             Slash::ArminSaysHi if args.is_empty() => {
                 let armin = Rc::new(std::cell::RefCell::new(crate::easter_eggs::Armin::new(
                     Rc::clone(&self.theme),
@@ -3061,16 +2991,14 @@ impl App {
             Slash::Usage => self.send(LaneCommand::Usage),
             Slash::Goal => self.send(LaneCommand::Goal(args.to_string())),
             Slash::Observer => self.send(LaneCommand::Observer(args.to_string())),
-            // With the overlays, `/agents` opens the agent hub (the inspection text is the worker's, not ported).
             Slash::Agents if self.qol.overlays && args.is_empty() => self.send(LaneCommand::Agents),
-            // The inspection commands: one read-only host request each, answered as indented lines.
             Slash::Agents | Slash::Memory | Slash::Skills | Slash::Experiments | Slash::Goals | Slash::Progress => {
                 match crate::inspection::inspection_request(name, args.trim()) {
                     Some(Ok((request, payload))) => {
                         let title = format!("/{name} {args}");
                         self.send(LaneCommand::Inspect {
                             title: title.trim().to_string(),
-                            request: request.to_string(),
+                            request,
                             payload,
                         });
                     }
@@ -3126,7 +3054,7 @@ impl App {
             }
             Action::Summarize => {
                 let hint = flow.choices.hint.clone();
-                self.send(LaneCommand::BugReportSummary(hint.clone()));
+                self.send(LaneCommand::BugReportSummary(hint));
             }
             Action::CancelSummary => {
                 self.send(LaneCommand::AbortBugReportSummary);
@@ -3140,7 +3068,6 @@ impl App {
                     summary: flow.summary.clone(),
                     upload: choices.upload,
                 };
-                // An export writes at once (no loader); an upload shows its loader until it answers.
                 if !request.upload {
                     self.set_panel(None);
                 }
@@ -3234,7 +3161,6 @@ impl App {
     }
 
     fn bash_done(&mut self, result: Result<BashResult, String>) {
-        // The worker records the command in the session, where the transcript draws it.
         self.bash = None;
         if let Err(error) = result {
             self.status = format!("Error: {error}");
@@ -3282,7 +3208,6 @@ impl App {
     fn compacted(&mut self, result: Result<Value, String>) {
         match result {
             Ok(entry) => {
-                // The lane's transcript restarts at the compaction entry (`#syncTranscript` diverged).
                 self.chat.clear();
                 self.chat.add_entry(&entry);
                 self.context_from = self.transcript.len();
@@ -3290,7 +3215,6 @@ impl App {
                 self.status.clear();
             }
             Err(error) => {
-                // The native lane's rejection (lane.ts `NothingToCompact`), whatever the session's own wording.
                 let error = if error.starts_with("Nothing to compact") || error == "Already compacted" {
                     "Lane \"main\" has nothing to compact".to_string()
                 } else {
@@ -3303,7 +3227,6 @@ impl App {
                 };
             }
         }
-        // After the transcript restarted (clearing it drops the indicator).
         self.compaction_over();
     }
 
@@ -3314,7 +3237,6 @@ impl App {
         if entries.is_empty() {
             return;
         }
-        // The lane's transcript starts at its last compaction (`scanBranch` stops there).
         let start = entries.iter().rposition(|e| e["type"] == "compaction").unwrap_or(0);
         let entries = &entries[start..];
         self.chat.clear();
@@ -3509,7 +3431,6 @@ impl App {
     fn settings_event(&mut self, event: Option<SettingsEvent>) {
         match event {
             Some(SettingsEvent::Cancelled) => self.set_panel(None),
-            // `onThemePreview`: the theme shows while the user browses; leaving restores the setting's.
             Some(SettingsEvent::Preview(setting)) => {
                 if let Some(theme) = self.theme_controller.as_mut().and_then(|c| c.preview(&setting)) {
                     self.adopt_theme(&theme);
@@ -3523,7 +3444,6 @@ impl App {
                     .find(|m| format!("{}/{}", m.provider, m.id) == selector)
                     .cloned()
                 {
-                    // The session worker saves the selection as the default (`Models.select`).
                     self.send(LaneCommand::SelectModel {
                         provider: model.provider.to_string(),
                         id: model.id.to_string(),
@@ -3536,7 +3456,6 @@ impl App {
                 let stored = if value.is_empty() {
                     Value::Null
                 } else if key == "rlm.raceModels" {
-                    // The selector joins the toggled list with ", " (model refs hold no spaces).
                     Value::from(value.split(", ").collect::<Vec<_>>())
                 } else {
                     Value::String(value.clone())
@@ -3578,7 +3497,7 @@ impl App {
                     if self.operation.is_some() {
                         self.send(LaneCommand::Abort);
                     }
-                    self.send(LaneCommand::Fork(entry_id.to_string()));
+                    self.send(LaneCommand::Fork(entry_id));
                 }
                 Some(SelectorAction::Cancelled) => self.set_panel(None),
                 None => {}
@@ -3591,9 +3510,8 @@ impl App {
                 };
                 match focus.handle_input(&self.keys, data, &snapshot, height) {
                     rlm_views::focus::FocusEvent::Exit => self.set_panel(None),
-                    // `loadTrace`: the frame's trace (`rlm.frames {id}`), answered as an inspection.
                     rlm_views::focus::FocusEvent::LoadTrace { key, trace_id } => self.send(LaneCommand::RlmInspect {
-                        tag: format!("trace:{key}").to_string(),
+                        tag: format!("trace:{key}"),
                         request: "rlm.frames".into(),
                         payload: serde_json::json!({ "id": trace_id }),
                     }),
@@ -3606,22 +3524,18 @@ impl App {
                     if Some(&path) == self.session_file.as_ref() {
                         self.show_status("Already in this session");
                     } else {
-                        // "Resumed session" once the switch is done (the link reports it).
-                        self.send(LaneCommand::Resume(path.to_string()));
+                        self.send(LaneCommand::Resume(path));
                     }
                 }
                 Some(SessionAction::Cancelled) => self.set_panel(None),
-                Some(SessionAction::Delete(path)) => self.send(LaneCommand::DeleteSession(path.to_string())),
+                Some(SessionAction::Delete(path)) => self.send(LaneCommand::DeleteSession(path)),
                 Some(SessionAction::LoadAll) => self.send(LaneCommand::ListAllSessions),
                 Some(SessionAction::Rename(path, name)) => {
                     if Some(&path) == self.session_file.as_ref() {
                         self.session_name = Some(name.clone());
                         self.update_title();
                     }
-                    self.send(LaneCommand::RenameSession {
-                        path: path.to_string(),
-                        name: name.to_string(),
-                    });
+                    self.send(LaneCommand::RenameSession { path, name });
                 }
                 None => {}
             },
@@ -3629,7 +3543,7 @@ impl App {
                 Some(SessionAction::Selected(path)) => {
                     self.set_panel(None);
                     self.show_status(&format!("Importing {path}…"));
-                    self.send(LaneCommand::ImportPi(path.to_string()));
+                    self.send(LaneCommand::ImportPi(path));
                 }
                 Some(SessionAction::Cancelled) => self.set_panel(None),
                 Some(SessionAction::LoadAll) => self.send(LaneCommand::ListAllPiSessions),
@@ -3678,23 +3592,17 @@ impl App {
                         });
                     }
                 },
-                // Esc stops the login and closes its dialog silently (`Login cancelled`): dismissing the dialog
-                // cancels its login.
                 crate::login_dialog::DialogAction::Cancel => self.set_panel(None),
                 crate::login_dialog::DialogAction::None => {}
             },
             Some(Panel::LoginPrompt { provider, input, .. }) => {
                 if self.keys.matches(data, "tui.select.cancel") {
-                    // Esc closes the login silently.
                     self.set_panel(None);
                 } else if self.keys.matches(data, "tui.select.confirm") {
                     let key = input.value().to_string();
                     let id = provider.id.clone();
                     self.set_panel(None);
-                    self.send(LaneCommand::SaveApiKey {
-                        provider: id.to_string(),
-                        key: key.to_string(),
-                    });
+                    self.send(LaneCommand::SaveApiKey { provider: id, key });
                 } else {
                     input.handle_input(data);
                 }
@@ -3718,10 +3626,7 @@ impl App {
                             "Removed stored API key for {name}. Environment variables and models.json config are unchanged"
                         )
                     };
-                    self.send(LaneCommand::Logout {
-                        provider: id.to_string(),
-                        done: done.to_string(),
-                    });
+                    self.send(LaneCommand::Logout { provider: id, done });
                 }
                 Some(Err(())) => self.set_panel(None),
                 None => {}
@@ -3740,10 +3645,7 @@ impl App {
                     None => self.show_status("Error: Selected entry has no text to copy"),
                     Some(text) => self.copy_to_clipboard(&text, "Copied selected message to clipboard"),
                 },
-                Some(TreeAction::Label(entry, label)) => self.send(LaneCommand::SetLabel {
-                    entry_id: entry.to_string(),
-                    label: label.clone(),
-                }),
+                Some(TreeAction::Label(entry, label)) => self.send(LaneCommand::SetLabel { entry_id: entry, label }),
                 Some(TreeAction::RestoreFiles(entry)) => {
                     self.set_panel(None);
                     self.ask_restore(entry, false);
@@ -3758,7 +3660,6 @@ impl App {
                     _ => return,
                 };
                 let id = id.clone();
-                // Answered here: taken, not dismissed (which would cancel it).
                 self.panel.take();
                 self.answer_extension_dialog(&id, answer);
             }
@@ -3784,7 +3685,6 @@ impl App {
                 };
                 match submitted {
                     Some(text) => self.navigate(&entry, true, Some(&text)),
-                    // Back to the summary choice.
                     None => self.ask_summary(entry),
                 }
             }
@@ -3793,7 +3693,6 @@ impl App {
                 self.bug_action(action);
             }
             Some(Panel::ShareLoader(loader)) => {
-                // `loader.onAbort`: the upload stops and the loader closes.
                 if loader.handle_input(data) {
                     self.set_panel(None);
                     self.send(LaneCommand::CancelShare);
@@ -4042,7 +3941,6 @@ impl App {
             LoginStep::Started { .. } => {}
             LoginStep::Event(event) => dialog.show_event(&self.theme, &event),
             LoginStep::Prompt(prompt) => dialog.show_prompt(&self.theme, &prompt),
-            // The login is over: its dialog closes without a reply.
             LoginStep::Finished => {
                 self.panel.take();
                 self.next_extension_dialog();
@@ -4053,8 +3951,6 @@ impl App {
     /// `startProviderLogin`: the login dialog (a subscription login runs in the client; an API key is prompted for).
     fn start_login(&mut self, option: crate::selectors::AuthProvider) {
         if option.auth_type == "oauth" {
-            // The flow runs in the client; its dialog opens with its first step (`LoginStep::Started`), or the client
-            // says it cannot sign in with an account.
             self.last_login += 1;
             self.send(LaneCommand::OAuthLogin {
                 id: self.last_login,
@@ -4063,7 +3959,6 @@ impl App {
             });
             return;
         }
-        // A provider whose key prompt has a choice or several fields (`apiKey.login`): its flow runs in the dialog.
         if let Some((login, steps)) = crate::api_key_login::ApiKeyLogin::start(&option.id) {
             let dialog = crate::login_dialog::LoginDialog::new(self.keys.clone(), &option.name, "local");
             let flow = LoginFlow::ApiKey(Box::new((login, option)));
@@ -4150,7 +4045,6 @@ impl App {
             key: key.to_string(),
             value: value.clone(),
         });
-        // A per-model thinking level of the current model applies to the session now.
         if key == "modelThinkingLevel"
             && value["provider"] == self.model.provider.as_str()
             && value["modelId"] == self.model.id.as_str()
@@ -4169,7 +4063,6 @@ impl App {
             _ => self.apply_local_setting(key, &value),
         }
         if key == "tuiMode" {
-            // The Rust TUI reads tuiMode when it starts (fullscreen, or the scrollback split).
             self.show_status(&format!(
                 "Saved tuiMode: {}. It takes effect when Ultron restarts.",
                 value.as_str().unwrap_or("")
@@ -4193,14 +4086,11 @@ impl App {
     /// kernel pool, the context state, retained instances); answers arrive as lane events.
     fn refresh_rlm(&mut self) {
         if self.rlm_round {
-            // Polled again as soon as the round in flight is answered.
             self.rlm_polled = None;
             return;
         }
         self.rlm_round = true;
         self.rlm_polled = Some(self.now());
-        // The `rlm.spawn` subagents: the Rust worker keeps them in a task journal of their own, which
-        // `agents.status` does not list (TypeScript's one task host lists both).
         self.send(LaneCommand::RlmStatus);
         let lane = &self.lane;
         self.rlm_poll.refresh(&mut |i| {
@@ -4287,7 +4177,6 @@ impl App {
             }
             return;
         }
-        // A worker without `rlm.detached` lists no detached cells.
         if tag == "detached" {
             self.rlm_round = false;
             self.detached_cells = result
@@ -4450,7 +4339,6 @@ impl App {
     fn rlm_snapshot(&mut self) -> rlm_views::visualizer::RlmSnapshot {
         use rlm_views::visualizer::{RunningTool, TranscriptView, extract_root_cell, extract_turn};
         let now = jsrt::date::now_ms() as f64;
-        // The open operation's tools: the calls of the last assistant message that have no result yet.
         let running = self.operation.as_ref().map(|_| {
             let done: std::collections::HashSet<&str> = self
                 .transcript
@@ -4588,9 +4476,7 @@ impl App {
         } else {
             "Navigating…"
         });
-        // The lane's navigation operation shows its indicator until the session answers.
         self.chat.set_navigating(true);
-        // The session resolves the selection (AgentSession `navigateTree`) and answers the editor's text.
         self.send(LaneCommand::Navigate {
             target: Some(entry_id.to_string()),
             summarize,
@@ -4627,7 +4513,6 @@ impl App {
             return true;
         }
         if self.keys.matches(data, "tui.altScreen.search") {
-            // Every transcript row (scrollback and viewport) at the current width, rendered once.
             let width = self.cols.max(1);
             let rows = self.document(width);
             let mut search = crate::transcript_search::TranscriptSearch::new(rows, self.keys.clone());
@@ -4753,7 +4638,6 @@ impl App {
     fn handle_overlay_input(&mut self, data: &str) {
         self.overlay_input(data);
         if self.overlay.is_none() {
-            // The overlay painted over the transcript: paint everything again.
             self.reset_display = true;
             self.committed.clear();
         }
@@ -4779,7 +4663,6 @@ impl App {
                 }
                 PickerEvent::Open { href, .. } => {
                     self.overlay = None;
-                    // The session's opener (launcher from its PATH only), never the process's PATH.
                     match self.viewport.open_url.clone() {
                         Some(open) => {
                             open(&href);
@@ -4790,8 +4673,6 @@ impl App {
                 }
                 PickerEvent::Rewind { entry_id } => {
                     self.overlay = None;
-                    // A user turn: fork before it (its prompt returns to the editor). Any other turn: keep it, so
-                    // fork before the next user turn; after the last one there is nothing to drop.
                     let Some(entry_id) = self.rewind_target(&entry_id) else {
                         self.show_status("Already at this point");
                         return;
@@ -4799,12 +4680,10 @@ impl App {
                     if self.operation.is_some() {
                         self.send(LaneCommand::Abort);
                     }
-                    self.send(LaneCommand::Fork(entry_id.to_string()));
+                    self.send(LaneCommand::Fork(entry_id));
                 }
                 PickerEvent::RestoreFiles { entry_id } => {
                     self.overlay = None;
-                    // The files before the turn the rewind would continue from: the selected user turn, else the
-                    // next one; after the last one the files are already where they are.
                     let target = self.rewind_target(&entry_id);
                     match target {
                         Some(entry) => self.ask_restore(entry, true),
@@ -4839,32 +4718,31 @@ impl App {
             Overlay::AgentHub(hub) => match hub.handle_input(data) {
                 HubEvent::Close => self.overlay = None,
                 HubEvent::Kill(id) => {
-                    self.send(LaneCommand::KillAgent(id.to_string()));
+                    self.send(LaneCommand::KillAgent(id));
                     self.send(LaneCommand::Agents);
                 }
                 HubEvent::OpenTranscript(id) => {
                     hub.set_transcript(&id, Vec::new());
-                    self.send(LaneCommand::AgentTranscript(id.to_string()));
+                    self.send(LaneCommand::AgentTranscript(id));
                 }
                 HubEvent::Revive(id) => {
-                    self.send(LaneCommand::ReviveAgent(id.to_string()));
+                    self.send(LaneCommand::ReviveAgent(id));
                     self.send(LaneCommand::Agents);
                 }
                 HubEvent::Steer { id, text } => {
-                    // A parked (interrupted) agent is revived first; its brief runs again as a new subagent.
                     let parked = hub
                         .rows()
                         .iter()
                         .any(|r| r.id == id && r.status == crate::agent_hub::AgentStatus::Parked);
                     if parked {
-                        self.send(LaneCommand::ReviveAgent(id.to_string()));
+                        self.send(LaneCommand::ReviveAgent(id));
                         self.send(LaneCommand::Agents);
                     } else {
                         self.send(LaneCommand::SteerAgent {
                             id: id.to_string(),
-                            text: text.to_string(),
+                            text,
                         });
-                        self.send(LaneCommand::AgentTranscript(id.to_string()));
+                        self.send(LaneCommand::AgentTranscript(id));
                     }
                 }
                 HubEvent::Ignored | HubEvent::Render => {}
@@ -4973,7 +4851,6 @@ impl App {
             list.set_selected_index(index);
         }
         self.editor.focused = false;
-        // A `/mcp` select dialog this selection replaces is answered cancelled.
         if let Some(Selection {
             purpose: Purpose::ExtensionSelect { id },
             ..
@@ -5014,7 +4891,7 @@ impl App {
                         }
                     }
                     Purpose::LoginMethod(options, all) => {
-                        let kind = item.value.clone();
+                        let kind = item.value;
                         if all {
                             self.show_login_providers(options, Some(&kind), "");
                         } else if let Some(option) = options.iter().find(|o| o.auth_type == kind).cloned() {
@@ -5039,10 +4916,10 @@ impl App {
                         choice => self.navigate(&entry, choice == "Summarize", None),
                     },
                     Purpose::RestoreFiles(entry) => match item.value.as_str() {
-                        RESTORE_FILES => self.send(LaneCommand::RestoreFiles(entry.to_string())),
+                        RESTORE_FILES => self.send(LaneCommand::RestoreFiles(entry)),
                         RESTORE_FILES_AND_REWIND => {
                             self.rewind_after_restore = Some(entry.clone());
-                            self.send(LaneCommand::RestoreFiles(entry.to_string()));
+                            self.send(LaneCommand::RestoreFiles(entry));
                         }
                         _ => {}
                     },
@@ -5052,13 +4929,13 @@ impl App {
                         source,
                     } => match (item.value.as_str(), session_file) {
                         ("Switch to the imported session", Some(file)) => {
-                            self.send(LaneCommand::Resume(file.to_string()));
+                            self.send(LaneCommand::Resume(file));
                             self.show_status(&format!("Session imported from: {source}"));
                         }
                         _ => self.show_status(&format!("{imported}. Use /resume to open it.")),
                     },
                     Purpose::Thinking => {
-                        let level = item.value.clone();
+                        let level = item.value;
                         self.set_thinking(&level);
                         self.status = format!("Thinking level: {level}.");
                     }
@@ -5086,7 +4963,6 @@ impl App {
                 }
             }
             Some(SelectEvent::Cancelled) => match self.selection.take() {
-                // Esc on the summary choice returns to the tree with the same selection.
                 Some(Selection {
                     purpose: Purpose::Summarize(entry),
                     ..
@@ -5111,7 +4987,6 @@ impl App {
             },
             _ => {}
         }
-        // A `/mcp` dialog queued behind one this selection displaced shows now.
         self.next_extension_dialog();
     }
 
@@ -5169,7 +5044,6 @@ impl App {
             cwd: self.cwd.clone(),
             home: self.home.clone(),
             git_branch: self.footer_git_branch.clone(),
-            // `isUsingSubscription` of the client footer: Claude Code's costs are notional (its own login pays).
             using_subscription: config::providers::runs_claude_code(&self.model.provider),
             session_name: self.session_name.clone(),
             thinking_level: self.thinking_level.clone(),
@@ -5182,7 +5056,6 @@ impl App {
             }),
             ..FooterView::default()
         };
-        // `setExtensionStatus(CLAUDE_USAGE_STATUS, claudeCodeUsageText(transcript))`: no usage removes the key.
         use crate::footer_data::{CLAUDE_USAGE_STATUS, claude_code_usage_text};
         if let Some(text) = claude_code_usage_text(&self.transcript) {
             v.statuses.push((CLAUDE_USAGE_STATUS.into(), text));
@@ -5250,7 +5123,6 @@ impl App {
         if !self.status.is_empty() {
             status.extend(Text::new(&self.theme.fg(Fg::Dim, &self.status), 1, 0, None).render(width));
         }
-        // `#renderRlm(width, "panel")`: the docked RLM panel, one column in, hidden while the graph shows.
         let rlm_focus = matches!(self.panel, Some(Panel::RlmFocus(_)));
         let need_snapshot = self.rlm_visible || !rlm_focus;
         let snapshot = need_snapshot.then(|| self.rlm_snapshot());
@@ -5269,12 +5141,10 @@ impl App {
         let running = self.running_work_lines(snapshot.as_ref(), width);
         status.extend(self.chat.render_status(width));
         let mut waves = self.wave_summary(width);
-        // The running-work panel lists what runs: the wave summary keeps its progress line.
         if !running.is_empty() {
             waves.truncate(1);
         }
         status.extend(waves);
-        // `#renderRuntimeLine`: one RLM line under the footer while the panel and the graph are hidden.
         let runtime_line = match &snapshot {
             Some(snapshot) if !self.rlm_visible && !rlm_focus => {
                 rlm_views::graph::render_rlm_footer(snapshot, width.max(1), &options)
@@ -5318,7 +5188,6 @@ impl App {
                     input,
                 }),
             ) => {
-                // `LoginDialogComponent` with its prompt (`showPrompt`).
                 let t = Rc::clone(&self.theme);
                 let border = t.fg(Fg::Border, &"─".repeat(width.max(1)));
                 let mut lines = vec![border.clone()];
@@ -5357,13 +5226,11 @@ impl App {
             (None, Some(Panel::ShareLoader(loader))) => loader.render(width),
             (None, Some(Panel::BugReport(flow))) => flow.render(width, self.rows),
             (None, None) => {
-                // `#chatInput.focused = !#busy && !(rlm pane focused and shown)`: no cursor while recovering.
                 self.editor.focused = !self.recovering && !(self.rlm_pane_focused && self.rlm_pane_shown());
                 self.editor.terminal_rows = self.rows;
                 self.editor.render(width)
             }
         };
-        // The running-work panel first, right under the transcript (no rows while nothing runs).
         let mut parts = vec![running, pending, status];
         if let Some(line) = self.status_line(width) {
             parts.push(vec![line]);
@@ -5428,14 +5295,12 @@ impl App {
 
     /// The chat column: transcript above the dock, `height` rows.
     fn render_main(&mut self, width: usize, height: usize) -> Vec<String> {
-        // The last frame's rows, overwritten in place.
         let mut document = self.viewport.take_content();
         let header = self.header_lines(width);
         self.mouse_layout.header_rows = header.len();
         self.chat.render_items(width);
         refill(&mut document, header.iter().chain(self.chat.lines()));
         let dock = self.dock(width);
-        // The editor (second to last) keeps at least three rows.
         let editor = dock.len() - 2;
         let dock_entries: Vec<StackEntry> = (0..dock.len())
             .map(|i| StackEntry {
@@ -5461,7 +5326,6 @@ impl App {
         ];
         let sizes = tui::allocate_stack_sizes(&root, &[document.len(), dock_height], Some(height));
         let dock_lines = stack_lines(dock, &dock_entries, &[], sizes[1]);
-        // The rows each dock part got, for the mouse: the slot is the editor's (second to last).
         let dock_sizes = tui::allocate_stack_sizes(&dock_entries, &dock_intrinsic, Some(sizes[1]));
         self.mouse_layout.slot = Some(tui::Rect {
             x: 0,

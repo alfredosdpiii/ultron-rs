@@ -421,7 +421,6 @@ fn run_shell(
     };
     let isolated = launcher.is_some_and(|launcher| launcher.mechanism().is_some());
     command_env(&mut process, base, env, isolated);
-    // A child server's verdict token authenticates only its own `rlm.finish`; commands never see it.
     process.env_remove(PARENT_TOKEN_ENV);
     let (reader, writer) = std::io::pipe().map_err(|error| error.to_string())?;
     let stderr = writer.try_clone().map_err(|error| error.to_string())?;
@@ -432,9 +431,7 @@ fn run_shell(
         .process_group(0)
         .spawn()
         .map_err(|error| error.to_string())?;
-    // The Command holds the pipe's write ends: drop it so the reader sees EOF when the command exits.
     drop(process);
-    // The command's own group (`process_group(0)`): its pgid is its pid.
     let group = i32::try_from(child.id()).unwrap_or(0);
     let (sender, chunks) = mpsc::channel::<Vec<u8>>();
     let pump = std::thread::spawn(move || {
@@ -606,7 +603,6 @@ impl Host {
                     (saved.lane.clone(), saved.root_id.clone()),
                     (saved.command.clone(), saved.cwd.clone()),
                     saved.timeout,
-                    // The record names its own spill file; the keeper's files sit next to it.
                     Path::new(&saved.output_path).parent().unwrap_or(&self.jobs_dir),
                     Record {
                         status: saved.status,
@@ -632,10 +628,9 @@ impl Host {
         *sync::lock(&self.shared.journal) = Some(journal);
         for job in adopted {
             if keeper_alive(*sync::lock(&job.process)) {
-                let (runner, shared) = (job.clone(), self.shared.clone());
+                let (runner, shared) = (job, self.shared.clone());
                 std::thread::spawn(move || follow(&runner, None, &shared));
             } else {
-                // Ended while no worker followed it: settle it now, so the first reply is already its real state.
                 follow(&job, None, &self.shared);
             }
         }
@@ -750,7 +745,6 @@ impl Host {
         signal: &Signal,
     ) -> Result<Value, String> {
         if kind == "files.before_write" {
-            // session-worker.ts `proposedWrites`.
             let writes = match payload.get("writes") {
                 Some(Value::Array(writes)) if (1..=64).contains(&writes.len()) => writes,
                 _ => return Err("files.before_write needs 1 to 64 writes".into()),
@@ -785,7 +779,6 @@ impl Host {
         }
         let requested = payload.get("command").and_then(Value::as_str).map(str::to_string);
         let mut result = self.dispatch_shell(lane, kind, payload, signal)?;
-        // The model's results: a non-error exit 1 and a sandbox refusal are noted (bash_notes).
         if matches!(
             kind,
             "bash" | "shell.run" | "shell.result" | "shell.get" | "shell.cancel"
@@ -823,7 +816,6 @@ impl Host {
             "shell.result" => {
                 kernel::ops::fields(kind, &payload)?;
                 let job = self.find(lane, payload.get("id"))?;
-                // TS validates `wait` only while the job runs.
                 if sync::lock(&job.record).status == Status::Running {
                     wait(&job, wait_seconds(payload.get("wait"), "wait")?, signal);
                 }
@@ -918,7 +910,6 @@ impl Host {
             },
             self.launcher.as_deref(),
             |text, raw| {
-                // The decoder's flush at the end (no bytes read) is not a chunk of the command's output.
                 if raw > 0 || !text.is_empty() {
                     on_chunk(text);
                 }
@@ -1018,7 +1009,6 @@ impl Host {
             },
         ));
         jobs.push(job.clone());
-        // Bounded retention: drop the oldest finished jobs and their files.
         let excess = jobs.len().saturating_sub(JOB_MAX_RETAINED);
         let pruned: Vec<String> = jobs
             .iter()
@@ -1036,15 +1026,12 @@ impl Host {
             keep
         });
         drop(jobs);
-        // The keeper is spawned on the thread that follows it (its waiter); its sandbox is persistent
-        // (`Launcher::command_persistent`), so neither that thread nor this worker ending stops it.
         let (started, spawned) = mpsc::channel();
         let (runner, shared, cwd, launcher, shell) = (
             job.clone(),
             self.shared.clone(),
             (self.cwd.clone(), self.base_env.clone(), self.env.clone()),
             self.launcher.clone(),
-            // The keeper is POSIX shell run by the default shell (/bin/bash, else bash on the session's PATH).
             self.shell()
                 .and_then(|shell| Ok((shell, self.shell_named(None)?.shell))),
         );
@@ -1105,7 +1092,6 @@ fn spawn_keeper(
     argv.push(shell.shell.clone());
     argv.extend(shell.args.iter().cloned());
     let mut process = match launcher {
-        // A job outlives the worker that started it (a successor adopts it): its sandbox is not tied to us.
         Some(launcher) => launcher.command_persistent(&sandboxed_argv(argv, env), cwd)?,
         None => {
             let mut process = Command::new(&argv[0]);
@@ -1197,7 +1183,6 @@ impl Digest {
 fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
     let own = child.is_some();
     if let Some(mut child) = child {
-        // Waits for the keeper on a thread of its own so its exit wakes the follower at once.
         let waiter = job.clone();
         std::thread::spawn(move || {
             let code = child.wait().ok().and_then(|status| status.code());
@@ -1237,7 +1222,6 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
             } else if *sync::lock(&job.cancel.0) {
                 stopped = Some(Status::Cancelled);
             }
-            // The keeper's own group (`process_group(0)` in `spawn_keeper`): its pgid is its pid.
             if stopped.is_some()
                 && let Some((pid, _)) = process
             {
@@ -1255,11 +1239,9 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
         }
     };
     digest.finish(job);
-    // The keeper writes the command's status just before it exits.
     let code = exit_status(&job.exit_path);
     let jobs = sync::lock(&shared.jobs);
     if shared.released.load(Ordering::SeqCst) {
-        // Released while it ended: the next owner settles it from its exit file.
         drop(jobs);
         job.stop_following(Tracking::Released);
         return;
@@ -1268,7 +1250,6 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
         let mut record = sync::lock(&job.record);
         record.ended_at = Some(match own {
             true => jsrt::date::now_ms() as u64,
-            // Ended while nobody followed it: the exit file's time, when there is one.
             false => std::fs::metadata(&job.exit_path)
                 .and_then(|meta| meta.modified())
                 .ok()
@@ -1292,7 +1273,6 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
                     record.status = Status::Completed;
                     record.exit_code = Some(code);
                 }
-                // The keeper itself was killed: as a command killed by a signal, no exit code.
                 (None, true) => {
                     record.status = Status::Completed;
                     record.exit_code = ended;
@@ -1308,7 +1288,6 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
     }
     shared.persist_locked(&jobs);
     drop(jobs);
-    // `onEnd`, before the job's waiters wake: a caller still waiting gets the result inline, so nothing is announced.
     let reason = *sync::lock(&job.reason);
     let end = JobEnd {
         record: job_record(job, true),
@@ -1359,7 +1338,6 @@ fn wait(job: &Arc<Job>, seconds: Option<f64>, signal: &Signal) {
 /// owner is not this worker's to stop: it returns at once.
 fn cancel(job: &Job, reason: StopReason, shared: &Shared) {
     {
-        // Under the jobs lock, as the release is: a stop asked for before it is carried out by this worker.
         let _jobs = sync::lock(&shared.jobs);
         if shared.released.load(Ordering::SeqCst) || !job.following() {
             return;

@@ -383,7 +383,7 @@ fn review_prepare_env_daemon_review_uses_the_prepared_environment() {
             now: Arc::new(|| 0),
         }));
         let runner: Arc<dyn Runner> = Arc::new(WithTools {
-            hub: hub.clone(),
+            hub,
             builds: Arc::default(),
         });
         context.deps.runner = runner.clone();

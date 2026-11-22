@@ -819,7 +819,7 @@ fn harness_chat_compaction_recovery_keeps_a_generation_waiting_on_its_blocking_c
         let input = chat.root.submit(SubmissionDraft::input(text("u4", 200))).unwrap();
         reached.wait();
         chat.chat.close().unwrap();
-        let chat = open(storage.reopen(), chat.setup.clone(), chat.faux.clone());
+        let chat = open(storage.reopen(), chat.setup.clone(), chat.faux);
         chat.faux.summary(step(text_message("SUMMARY")));
         chat.faux.agent(step(text_message("a4")));
         assert_eq!(
@@ -862,7 +862,7 @@ fn harness_chat_compaction_recovery_fails_an_overflow_run_with_its_text_when_its
             json!({ "status": "waiting", "checkpoint": { "phase": "prepare", "overflow": OVERFLOW } }),
         );
         chat.chat.close().unwrap();
-        let chat = open(storage.reopen(), chat.setup.clone(), chat.faux.clone());
+        let chat = open(storage.reopen(), chat.setup.clone(), chat.faux);
         chat.faux.summary(step(failure("bad request")));
         assert_matches(
             &record(&chat.chat.submission(input.id).unwrap().unwrap().wait(&bg()).unwrap()),
@@ -884,7 +884,7 @@ fn harness_chat_compaction_recovery_repeats_nothing_after_reopen_once_the_summar
         let entries = chat.root.entries().unwrap();
         let usage = chat.chat.snapshot(&USAGE, Owner::Conversation(chat.root.id)).unwrap();
         chat.chat.close().unwrap();
-        let chat = open(storage.reopen(), chat.setup.clone(), chat.faux.clone());
+        let chat = open(storage.reopen(), chat.setup.clone(), chat.faux);
         chat.chat.wait_for_idle(&bg()).unwrap();
         assert_eq!(chat.faux.summary_requests().len(), 1);
         assert_eq!(chat.root.entries().unwrap(), entries);

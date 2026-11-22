@@ -191,7 +191,6 @@ impl MemoryService {
             let claims: Vec<Value> = listed["claims"].as_array().cloned().unwrap_or_default();
             for claim in claims.iter().filter(|c| confirmed_at(c) < cutoff.as_str()).take(limit) {
                 let quotes = quotes_of(&claim["metadata"]);
-                // A global claim quotes files of whatever project it came from: nothing here to check it against.
                 let (Some(root), false) = (root.as_deref(), quotes.is_empty()) else {
                     unchecked += 1;
                     continue;
@@ -206,7 +205,6 @@ impl MemoryService {
                     Some(why) => changed.push((claim.clone(), quotes, why, root.to_path_buf())),
                 }
             }
-            // A claim kept in the window and not yet looked at, beside an older one of the same situation.
             for newer in claims
                 .iter()
                 .filter(|c| c["createdAt"].as_str() >= Some(cutoff.as_str()) && c["lastConfirmedAt"].is_null())
@@ -276,7 +274,6 @@ impl MemoryService {
                             let kept: Vec<Value> =
                                 held.iter().map(|q| json!({"path": q.path, "quote": q.quote})).collect();
                             metadata["ultron_quotes"] = Value::Array(kept).to_string().into();
-                            // The host checked what remains: only it marks a claim verified.
                             metadata["ultron_evidence_class"] = "verified".into();
                         }
                     }
@@ -322,7 +319,6 @@ impl MemoryService {
                     continue;
                 }
             }
-            // Settled: the newer claim is marked looked at (confirmed), so the next dream does not ask again.
             if !looked_at.contains(&newer["id"]) {
                 let id = newer["id"].as_str().unwrap_or_default();
                 self.backend_call(self.backend.confirm(id, &json!({}), signal))?;

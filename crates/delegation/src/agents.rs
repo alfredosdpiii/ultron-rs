@@ -755,13 +755,11 @@ impl Agents {
             "definition": request.definition, "input": request.input, "model": request.model,
             "timeout_ms": request.timeout_ms,
         });
-        // A brief is part of what was asked: a retried key with another contract is another task.
         if let Some(brief) = &request.brief {
             fingerprinted["brief"] = brief.to_value();
         }
         let fingerprint = task_fingerprint(&fingerprinted);
         let key = request.key.clone().unwrap_or_else(random::uuid_v4);
-        // An idempotent retry resolves to the existing task before any budget is touched.
         if request.key.is_some() {
             let mut state = self.state();
             let prior = state.journal.list()?.into_iter().find(|t| t["key"] == key.as_str());
@@ -839,8 +837,6 @@ impl Agents {
             state.tasks.push(task);
             state.closed
         };
-        // The timeout, capped by the root wall deadline; only a deadline the ledger capped below the task's own
-        // timeout is reported as the root wall deadline.
         let delay = match deadline_at {
             None => (!request.untimed).then_some(request.timeout_ms as f64),
             Some(deadline) => Some(if request.untimed {
@@ -915,7 +911,6 @@ impl Agents {
             Ok(true) => {
                 let result = self.execute(id, &request);
                 let result = self.with_limit_reason(id, result);
-                // The host verifies the brief's contract before the result is committed or seen.
                 let result = match &request.brief {
                     Some(brief) => brief.verify(result),
                     None => result,
@@ -970,8 +965,6 @@ impl Agents {
         let Some(usage) = &self.inner.usage else {
             return Ok(None);
         };
-        // Reserved under the task lock, so a model reservation is never admitted for a task that has
-        // already ended (TS passes the task signal to `reserve`); `commit` settles the ones still open.
         let mut state = self.state();
         let task = state.task(id).ok_or("Unknown Ultron task")?;
         if let Some(reason) = task.signal.reason() {
@@ -1086,7 +1079,6 @@ impl Agents {
                         if let Some(reservation) = &reservation {
                             usage.settle(reservation, Some(status), None)?;
                         }
-                        // A predict attempt is one model turn of its root (the adapter reports no tokens).
                         usage.record_turn(self.root_of_task(id).as_deref(), None, None)?;
                     }
                     let value = answer?;
@@ -1141,7 +1133,6 @@ impl Agents {
         let model = request.model.clone().or_else(|| definition.model().map(String::from));
         {
             let mut state = self.state();
-            // A reused lane now acts for its newest invocation.
             state.lane_tasks.insert(lane.clone(), id.into());
             if let Some(task) = state.task_mut(id) {
                 task.lane = Some(lane.clone());
@@ -1162,7 +1153,6 @@ impl Agents {
                 definition.output_description()
             )
         };
-        // Refinements are optional: an unavailable refinement service never fails the task.
         let refinements = self
             .inner
             .refinements
@@ -1202,7 +1192,7 @@ impl Agents {
         });
         let reply = runner(LaneRun {
             task_id: id.into(),
-            lane: lane.clone(),
+            lane,
             reuse: request.lane.is_some(),
             prompt,
             model,
@@ -1223,7 +1213,6 @@ impl Agents {
                 task.cost = usage.as_ref().and_then(|u| u.cost);
                 task.tokens = usage.as_ref().and_then(|u| u.total_tokens);
                 if let Ok(reply) = &reply {
-                    // The run's own entries are authoritative for the graph view's counts.
                     task.turns = Some(task.turns.unwrap_or(0).max(reply.turns));
                     task.tool_calls = Some(task.tool_calls.unwrap_or(0).max(reply.tool_calls));
                     let flat = string::flatten(&reply.text);
@@ -1374,9 +1363,6 @@ impl Agents {
         let Some(usage) = &self.inner.usage else {
             return;
         };
-        // A run cut short (cancel, root deadline) has not settled its model call: it ends with its task,
-        // before the result is published, as TS settles it when the aborted prompt unwinds. Settling a
-        // reservation the run already settled is a no-op.
         for reservation in std::mem::take(&mut task.model_reservations) {
             let _ = usage.settle(&reservation, Some(status), None);
         }
@@ -1414,8 +1400,6 @@ impl Agents {
             None => "failed",
         }
         .to_string();
-        // The usage status of the end this caller meant, settled even when the journal refuses it: the task ends
-        // here either way, and an open reservation would count against its root until the next reopen.
         let meant = match result["status"].as_str() {
             Some("succeeded") => "succeeded",
             Some("cancelled") => "cancelled",
@@ -1491,7 +1475,6 @@ impl Agents {
             if task.outcome.is_some() || task.finishing {
                 None
             } else {
-                // Only the first party to end a task aborts its work.
                 task.finishing = true;
                 task.signal.abort(reason);
                 Some(task.lane.clone())
@@ -1532,7 +1515,6 @@ impl Agents {
     /// Waits for a task's terminal result. `cell`: the requesting cell; when it is cancelled the wait ends with an
     /// error (`cancel_task`: and the task is cancelled first, as an invoke's own task is).
     fn wait_outcome(&self, id: &str, cell: Option<(&Signal, bool)>) -> Result<Value, String> {
-        // The cell's cancellation wakes this wait (from a thread of its own: the aborting thread may hold the state).
         let listener = cell.and_then(|(signal, _)| {
             let inner = self.inner.clone();
             let id = signal.on_abort(move |_| {
@@ -1747,7 +1729,6 @@ impl Agents {
                 let id = nonempty_string(payload.get("id"), "id")?;
                 let stored = records.iter().find(|r| r["id"] == id.as_str());
                 let Some(stored) = stored.filter(|_| visible(&id)) else {
-                    // A subagent's id: the subagent host answers for it.
                     if let Some(children) = self.inner.worktree_children.get()
                         && let Some(answer) = children.agents_request(kind, &id, lane, cell)
                     {
@@ -1758,7 +1739,6 @@ impl Agents {
                 match kind {
                     "agents.inspect" => Ok(public_task(stored)),
                     "agents.cancel" => {
-                        // Stopping a task stops its subtree, even when the task itself already finished.
                         let result = self.cancel(&id, "Ultron task cancelled")?;
                         Ok(json!({ "cancelled": result["status"] == "cancelled" }))
                     }
@@ -2144,7 +2124,6 @@ impl Agents {
                 ));
             }
             let item = self.definition(&definition)?;
-            // A node that could never execute is a validation error, not a runtime failure after effects.
             self.state().registry.can_execute(&item)?;
             let depends_on: Vec<String> = match node.get("dependsOn") {
                 None => Vec::new(),
@@ -2381,7 +2360,10 @@ impl Agents {
     }
 
     /// `workflowTask`: validates a bound input, admits the node's task, and waits for its durable result.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal wiring helper; parameters match distinct caller inputs"
+    )]
     fn workflow_task(
         &self,
         node: &Node,
@@ -2393,7 +2375,6 @@ impl Agents {
         gate: bool,
         admitted: Option<&Sender<()>>,
     ) -> Value {
-        // Tells the workflow its admission was attempted, so the next ready node is admitted after it (TS order).
         let signal_admitted = || {
             if let Some(sender) = admitted {
                 let _ = sender.send(());
@@ -2433,7 +2414,6 @@ impl Agents {
         };
         let estimate = self.node_estimate(node);
         if let (Some(mode), Some(children)) = (&subagent, self.inner.worktree_children.get()) {
-            // The subagent host admits it outside this ledger: the stop-line is checked here first.
             if let (Some(usage), Some(estimate)) = (&self.inner.usage, estimate) {
                 let root = self.status_root(&self.state(), parent);
                 let unit = format!("workflow node {}", node.id);
@@ -2445,8 +2425,6 @@ impl Agents {
                     }
                 }
             }
-            // A worktree node branches from the caller's tree as it is when the node starts; a node with a contract
-            // runs as a subagent so that the subagent host checks it.
             let base = input["prompt"].as_str().unwrap_or_default().to_string();
             let prompt = match &brief {
                 Some(brief) => brief.prompt(&base),
@@ -2494,7 +2472,10 @@ impl Agents {
     }
 
     /// `workflowLoop`: the revised node, then its reviewer, until `until` holds or the rounds run out.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal wiring helper; parameters match distinct caller inputs"
+    )]
     fn workflow_loop(
         &self,
         work: &Node,
@@ -2681,7 +2662,6 @@ impl Agents {
                             },
                         }
                     }));
-                    // Admission in ready order: the next node waits until this one's admission was attempted.
                     let _ = wait.recv();
                 }
                 handles.into_iter().map(|h| h.join().unwrap_or_default()).collect()

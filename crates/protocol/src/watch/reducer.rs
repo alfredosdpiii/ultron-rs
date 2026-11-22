@@ -127,8 +127,6 @@ pub fn reduce_lane_snapshot(snapshot: &mut Value, event: &Value) -> Option<Reduc
                 operation.insert("streamingMessage".into(), message.clone());
             }
         }
-        // Rust-only: an update carries its frame, folded into the streaming message (crate::stream_fold); one from an
-        // older worker (or TypeScript) carries the whole message, which replaces it.
         "message_update" => {
             if let Some(message) = super::stream_fold::message_of(event) {
                 if message["role"] != "assistant" {

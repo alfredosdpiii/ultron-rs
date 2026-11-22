@@ -71,7 +71,6 @@ pub fn run(args: &[String]) -> io::Result<()> {
         }
     };
     schedule_empty_shutdown(&coordinator, EMPTY_STARTUP_GRACE);
-    // SIGINT/SIGTERM/SIGHUP: shut down, removing both sockets (`shutdownCoordinator`).
     let signalled = coordinator.clone();
     signals::set_handler(Arc::new(move |_| shutdown(&signalled, signalled.lock())));
     let public = coordinator.clone();

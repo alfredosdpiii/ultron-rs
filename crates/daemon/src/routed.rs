@@ -104,7 +104,6 @@ impl Conn {
             Some(Subscription::Pending(buffer)) => buffer.push(update),
             Some(Subscription::Ready(encoder)) => {
                 if let Ok(update) = encoder.encode_update(&update) {
-                    // Sent under the subscriptions lock so updates leave in publication order.
                     self.send(&ServerMessage::ServiceUpdate {
                         subscription_id: subscription.to_string(),
                         update: to_cbor(&update),
@@ -262,8 +261,6 @@ impl Hub {
         }
         let (handle, attachment) = match self.manager.attach_client(&handle) {
             Ok(attachment) => (handle, attachment),
-            // The session's worker went idle as its last client left and is retiring (a client that attaches right
-            // after another detached): once it is gone, a new worker is started for this client.
             Err(error) if error.code.as_deref() == Some(protocol::names::WORKER_RETIRING_CODE) => {
                 self.wait_worker_gone(session_id, &handle);
                 let handle = self.acquire(session_id, options)?;
@@ -324,10 +321,9 @@ impl Hub {
         );
         drop(router);
         let hub = self.me.clone();
-        let (id, path, terminated) = (meta.id.clone(), meta.path.clone(), handle.terminated.clone());
+        let (id, path, terminated) = (meta.id.clone(), meta.path, handle.terminated.clone());
         terminated.on_resolve(Box::new(move |error| {
             if let Some(hub) = hub.upgrade() {
-                // Off the reporting thread: releasing talks to the worker manager.
                 std::thread::spawn(move || hub.invalidate(&id, &path, error));
             }
         }));
@@ -344,7 +340,6 @@ impl Hub {
         let mut handle = self.serialized(|| self.acquire(session_id, None))?;
         let attachment = match self.manager.attach_client(&handle) {
             Ok(attachment) => attachment,
-            // The worker is retiring: once it is gone, a new one is started for the call.
             Err(_) => {
                 self.wait_worker_gone(session_id, &handle);
                 handle = self.serialized(|| self.acquire(session_id, None))?;
@@ -362,7 +357,6 @@ impl Hub {
                 let _ = tx.send(result);
             }),
         );
-        // A worker that dies under the call rejects it; the bound only guards a hung coordinator.
         let result = rx
             .recv_timeout(Duration::from_secs(600))
             .unwrap_or_else(|_| Err(ServiceError::internal("Session worker did not answer")));
@@ -378,7 +372,6 @@ impl Hub {
             let _ = gone.send(());
         }));
         let _ = ended.recv_timeout(Duration::from_secs(30));
-        // The hub drops the ended worker's entry on its own thread (`invalidate`).
         let router = self.router();
         let _ = self
             .unhosted
@@ -426,7 +419,6 @@ impl Hub {
         for id in conns {
             let conn = self.conns.lock().unwrap_or_else(|e| e.into_inner()).get(&id).cloned();
             if let Some(conn) = conn.filter(|_| back) {
-                // Checked under the same serialization as the client's own attach and detach.
                 let _ = self.serialized(|| {
                     if self.router().routes.reconnecting(id, session_id) {
                         self.attach(&conn, session_id, None)
@@ -451,7 +443,6 @@ impl Hub {
             .get(&conn_id)
             .cloned();
         if let Some(conn) = conn {
-            // The attachment's subscriptions end with it.
             let ended: Vec<String> = conn
                 .session_subscriptions
                 .lock()
@@ -598,12 +589,11 @@ impl Hub {
             hub.clone(),
         );
         let (c1, c2, c3, c4) = (conn_of.clone(), conn_of.clone(), conn_of.clone(), conn_of);
-        let (h8, h9) = (hub.clone(), hub.clone());
+        let (h8, h9) = (hub.clone(), hub);
         let management = Service::new(protocol::names::SESSION_MANAGEMENT)
             .method("attach", move |args| {
                 let (hub, conn) = (h1()?, c1()?);
                 let id = args.first().and_then(Value::as_str).unwrap_or_default().to_string();
-                // A Rust-only second argument: the client's own session options (`ultron durable --model ...`).
                 let options = args.get(1).filter(|o| o.is_object());
                 hub.serialized(|| hub.attach(&conn, &id, options)).map(|()| None)
             })
@@ -647,7 +637,6 @@ impl Hub {
                 let name = args.get(1).and_then(Value::as_str).unwrap_or_default().to_string();
                 hub.serialized(|| {
                     let meta = hub.resolve(&id)?;
-                    // A running worker owns the session file; a second writer would interleave entries.
                     if hub.manager.worker_pids().contains_key(&meta.id) {
                         return Err(ServiceError::coded(
                             "service_invalid_value",
@@ -666,8 +655,6 @@ impl Hub {
                 let id = request["sessionId"].as_str().unwrap_or_default();
                 hub.serialized(|| {
                     hub.resolve(id)?;
-                    // The selection the client asked for (none: the session's own). Plugin packages are not built
-                    // by the Rust server: every selection has no presentation bundles.
                     let paths: Vec<String> = request["packagePaths"]
                         .as_array()
                         .map(|p| p.iter().filter_map(Value::as_str).map(str::to_string).collect())
@@ -741,7 +728,6 @@ impl Hub {
             .insert(conn.id, conn.clone());
         self.connection_count_changed();
         self.read_loop(&conn, stream);
-        // Disconnect: release the attachment (without publishing) and the server services.
         conn.close();
         let attachment = self.router().routes.remove(conn.id);
         if let Some(attachment) = attachment {
@@ -752,7 +738,6 @@ impl Hub {
         if let Some(endpoint) = conn.services.lock().unwrap_or_else(|e| e.into_inner()).take() {
             endpoint.dispose();
         }
-        // Calls still running stop waiting (server.ts `disconnect` aborts them); their workers are told.
         let operations: Vec<String> = conn.active().drain().filter_map(|(_, a)| a.operation).collect();
         for operation in operations {
             self.manager.cancel_operation(&operation);
@@ -914,7 +899,6 @@ impl Hub {
                         _ => false,
                     }
                 };
-                // A request aborted by its client answers `cancelled` unless it completed anyway.
                 let result = match result {
                     Err(_) if cancelled => {
                         Err(coded(crate::workers::CANCELLED_CODE, crate::workers::CANCELLED_MESSAGE))
@@ -968,7 +952,6 @@ impl Hub {
                 let operation =
                     self.manager
                         .invoke(&handle, &attachment, call_json, conn.publisher(), Box::new(finish));
-                // A cancel that came while the call was being sent applies now.
                 let cancel_now = operation.and_then(|operation| {
                     let mut active = conn.active();
                     let entry = active.get_mut(&id).filter(|a| a.generation == generation)?;

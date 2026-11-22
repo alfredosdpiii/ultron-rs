@@ -584,7 +584,6 @@ impl<'a> Tx<'a> {
         let owner = match options.ownership {
             TaskOwnership::Conversation => None,
             TaskOwnership::Task(owner_id) => {
-                // Validated again against the owner's final candidate during assembly.
                 let Some(owner) = self.current_task(owner_id)? else {
                     return Err(SessionError::Error(format!("Task owner {} does not exist", owner_id.0)));
                 };
@@ -885,7 +884,6 @@ impl<'a> Tx<'a> {
             }
         }
 
-        // Terminal settlement retires every task document, including ones created by this transaction.
         let terminal: Vec<(TaskId, bool)> = self
             .tasks
             .values()
@@ -940,7 +938,6 @@ impl<'a> Tx<'a> {
             }
         }
 
-        // Resolve publication ownership before Storage admission so adoption needs no reads.
         for plan in &mut plans {
             if !plan.publishes() {
                 continue;
@@ -988,7 +985,6 @@ impl<'a> Tx<'a> {
             }
         }
         for plan in &mut plans {
-            // Checkpoint predicates run last, after every validation.
             if let (
                 Some(StorageWrite::DocumentChange {
                     id,
@@ -1180,7 +1176,6 @@ fn plan_document(entry: DocEntry) -> Result<Option<Plan>> {
                 (document.record.clone(), document.stored_version)
             };
             let id = record.identity.id;
-            // A version change stores a base even without operations; otherwise only a change stores a delta.
             let content = if stored_version < version {
                 Some(DocumentContent::Base {
                     version,
@@ -1236,7 +1231,6 @@ pub(crate) fn adopt(inner: &Inner, plans: Vec<Plan>, seq: Seq) -> Result<Vec<Com
             } = change;
             match tracker {
                 PlanTracker::Created(mut tracker) => {
-                    // A new incarnation is adopted unless it retires in the same commit.
                     if !plan.retire {
                         tracker.adopt(&prepared)?;
                         let loaded = LoadedDocument {

@@ -343,7 +343,7 @@ fn cli_durable_model_changes_save_durable_model_and_plain_ultron_saves_the_globa
         model["id"].as_str().unwrap()
     );
     assert_ne!(cycled_ref, "anthropic/claude-haiku-4-5");
-    assert_eq!(saved(&fixture), (global.clone(), json!(cycled_ref)));
+    assert_eq!(saved(&fixture), (global, json!(cycled_ref)));
     // Back to a known model for the next session.
     client
         .send(json!({"type": "set_model", "provider": "anthropic", "modelId": "claude-haiku-4-5"}))

@@ -241,7 +241,7 @@ fn acceptance_a36_an_instance_survives_an_owner_restart_and_keeps_its_lane() {
     let lane = instance["lane"].as_str().unwrap().to_string();
     first.fixture.agents.close();
 
-    let restarted = build(&fake, Some(first.stores.clone()));
+    let restarted = build(&fake, Some(first.stores));
     let next = restarted
         .call(
             "instances.invoke",

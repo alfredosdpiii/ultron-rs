@@ -126,7 +126,6 @@ impl Scratch {
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
         let dir = std::env::temp_dir().join(name);
-        // `create_dir` fails on an existing path, so nothing planted there is ever used.
         std::fs::create_dir(&dir).ok()?;
         Some(Scratch(dir))
     }
@@ -145,12 +144,10 @@ fn work_tree(cwd: &Path, env: &[(String, String)]) -> Option<String> {
     let index = scratch.0.join("index");
     let real = text(git(cwd, env, &["rev-parse", "--git-path", "index"], None)?);
     let real = cwd.join(real);
-    // The real index's stat data spares hashing every unchanged file; without one, start from HEAD.
     let seeded = real.is_file() && std::fs::copy(&real, &index).is_ok();
     if !seeded {
         git_on(cwd, env, Some(&index), &["read-tree", "HEAD"], None)?;
     }
-    // The whole tree (`:/`): unmerged or intent-to-add entries anywhere would stop write-tree.
     git_on(cwd, env, Some(&index), &["add", "-A", "--", ":/"], None)?;
     let tree = text(git_on(cwd, env, Some(&index), &["write-tree"], None)?);
     (!tree.is_empty()).then_some(tree)
@@ -165,7 +162,6 @@ fn contents(cwd: &Path, env: &[(String, String)], paths: &[&String]) -> Option<B
         .filter(|path| std::fs::metadata(cwd.join(path)).is_ok_and(|m| m.is_file()))
         .collect();
     if !files.is_empty() {
-        // Absolute: git reads `--stdin-paths` relative to the repository's top, not the working directory.
         let list: String = files
             .iter()
             .map(|path| format!("{}\n", cwd.join(path).display()))
@@ -200,7 +196,6 @@ fn status(cwd: &Path, env: &[(String, String)]) -> Option<(Vec<u8>, Vec<String>)
     let paths = nul_list(&raw)
         .into_iter()
         .filter_map(|entry| entry.get(3..).map(String::from))
-        // Porcelain paths are relative to the repository's top; the pathspec kept those under `cwd`.
         .map(|path| path.strip_prefix(&prefix).map(String::from).unwrap_or(path))
         .map(|path| path.strip_suffix('/').map(String::from).unwrap_or(path))
         .collect();
@@ -298,7 +293,6 @@ impl GitBaseline {
         dirty: &BTreeMap<String, String>,
         unknown: &dyn Fn(&str) -> String,
     ) -> Result<Vec<String>, String> {
-        // Unchanged since the start: the same commit and the same status, every dirty file as it was.
         if head(cwd, env).as_deref() == Some(self.commit.as_str()) && dirty.is_empty() {
             let (raw, _) = status(cwd, env).ok_or_else(|| unknown("git status failed"))?;
             let now = git(cwd, env, &["hash-object", "--stdin"], Some(&raw)).map(text);
@@ -324,7 +318,6 @@ impl GitBaseline {
         let untracked = git(cwd, env, &["ls-files", "-z", "--others", "--exclude-standard"], None)
             .ok_or_else(|| unknown("git ls-files failed"))?;
         let listed: BTreeSet<String> = nul_list(&tracked).into_iter().chain(nul_list(&untracked)).collect();
-        // Dirty at the start: changed only when its content differs now (or it is back to the commit's).
         let paths: Vec<&String> = dirty.keys().collect();
         let now = contents(cwd, env, &paths).ok_or_else(|| unknown("git hash-object failed"))?;
         let mut changed: BTreeSet<String> = listed

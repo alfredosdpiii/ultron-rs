@@ -259,7 +259,6 @@ pub fn rlm_runtime_prompt(active_tools: &[&str], options: &RuntimeGuideOptions) 
         return None;
     }
     let subagent = matches!(options.reader, GuideReader::Subagent { .. });
-    // A subagent is never woken: everything it says about waiting is the awaiting kind.
     let delivery = match options.delivery {
         EventDelivery::Wake if subagent => EventDelivery::NextCall,
         other => other,
@@ -317,8 +316,6 @@ pub fn rlm_runtime_prompt(active_tools: &[&str], options: &RuntimeGuideOptions) 
     parts.extend(extension_tools);
     let delegation = delegation_prompt(delivery, options.host_waits);
     let swarm = options.reader != GuideReader::Subagent { swarm: false };
-    // An external root (Claude Code over `ultron mcp`) serves them too, from a durable runtime of its own session;
-    // its Claude Code subagents (an external root's subagent reader) do not: each has a server of its own.
     let persistent = options.durable_apis && swarm && !(options.external_root && subagent);
     if persistent {
         parts.push(format!(
@@ -332,7 +329,6 @@ pub fn rlm_runtime_prompt(active_tools: &[&str], options: &RuntimeGuideOptions) 
         parts.push(delegation);
     }
     if options.durable_apis {
-        // `schedule.*` is the root agent's only.
         let schedule = if persistent && !subagent {
             format!("\n{SCHEDULE_PROMPT}")
         } else {

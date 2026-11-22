@@ -275,7 +275,6 @@ fn walk_with_fd(
     if !query.is_empty() {
         cmd.arg(build_fd_path_query(query));
     }
-    // Cancelled (TS `child.kill("SIGKILL")`) when the request is aborted.
     let Ok(running) = signals::child::start(
         cmd.stdout(Stdio::piped()).stderr(Stdio::null()),
         None,
@@ -667,7 +666,6 @@ pub fn apply_completion(
         _ => after,
     };
     let is_dir = item.label.ends_with('/');
-    // Directories with a closing quote keep the cursor inside the quotes.
     let offset = if is_dir && value.ends_with('"') {
         value.len() - 1
     } else {

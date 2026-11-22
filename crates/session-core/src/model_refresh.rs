@@ -51,14 +51,12 @@ pub fn refresh_catalogs_from(env: &Env, catalog_base_url: &str, force: bool) -> 
         .provider_ids()
         .into_iter()
         .filter(|p| builtin.contains(&p.as_str()) || registry.radius_gateway(p).is_some())
-        // `claude-code` has no catalog to refresh (its models are the CLI's), though its requests always resolve.
         .filter(|p| p != ai::claude_code::PROVIDER)
         .collect();
     let now = || jsrt::date::now_ms();
     let work = async {
         let mut errors: Vec<(String, String)> = Vec::new();
         for provider in &providers {
-            // `resolveRefreshCredential`: no credential, no network refresh.
             let key = match lane::request_key(&ModelFlags::default(), env, provider) {
                 Ok(Some(key)) => key,
                 Ok(None) => continue,

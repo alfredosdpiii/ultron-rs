@@ -40,8 +40,6 @@ impl Delegation {
         {
             let mut state = sync::lock(&self.inner.state);
             let known: Vec<String> = state.tasks.iter().map(|task| task.id.clone()).collect();
-            // Asked while the journal reopens: a child a runtime still runs stays `running` in the same write that
-            // records the others `interrupted`, so a later restart finds it unfinished and reattaches it again.
             let mut kept: HashMap<String, Reattached> = HashMap::new();
             let records = state.journal.reopen(|record| {
                 let id = record["id"].as_str().unwrap_or_default();
@@ -57,8 +55,6 @@ impl Delegation {
                     None => false,
                 }
             })?;
-            // The children's saved worktree records: a reattached child keeps its worktree, and a kept worktree
-            // already merged stays merged (`rlm.merge` does not merge it again).
             let saved = self
                 .inner
                 .workspace
@@ -75,7 +71,6 @@ impl Delegation {
                     Some(r) => (Some(r.waiter), r.contract, r.run),
                     None => (None, None, None),
                 };
-                // The Git baseline kept beside a contract with workspace checks: their "before" from now on.
                 let git_baseline = contract
                     .as_ref()
                     .and_then(|kept| GitBaseline::from_value(&kept["baseline"]));
@@ -95,9 +90,6 @@ impl Delegation {
                 let merge_status = saved
                     .filter(|record| record.state == "merged")
                     .map(|_| "merged".to_string());
-                // A reattached worktree child keeps its worktree (its saved record names the task): its work is
-                // committed on its branch when it ends, and `rlm.merge` finds it.
-                // This worker owns it now: its close prunes the worktree once the child has ended.
                 let worktree = waiter.as_ref().and(saved.cloned()).map(|mut record| {
                     record.owner = wt::Owner::of_this_process();
                     let _ = wt::save_record(&record);
@@ -113,7 +105,6 @@ impl Delegation {
                     outcome,
                     spawn_depth: 0,
                     lane_name,
-                    // A run kept for a retry hop still names its child and model.
                     name: run.as_ref().map(|run| run.name.clone()),
                     model: run.as_ref().and_then(|run| run.model.clone()),
                     started_at: None,
@@ -181,7 +172,6 @@ impl Delegation {
                 "Contract failed: the session's kept contract is unreadable: {error}"
             ));
         }
-        // As any child's end (its worktree work committed first, then the journal).
         let _ = self.end(id, result);
     }
 }

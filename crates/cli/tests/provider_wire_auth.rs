@@ -72,7 +72,7 @@ impl Drop for Root {
 struct Seen {
     url: String,
     headers: Vec<(String, String)>,
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "shared test helper used across integration test binaries")]
     body: Value,
 }
 

@@ -276,8 +276,6 @@ pub fn run_setup_wizard<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> SetupRe
     }
 }
 
-// ------------------------------------------------------------------------------------------------- 1. environment
-
 fn environment_step<U: SetupUi>(ui: &mut U, deps: &SetupDeps) {
     ui.heading(&step_title(deps, 1, "Environment"));
     for check in setup_core::check_environment(&deps.probe, &deps.python) {
@@ -301,8 +299,6 @@ fn environment_step<U: SetupUi>(ui: &mut U, deps: &SetupDeps) {
         }
     }
 }
-
-// -------------------------------------------------------------------------------------------- 2. provider and model
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ProviderPath {
@@ -374,7 +370,7 @@ fn provider_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<(Summar
             Some(path) => path,
         };
         if path == ProviderPath::Keep {
-            let current = current.clone().expect("Keep is offered with a current default");
+            let current = current.expect("Keep is offered with a current default");
             let tested = test_and_report(ui, deps, &current)?;
             let detail = format!(
                 "{}{}",
@@ -810,8 +806,6 @@ fn test_and_report<U: SetupUi>(ui: &mut U, deps: &SetupDeps, model: &Model) -> R
     Ok(result.ok)
 }
 
-// ------------------------------------------------------------------------------------------------------ 3. Hindsight
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HindsightAction {
     Docker,
@@ -917,7 +911,7 @@ fn memory_backend_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<S
             None | Some(BackendAction::Skip) => return Ok(line(MEMORY_BACKEND, "skipped", now)),
             Some(BackendAction::Url) => {
                 let options = InputOptions {
-                    initial: Some(url.clone()),
+                    initial: Some(url),
                     validate: Some(Box::new(setup_core::validate_base_url)),
                     ..Default::default()
                 };
@@ -1270,8 +1264,6 @@ fn install_with_docker<U: SetupUi>(ui: &mut U, deps: &SetupDeps, url: &str) -> R
     Ok(Some(true))
 }
 
-// ---------------------------------------------------------------------------------------------------- 4. judge seat
-
 const JUDGE: &str = "Judge";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1408,7 +1400,6 @@ fn judge_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLin
                     InputOptions {
                         initial: Some(d1_url.clone().unwrap_or_default()),
                         description: Some("For example a tailscale serve address of the machine running d1.".into()),
-                        // Its key goes there: https, or plain http to this machine only.
                         validate: Some(Box::new(|value: &str| {
                             setup_core::validate_base_url(value)
                                 .or_else(|| config::auth::secure_url(jsrt::string::trim(value)).err())
@@ -1431,7 +1422,6 @@ fn judge_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLin
                 d1.insert("url".into(), Value::String(url.clone()));
                 deps.settings.set_global_nested("judge", "d1", Some(Value::Object(d1)));
                 ui.note(&format!("✓ Saved judge.d1.url ({url})."), Tone::Success);
-                // A stored key is bound to the server it was saved for: a new server needs it entered again.
                 let kept = key_origin(deps, config::auth::D1_KEY, Some(&url));
                 let key = ui.input(
                     if usable(kept) {
@@ -1462,8 +1452,6 @@ fn judge_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLin
         line(JUDGE, "configured", changed.join(", "))
     })
 }
-
-// ----------------------------------------------------------------------------------------------------------- 5. Loki
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LokiAction {
@@ -1606,8 +1594,6 @@ fn loki_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLine
     Ok(line("Loki", "configured", describe_loki(&current)))
 }
 
-// -------------------------------------------------------------------------------------------------------- 6. summary
-
 fn summary_step<U: SetupUi>(ui: &mut U, deps: &SetupDeps, lines: &[SummaryLine], completed: bool) {
     ui.heading(&step_title(deps, 6, "Summary"));
     for l in lines {
@@ -1633,8 +1619,6 @@ fn summary_step<U: SetupUi>(ui: &mut U, deps: &SetupDeps, lines: &[SummaryLine],
         Tone::Info,
     );
 }
-
-// ------------------------------------------------------------------------------------------------- the live test
 
 const MODEL_TEST_TIMEOUT: Duration = Duration::from_secs(90);
 

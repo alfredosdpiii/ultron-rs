@@ -277,7 +277,6 @@ pub fn qol_keybindings() -> Vec<KeybindingDefinition> {
         KeybindingDefinition::new("app.retry", &["f5"], "Retry last failed assistant turn"),
         KeybindingDefinition::new("app.display.reset", &["alt+l"], "Reset terminal display"),
         KeybindingDefinition::new("app.agents.hub", &["alt+a"], "Open the agent hub"),
-        // Fullscreen transcript browsing shared by /copy, rewind and the agent transcript viewer.
         KeybindingDefinition::new("app.transcript.scrollUp", &["shift+up"], "Transcript: scroll up fast"),
         KeybindingDefinition::new(
             "app.transcript.scrollDown",
@@ -298,7 +297,6 @@ pub fn qol_keybindings() -> Vec<KeybindingDefinition> {
         KeybindingDefinition::new("app.rewind.prevUser", &["left"], "Rewind: previous user turn"),
         KeybindingDefinition::new("app.rewind.nextUser", &["right"], "Rewind: next user turn"),
         KeybindingDefinition::new("app.rewind.filter", &["f"], "Rewind: filter turns by words"),
-        // Working-tree checkpoints (Rust-only): restore the files to a turn's start.
         KeybindingDefinition::new(
             "app.rewind.restoreFiles",
             &["r"],
@@ -337,7 +335,6 @@ pub fn qol_keybindings() -> Vec<KeybindingDefinition> {
         ),
         KeybindingDefinition::new("app.modelHub.scopes", &["left"], "Model hub: focus the scopes sidebar"),
         KeybindingDefinition::new("app.modelHub.models", &["right"], "Model hub: focus the model list"),
-        // Prompt-history search (prompt-history-search.ts: the search key and Ctrl+R step older, Ctrl+S newer).
         KeybindingDefinition::new("app.historySearch.older", &["ctrl+r"], "History search: older match"),
         KeybindingDefinition::new("app.historySearch.newer", &["ctrl+s"], "History search: newer match"),
     ]

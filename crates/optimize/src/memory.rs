@@ -277,7 +277,6 @@ pub fn measure(backend: &dyn MemoryBackend, set: &MemorySet, config: &Value, sig
                 continue;
             }
         };
-        // Results in rank order, one per document (a backend may return several facts of one document).
         let mut seen = HashSet::new();
         let mut ranked: Vec<(Option<String>, String)> = Vec::new();
         for item in &items {

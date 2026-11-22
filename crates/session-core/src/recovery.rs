@@ -166,8 +166,6 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
     let mut tip = session.branch_tip(MAIN_LANE).flatten();
     let mut interrupted_calls = 0;
     let stored_at = state["at"].as_str().unwrap_or_default().to_string();
-    // Every state the writers produce is settled here by name; a value this build does not know (a newer writer,
-    // a damaged record) is not guessed at: the operation fails without resuming.
     let ending = match OpAt::of(&state) {
         Some(OpAt::AssistantEffectPending) => {
             let response = state["responseEntryId"].as_str().unwrap_or_default().to_string();
@@ -222,8 +220,6 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
             }
             Ending::Interrupted
         }
-        // A navigation without a summary that was admitted commits (`commitNavigation`: nothing external is
-        // repeated), unless it was cancelled.
         Some(OpAt::NavigationReadyToCommit) => {
             if !cancelled {
                 tip = state["targetId"].as_str().map(str::to_string);
@@ -240,22 +236,16 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
             }
             Ending::Completed
         }
-        // The last answer committed and the run may finish: it had nothing left to do. So had a run in the compaction
-        // of that checkpoint (its summary only shortens what the next run sends), as `may_finish` of the reopened
-        // run reads it.
         Some(OpAt::Checkpoint) if state["continuation"]["kind"] == "may_finish" => Ending::Completed,
         Some(at)
             if at.is_summary() && state["task"]["boundary"]["resumeAfter"]["continuation"]["kind"] == "may_finish" =>
         {
             Ending::Completed
         }
-        // The answer the run ends with committed (an error the run does not retry): the run failed with it.
         Some(OpAt::AssistantFailed) => Ending::Failed {
             code: "assistant_error",
             message: state["errorMessage"].as_str().unwrap_or_default().to_string(),
         },
-        // Between steps, nothing in flight: the next step (a generation, a retried one, a compaction's summary) had
-        // not reached the provider, so nothing is settled; the run is interrupted there.
         Some(
             OpAt::Starting
             | OpAt::Checkpoint
@@ -291,7 +281,7 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
         result.insert("error".into(), error);
     }
     result.insert("fromTipId".into(), meta["sourceTipId"].clone());
-    result.insert("tipId".into(), tip.clone().map_or(Value::Null, Value::from));
+    result.insert("tipId".into(), tip.map_or(Value::Null, Value::from));
     result.insert("startedAt".into(), meta["startedAt"].clone());
     result.insert("endedAt".into(), json!(jsrt::date::now_ms()));
     let queued = inbox(session);
@@ -299,7 +289,6 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
         .iter()
         .map(|q| json!({"entryId": q.entry_id, "kind": q.kind}))
         .collect();
-    // A compaction's preparation goes with its operation (`operationCleanupWrites`).
     let preparations: Vec<String> = session
         .state()
         .scan_values(session_journal::ns::OP_PREPARATION, &format!("{operation}:"))

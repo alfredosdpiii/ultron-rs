@@ -242,7 +242,6 @@ impl SecretDetector {
                 found.push((finding, order));
             }
         }
-        // Earlier first; at the same start the longer match, then the earlier rule.
         found.sort_by(|(a, ao), (b, bo)| {
             a.start
                 .cmp(&b.start)

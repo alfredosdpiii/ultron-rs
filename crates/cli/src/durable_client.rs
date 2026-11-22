@@ -63,12 +63,9 @@ pub fn durable_resume_argv(env: &Env, session_id: &str) -> Vec<String> {
 
 /// Run `args` (an ordinary `ultron` command line) as a client of the durable instance.
 pub fn run(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
-    // herdr resumes the pane as a durable client (`ultron-s` set its own override first, which stays).
     let caller = env.clone();
     crate::herdr_report::set_resume_override(move |session_id| Some(durable_resume_argv(&caller, session_id)));
     let instance = crate::instance(env, true).dir;
-    // The durable instance's own directory (not an `ULTRON_SERVER_DIR` elsewhere): its sessions start on
-    // `durable.model`, as its workers do (session-core `lane::is_durable`).
     let own = daemon::instance::ultron_home(&env.home).join("server");
     let sessions = (config::paths::normalize(&instance) == config::paths::normalize(&own)).then(|| "1".to_string());
     let dir = instance.display().to_string();
@@ -168,7 +165,6 @@ pub fn home_resume_argv(home: Option<&str>, session_id: &str) -> Vec<String> {
 
 fn home_inner(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
     let (mut new, mut list, mut make_home, mut session) = (false, false, false, None::<String>);
-    // `-c`, `-r`, `--fork <id>` or `--session-id <id>`: the session another way than the home one.
     let mut selector: Option<Vec<String>> = None;
     let mut rest = Vec::new();
     let mut i = 0;
@@ -227,11 +223,8 @@ fn home_inner(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Wri
         }
         return Ok(0);
     }
-    // Another selector: the client selects the session among the instance's (the TUI's `-r` picker lists them).
     if let Some(mut selector) = selector {
         if selector[0] == "-c" || selector[0] == "--continue" {
-            // The most recently active session (none: a new one), as the client's own `-c` picks it. The dream
-            // session (daemon::dream) is busy every night and is never the one the user left.
             let dream = daemon::dream::session_id(&instance.dir, &session_dir);
             sessions.retain(|m| Some(&m.id) != dream.as_ref());
             sessions.sort_by(|a, b| b.modified_at.total_cmp(&a.modified_at));
@@ -269,7 +262,6 @@ fn home_inner(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Wri
     };
     resume_through_home(&instance.dir);
     let mut client_args = vec!["--session-id".to_string(), id];
-    // The client runs in the home directory: what names a file of the caller's directory is resolved there first.
     client_args.extend(caller_args(&rest, &env.cwd, &env.home));
     let at_home = Env {
         cwd: env.home.clone(),

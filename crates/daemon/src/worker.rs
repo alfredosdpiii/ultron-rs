@@ -61,7 +61,6 @@ pub const RESTART_EXIT_CODE: i32 = 75;
 /// The others run in order on one operation thread; the reader itself only dispatches, so it always answers the
 /// server's heartbeat.
 const LONG_OPERATIONS: [(&str, &str); 10] = [
-    // `/mcp` may wait on the client's dialogs (its menu, a sign-in's redirect prompt).
     (protocol::names::LEGACY_EXTENSION_COMMANDS, "run"),
     (protocol::names::AGENT_CONTROLLER, "prompt"),
     (protocol::names::AGENT_CONTROLLER, "resume"),
@@ -70,7 +69,6 @@ const LONG_OPERATIONS: [(&str, &str); 10] = [
     (protocol::names::EXTENSION_UI, "poll"),
     (protocol::names::SESSION_CONTROL, "bash"),
     (protocol::names::SESSION_CONTROL, "readTree"),
-    // A session operation may be a compaction or a bash command; `abortStuck` waits for the run to stop.
     (protocol::names::SESSION_OPS, "op"),
     (protocol::names::SESSION_OPS, "abortStuck"),
 ];
@@ -126,7 +124,6 @@ pub fn parse_options(argument: &str) -> Result<WorkerOptions, String> {
             model: text("model"),
             api_key: std::env::var(API_KEY_ENV).ok(),
             thinking: text("thinking"),
-            // `--models` (a Rust addition to the worker options): else the settings' `enabledModels` apply.
             models: options["models"]
                 .as_array()
                 .map(|m| m.iter().filter_map(Value::as_str).map(str::to_string).collect()),
@@ -385,7 +382,7 @@ fn services(
         core.clone(),
     );
     let next_core = core.clone();
-    let prompt_lifecycle = lifecycle.clone();
+    let prompt_lifecycle = lifecycle;
     let (resume_core, resume_progress) = (core.clone(), watch.progress.clone());
     let agent = Service::new(protocol::names::AGENT_CONTROLLER)
         .method("cancelQueued", move |args| {
@@ -398,7 +395,6 @@ fn services(
         })
         .method("followUp", move |args| queue(&follow_core, QueueKind::FollowUp, &args))
         .method("navigate", move |args| {
-            // `{targetId, summarize, label, customInstructions}`; a long operation (a summary is a model call).
             let request = request(&args);
             call_core(
                 &navigate_core,
@@ -415,7 +411,6 @@ fn services(
             let typed = request(&args)["message"]
                 .as_str()
                 .ok_or_else(|| ServiceError::internal("Invalid prompt request"))?;
-            // `/goal`, `/persona`, `/keepgoing`: the session's command, answered here, never a turn.
             if let Some((name, op)) = crate::session_commands::command(typed) {
                 return Ok(Some(crate::session_commands::answer(
                     name,
@@ -437,8 +432,6 @@ fn services(
         })
         .method("requestAbort", move |_| call_core(&abort_core, Op::Abort))
         .method("resume", move |_| {
-            // `lane.resume`: continue what the session left (the interrupted run, else the first queued message)
-            // and answer when that run ends.
             let recovered = call_core(&resume_core, Op::Recover)?.unwrap_or_default();
             let response = crate::session_control::resume_response(&recovered, resume_progress.run());
             if let Some(run) = response["operationId"].as_str() {
@@ -448,9 +441,6 @@ fn services(
         })
         .method("steer", move |args| queue(&steer_core, QueueKind::Steer, &args));
     let plugins = Service::new(protocol::names::SESSION_PLUGINS).method("reload", |_| Ok(None));
-    // `/mcp`, the built-in MCP gateway's command (TypeScript's inline MCP extension, so on the legacy extension
-    // command service): it runs here, its dialogs and notices go to the client through the dialog bridge. Pi
-    // extensions are not supported by ultron-rs, so it is the only command of the service.
     let (list_mcp, run_mcp, run_ui) = (extensions.mcp.clone(), extensions.mcp.clone(), extensions.ui.clone());
     let legacy = Service::new(protocol::names::LEGACY_EXTENSION_COMMANDS)
         .method("list", move |_| {
@@ -471,8 +461,6 @@ fn services(
                     gateway.run_command(&args, &crate::extension_ui::BridgeUi(run_ui.clone()));
                     Ok(Some(json!({"notifications": []})))
                 }
-                // A command's failure is a plain error of the service, as TypeScript's `runCommand` throws it (it
-                // crosses the wire as an internal error).
                 _ => Err(ServiceError::internal(format!("Unknown extension command: /{name}"))),
             }
         });
@@ -493,7 +481,6 @@ fn services(
         .method("bash", move |args| {
             let command = args.first().and_then(Value::as_str).unwrap_or_default().to_string();
             let exclude = args.get(1) == Some(&Value::Bool(true));
-            // A client's tag for the command's streamed output (RPC: the command's id).
             let id = args.get(2).and_then(Value::as_str).map(str::to_string);
             call_core(&bash_core, Op::Bash { command, exclude, id })
         })
@@ -507,10 +494,7 @@ fn services(
             None => Ok(None),
         })
         .method("inspect", move |args| match args.first().and_then(Value::as_str) {
-            // Root-owned work whose completion may still re-invoke the root: the running run.
             Some("async.pending") => call_core(&inspect_core, Op::AsyncPending),
-            // Every other request through the session's inspector (session-core `inspect`), which refuses anything
-            // that is not a read-only inspection.
             other => call_core(
                 &inspect_core,
                 Op::Inspect {
@@ -557,7 +541,7 @@ fn services(
         (core.clone(), core.clone(), core.clone(), core.clone(), core);
     let (select_state, thinking_state, refresh_state) =
         (models_state.clone(), models_state.clone(), models_state.clone());
-    let (refresh_core, refresh_env, select_env) = (models_core, extensions.env.clone(), extensions.env.clone());
+    let (refresh_core, refresh_env, select_env) = (models_core, extensions.env.clone(), extensions.env);
     let models = Service::new(protocol::names::MODELS)
         .method("cycleThinking", move |_| call_core(&cycle_core, Op::CycleThinking))
         .method("getThinkingLevels", move |_| {
@@ -599,11 +583,9 @@ fn services(
         })
         .state("state", models_state);
     let transcript = Service::new(protocol::names::TRANSCRIPT).state("state", lane.transcript.clone());
-    // Rust-only: one session operation (session-core `Op` as JSON), the RPC and TUI clients' whole command set.
     let ops = Service::new(protocol::names::SESSION_OPS)
         .method("op", move |args| {
             let op = Op::from_json(request(&args)).map_err(ServiceError::internal)?;
-            // A prompt that is one of the session's commands runs that command (crate::session_commands).
             if let Op::Prompt { message, .. } | Op::PromptAndWait { message, .. } = &op
                 && let Some((name, command)) = crate::session_commands::command(message)
             {
@@ -612,8 +594,6 @@ fn services(
                     call_core(&op_core, command)?,
                 )));
             }
-            // `Models.select` and Ctrl+P (client-tui.ts `#cycleModel` selects through `Models.select`): the session's
-            // new model becomes the saved default, whichever client switched it.
             let (selects, cycles) = (matches!(op, Op::SetModel { .. }), matches!(op, Op::CycleModel));
             let answer = call_core(&op_core, op)?;
             let chosen = match &answer {
@@ -629,8 +609,6 @@ fn services(
         .method("checkHealth", move |_| {
             Ok(Some(health_progress.health(jsrt::date::now_ms(), watch.stuck_after)))
         })
-        // Abort the run in progress; one that does not stop within the grace restarts the worker, whose recovery
-        // ends it as aborted (its cancel request is journaled first).
         .method("abortStuck", move |_| {
             let Some(run) = watch.progress.run() else {
                 return Ok(Some(json!({"aborted": false, "reason": "no run in progress"})));
@@ -644,7 +622,6 @@ fn services(
             }
             if let Some(shared) = watch.shared.get().and_then(Weak::upgrade) {
                 std::thread::spawn(move || {
-                    // Let the answer leave first.
                     std::thread::sleep(Duration::from_millis(100));
                     shared.close_and_exit(RESTART_EXIT_CODE)
                 });
@@ -667,13 +644,11 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
         return Err("Session worker requires one options argument".into());
     };
     let options = parse_options(argument)?;
-    // `settingsDefaults` (the durable instance's persona): under the user's settings files, for this whole worker.
     if let Ok(Value::Object(raw)) = serde_json::from_str::<Value>(argument)
         && let Some(Value::Object(defaults)) = raw.get("settingsDefaults")
     {
         config::settings::set_process_defaults(defaults.clone());
     }
-    // `durable`: a worker of the durable instance (`durable.model`, see `save_default_model`).
     if let Ok(Value::Object(raw)) = serde_json::from_str::<Value>(argument)
         && raw.get("durable") == Some(&Value::Bool(true))
     {
@@ -720,8 +695,6 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
     let metadata = options.metadata.clone();
     let path = PathBuf::from(metadata["path"].as_str().unwrap_or_default());
     let session_id = metadata["id"].as_str().unwrap_or_default().to_string();
-    // One writer per session file, across every server and instance: a live owner refuses this worker, named once
-    // its record appears (bounded by a hang guard a loaded machine never reaches).
     let owner_lock = crate::owner::OwnerLock::acquire(&path, Duration::from_secs(30)).map_err(|error| match error {
         crate::owner::OwnerError::InUse { pid } => {
             fail_coded(Some("service_invalid_value"), session_in_use(&session_id, pid))
@@ -736,13 +709,10 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
     let session_metadata = session_journal::catalog::read_metadata(&path)
         .ok_or_else(|| fail(format!("Not a session file: {}", path.display())))?;
     let session_root = PathBuf::from(options.session_dir.clone());
-    // The actor reports no event while it opens; the transcript state starts at its snapshot.
     let lane_slot: Arc<std::sync::OnceLock<Arc<Mutex<Lane>>>> = Arc::new(std::sync::OnceLock::new());
     let sink_lane = lane_slot.clone();
-    // The actor's input, for the lane to ask it for a fresh snapshot after a navigation.
     let core_slot: Arc<OnceLock<Sender<Input>>> = Arc::new(OnceLock::new());
     let sink_core = core_slot.clone();
-    // The client this worker is started for serves the dialog bridge (Pi's `extensionMode` tui or rpc).
     let ui =
         crate::extension_ui::ExtensionUiBridge::new(matches!(options.mode.as_str(), "interactive" | "tui" | "rpc"));
     let gateway_slot: Arc<OnceLock<Arc<mcp::gateway::Gateway>>> = Arc::new(OnceLock::new());
@@ -763,7 +733,6 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
                 mcp::gateway::CommandUi::notify(&crate::extension_ui::BridgeUi(notice_ui.clone()), message, level);
             })),
             session: options.session_flags.clone(),
-            // The session's active schedules go to the server whose timer fires them (crate::prompt_schedules).
             on_schedules: Some(Arc::new(move |schedules: Vec<Value>| {
                 if let Some(shared) = schedules_shared.get().and_then(Weak::upgrade) {
                     let event = json!({"type": "worker_schedules", "token": shared.token,
@@ -785,8 +754,6 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
         open,
         Box::new(move |event| {
             if event["type"] == "activity" {
-                // Detached work (jobs, subagents, pending events) holds retirement as a run does; it is not a run's
-                // progress (the stuck-run watchdog never sees it).
                 if let Some(shared) = sink_shared.get().and_then(Weak::upgrade) {
                     shared.activity(event["active"] == true);
                 }
@@ -803,8 +770,6 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
             } else if let Some(lane) = sink_lane.get() {
                 let ended = event["runId"].clone();
                 let reduction = lane.lock().unwrap_or_else(|e| e.into_inner()).publish(event);
-                // A navigation ended: its events cannot be folded, so the lane takes the session's snapshot (asked
-                // after the events already queued, so it includes them).
                 if reduction.is_some()
                     && let Some(core) = sink_core.get()
                 {
@@ -854,7 +819,7 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
         lifecycle_slot.clone(),
         watch,
         Extensions {
-            ui: ui.clone(),
+            ui,
             mcp: gateway_slot,
             control: control_context,
             env: run_env,
@@ -869,9 +834,9 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
     let shared = Arc::new(Shared {
         token: token.clone(),
         session_key: session_key.clone(),
-        session_id: session_id.clone(),
+        session_id,
         metadata,
-        plugin_manifest_paths: options.plugin_manifest_paths.clone(),
+        plugin_manifest_paths: options.plugin_manifest_paths,
         writer: writer.clone(),
         lifecycle: Mutex::new(None),
         endpoints: Mutex::new(HashMap::new()),
@@ -894,7 +859,6 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
         lifecycle_delay(INITIAL_DEMAND_GRACE_ENV, DEFAULT_INITIAL_DEMAND_GRACE_MS)?,
         lifecycle_delay(ORPHAN_DEMAND_GRACE_ENV, DEFAULT_ORPHAN_DEMAND_GRACE_MS)?,
         Box::new(move || {
-            // Announce the deliberate retirement before exiting; the coordinator delivers it before the disconnect.
             if let Some(shared) = retiring.upgrade() {
                 std::thread::spawn(move || {
                     retire_gate();
@@ -913,7 +877,6 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
     if shared.send(shared.worker_ready(), None).is_err() {
         shared.close_and_exit(1);
     }
-    // A signal stops the session (its run stays open in the journal; the next worker recovers it) and exits.
     let signalled = Arc::downgrade(&shared);
     signals::set_handler(Arc::new(move |_| {
         if let Some(shared) = signalled.upgrade() {
@@ -921,7 +884,6 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
         }
         std::process::exit(0);
     }));
-    // Continue what a dead worker left (an interrupted run, queued messages), without waiting for a client.
     let recover = shared.core.clone();
     std::thread::spawn(move || {
         let _ = session_core::core::call(&recover, Op::Recover);
@@ -930,7 +892,6 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
     loop {
         let message = match reader.read_value() {
             Ok(Some(message)) => message,
-            // The server (or its coordinator) is gone; a new one starts a successor for the session.
             _ => shared.hand_over_and_exit(0),
         };
         handle_input(&shared, &message, discovery_grace);
@@ -944,7 +905,6 @@ fn handle_input(shared: &Arc<Shared>, message: &Value, discovery_grace: Duration
         Some("server_disconnected") => {
             let server = message["serverConnectionId"].as_str().unwrap_or_default().to_string();
             shared.remove_subscriptions(|scope| scope["serverConnectionId"] == json!(server));
-            // A crashed server's calls stop waiting; lane operations they started are not aborted.
             cancel_requests(shared, |_, scope| scope["serverConnectionId"] == json!(server));
             lifecycle.server_disconnected(&server);
         }
@@ -955,12 +915,10 @@ fn handle_input(shared: &Arc<Shared>, message: &Value, discovery_grace: Duration
                 announce(shared, &lifecycle, from, discovery_grace);
                 return;
             }
-            // Another live server must not steer (or stop) a worker it does not own.
             if lifecycle.owner().as_deref() != Some(from) {
                 return;
             }
             match command["type"].as_str() {
-                // The server's heartbeat: answered by the reader, which never waits on the session.
                 Some("ping") => {
                     let _ = shared.send(shared.status(command["nonce"].clone()), None);
                 }
@@ -995,7 +953,6 @@ fn announce(shared: &Arc<Shared>, lifecycle: &Arc<Lifecycle>, from: &str, grace:
     if lifecycle.owner().is_none() {
         lifecycle.server_connected(from);
     }
-    // A detached worker a new server just discovered must not retire before that server attaches.
     let hold = lifecycle.hold_retirement();
     std::thread::spawn(move || {
         std::thread::sleep(grace);

@@ -51,7 +51,7 @@ fn replay(base: &Value, session: &Value) -> Vec<Value> {
     assert!(status.success());
     let cwd = match session["cwd"].as_str() {
         Some(sub) => repo.join(sub),
-        None => repo.clone(),
+        None => repo,
     };
     let mut hooks = FileHooks::new(&cwd);
     let mode = mode(session["mode"].as_str().unwrap());

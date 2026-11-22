@@ -201,7 +201,7 @@ fn rules_a_thread_is_addressed_when_resolved_not_when_only_outdated() {
     context.hub.add_pull(pull);
     let token = context.token.clone();
     let github = GitHub::new(
-        context.hub.clone(),
+        context.hub,
         Account::new(BOT, "github.com"),
         Arc::new(move || {
             let mut env = review::runner::Env::new();

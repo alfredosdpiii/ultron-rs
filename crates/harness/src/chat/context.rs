@@ -94,7 +94,6 @@ pub(crate) fn read_context(
 
 /// Derive the view from the entries scanned from the head marker's head, or transcript start, through the tail.
 pub(crate) fn derive(head: Option<EntryRecord>, range: Vec<EntryRecord>) -> Result<ContextView> {
-    // Edits of every entry in the range count, including older head markers that the active selection drops.
     let mut edits: HashMap<u64, Value> = HashMap::new();
     for entry in &range {
         for edit in entry.edits.iter().flatten() {

@@ -604,7 +604,6 @@ fn ignored_entries(top: &Path) -> Result<Vec<String>> {
 }
 
 fn sorted_entries(dir: &Path) -> Vec<String> {
-    // Node's readdir order is the directory's order; sorting keeps runs comparable.
     let mut names: Vec<String> = std::fs::read_dir(dir)
         .map(|entries| {
             entries
@@ -816,7 +815,6 @@ fn create_in(info: &RepoInfo, options: &CreateWorktreeOptions<'_>) -> Result<Wor
         task_id: None,
         commit: None,
     };
-    // Recorded first: a crash in the middle leaves something the next session can prune.
     save_record(&record)?;
     let made = (|| -> Result<()> {
         git_ok(
@@ -855,8 +853,6 @@ pub fn run_setup_command(record: &WorktreeRecord, signal: Option<&Signal>) -> Re
     let Some(command) = record.command.as_deref() else {
         return Ok(());
     };
-    // One pipe for stdout and stderr: the output keeps the order the command wrote it in. Two pipes drained by two
-    // threads (or two event-loop callbacks) can reorder `echo out; echo err >&2` into "err\nout".
     let (reader, writer) = std::io::pipe()?;
     let mut sh = Command::new("/bin/sh");
     sh.args(["-c", command])
@@ -897,8 +893,6 @@ pub fn run_setup_command(record: &WorktreeRecord, signal: Option<&Signal>) -> Re
         Some(signal) => signal.run_child(&mut sh, None, bound),
         None => signals::child::run(&mut sh, None, bound),
     };
-    // The Command holds our copies of the write end: dropped, the reader sees EOF once the command and anything it
-    // left running close the pipe.
     drop(sh);
     let (code, timed_out) = match ran {
         Err(error) => {
@@ -1030,7 +1024,6 @@ pub fn commit_child_worktree(
             },
         );
         if added.is_err() {
-            // One bad path (ignored, vanished) fails the batch: add the rest one by one.
             for path in &wanted {
                 git_with(root, &quiet(&["add", "-A", "--", path]), opts(&literal))?;
             }
@@ -1243,7 +1236,6 @@ fn write_changes(top: &Path, tree: &str, changes: &[TreeChange]) -> Result<()> {
         .collect();
     if !written.is_empty() {
         git_ok_with(top, &["read-tree", tree], opts(&env))?;
-        // A path that is a directory now but a file in the result is cleared first.
         for change in &written {
             let target = top.join(&change.path);
             if std::fs::symlink_metadata(&target).is_ok_and(|m| m.is_dir()) {
@@ -1269,7 +1261,6 @@ fn write_changes(top: &Path, tree: &str, changes: &[TreeChange]) -> Result<()> {
     for change in changes.iter().filter(|c| c.dst_mode == ZERO_MODE) {
         let target = top.join(&change.path);
         let _ = std::fs::remove_file(&target);
-        // Directories the deletion emptied go too, as a checkout would remove them.
         let mut dir = target.parent().map(Path::to_path_buf);
         while let Some(current) = dir {
             if current == top || !current.starts_with(top) || std::fs::remove_dir(&current).is_err() {
@@ -1301,7 +1292,7 @@ pub fn conflict_hunks(text: &str) -> Vec<ConflictHunk> {
         }
         let start = index;
         let (mut ours, mut theirs) = (Vec::new(), Vec::new());
-        let mut side = 0; // 0 ours, 1 base, 2 theirs
+        let mut side = 0;
         index += 1;
         while index < lines.len() {
             let line = lines[index];
@@ -1492,7 +1483,6 @@ pub fn merge_child_worktree(target_cwd: &Path, source: &MergeSource, markers: bo
             return Ok(drift_conflict(moved));
         }
         write_changes(top, &parsed.tree, &changes)?;
-        // Readable labels instead of commit ids on the markers.
         for path in &parsed.paths {
             let file = top.join(path);
             let Ok(content) = std::fs::read_to_string(&file) else {

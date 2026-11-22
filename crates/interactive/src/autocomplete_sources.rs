@@ -426,7 +426,6 @@ impl AutocompleteProvider for ModelMentionProvider {
         if query.is_empty() {
             return None;
         }
-        // Substring hits (selector, then name) rank ahead of fuzzy subsequence hits.
         let q = query.to_lowercase();
         let text = |m: &MentionModel| format!("{} {}", m.selector, m.name);
         let tier = |m: &MentionModel| {

@@ -90,7 +90,6 @@ pub fn redact_url(value: &str) -> String {
         let mut pairs: Vec<(String, String)> = form_urlencoded::parse(query.as_bytes()).into_owned().collect();
         let mut modified = false;
         let mut i = 0;
-        // URLSearchParams.set while iterating keys(): the first pair with the name takes the value, later ones go.
         while i < pairs.len() {
             let key = pairs[i].0.clone();
             if is_sensitive_key(&key) {

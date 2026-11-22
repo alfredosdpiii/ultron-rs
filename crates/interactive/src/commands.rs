@@ -275,8 +275,6 @@ impl Slash {
                 "Show progress receipts and decisions for a task",
                 Tier::Client,
             ),
-            // TypeScript's `/extension <name> [args]`: kept in the list (as the client TUI lists it); Pi extensions are not
-            // supported by ultron-rs, so it says so.
             Slash::Extension => (
                 "extension",
                 "<name> [args]",
@@ -327,7 +325,6 @@ impl Slash {
                 "Scheduled prompts of this session (schedule.every / schedule.at): name, next run, runs",
                 Tier::Overlay,
             ),
-            // Claude Code's `/clear`: `/new` by another name.
             Slash::Clear => (
                 "clear",
                 "",
@@ -340,7 +337,6 @@ impl Slash {
                 "Start a new session that searches this one (or the session named) instead of a summary of it",
                 Tier::Overlay,
             ),
-            // Pi's own (core/slash-commands.ts), which the client TUI does not offer.
             Slash::Bug => ("bug", "<description>", "Report a bug to the Pi developers", Tier::Pi),
             Slash::ArminSaysHi => ("arminsayshi", "", "", Tier::Hidden),
             Slash::DementedElves => ("dementedelves", "", "", Tier::Hidden),
@@ -569,7 +565,6 @@ pub fn session_info(t: &Theme, s: &SessionStats) -> String {
     info += &format!("{} {}\n", dim("User:"), s.user_messages);
     info += &format!("{} {}\n", dim("Assistant:"), s.assistant_messages);
     info += &format!("{} {} calls, {} results\n", dim("Tools:"), s.tool_calls, s.tool_results);
-    // Rust-only (the persona's auto-nudge), so only when there was one.
     if s.auto_continues > 0 {
         info += &format!("{} {}\n", dim("Auto-continues:"), s.auto_continues);
     }

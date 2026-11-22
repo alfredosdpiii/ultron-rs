@@ -173,10 +173,7 @@ impl Backend for Chat {
         }
         if message.stop_reason == StopReason::Error {
             return Err(Failure::Failed(
-                message
-                    .error_message
-                    .clone()
-                    .unwrap_or_else(|| "the model failed".into()),
+                message.error_message.unwrap_or_else(|| "the model failed".into()),
             ));
         }
         let answers = arguments(&message)

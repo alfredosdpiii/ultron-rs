@@ -143,7 +143,6 @@ fn run_field(value: Option<&Value>, name: &str, gate: &Value) -> Result<Value, S
     let supplied = plain_object(run.get("results"), &format!("{name}.results"))?;
     let checks = gate_checks(gate);
     for (check, outcome) in supplied {
-        // The gate definition is the protected checker input: a run cannot introduce its own checks.
         if !checks.iter().any(|(known, _)| known == check) {
             return Err(format!(
                 "{name}.results names a check the gate does not define: {check}"

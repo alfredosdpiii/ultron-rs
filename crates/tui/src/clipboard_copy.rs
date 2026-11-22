@@ -113,14 +113,11 @@ pub fn copy_to_clipboard(text: &str, env: &CopyEnv, io: &mut dyn CopyIo) -> Resu
     }
     let mut emitted: Option<String> = None;
     if !copied && p == "linux" && crate::clipboard_image::is_wsl(env.var, env.proc_version.as_deref()) {
-        // Windows Terminal supports OSC 52; prefer it over the slower PowerShell round trip.
         if env.set("WT_SESSION") {
             emitted = osc52(text);
         }
         copied = emitted.is_some() || copy_via_windows_clipboard(text, io);
     }
-    // OSC 52 cannot be verified, so a desktop session with a display reports the failure instead. Without a display
-    // the terminal is the only route; remote sessions always emit it to reach the client's clipboard.
     let headless = p == "linux" && !env.set("DISPLAY") && !env.set("WAYLAND_DISPLAY") && !env.set("TERMUX_VERSION");
     let mut oversized = false;
     if emitted.is_none() && (is_remote_session(env) || (!copied && headless)) {

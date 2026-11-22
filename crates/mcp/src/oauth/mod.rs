@@ -107,8 +107,6 @@ pub fn parse_www_authenticate(header: Option<&str>) -> Challenge {
     }
 }
 
-// ---- metadata and response parsing (`oauth/types.ts`) ----
-
 /// `null` and `""` count as absent: servers send them for fields they have no value for.
 fn absent(value: Option<&Value>) -> bool {
     matches!(value, None | Some(Value::Null)) || value.and_then(Value::as_str) == Some("")

@@ -17,7 +17,7 @@
 //! it) and is closed by the time anything executes the file. Our forks can only inherit the pipe to `sh`, which
 //! delays its end-of-input by at most one fork-to-exec window and never touches the file.
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use std::io::Write;
 use std::path::Path;

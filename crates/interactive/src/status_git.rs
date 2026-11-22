@@ -165,7 +165,7 @@ impl GitWatcher {
         let thread = ServiceThread::spawn("status-git", move |mut jobs: Jobs<()>| {
             let mut probe = GitProbe::new(cwd, lookup);
             while jobs.next().is_some() {
-                while jobs.try_next().is_some() {} // coalesce bursts
+                while jobs.try_next().is_some() {}
                 let next = probe.probe();
                 let changed = {
                     let mut cur = shared.lock().unwrap_or_else(|e| e.into_inner());

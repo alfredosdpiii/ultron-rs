@@ -498,7 +498,6 @@ impl SituationalSkills {
         if given.contains(&(lane.to_string(), skill.to_string())) {
             return None;
         }
-        // A skill that is not loaded (renamed, `--no-skills`) is given to nobody, and asked for again next time.
         let (file, text) = (self.resolve)(skill)?;
         given.insert((lane.to_string(), skill.to_string()));
         Some(format!("{head}\n{}", excerpt(text.trim(), &file)))
@@ -554,7 +553,6 @@ impl CellObserver for SituationalSkills {
         let paths: Vec<String> = changes
             .checked
             .iter()
-            // A file in another repository (a sibling worktree) matches by its path in that repository.
             .filter_map(|path| {
                 inside(cwd, path).or_else(|| {
                     let dir = path.ancestors().skip(1).find(|dir| dir.is_dir())?;
@@ -597,7 +595,6 @@ impl CellObserver for SituationalSkills {
             if let Some(dir) = pr_directory(&command, &self.cwd) {
                 return receipt_refusal(&dir).or_else(|| description_refusal(typed, &dir));
             }
-            // A push stays advisory: said once per tree, then the same command goes through.
             let dir = push_directory(typed, &command, &self.cwd)?;
             let (described, tree) = stale_description(&dir)?;
             let mut given = self.given.lock().unwrap_or_else(PoisonError::into_inner);

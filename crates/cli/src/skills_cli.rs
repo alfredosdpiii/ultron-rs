@@ -90,7 +90,6 @@ pub fn run_with(
     let Some(terminal) = terminal else {
         return refuse("run it at a terminal (stdin is not one)", err);
     };
-    // Show the proposal as it is now, ask, and act on exactly what was shown.
     let (record, content) = match proposals::show(&dir, id) {
         Ok(found) => found,
         Err(error) => return Some(done(Err(error), out, err)),

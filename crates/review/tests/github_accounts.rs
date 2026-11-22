@@ -126,10 +126,7 @@ fn review_github_token_reaches_gh_only_through_the_environment() {
     tokens.env(&Account::new(BOT, "github.com")).expect("env");
     let reads = |hub: &FakeHub| hub.calls().iter().filter(|c| c.argv[2] == "token").count();
     assert_eq!(reads(&hub), 2);
-    assert_eq!(
-        *registered.lock().expect("registered"),
-        vec![context.token.clone(), corp]
-    );
+    assert_eq!(*registered.lock().expect("registered"), vec![context.token, corp]);
     let missing = tokens.env(&Account::new("nobody", "github.com")).expect_err("no token");
     assert!(missing.message().contains("no token"), "{missing}");
     // Forgotten: read again.
@@ -167,7 +164,7 @@ fn review_github_retry_after_and_exhausted_limit_become_rate_limits() {
     let hub = context.hub.clone();
     hub.add_pull(FakePull::new("o", "r", 1));
     let tokens = context.deps.tokens.clone();
-    let me = context.account.clone();
+    let me = context.account;
     let clock = hub.clone();
     let github = GitHub::new(
         hub.clone(),

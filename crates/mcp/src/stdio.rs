@@ -142,7 +142,6 @@ impl Transport for StdioTransport {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        // Own process group, so closing the transport can terminate the server's children too.
         command.process_group(0);
         if let Some(cwd) = &self.options.cwd {
             command.current_dir(cwd);
@@ -158,8 +157,6 @@ impl Transport for StdioTransport {
         state.stdin = child.stdin.take();
         drop(state);
 
-        // The stdout reader reports the close only after stderr ended (or a grace period passed, when a child of
-        // the server keeps it open), so the stderr tail of a server that died is complete.
         let (stderr_done, stderr_ended) = std::sync::mpsc::channel::<()>();
         if let Some(mut stderr) = child.stderr.take() {
             let buffer = self.stderr.clone();
@@ -227,7 +224,6 @@ impl Transport for StdioTransport {
             .write_all(payload.as_bytes())
             .and_then(|()| stdin.flush())
             .map_err(|e| {
-                // The server exited before reading: its close is reported as the connection closing, as Node does.
                 if e.kind() == std::io::ErrorKind::BrokenPipe {
                     Error::closed()
                 } else {
@@ -245,7 +241,6 @@ impl Transport for StdioTransport {
             state.closed = true;
             (state.pid, state.stdin.take())
         };
-        // Never started: there is nothing to stop and no reader to report the close.
         let Some(pid) = pid else { return };
         drop(stdin);
         let close_timeout = self.options.close_timeout.unwrap_or(DEFAULT_CLOSE_TIMEOUT);
@@ -256,7 +251,6 @@ impl Transport for StdioTransport {
                 while !self.wait_exit(Duration::from_secs(60)) {}
             }
         }
-        // Children of the server that ignored stdin closing would otherwise outlive it.
         signal_group(pid, Signal::TERM);
     }
 }

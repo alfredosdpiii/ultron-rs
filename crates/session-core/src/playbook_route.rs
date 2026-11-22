@@ -25,7 +25,6 @@ pub const MAX_PLAYBOOK_CHARS: usize = 5000;
 
 /// (playbook file stem, title, request pattern), in priority order.
 // ponytail: keyword routes, not a model call; a wrong pick costs one read of the right playbook. Ask a small
-// model when these still misroute: on 217 real messages they route 92, and the rest are mostly short follow-ups.
 pub const ROUTES: &[(&str, &str, &str)] = &[
     (
         "babysit",
@@ -210,8 +209,6 @@ pub fn playbook_message(text: &str, rigor_dir: &Path, shown: &[String], timestam
     let body = std::fs::read_to_string(&path).ok()?;
     let body = body.trim();
     let dir = rigor_dir.display();
-    // Work that changes code starts from what the finished work must do; the pull request's description is built
-    // from it (spec_api.py). Reading changes nothing.
     let spec = if NO_SPEC.contains(&file) {
         ""
     } else {

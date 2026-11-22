@@ -212,7 +212,7 @@ fn serve(mut stream: TcpStream, shared: &Arc<Shared>) {
     let index = {
         let mut state = shared.lock();
         state.upgrades.push(Upgrade {
-            path: path.clone(),
+            path,
             protocol: protocol.clone(),
             authorization: header("authorization"),
             closed: None,
@@ -263,7 +263,7 @@ fn serve(mut stream: TcpStream, shared: &Arc<Shared>) {
             let mut state = shared.lock();
             state.next_connection += 1;
             let id = format!("00000000-0000-4000-8000-{:012x}", state.next_connection);
-            state.clients.insert(id.clone(), (server_id.clone(), writer.clone()));
+            state.clients.insert(id.clone(), (server_id.clone(), writer));
             id
         };
         shared.changed.notify_all();

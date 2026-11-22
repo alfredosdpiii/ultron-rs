@@ -330,7 +330,7 @@ pub fn restore(cwd: &Path, target: &Checkpoint, limits: &Limits, jj: Option<&Pat
         return jj_restore(Path::new(&target.root), jj, target, limits);
     }
     let info = repo_info(cwd).map_err(|e| e.message)?;
-    let top = info.top.clone();
+    let top = info.top;
     if top.display().to_string() != target.root {
         return Err(format!(
             "The checkpoint belongs to {}, not to this working tree ({})",
@@ -377,7 +377,6 @@ pub fn restore(cwd: &Path, target: &Checkpoint, limits: &Limits, jj: Option<&Pat
     )
     .map_err(|e| e.message)?;
     let changes = parse_raw(&raw);
-    // A file the safety checkpoint does not hold (ignored, or left out for its size) is never overwritten.
     let unsaved: Vec<&str> = changes
         .iter()
         .filter(|c| c.status == 'A' && c.dst_mode != GITLINK)
@@ -411,7 +410,6 @@ pub fn restore(cwd: &Path, target: &Checkpoint, limits: &Limits, jj: Option<&Pat
         git_ok_with(&top, &["read-tree", &target_tree], opts(&env)).map_err(|e| interrupted(&safety, &e.message))?;
         for path in &written {
             let full = top.join(path);
-            // A directory where the checkpoint has a file: emptied by the deletions above, or the restore stops.
             if std::fs::symlink_metadata(&full).is_ok_and(|m| m.is_dir()) {
                 std::fs::remove_dir(&full).map_err(|e| interrupted(&safety, &format!("{path}: {e}")))?;
             }
@@ -480,7 +478,6 @@ fn jj_commit(jj: &Path, root: &Path, snapshot: bool, limits: &Limits) -> Result<
         jj,
         root,
         &[
-            // Keep the snapshot operation uncommitted: no change to @, bookmarks or the checkout.
             if snapshot {
                 "--no-integrate-operation"
             } else {

@@ -207,7 +207,7 @@ fn harness_tasks_commit_results_with_entries_keep_memos_until_terminal_and_retir
                 })
             })
             .build();
-        let (opened, root, _) = open_root(backend, vec![writer.clone(), child.clone()], OpenOptions::default());
+        let (opened, root, _) = open_root(backend, vec![writer.clone(), child], OpenOptions::default());
         let harness = &opened.harness;
         let conversation = harness.create_conversation(ConversationOwnership::Ownerless).unwrap();
         let id = start(&conversation, &writer, false);
@@ -538,7 +538,7 @@ fn harness_runtime_orders_commits_against_the_step_one_queued_before_lands_one_a
             *a.lock().unwrap() = Some(spawn(move || late.commit(&bg(), |_, _| Ok(completed(json!("after"))))));
             Ok(())
         });
-        let opened = open_tasks(storage.clone(), vec![detached.clone()], OpenOptions::default()).unwrap();
+        let opened = open_tasks(storage, vec![detached.clone()], OpenOptions::default()).unwrap();
         *harness_ref.lock().unwrap() = Some(opened.harness.clone());
         let root = opened.harness.root().unwrap();
         let id = start(&root, &detached, false);

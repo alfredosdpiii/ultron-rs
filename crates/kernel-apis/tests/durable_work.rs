@@ -268,7 +268,7 @@ fn kernel_apis_goal_recovery_reconciles_the_goal_with_the_task_journal() {
         )],
         &[],
     );
-    let goal = recover(saved_goal(json!({})), jobs.clone());
+    let goal = recover(saved_goal(json!({})), jobs);
     assert_eq!(
         pick(&goal, FIELDS),
         json!({"status": "paused", "reason": "the goal job ended without progress; /goal resume continues", "job": null,
@@ -279,7 +279,7 @@ fn kernel_apis_goal_recovery_reconciles_the_goal_with_the_task_journal() {
         &[("task-1", JobState::Ended(json!({"status": "failed", "error": "boom"})))],
         &[],
     );
-    let goal = recover(saved_goal(json!({"run_progress": true})), jobs.clone());
+    let goal = recover(saved_goal(json!({"run_progress": true})), jobs);
     assert_eq!(
         pick(&goal, &["status", "job", "runs", "last_answer"]),
         json!({"status": "active", "job": "job-goal-0000abcd:2", "runs": 2, "last_answer": "boom"})
@@ -295,7 +295,7 @@ fn kernel_apis_goal_recovery_reconciles_the_goal_with_the_task_journal() {
     assert_eq!(jobs.log(), Vec::<Value>::new());
     // ... and when the admission never happened, the run starts now.
     let jobs = Jobs::with_journal(&[], &[]);
-    let goal = recover(saved_goal(json!({"job": null, "runs": 2})), jobs.clone());
+    let goal = recover(saved_goal(json!({"job": null, "runs": 2})), jobs);
     assert_eq!(
         pick(&goal, &["status", "job", "runs"]),
         json!({"status": "active", "job": "job-goal-0000abcd:3", "runs": 3})

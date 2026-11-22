@@ -169,7 +169,7 @@ impl RpcClient {
         self.request_id += 1;
         let id = format!("req_{}", self.request_id);
         let mut command = command;
-        command["id"] = id.clone().into();
+        command["id"] = id.into();
         self.request(command)
     }
 

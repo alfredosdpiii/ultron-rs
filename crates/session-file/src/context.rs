@@ -199,7 +199,6 @@ fn project_entry(entry: &Value, edit: Option<&Value>) -> Vec<Value> {
     let Some(edit) = edit else { return messages };
     let replacement = match edit.get("replacement") {
         Some(Value::Null) => return Vec::new(),
-        // Upstream throws on an edit without `replacement`; leave the target unedited.
         None => return messages,
         Some(replacement) => replacement,
     };
@@ -291,8 +290,6 @@ pub(crate) fn session_projection<'a>(entries: &[&'a Value], leaf: Leaf<'_>) -> S
         .enumerate()
         .map(|(i, source)| ProjectedEntry {
             source,
-            // An older compaction can sit inside the newest one's kept range; only the newest
-            // (at index 0) contributes its checkpoint and summary.
             messages: if entry_type(source) == Some("compaction") && i > 0 {
                 Vec::new()
             } else {

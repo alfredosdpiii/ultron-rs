@@ -138,8 +138,6 @@ impl ScheduleTimer {
                     earliest = Some(earliest.map_or(at, |e| e.min(at)));
                     continue;
                 }
-                // The module records the run only once the prompt is delivered; a slot it did not take (not due
-                // on its clock, already fired) or could not deliver waits instead of repeating.
                 match module.fire_with(id, due, &mut |message| deliver(message)) {
                     Ok(Some(_)) => {
                         self.lock().retry_at.remove(id);
@@ -162,7 +160,6 @@ impl ScheduleTimer {
                         .unwrap_or_else(PoisonError::into_inner)
                         .0
                 }
-                // No deadline, or a clock that moves only when told to: until the schedules change.
                 _ => self.bell.wait(state).unwrap_or_else(PoisonError::into_inner),
             };
         }

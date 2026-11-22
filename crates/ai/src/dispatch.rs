@@ -90,7 +90,6 @@ pub async fn stream_simple_routed(
         "pi-messages" => Ok(pi_messages::stream_simple(model, context, options, transport, sink).await),
         crate::models::ANTIGRAVITY_API => crate::antigravity::stream_simple(model, context, options, sink).await,
         crate::claude_code::API => {
-            // With tools: the Claude subscription, for every caller (session lanes, inference frames with depth).
             if let Some(message) = router.stream_claude_code(model, context, options, sink).await {
                 return Ok(message);
             }
@@ -100,7 +99,6 @@ pub async fn stream_simple_routed(
             };
             Ok(claude_code_cli::stream_simple(model, context, &options, sink).await)
         }
-        // Subscription first, API credits when the plan is out of usage (`claude_subscription::fallback`).
         "claude-subscription" => Ok(router.stream(model, context, options, transport, sink).await),
         other => Err(format!("No API implementation for \"{other}\"")),
     }

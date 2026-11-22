@@ -159,7 +159,6 @@ pub fn openrouter_images_params(model: &ImagesModel, context: &ImagesContext) ->
         .input
         .iter()
         .map(|item| match item {
-            // sanitizeSurrogates is a no-op: a Rust string cannot hold a lone surrogate.
             ImagesContent::Text(text) => json!({"type": "text", "text": text.text}),
             ImagesContent::Image(image) => json!({
                 "type": "image_url",
@@ -266,7 +265,6 @@ async fn openrouter_request(
         .as_deref()
         .filter(|k| !k.is_empty())
         .ok_or_else(|| Failure::plain(format!("No API key for provider: {}", model.provider)))?;
-    // `{ ...model.headers, ...options.headers }` (case-sensitive spread), nulls dropped, then the SDK's defaults.
     let mut custom: IndexMap<String, Option<String>> = model
         .headers
         .iter()

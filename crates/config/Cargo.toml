@@ -20,7 +20,7 @@ signals = { package = "ultron-signals", path = "../signals", version = "=1.0.2" 
 workspace = true
 
 [dev-dependencies]
-loki = { package = "loki-guardrails", version = "=0.2.2" }
+loki.workspace = true
 review = { package = "ultron-review", path = "../review" }
 tempfile = "=3.27.0"
 

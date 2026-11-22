@@ -46,7 +46,6 @@ fn cut_at_word(text: &str, max: usize, ellipsis: bool) -> String {
 
 fn strip_markdown(line: &str) -> String {
     let mut text = line.trim_start();
-    // Block markers: headings, quotes, list bullets, numbered items.
     loop {
         let before = text;
         text = text.trim_start_matches(['#', '>']).trim_start();
@@ -270,7 +269,6 @@ pub fn session_details(text: &str) -> SessionDetails {
                 if role == "user" && first.is_empty() {
                     first = content_text(&m["message"]["content"]);
                 }
-                // `isMessageWithContent`: only a message with a `content` field has text; empty text is skipped.
                 if let Some(content) = m["message"].get("content") {
                     let text = search_text(content);
                     if !text.is_empty() {

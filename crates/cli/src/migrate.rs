@@ -48,7 +48,6 @@ fn parse_options(args: &[String], flags: &[&str]) -> Result<Options, Failure> {
     while index < args.len() {
         let arg = &args[index];
         if let Some(body) = arg.strip_prefix("--") {
-            // `split("=", 2)`: the inline value stops at a second `=`.
             let mut parts = body.split('=');
             let name = parts.next().unwrap_or_default().to_string();
             let inline = parts.next().map(str::to_string);

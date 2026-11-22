@@ -163,7 +163,6 @@ pub fn writes(session: &Session, document: &Value, folded: &BTreeSet<String>) ->
             json!({"index": index, "root": root}),
         ));
     }
-    // Roots still inside an old head come first: they were there before any root this document adds.
     let inside_head = old_head
         .into_iter()
         .flatten()
@@ -180,7 +179,6 @@ pub fn writes(session: &Session, document: &Value, folded: &BTreeSet<String>) ->
             )),
             None => writes.push(Write::set(USAGE, &key, json!({"index": mint(), "root": body}))),
         }
-        // A root without the field (one read with [`root`]) leaves its records as they are.
         let Some(calls) = root["calls"].as_array() else {
             continue;
         };

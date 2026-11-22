@@ -196,7 +196,7 @@ impl Failure {
         text: Option<String>,
     ) -> Self {
         let error = match sdk {
-            Sdk::Anthropic => body.clone(),
+            Sdk::Anthropic => body,
             Sdk::OpenAi => body.as_ref().and_then(|b| b.get("error").cloned()),
         };
         let message_field = error

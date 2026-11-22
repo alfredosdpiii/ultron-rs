@@ -137,7 +137,6 @@ pub fn truncate_tool_output(text: &str, max_bytes: usize, spill_dir: Option<&Pat
     }
     let saved = spill_dir.and_then(|dir| spill_output(text, dir, "cell"));
     let keep = max_bytes / 2;
-    // A cut inside a multi-byte character drops that character rather than adding a replacement glyph.
     let head = String::from_utf8_lossy(&data[..keep]);
     let head = head.strip_suffix('\u{fffd}').unwrap_or(&head);
     let tail = String::from_utf8_lossy(&data[data.len() - keep..]);

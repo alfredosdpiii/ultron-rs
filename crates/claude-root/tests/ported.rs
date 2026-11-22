@@ -688,7 +688,7 @@ fn claude_root_stream_json_turns_count_responses_not_blocks() {
     let result = result.unwrap();
     assert_eq!(result["result"], "Done.");
     // The task result: usage summed over the cache fields, cost and wall time kept.
-    let mut final_message = result.clone();
+    let mut final_message = result;
     final_message.insert(
         "usage".into(),
         json!({"input_tokens": 10, "cache_creation_input_tokens": 5, "cache_read_input_tokens": 100, "output_tokens": 7}),

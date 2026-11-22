@@ -1263,7 +1263,6 @@ impl SettingsSelector {
         };
         let alias = |v: &Option<String>| v.as_ref().map(|v| format!("{CLAUDE_CODE}/{v}"));
         let setting = |v: &Option<String>, fallback: String| v.as_ref().map_or(fallback, |v| format!("{v} (setting)"));
-        // A session of the durable instance (its worker reports `durable.model`): a chosen model is saved there.
         let durable = c.get("durable").is_object().then(|| c.text("durable.model"));
         let durable_default = CLAUDE_CODE_DEFAULT_REF.to_string();
         let session_saved = match &durable {
@@ -1271,7 +1270,7 @@ impl SettingsSelector {
                 "{} (durable.model)",
                 model.clone().unwrap_or_else(|| durable_default.clone())
             ),
-            None => saved_default.clone().unwrap_or_else(|| "none".into()),
+            None => saved_default.unwrap_or_else(|| "none".into()),
         };
         let mut rows = vec![
             row(
@@ -1377,7 +1376,6 @@ impl SettingsSelector {
                 cc_ultron.clone(),
             ),
         ];
-        // Rust-only: the judge seat's chat models (crates/judge), before the Claude Code mode rows.
         if c.rust_rows
             && let Some(at) = rows.iter().position(|r| r.id == "claude-code-heading")
         {
@@ -1777,7 +1775,6 @@ impl SettingsSelector {
                 y -= header_rows(header);
             }
         }
-        // A submenu's answer focuses the list that holds it (`{ ...result, focus: true }`).
         let focused = |result: MouseResult| MouseResult {
             focus: Some(true),
             ..result
@@ -1810,8 +1807,6 @@ impl SettingsSelector {
                     self.stack.push(Sub::Select { kind, menu });
                     return None;
                 };
-                // Each answer in order (a click on a row the press did not select: its highlight, then the pick);
-                // the submenu is back on the stack after an answer that keeps it.
                 let mut events = Vec::new();
                 let mut open = Some((kind, menu));
                 for outcome in outcomes {
@@ -1877,7 +1872,6 @@ impl SettingsSelector {
                 self.list.update("models", &summary);
                 None
             }
-            // Leaving the theme submenu restores the theme the setting names (`cancel`).
             (Some(ListAction::Cancel), SubKind::Theme) => Some(SettingsEvent::Preview(self.input.str("theme", "dark"))),
             (Some(ListAction::Cancel), _) => None,
             (Some(ListAction::Open(index)), _) => {
@@ -1999,7 +1993,6 @@ impl SettingsSelector {
                         "modelThinkingLevel".into(),
                         json!({"provider": provider, "modelId": id, "level": level}),
                     );
-                    // Loops back to the model step.
                     self.stack.push(self.thinking_step());
                     Some(event)
                 }
@@ -2024,7 +2017,6 @@ impl SettingsSelector {
                 }
                 let row = self.model_rows().into_iter().find(|r| r.id == id)?;
                 let event = if id == RACE_MODELS {
-                    // Toggles `value` (Clear empties the list); the picker reopens below so several can be toggled.
                     let mut picked = self.input.race_models();
                     if value.is_empty() {
                         picked.clear();
@@ -2037,7 +2029,7 @@ impl SettingsSelector {
                     set_path(&mut self.input.settings, &id, stored);
                     SettingsEvent::ModelSetting {
                         key: id.clone(),
-                        label: row.label.clone(),
+                        label: row.label,
                         value: picked.join(", "),
                     }
                 } else if id == "session" {
@@ -2056,11 +2048,10 @@ impl SettingsSelector {
                     set_path(&mut self.input.settings, &id, stored);
                     SettingsEvent::ModelSetting {
                         key: id.clone(),
-                        label: row.label.clone(),
+                        label: row.label,
                         value: value.clone(),
                     }
                 };
-                // Back on the Models list, every row re-derived.
                 let rows = self.model_rows();
                 if let Some(Sub::List { list, .. }) = self.stack.last_mut() {
                     for row in rows {
@@ -2176,7 +2167,6 @@ impl SettingsSelector {
             "fullscreen-exit-output" => ("fullscreenExitOutput", value.into()),
             "fullscreen-scrollbar" => ("fullscreenScrollbar", value.into()),
             "fullscreen-copy-on-select" => ("fullscreenCopyOnSelect", b),
-            // As `/persona ultron|none` writes it.
             "persona" => (
                 config::keys::PERSONA_KEY,
                 if value == config::keys::PERSONA_ULTRON {
@@ -2255,7 +2245,6 @@ impl Component for SettingsSelector {
         let t = Rc::clone(&self.theme);
         let border = t.fg(Fg::Border, &"─".repeat(width.max(1)));
         let mut lines = vec![border.clone()];
-        // A submenu list keeps its header above what it opened (its `Container` holds both).
         let depth = self.stack.len();
         for sub in self.stack.iter().take(depth.saturating_sub(1)) {
             if let Sub::List { header, .. } = sub {
@@ -2567,12 +2556,10 @@ mod tests {
         assert_eq!(s.input.get(RACE_MODELS), &json!([haiku, opus]));
         assert_eq!(display(&s), format!("{haiku}, {opus}"));
         assert_eq!(marked(&s), [haiku, opus]);
-        // Toggle off.
         let event = pick(&mut s, haiku);
         assert!(matches!(event, Some(SettingsEvent::ModelSetting { value, .. }) if value == opus));
         assert_eq!(s.input.get(RACE_MODELS), &json!([opus]));
         assert_eq!(marked(&s), [opus]);
-        // Clear.
         let event = pick(&mut s, "");
         assert!(matches!(event, Some(SettingsEvent::ModelSetting { value, .. }) if value.is_empty()));
         assert_eq!(s.input.get(RACE_MODELS), &Value::Null);

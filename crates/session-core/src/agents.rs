@@ -20,7 +20,6 @@ pub fn status_extras(host: &host::Host, tool_calls: &kernel_apis::ToolCalls, lan
                 "startedAt": job.started_at,
                 "endedAt": job.ended_at,
                 "outputBytes": job.output_bytes,
-                // Last output, bounded, for the TUI graph's job details.
                 "tail": jsrt::utf16::tail(&job.tail, 160),
             })
         })

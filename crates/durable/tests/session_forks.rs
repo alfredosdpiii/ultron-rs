@@ -1,6 +1,6 @@
 //! Port of upstream `test/session-forks.test.ts` ("Session conversation document forks"), run against every backend.
 
-#![allow(clippy::type_complexity)]
+#![allow(clippy::type_complexity, reason = "test helper callback signatures")]
 
 use crate::session_support;
 

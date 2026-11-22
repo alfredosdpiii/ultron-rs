@@ -112,3 +112,105 @@ fn every_test_environment_turns_memory_services_off() {
     missing.sort();
     assert!(missing.is_empty(), "{}", missing.join("\n"));
 }
+
+/// Every workspace crate must inherit `[workspace.lints]` so `unsafe_code = "forbid"` and workspace clippy lints
+/// cannot be silently dropped when a new crate is added.
+#[test]
+fn every_workspace_crate_inherits_workspace_lints() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut missing = Vec::new();
+    for entry in fs::read_dir(&crates).unwrap() {
+        let dir = entry.unwrap().path();
+        let Ok(manifest) = fs::read_to_string(dir.join("Cargo.toml")) else {
+            continue;
+        };
+        let mut in_lints = false;
+        let mut inherited = false;
+        for line in manifest.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') {
+                in_lints = trimmed == "[lints]";
+            } else if in_lints && trimmed == "workspace = true" {
+                inherited = true;
+                break;
+            }
+        }
+        if !inherited {
+            let krate = dir.file_name().unwrap().to_string_lossy();
+            missing.push(format!("crates/{krate}/Cargo.toml is missing [lints] workspace = true"));
+        }
+    }
+    missing.sort();
+    assert!(missing.is_empty(), "{}", missing.join("\n"));
+}
+
+/// `loki-guardrails` must be pinned once in root `[workspace.dependencies]` with an exact `=` version, and every
+/// workspace crate depending on `loki` must inherit it via `loki.workspace = true`.
+#[test]
+fn every_loki_guardrails_pin_is_exact_and_consistent() {
+    let root_manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+    let root_text = fs::read_to_string(&root_manifest).unwrap();
+    let pinned_in_root = root_text.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed.contains("loki-guardrails") && trimmed.contains("version = \"=")
+    });
+    assert!(
+        pinned_in_root,
+        "Cargo.toml must pin loki-guardrails with an exact `=` version in [workspace.dependencies]"
+    );
+
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut users = 0usize;
+    let mut violations = Vec::new();
+    for entry in fs::read_dir(&crates).unwrap() {
+        let dir = entry.unwrap().path();
+        let Ok(manifest) = fs::read_to_string(dir.join("Cargo.toml")) else {
+            continue;
+        };
+        let krate = dir.file_name().unwrap().to_string_lossy().into_owned();
+        for line in manifest.lines() {
+            let trimmed = line.trim();
+            if trimmed == "loki.workspace = true"
+                || (trimmed.starts_with("loki =") && trimmed.contains("workspace = true"))
+            {
+                users += 1;
+            } else if trimmed.contains("loki-guardrails") {
+                violations.push(format!(
+                    "crates/{krate}/Cargo.toml must use `loki.workspace = true` instead of duplicating loki-guardrails"
+                ));
+            }
+        }
+    }
+    assert!(users > 0, "expected at least one crate using loki.workspace = true");
+    violations.sort();
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
+}
+
+/// Every `crates/*/src` file must stay free of non-exempt inline comments (doc comments `///`/`//!`,
+/// `// ponytail:`, `// SAFETY:`, and license headers remain allowed). Run `scripts/strip-comments.py --apply`.
+#[test]
+fn no_non_exempt_inline_comments_in_src() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let script = repo.join("scripts/strip-comments.py");
+    let crates = repo.join("crates");
+    let mut src_dirs: Vec<std::path::PathBuf> = fs::read_dir(&crates)
+        .unwrap()
+        .filter_map(|e| {
+            let src = e.ok()?.path().join("src");
+            src.is_dir().then_some(src)
+        })
+        .collect();
+    src_dirs.sort();
+    let output = std::process::Command::new("python3")
+        .arg(&script)
+        .arg("--check")
+        .args(&src_dirs)
+        .output()
+        .expect("python3 must run scripts/strip-comments.py");
+    assert!(
+        output.status.success(),
+        "non-exempt inline comments found in crates/*/src (run `scripts/strip-comments.py --apply crates/*/src`):\n{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

@@ -110,7 +110,7 @@ fn delegation_spawn_worktrees_replay_typescript_scenarios() {
         let runs: Arc<Mutex<Vec<Value>>> = Arc::default();
         let spawned = Arc::new(Mutex::new(0usize));
         let runner: ChildRunner = {
-            let (runs, spawned, workspace) = (runs.clone(), spawned.clone(), workspace.clone());
+            let (runs, spawned, workspace) = (runs.clone(), spawned, workspace.clone());
             Arc::new(move |run| {
                 let index = {
                     let mut n = spawned.lock().unwrap();
@@ -237,7 +237,7 @@ fn delegation_spawn_worktrees_replay_typescript_scenarios() {
     let hex = Regex::new(r"\b[0-9a-f]{40}\b").unwrap();
     let text = number(&text, &hex, |n| format!("#{n}"));
     let mut got: Value = serde_json::from_str(&text).unwrap();
-    let mut want = fixture.clone();
+    let mut want = fixture;
     strip_keys(&mut got, &mut Vec::new());
     strip_keys(&mut want, &mut Vec::new());
     for (g, w) in got.as_array().unwrap().iter().zip(want.as_array().unwrap()) {
@@ -265,7 +265,7 @@ fn cwd_host(session: &Path) -> (Delegation, Arc<Mutex<Vec<Option<String>>>>) {
         if let Some(cwd) = &run.cwd {
             std::fs::write(Path::new(cwd).join("made.txt"), "made\n").unwrap();
         }
-        sink.lock().unwrap().push(run.cwd.clone());
+        sink.lock().unwrap().push(run.cwd);
         Ok("done".into())
     });
     let mut options = DelegationOptions::new(runner);

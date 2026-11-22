@@ -1,5 +1,5 @@
 //! Shared by the tests: a scripted chat-completions transport and the fixture's fake model.
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use ai::{Body, HttpRequest, HttpResponse, Model, Transport};
 use serde_json::{Value, json};

@@ -983,7 +983,6 @@ impl TranscriptPicker {
 }
 
 fn is_latin(c: char) -> bool {
-    // `\p{Script=Latin}`: ASCII letters and the Latin-1/Extended blocks.
     c.is_ascii_alphabetic()
         || matches!(c as u32, 0xAA | 0xBA | 0xC0..=0xD6 | 0xD8..=0xF6 | 0xF8..=0x24F | 0x1E00..=0x1EFF | 0x2C60..=0x2C7F | 0xA720..=0xA7FF | 0xFF21..=0xFF3A | 0xFF41..=0xFF5A)
 }

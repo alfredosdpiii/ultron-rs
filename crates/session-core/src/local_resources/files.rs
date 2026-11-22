@@ -185,8 +185,6 @@ pub fn files_from_paths(paths: &[String], kind: ResourceType) -> Vec<String> {
     out
 }
 
-// ---------------------------------------------------------------------------------------------------- patterns
-
 fn is_override(s: &str) -> bool {
     s.starts_with('!') || s.starts_with('+') || s.starts_with('-')
 }
@@ -275,8 +273,6 @@ pub fn apply_patterns(all: &[String], patterns: &[String], base: &str) -> Vec<St
     }
     result.into_iter().cloned().collect()
 }
-
-// ------------------------------------------------------------------------------------------------ auto-discovery
 
 pub fn auto_skills(dir: &str, agents: bool) -> Vec<String> {
     skill_entries(dir, if agents { SkillMode::Agents } else { SkillMode::Pi })

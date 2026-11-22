@@ -169,13 +169,10 @@ impl ExternalRoot {
         config: &session_core::compose::Config,
     ) -> ExternalRoot {
         let stats = lane.stack.stats.clone();
-        // Subagents', typed tasks' and detached cells' ends, forwarded until the root or its lane goes away (the
-        // native session forwards them to its dispatcher the same way).
         let (forward_lane, forward_sink, forward_events) =
             (Arc::downgrade(&lane), Arc::downgrade(&sink), lane.events.clone());
         std::thread::spawn(move || {
             loop {
-                // Returns as soon as an end arrives; the wait only bounds how long a closed root keeps this thread.
                 let ends = forward_events.recv(std::time::Duration::from_secs(1));
                 let (Some(_lane), Some(sink)) = (forward_lane.upgrade(), forward_sink.upgrade()) else {
                     return;
@@ -351,8 +348,6 @@ impl ExternalRoot {
             Ok(content) => (content, false),
             Err(error) => (vec![json!({"type": "text", "text": error})], true),
         };
-        // The call was cancelled: the cell was cancelled with it (the rlm tool's abort); what it started under this
-        // turn stops too.
         if signal.aborted() {
             self.host.root_aborted(&self.host.root_id_of_run(&turn));
         }

@@ -146,7 +146,7 @@ fn host_guard_stats_count_shell_checks_and_skip_commands_that_write_nothing() {
         *seen.lock().unwrap(),
         vec![
             ("echo VALUE = 2 > app.py".to_string(), root.clone()),
-            ("echo beta >> notes.txt && cat notes.txt".to_string(), root.clone()),
+            ("echo beta >> notes.txt && cat notes.txt".to_string(), root),
         ]
     );
     let stats = stats_of(&hooks, 0);

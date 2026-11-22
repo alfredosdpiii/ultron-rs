@@ -90,7 +90,6 @@ pub const SERVERS: &[Spec] = &[
             ("hpp", "cpp"),
             ("hxx", "cpp"),
         ],
-        // Without the compile flags every project include is an error.
         markers: &["compile_commands.json", "compile_flags.txt", ".clangd"],
         loose: false,
         status: false,
@@ -167,7 +166,6 @@ pub fn reliable(spec: &Spec, errors: Vec<Diagnostic>) -> Vec<Diagnostic> {
         return errors;
     }
     let code = |error: &Diagnostic| error.code.clone().unwrap_or_default();
-    // The names a macro that was not expanded would define are not missing.
     let unexpanded = errors.iter().any(|error| UNEXPANDED.contains(&code(error).as_str()));
     errors
         .into_iter()
@@ -203,7 +201,6 @@ pub fn in_project(spec: &'static Spec, root: &Path) -> &'static Spec {
         return spec;
     }
     let read = |file: &str| std::fs::read_to_string(root.join(file)).ok();
-    // tsconfig.json has comments, so it is not parsed.
     let effect = read("tsconfig.json").is_some_and(|text| text.contains("\"@effect/language-service\""));
     let older = read("node_modules/typescript/package.json")
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
@@ -241,17 +238,13 @@ pub fn root_of(spec: &Spec, file: &Path) -> Option<PathBuf> {
 /// The settings tree a server reads (`initializationOptions`, `workspace/configuration`), by section.
 pub fn settings(spec: &Spec, root: &Path, var: &dyn Fn(&str) -> Option<String>) -> Value {
     match spec.name {
-        // No `cargo check`, build scripts or proc-macro builds: rust-analyzer's own analysis only, so it never
-        // competes with the session's builds for cores or the target directory.
         "rust-analyzer" => json!({ "rust-analyzer": {
             "checkOnSave": false,
             "cachePriming": { "enable": false },
             "cargo": { "buildScripts": { "enable": false } },
             "procMacro": { "enable": false },
-            // Unresolved names, which only the experimental diagnostics report; `reliable` drops the rest of them.
             "diagnostics": { "experimental": { "enable": true } },
         } }),
-        // Without the project's interpreter every third-party import is an error.
         "pyright" => match loki::project::find_project_python(root, var) {
             Some(python) => json!({ "python": { "pythonPath": python } }),
             None => json!({}),

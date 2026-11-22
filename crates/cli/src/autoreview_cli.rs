@@ -598,7 +598,6 @@ pub fn offline_json(
     put_when(&mut dropped, "refutedByInvestigator", dropped_in, |entries| {
         entries.as_array().is_some_and(|items| !items.is_empty())
     });
-    // Findings the deterministic stage contradicted (Rust-only, when there were any).
     put_when(&mut dropped, "contradicted", dropped_in, |count| {
         count.as_u64().is_some_and(|n| n > 0)
     });
@@ -630,7 +629,6 @@ pub fn offline_json(
     if let Some(by_phase) = usage_in.get("byPhase") {
         usage.insert("byPhase".into(), by_phase.clone());
     }
-    // The judge seat's calls (the blind check), included in costUsd (Rust-only, when it made any).
     put_when(&mut usage, "judge", usage_in, |judge| {
         judge["calls"].as_u64().is_some_and(|n| n > 0)
     });
@@ -651,8 +649,6 @@ pub fn offline_json(
     out.insert("verdict".into(), serde_json::to_value(verdict).unwrap_or(Value::Null));
     put_present(&mut out, "complete", result, "complete");
     out.insert("findings".into(), Value::Array(findings));
-    // Real problems in code the change did not alter (Rust-only, only when there are any): never posted inline,
-    // never blocking.
     put_present(&mut out, "preexisting", result, "preexisting");
     out.insert("dropped".into(), Value::Object(dropped));
     out.insert("timing".into(), Value::Object(timing));
@@ -687,7 +683,6 @@ pub fn offline_json(
         out.insert(key.into(), or_else(result, key, Value::Null));
     }
     out.insert("program".into(), program);
-    // The deterministic stage and the blind check (Rust-only, when they found, dropped or asked anything).
     put_when(&mut out, "static", result, |found| {
         found["findings"].as_u64().is_some_and(|n| n > 0)
             || found["contradicted"].as_array().is_some_and(|items| !items.is_empty())
@@ -919,9 +914,7 @@ fn open_engine(
             map_tokens: saved.map_tokens,
         },
         kernel_env: Vec::new(),
-        // The blind check's closed questions go to the profile's judge seat (crates/judge).
         modules: vec![Arc::new(judge_module(env))],
-        // The review kernels start from this environment's variables, never the server process's.
         base_env: Some(session_core::compose::session_environment(&*env.var)),
         log: Some(log),
     };
@@ -1106,7 +1099,10 @@ fn labels_command(
 /// `eval <repo-dir>`: the reviewer measured on the repository's own mistakes (review::eval). The cases come from
 /// history with no model call (`--list` stops there); each is then reviewed as `review --repo-dir` would review it,
 /// up to `autoreview.concurrency` at once on one engine, and scored. The report is kept under the autoreview directory (`evals/`).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal wiring helper; parameters match distinct caller inputs"
+)]
 fn eval_command(
     parsed: &Parsed,
     config: &AutoreviewConfig,
@@ -1178,8 +1174,6 @@ fn eval_command(
         Some(engine) => engine.clone(),
         None => Arc::new(open_engine(config, saved, env, &dir, log).map_err(Failure::Error)?),
     };
-    // Every case's spec first (the knowledge graph is indexed here, one commit at a time); then the reviews, up to
-    // autoreview.concurrency at once on the one engine, as the daemon runs them.
     let specs: Vec<Value> = cases
         .iter()
         .map(|case| {
@@ -1300,7 +1294,6 @@ fn offline_spec(
     if let Ok(Value::Object(settings)) = serde_json::to_value(engine_settings(config)) {
         spec.extend(settings);
     }
-    // A local repository is the user's own: its tests may run (sandboxed) unless turned off.
     let run_tests = config.mode != "fast" && parsed.run_tests.unwrap_or(config.run_tests);
     spec.insert("runTests".into(), run_tests.into());
     match &parsed.test_env {
@@ -1325,8 +1318,6 @@ fn offline_spec(
                     spec.insert("testEnvFailures".into(), prepared.failures.clone().into());
                 }
             }
-            // A checkout of the named repository under --checkout-roots, else the repository given: it is itself
-            // a local checkout, and its own prepared environments serve the tests.
             None => {
                 let checkout = lent.map_or_else(|| repo_dir.display().to_string(), String::from);
                 spec.insert("testCheckout".into(), checkout.into());
@@ -1434,7 +1425,6 @@ pub fn age(iso: Option<&str>, now: i64) -> String {
         return "never".into();
     };
     let parsed = jsrt::date::parse_date(at).map_or(f64::NAN, |ms| ms as f64);
-    // `Math.max(0, NaN)` is NaN; Rust's `f64::max` would return the 0.
     let rounded = jsrt::number::round((now as f64 - parsed) / 1000.0);
     let seconds = if rounded.is_nan() { rounded } else { rounded.max(0.0) };
     if seconds.is_nan() {
@@ -1707,7 +1697,6 @@ fn doctor(
             lines
         }
     };
-    // The prepared environment of that checkout, when there is one: its toolchain and where it came from.
     let prepared = lent
         .as_ref()
         .and_then(|(_, checkout, _)| checkout.as_deref())
@@ -1789,7 +1778,10 @@ fn prepare_vars(env: &Env) -> HashMap<String, String> {
 }
 
 /// `prepareEnvironment` of `repo_dir` as the command line runs it: log lines to stderr.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal wiring helper; parameters match distinct caller inputs"
+)]
 fn run_prepare(
     repo_dir: &str,
     parsed: &Parsed,
@@ -1890,7 +1882,6 @@ pub fn outcome_json(outcome: &review::reviewer::Outcome) -> Value {
             out.insert("kind".into(), outcome.kind().into());
             out.insert("sha".into(), reviewed.sha.clone().into());
             out.insert("event".into(), reviewed.plan.event.into());
-            // The reviewer parsed this result before planning it.
             if let Ok(Value::Object(offline)) = offline_json(&reviewed.result, None, None, None) {
                 out.extend(offline);
             }
@@ -1976,7 +1967,6 @@ fn reviewer_deps(
         now: Arc::new(jsrt::date::now_ms),
         random: Arc::new(random),
         lessons,
-        // Test environments are built before a review (autoreview.prepareEnvs), with the network, into the cache.
         environments: Some(Arc::new(review::prepare_env::RunnerPreparer {
             runner: runner_for_envs,
             cache_dir: paths.cache.clone(),
@@ -1986,7 +1976,6 @@ fn reviewer_deps(
             now: Arc::new(jsrt::date::now_ms),
         })),
         home: env.home.display().to_string(),
-        // Re-read from the global settings file every poll and before each decision and model turn.
         bans: Arc::new(review::ban::Bans::reloading(ban_loader(env))),
     })
 }
@@ -1996,7 +1985,6 @@ fn ban_loader(env: &Env) -> review::ban::BanLoader {
     let (cwd, agent_dir) = (env.cwd.clone(), env.agent_dir());
     Arc::new(move || {
         let mut manager = config::settings::SettingsManager::create(&cwd, &agent_dir, false);
-        // An unreadable file (caught mid-write, invalid JSON) keeps the bans last read.
         if !manager.drain_errors().is_empty() {
             return None;
         }
@@ -2283,7 +2271,6 @@ fn execute(
     match parsed.command.as_str() {
         "review" => {}
         "run" | "once" => {
-            // `/autoreview off` (autoreview.enabled: false): the loop and a one-off poll do nothing.
             if saved.enabled == Some(false) {
                 let _ = writeln!(
                     err,
@@ -2325,7 +2312,6 @@ fn execute(
         return Err(UsageError("--program and --dump-program need --mode compiled".into()).into());
     }
     let repo_dir = absolute(&env.cwd, repo_dir);
-    // A checkout of the named repository under --checkout-roots lends its environments to the tests.
     let lent = match &parsed.repo {
         Some(repo) if !config.checkout_roots.is_empty() => {
             review::github::parse_pull_target(&format!("{repo}#1"), "github.com")
@@ -2333,7 +2319,6 @@ fn execute(
         }
         _ => None,
     };
-    // --prepare: build (or reuse) the environment first, with the network; the review then binds it read-only.
     let prepared = if parsed.prepare {
         let prepared = run_prepare(
             &repo_dir.display().to_string(),
@@ -2363,7 +2348,6 @@ fn execute(
     } else {
         None
     };
-    // A partial environment is used; its failures go to the kernel for the report.
     let use_prepared = prepared.as_ref().filter(|prepared| !prepared.prepared.is_empty());
     let (engine, start_ms): (Arc<dyn ReviewEngine>, Option<u64>) = match &ov.engine {
         Some(engine) => (engine.clone(), None),

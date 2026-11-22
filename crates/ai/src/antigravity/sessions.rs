@@ -352,7 +352,6 @@ async fn run(mut job: Job, registry: Registry) {
     let outcome = tokio::select! {
         outcome = serve(&mut slot, archived, &job.model, messages, job.env.as_ref(), &job.deltas) => outcome,
         () = job.reply.closed() => {
-            // The caller aborted or timed out: stop agy's turn and drop the session.
             if let Some(live) = slot.as_mut() {
                 let cancel = json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":live.agy.session}});
                 match tokio::time::timeout(Duration::from_secs(2), live.agy.send(cancel)).await {
@@ -380,7 +379,6 @@ async fn run(mut job: Job, registry: Registry) {
             pool.archive(evicted);
         }
     }
-    // The caller may have gone between the outcome and this send; the session is kept either way.
     let _unread = job.reply.send(outcome);
 }
 
@@ -429,7 +427,6 @@ async fn serve(
                 live.hash = prefix_hash(messages);
                 return Ok(done);
             }
-            // agy may already have run the answered call's continuation; replaying could run tools twice.
             Err(error) if answered => return Err(slot.take().expect("matched").agy.failed(error).await),
             Err(error) => eprintln!("agy session ended, replaying the transcript to a fresh agy: {error}"),
         }
@@ -463,7 +460,6 @@ async fn serve(
             }
         }
     }
-    // No live or archived session continues this transcript, or the one that did failed: replay it to a fresh agy.
     *slot = None;
     let workspace = session_workspace(env)?;
     let (agy, step) = Agy::start_in(model, messages, env, true, workspace).await?;
@@ -491,7 +487,6 @@ fn continuation(live: &mut Live, messages: &[Message]) -> Option<Step> {
         return None;
     }
     match &live.agy.held {
-        // agy timed the call out, so it has already ended the step without this result.
         Some((_, reply)) if reply.is_closed() => None,
         Some((id, _)) => match delta {
             [Message::Assistant(call), Message::ToolResult(result), trailing @ ..]

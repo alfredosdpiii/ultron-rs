@@ -156,7 +156,6 @@ pub fn js_regex(src: &str, case_insensitive: bool) -> String {
             '[' => {
                 in_class = true;
                 out.push('[');
-                // `[^]` matches anything in JavaScript; `[]` nothing.
                 if chars.get(i) == Some(&'^') {
                     out.push('^');
                     i += 1;
@@ -177,7 +176,6 @@ pub fn js_regex(src: &str, case_insensitive: bool) -> String {
             '^' => out.push_str(r"(?:\A|(?<=\n)|(?<=\r)|(?<=\u{2028})|(?<=\u{2029}))"),
             '$' => out.push_str(&format!(r"(?=[{LINE_TERMINATORS}]|\z)")),
             '{' => {
-                // A quantifier `{n}`, `{n,}` or `{n,m}`; anything else is a literal brace in JavaScript.
                 let rest: String = chars[i..].iter().collect();
                 let quantifier = rest.find('}').is_some_and(|close| {
                     let body = &rest[..close];
@@ -920,21 +918,17 @@ mod tests {
 
     #[test]
     fn hljs_js_regex_has_javascript_semantics() {
-        // ASCII word boundaries and word characters.
         assert!(re(r"\bé").is_match("aé").unwrap());
         assert!(!re(r"\bé").is_match(" é").unwrap());
         assert_eq!(re(r"\w+").find("é_ab9").unwrap().unwrap().as_str(), "_ab9");
         assert!(re(r"\Ba").is_match("ba").unwrap());
-        // JavaScript whitespace: U+FEFF yes, U+0085 no.
         assert!(re(r"\s").is_match("\u{feff}").unwrap());
         assert!(!re(r"\s").is_match("\u{85}").unwrap());
         assert!(re(r"[\s\S]").is_match("\u{85}").unwrap());
-        // `.` stops at \r and U+2028; multi-line ^ and $ at \r.
         assert!(!re(r"a.b").is_match("a\rb").unwrap());
         assert!(re(r"^b").is_match("a\rb").unwrap());
         assert!(re(r"a$").is_match("a\rb").unwrap());
         assert!(re(r"a$").is_match("a").unwrap());
-        // Literal braces and quantifiers.
         assert!(re(r"\{\{").is_match("{{").unwrap());
         assert!(re(r"{{").is_match("{{").unwrap());
         assert!(re(r"a{2}").is_match("aa").unwrap());

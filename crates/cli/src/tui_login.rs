@@ -205,7 +205,10 @@ pub fn start(
 }
 
 /// [`start`] with the provider reached through `options` (tests answer its endpoints).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal wiring helper; parameters match distinct caller inputs"
+)]
 pub fn start_with(
     env: Env,
     id: u64,
@@ -250,7 +253,6 @@ pub fn start_with(
             config::auth::AuthStorage::create(auth)
                 .modify(&provider, |_| Some(credential.to_json()))
                 .map(|_| ())
-                .map_err(|e| e.to_string())
         })();
         slot.end(id);
         send(LaneEvent::Login(id, LoginStep::Finished));

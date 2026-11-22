@@ -116,7 +116,7 @@ fn tui_theme_builtin_palettes_match_typescript() {
 /// The generator's custom documents, rebuilt here exactly as generate-theme.mjs builds them.
 fn custom_docs() -> Vec<(&'static str, Value)> {
     let dark: Value = serde_json::from_str(theme::DARK_JSON).expect("dark");
-    let mut custom = dark.clone();
+    let mut custom = dark;
     let colors = custom["colors"].as_object_mut().expect("colors");
     for k in [
         "thinkingMax",

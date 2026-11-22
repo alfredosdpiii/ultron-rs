@@ -142,7 +142,6 @@ pub fn backup(agent_dir: &Path, backup_dir: &Path) -> Result<(PathBuf, usize), S
         for (rel, kind) in collect_profile(agent_dir, skip)? {
             let source = agent_dir.join(&rel);
             let destination = files_root.join(&rel);
-            // `mkdirPrivateTree`: each missing level 0700.
             let mut current = files_root.clone();
             for segment in Path::new(&rel).parent().into_iter().flat_map(Path::components) {
                 current.push(segment);

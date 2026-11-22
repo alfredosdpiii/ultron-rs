@@ -700,7 +700,7 @@ fn cli_acp_codecompanion_message_sequence() {
     );
     let sandbox = Sandbox::new(port);
     let mut acp = Acp::start(&sandbox, &[]);
-    let cwd = sandbox.cwd.clone();
+    let cwd = sandbox.cwd;
 
     // initialize: CodeCompanion authenticates only when authMethods is not empty.
     let init = result(&acp.call_raw(fill(&steps[0]["send"], &cwd, "")));
@@ -788,7 +788,7 @@ fn cli_acp_avante_message_sequence() {
     );
     let sandbox = Sandbox::new(port);
     let mut acp = Acp::start(&sandbox, &[]);
-    let cwd = sandbox.cwd.clone();
+    let cwd = sandbox.cwd;
 
     // initialize (id 0): avante stops unless the agent answers its exact protocol version.
     let reply = acp.call_raw(fill(&steps[0]["send"], &cwd, ""));
@@ -953,7 +953,7 @@ fn cli_acp_name_is_the_first_sessions_and_selectors_are_refused() {
     let names: HashMap<String, Option<String>> = [sandbox.cwd.clone(), other.clone()]
         .iter()
         .flat_map(|cwd| session_journal::names::list_sessions(&sandbox.sessions_dir(), &cwd.display().to_string()))
-        .map(|s| (s.metadata.id.clone(), s.name.clone()))
+        .map(|s| (s.metadata.id.clone(), s.name))
         .collect();
     assert_eq!(names.get(&first), Some(&Some("Editor work".to_string())), "{names:?}");
     assert_eq!(names.get(&second), Some(&None), "{names:?}");

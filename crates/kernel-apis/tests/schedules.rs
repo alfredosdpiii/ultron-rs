@@ -148,7 +148,7 @@ fn kernel_apis_schedules_slot_runs_once_across_ticks_and_restart() {
         call(&module, &fake, "schedules.tick", json!({})).unwrap(),
         json!({"fired": [], "failed": []})
     );
-    let restarted = SchedulesModule::new(store.clone(), Some(Arc::new(|| 1_000_500)));
+    let restarted = SchedulesModule::new(store, Some(Arc::new(|| 1_000_500)));
     restarted.start(fake.as_ref()).unwrap();
     assert_eq!(
         call(&restarted, &fake, "schedules.tick", json!({})).unwrap(),
@@ -379,7 +379,7 @@ fn kernel_apis_goals_verify_state_follows_the_latest_round() {
         newer: Mutex::new(None),
         first_done: (Mutex::new(false), std::sync::Condvar::new()),
     });
-    let _ = host.module.set(module.clone());
+    let _ = host.module.set(module);
     let verify = |host: &Rounds| {
         host.module.get().unwrap().handle(
             "goals.verify",

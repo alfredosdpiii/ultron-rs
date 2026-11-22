@@ -163,7 +163,7 @@ fn session(
     all.extend(vars.into_iter().map(|(k, v)| (k.to_string(), v)));
     let env = RunEnv {
         cwd: cwd.clone(),
-        home: root.clone(),
+        home: root,
         var: Arc::new(move |key| all.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
         package: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent")),
     };

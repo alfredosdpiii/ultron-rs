@@ -474,7 +474,6 @@ pub fn read_session_log(path: &Path) -> Result<SessionLog, LogError> {
         unreadable_lines: 0,
     };
     let mut durable = DurableDigest::default();
-    // List appends are skipped unread (stream frames are most of a file), except the durable runtime's commits.
     let skip = |line: &str| line.starts_with(r#"{"kind":"list""#) && !is_durable_commit(line) && !is_usage_list(line);
     session_journal::catalog::scan_writes(path, skip, |writes| {
         let Some(writes) = writes else {

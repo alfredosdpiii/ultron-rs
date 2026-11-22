@@ -353,8 +353,6 @@ fn divide_sa(
     breaks: &mut Vec<usize>,
 ) {
     const LOOKAHEAD: usize = 3;
-    // "Not enough characters for two words": Thai moves 4 code points from the range start and needs to land
-    // before its end; the Lao, Burmese and Khmer engines compare the range length with 4.
     let too_short = if engine == Engine::Thai {
         range_start + 4 >= range_end
     } else {
@@ -664,7 +662,6 @@ fn rule_segments(chars: &[char]) -> Vec<(usize, usize, u16)> {
     let mut out = Vec::new();
     let mut start = 0;
     while start < n {
-        // The segment's first base character (None: a leading ExFm run, `^$ExFm+`).
         let mut i = start;
         let mut base: Option<usize>;
         let mut prev_base: Option<usize> = None;
@@ -683,7 +680,6 @@ fn rule_segments(chars: &[char]) -> Vec<(usize, usize, u16)> {
             while i < n && k[i].ex_fm && !(i > start && k[i - 1].wb == WordBreak::ZWJ && k[i].ext_pict) {
                 i += 1;
             }
-            // `$ZWJ $Extended_Pict` chains onto the leading run.
             if !(i < n && i > start && k[i - 1].wb == WordBreak::ZWJ && k[i].ext_pict) {
                 out.push((start, i, 0));
                 start = i;
@@ -698,7 +694,6 @@ fn rule_segments(chars: &[char]) -> Vec<(usize, usize, u16)> {
         i += 1;
         let mut trailing = 0;
         loop {
-            // Attach ExFm (WB4), except ZWJ before Extended_Pictographic which rule 3c handles first.
             while i < n && k[i].ex_fm && !(k[i - 1].wb == WordBreak::ZWJ && k[i].ext_pict) {
                 i += 1;
                 trailing += 1;
@@ -708,7 +703,6 @@ fn rule_segments(chars: &[char]) -> Vec<(usize, usize, u16)> {
             }
             let b = base.unwrap();
             let next = i;
-            // The base after `next` (skipping ExFm) for rules 6/12.
             let mut after = next + 1;
             while after < n && k[after].ex_fm {
                 after += 1;
@@ -741,8 +735,6 @@ fn rule_segments(chars: &[char]) -> Vec<(usize, usize, u16)> {
             }
         }
         let b = base.unwrap();
-        // The status of the last rule: a single-character rule (with or without trailing ExFm), or the join into
-        // the last base (`{200}`, `{400}`, ...), whichever is larger.
         let status = if trailing > 0 {
             k[b].single.0
         } else {

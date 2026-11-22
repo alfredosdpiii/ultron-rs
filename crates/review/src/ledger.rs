@@ -107,7 +107,6 @@ pub fn fates_of(input: &FateInput) -> Vec<Fate> {
             Some((FateKind::Accepted, "thumbs up on the comment"))
         } else if status == "fixed" {
             Some((FateKind::Accepted, "fixed in a later commit"))
-        // A nit is optional: waving it off is not a rejection the repository's rules should learn from.
         } else if resolved_by_human && status != "not_applicable" && finding.severity != "nit" {
             Some((FateKind::Rejected, "the thread was resolved without a fix"))
         } else if input.merged
@@ -165,7 +164,6 @@ pub fn merge_fates(ledger: &[Fate], fates: &[Fate]) -> Vec<Fate> {
 
 /// The rules a repository's recent fates support.
 pub fn lessons_for(ledger: &[Fate], now: &str) -> Vec<Lesson> {
-    // JS: Date.parse(now) - window; an unparsable `now` (NaN) admits nothing.
     let since = jsrt::date::parse_date(now).map(|now| now - FATE_DAYS * DAY_MS);
     let mut groups: IndexMap<(String, String), (u32, u32)> = IndexMap::new();
     for fate in ledger {

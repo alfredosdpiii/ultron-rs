@@ -582,7 +582,6 @@ pub fn run(
     for key in AUTH_OVERRIDES.iter().chain(BACKEND_OVERRIDES).chain(API_CREDENTIALS) {
         env.remove(*key);
     }
-    // Fail with the install hint, not a spawn error, when Claude Code is absent.
     let resolved =
         resolve_claude(config.command.as_deref(), &env).ok_or_else(|| ClaudeError::Missing(INSTALL_HINT.into()))?;
     let model = native_model(&prepared.model).map_err(ClaudeError::Invalid)?;
@@ -602,7 +601,6 @@ pub fn run(
         std::fs::write(&path, text).map_err(|e| ClaudeError::Failed(e.to_string()))?;
         Ok(path)
     };
-    // Skip the inert MCP server on tool-less calls (titles, summaries, judges): saves a spawn + MCP handshake.
     let mcp = if prepared.body.manifest.is_empty() {
         json!({"mcpServers": {}})
     } else {
@@ -634,7 +632,6 @@ pub fn run(
         ("CLAUDE_CODE_MAX_RETRIES", "0"),
         ("DISABLE_AUTO_COMPACT", "1"),
         ("DISABLE_COMPACT", "1"),
-        // Ultron owns budgets, memory, and instructions; native's reminders invalidate cache and leak into user turns.
         ("CLAUDE_CODE_TOTAL_TOKENS_REMINDER", "off"),
         ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
         ("CLAUDE_CODE_DISABLE_CLAUDE_MDS", "1"),
@@ -660,7 +657,6 @@ pub fn run(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(admission.abort_handle());
     cleanup.admission = Some(admission);
-    // Settings apply the extra body inside the process, avoiding execve's per-string limit for large schemas.
     let settings = write(
         "settings.json",
         &json!({"env": {"CLAUDE_CODE_EXTRA_BODY": prepared.body.encoded}}).to_string(),
@@ -705,7 +701,6 @@ pub fn run(
         ]
         .map(str::to_string),
     );
-    // Native appends a per-turn effort message at its own level unless --effort names one.
     if let Some(effort) = parsed["output_config"]["effort"].as_str() {
         argv.extend(["--effort".to_string(), effort.to_string()]);
     }
@@ -745,9 +740,6 @@ pub fn run(
             }
         }));
         cleanup.reader = Some(std::thread::spawn(move || {
-            // A launcher script may print before it starts Claude Code (mise's `claude` wrapper reports the tool on
-            // stdout): what comes before the stream's first JSON line is not the stream. When no stream follows,
-            // the first such line is the error.
             let mut preamble: Option<String> = None;
             let mut started = false;
             for line in BufReader::new(stdout).lines() {
@@ -890,7 +882,6 @@ pub fn run(
             _ => {}
         }
     }
-    // A cancel kills native, which ends this wait.
     let child = handle.watched().expect("native was spawned");
     let ended = child.wait_timeout(deadline.saturating_duration_since(Instant::now()));
     if !ended && handle.cancelled() {
@@ -950,7 +941,6 @@ pub fn run(
         && !handled
     {
         if code.as_deref() == Some("authentication_failed") && !outcome.used {
-            // No usable login where Ultron runs native: it refuses before any upstream request.
             return Err(ClaudeError::LoggedOut(format!(
                 "{LOGGED_OUT_HINT} (native: {detail}){err_tail}"
             )));
@@ -975,8 +965,6 @@ pub fn run(
                 continue;
             }
             let name = block["name"].as_str().unwrap_or_default().to_string();
-            // Native sometimes drops the prefix (or only the server segment `ultron__`) on a tool it was offered;
-            // carry the offered name so replayed history does not teach the slip back to the model.
             if names.contains(name.as_str()) {
                 block["name"] = json!(format!("{PREFIX}{name}"));
             } else if let Some(rest) = name.strip_prefix("mcp__")
@@ -1039,7 +1027,6 @@ pub fn run(
         refusal = explanation
             .map(str::to_string)
             .or_else(|| category.map(|c| format!("provider refusal category: {c}")));
-        // The cut-off call must not run; the carrier keeps native's turn as sent.
         calls.clear();
     } else if let Some(other) = calls.iter().find(|c| c.name != TOOL) {
         return Err(ClaudeError::Failed(format!(

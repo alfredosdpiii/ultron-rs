@@ -143,7 +143,6 @@ impl WsReader {
                     Message::Ping(payload) => self.writer.control(Message::Pong(payload)),
                     Message::Pong(_) => {}
                     Message::Close(code, reason) => {
-                        // Echo the close (undici does) unless this side already sent one.
                         if !self.writer.closed.load(Ordering::SeqCst) {
                             self.writer.close_socket(code.unwrap_or(1000), "");
                         }

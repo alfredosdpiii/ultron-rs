@@ -31,7 +31,7 @@ pub fn find_git_paths(cwd: &Path) -> Option<GitPaths> {
                     let common_git_dir = if common.exists() {
                         jsrt::path::absolute(&git_dir.join(std::fs::read_to_string(&common).ok()?.trim()))
                     } else {
-                        git_dir.clone()
+                        git_dir
                     };
                     return Some(GitPaths {
                         repo_dir: dir,

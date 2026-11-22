@@ -196,7 +196,6 @@ fn ai_claude_subscription_cancel_closes_the_active_upstream_socket() {
     let mut opts = options();
     opts.base.signal = Some(signal.clone());
     let aborter = {
-        let signal = signal.clone();
         std::thread::spawn(move || {
             let reached = entered.recv_timeout(Duration::from_secs(120)).is_ok();
             signal.abort();
@@ -414,7 +413,6 @@ fn ai_claude_subscription_actual_client_replays_restored_parallel_rounds_across_
     let fake = Fake::new();
     let turn_count = Arc::new(Mutex::new(0usize));
     let upstream = {
-        let turn_count = turn_count.clone();
         Upstream::start(move |_, stream| {
             let n = {
                 let mut count = turn_count.lock().unwrap();

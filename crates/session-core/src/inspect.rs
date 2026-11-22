@@ -23,7 +23,6 @@ pub const INSPECTION_REQUESTS: [&str; 25] = [
     "progress.history",
     "progress.assess",
     "schedules.list",
-    // The session's scheduled prompts (`/schedules`; Rust-only).
     "schedule.list",
     "goals.list",
     "goals.get",
@@ -35,8 +34,6 @@ pub const INSPECTION_REQUESTS: [&str; 25] = [
     "rlm.frames",
     "ctx.state",
     "async.pending",
-    // The root lane's detached cells with their start times, for the TUI's running-work panel (Rust-only; the
-    // worker answers it itself).
     "rlm.detached",
     "usage.report",
 ];

@@ -343,7 +343,6 @@ impl AltScreen {
         }
         out.push_str(&evicted);
         let unchanged = |row: usize| !redraw_images && self.previous.get(row) == Some(&screen[row]);
-        // WezTerm erases a Kitty image's cells when a later EL clears a row it covers.
         let clear_first = redraw_images && self.kitty() && self.wezterm && screen.iter().any(|l| is_image_line(l));
         if clear_first {
             for row in 0..height {
@@ -380,7 +379,6 @@ impl AltScreen {
     /// Leave the alternate screen and print `document` (the whole component render, cursor markers removed) on the
     /// main screen, as `TuiAltScreen.afterTerminalStop` does.
     pub fn exit(&mut self, document: &[String], width: usize) -> String {
-        // `beforeTerminalStop`: the alternate screen's Kitty images are deleted.
         let mut out = if self.kitty() {
             format!("{SYNC_BEGIN}{DELETE_ALL_KITTY_IMAGES}{SYNC_END}")
         } else {

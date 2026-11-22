@@ -601,8 +601,6 @@ impl ScheduleModule {
         due: i64,
         deliver: &mut dyn FnMut(&Value) -> Result<(), String>,
     ) -> Result<Option<Fired>, String> {
-        // The actor may be running a cell which cancels or replaces this operation during network I/O.
-        // Fetch outside `writing`, then recheck the entire value under the lock before applying it.
         let before = self.all()?.into_iter().find(|s| s.id == id);
         let observation = match before.as_ref() {
             Some(s)
@@ -626,7 +624,6 @@ impl ScheduleModule {
         if !schedule.active() || schedule.next_due != Some(due) || due > now || before.as_ref() != Some(&schedule) {
             return Ok(None);
         }
-        // A slot past `until` never runs (it was only reachable through a stale value).
         if schedule
             .until
             .is_some_and(|until| due > until || (schedule.operation.is_some() && now > until))

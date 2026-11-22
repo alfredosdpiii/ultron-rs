@@ -140,8 +140,6 @@ pub fn visible_width(s: &str) -> usize {
     } else {
         strip_terminal_sequences(s)
     };
-    // Styled lines are mostly printable ASCII once their escape sequences are gone: one column per byte, as above,
-    // without segmenting graphemes (the bulk of Markdown layout time, which measures every line several times).
     if is_printable_ascii(&clean) {
         return clean.len();
     }

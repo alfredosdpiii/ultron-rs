@@ -343,7 +343,6 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
         }
     }
 
-    // Depth.
     let frames = &depth["frames"];
     let subagents = &depth["subagents"];
     if n(frames, "/count") == 0.0 {
@@ -516,7 +515,6 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
         ),
     );
 
-    // Tokens and cost.
     lines.push(String::new());
     lines.push("Tokens and cost".into());
     let usage_row = |name: &str, bucket: &Value| -> Vec<String> {
@@ -602,7 +600,6 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
         lines.push(format!("  {note}"));
     }
 
-    // Guardrails.
     lines.push(String::new());
     lines.push("Guardrails".into());
     let guardrails = &report["guardrails"];
@@ -682,7 +679,6 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
         },
     );
 
-    // Memory.
     lines.push(String::new());
     lines.push("Memory".into());
     let operations = &report["memory"]["operations"];

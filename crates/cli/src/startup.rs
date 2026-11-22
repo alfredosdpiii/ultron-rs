@@ -17,7 +17,6 @@ const RUN_VARIABLES: [&str; 5] = [
     config::env::SKIP_VERSION_CHECK_ENV,
     "HTTP_PROXY",
     "HTTPS_PROXY",
-    // `--claude` / `claudeCode.root` (`prepareClaudeRoot`'s env): the worker moves a resumed lane to the root model.
     session_core::core::ROOT_ENV,
 ];
 
@@ -288,7 +287,6 @@ mod tests {
                 (config::env::SKIP_VERSION_CHECK_ENV.to_string(), "1".to_string())
             ]
         );
-        // `isTruthyEnvFlag`: 1, true, yes; anything else is not offline.
         for (value, offline) in [("YES", true), ("true", true), ("1", true), ("0", false), ("no", false)] {
             let env = offline_env(&args(&[]), &env_with(&[(config::env::OFFLINE_ENV, value)]));
             assert_eq!(
@@ -324,7 +322,6 @@ mod tests {
                 keeps
             ]
         );
-        // --no-builtin-tools keeps only rlm of what --tools named.
         assert!(tool_flag_warnings(&parse(&["--tools", "rlm,read", "--no-builtin-tools"])).is_empty());
     }
 

@@ -319,7 +319,6 @@ mod tests {
             let (old, new) = (case["old"].as_str().unwrap(), case["new"].as_str().unwrap());
             for (context, key) in [(4, "context4"), (2, "context2")] {
                 let (diff, first) = generate_diff_string(old, new, context);
-                // `firstChangedLine: undefined` is left out of the recorded JSON.
                 let mut got = json!({ "diff": diff });
                 if let Some(first) = first {
                     got["firstChangedLine"] = json!(first);

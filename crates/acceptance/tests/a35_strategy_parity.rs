@@ -156,7 +156,7 @@ fn acceptance_a35_idempotency_keys_behave_identically_across_strategies() {
             .collect();
         assert_eq!(both[0], both[1]);
         assert_eq!(invoke(fixture, request.clone()).unwrap(), both[0]);
-        let mut other = request.clone();
+        let mut other = request;
         other["input"] = json!({ "n": 4 });
         assert_eq!(
             invoke(fixture, other).unwrap_err(),

@@ -454,7 +454,6 @@ impl Connection {
             let weak = Arc::downgrade(self);
             let refreshed = client.clone();
             client.on_notification("notifications/tools/list_changed", move |_| {
-                // A request cannot wait on the reader thread that delivers its answer.
                 let (weak, client) = (weak.clone(), refreshed.clone());
                 std::thread::spawn(move || refresh_tools(&weak, generation, &client));
             });
@@ -471,7 +470,6 @@ impl Connection {
                     connection.client_closed(generation, closed_stdio.as_deref());
                 }
             });
-            // Servers without the tools capability (prompts or resources only) do not answer tools/list.
             let capabilities = client.server_capabilities().unwrap_or(Value::Null);
             let has_resources = capabilities.get("resources").is_some();
             let tools = if jsrt::value::truthy(capabilities.get("tools")) {
@@ -603,8 +601,6 @@ impl Connection {
                         continue;
                     }
                     if kind == Some(HttpErrorKind::SessionExpired) && attempt == 1 {
-                        // The server no longer knows the session, so it did not run the request. The old client is
-                        // detached but not closed: its other in-flight calls get the same 404 and retry the same way.
                         let mut data = sync::lock(&self.data);
                         if data.client.as_ref().map(|(g, _)| *g) == Some(generation) {
                             data.client = None;

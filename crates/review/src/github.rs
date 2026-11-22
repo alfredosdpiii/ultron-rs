@@ -139,7 +139,6 @@ pub fn parse_api_output(stdout: &str) -> ApiOutput {
         };
     };
     let rest = &stdout[found[0].len()..];
-    // A blank line ends the headers (at once, when there are none).
     let end = Regex::new(r"^\r?\n|\r?\n\r?\n").expect("static pattern").find(rest);
     let head = end.map_or(rest, |end| &rest[..end.start()]);
     let mut headers = IndexMap::new();
@@ -160,7 +159,6 @@ pub fn parse_api_output(stdout: &str) -> ApiOutput {
 
 /// `https://api.github.com/repos/o/r/pulls/7` (or `.../issues/7`, or a web URL) as a PullRef.
 pub fn pull_ref_from_url(url: &str, host: &str) -> Option<PullRef> {
-    // JavaScript's `.` stops at every line terminator.
     let pattern = Regex::new(r"/([^/]+)/([^/]+)/(?:pulls|pull|issues)/([0-9]+)(?:[/?#][^\n\r\u{2028}\u{2029}]*)?$")
         .expect("static pattern");
     let found = pattern.captures(url)?;
@@ -488,7 +486,6 @@ impl GitHub {
                 return Some((now + 1000.0).max(reset * 1000.0));
             }
         }
-        // A secondary limit without headers: GitHub asks for at least a minute.
         let lower = message.to_lowercase();
         if status == 429 || lower.contains("rate limit") || lower.contains("abuse") {
             return Some(now + 60_000.0);
@@ -1032,8 +1029,6 @@ impl GitHub {
                     body: text(first.get("body")),
                     url,
                     at: text(first.get("createdAt")),
-                    // Resolved: someone said it was dealt with. Outdated alone: the lines changed, which may
-                    // ignore the comment as well as fix it, so it is no rule and no miss.
                     state: if flag("isResolved") {
                         "addressed"
                     } else if flag("isOutdated") {
@@ -1042,7 +1037,6 @@ impl GitHub {
                         "open"
                     }
                     .into(),
-                    // A person's account (`User`), not a GitHub App (`Bot`); the reviewer marks its own accounts.
                     human: first
                         .get("author")
                         .and_then(|author| author.get("__typename"))

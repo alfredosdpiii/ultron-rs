@@ -206,14 +206,12 @@ fn translate(pattern: &str) -> Option<String> {
                     return None;
                 }
                 if next == Some(&'/') {
-                    // `**/`: any number of whole segments, also none.
                     out.push_str("(?:[^/]+/)*");
                     index += 3;
                 } else if index == 0 {
                     out.push_str(".*");
                     index += 2;
                 } else {
-                    // `dir/**`: everything below dir.
                     out.pop();
                     out.push_str("(?:/.*)?");
                     index += 2;

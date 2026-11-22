@@ -160,7 +160,6 @@ impl Scheduler {
                 let mut state = me.lock();
                 for (meta, schedules) in loaded {
                     let active: Vec<Value> = schedules.iter().filter(|s| s.active()).map(Schedule::entry).collect();
-                    // A worker's report that arrived while the store was read is newer.
                     if !state.sessions.contains_key(&meta.path) && !active.is_empty() {
                         state
                             .sessions
@@ -194,7 +193,6 @@ impl Scheduler {
 
     /// Look at the clock again now.
     pub fn poke(&self) {
-        // Taken first so a timer that is between reading the clock and waiting cannot miss the bell.
         drop(self.lock());
         self.bell.notify_all();
     }
@@ -281,7 +279,6 @@ impl Scheduler {
         match result {
             Delivery::Done(active) => {
                 let list = entries(&active);
-                // A fire the session did not take for this slot (its clock is behind) waits instead of repeating.
                 if list.iter().any(|e| e.id == entry.id && e.next_due == entry.next_due) {
                     state.retry_at.insert(key, now + RETRY_MS);
                 } else {

@@ -489,7 +489,6 @@ impl Worker {
                 .partition(|(at, _)| *at <= now);
             self.retries = waiting;
             for (_, events) in retry {
-                // Counted as pending since `retry_later`.
                 for event in events {
                     let coalesce = self.options.coalesce;
                     self.pending
@@ -625,7 +624,6 @@ impl Worker {
             entry,
             events,
         });
-        // The run may have ended between the check and the steer: then nothing will consume it.
         if self.lanes.execution(lane) == Execution::Idle {
             self.reclaim(lane, false);
         }

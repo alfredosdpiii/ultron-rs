@@ -122,7 +122,6 @@ fn non_negative_int(value: &Value) -> Option<usize> {
         return Some(usize::try_from(n).unwrap_or(usize::MAX));
     }
     let n = value.as_f64()?;
-    // Saturating float-to-int cast: integers past usize::MAX only ever act as "past the end".
     (n.is_finite() && n.fract() == 0.0 && n >= 0.0).then_some(n as usize)
 }
 
@@ -316,7 +315,6 @@ fn check_copy_walk(root: &Value, path: &[Seg]) -> Result<()> {
         let child = match (node, seg) {
             (Value::Array(items), Seg::Index(index)) => items.get(*index),
             (Value::Array(items), Seg::Key(key)) => {
-                // JavaScript `Object.hasOwn(array, key)` is true for "length" and canonical in-range indices.
                 let own_index = key
                     .parse::<usize>()
                     .is_ok_and(|i| i < items.len() && i.to_string() == *key);
@@ -459,9 +457,6 @@ fn trim_utf16(text: &mut String, count: usize, path: &[Seg]) -> Result<()> {
     text.clear();
     Ok(())
 }
-
-// One encoder/decoder pair per ordered state stream. Path ids span batches; a `Replace` resets them, and the
-// omitted-path short form is scoped to one batch.
 
 /// Interns a path on its second use and omits a path equal to the previous op's.
 #[derive(Default)]

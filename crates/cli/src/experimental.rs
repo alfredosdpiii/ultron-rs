@@ -842,7 +842,6 @@ pub fn run_client(command: &ClientCommand, env: &Env, out: &mut dyn Write) -> Re
         return crate::interactive::run_remote_interactive(&crate::args::Args::default(), env, route, selection);
     }
     let connection = route.connect().map_err(client::lost::message)?;
-    // The text of the assistant message streaming now: a rejoined prompt prints the rest of its answer.
     let streamed = Arc::new(std::sync::Mutex::new(None::<String>));
     let streaming = streamed.clone();
     let on_event: client::runtime::EventListener = Arc::new(move |event: &Value| {

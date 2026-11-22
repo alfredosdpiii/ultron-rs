@@ -201,7 +201,6 @@ impl Armin {
             }
             State::Rain(drops) => {
                 let mut settled_all = true;
-                // Columns with nothing left to settle: their drop falls through once, then nothing changes.
                 let mut falling_through = true;
                 self.current = empty_grid();
                 for (x, drop) in drops.iter_mut().enumerate() {
@@ -264,7 +263,6 @@ impl Armin {
                     for row in &self.target {
                         let offset = below(&mut *self.random, 7) as i64 - 3;
                         if (self.random)() < 0.3 {
-                            // `row.slice(offset).concat(row.slice(0, offset))`, JavaScript's negative indices.
                             let at = offset.rem_euclid(WIDTH as i64) as usize;
                             let mut shifted = row[at..].to_vec();
                             shifted.extend_from_slice(&row[..at]);

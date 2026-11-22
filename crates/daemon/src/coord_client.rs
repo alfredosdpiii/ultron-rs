@@ -28,7 +28,7 @@ pub enum Event {
 pub struct RegistrationRejected(pub String);
 
 /// Keeps a coordinator from its empty shutdown while a server starts (`CoordinatorStartupLease`).
-pub struct StartupLease(#[allow(dead_code)] UnixStream);
+pub struct StartupLease(#[expect(dead_code, reason = "holds the Unix socket open until the lease drops")] UnixStream);
 
 /// `ensureCoordinator`: connect to the control socket, else launch a coordinator and wait for it.
 pub fn ensure_coordinator(public: &Path, control: &Path) -> io::Result<StartupLease> {

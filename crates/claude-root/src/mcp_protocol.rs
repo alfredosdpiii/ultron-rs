@@ -195,7 +195,6 @@ impl<H: McpHandlers + 'static> Server<H> {
     fn on_message(self: &Arc<Self>, message: Map<String, Value>) {
         let id = message.get("id").cloned().filter(|id| !id.is_null());
         let Some(Value::String(method)) = message.get("method") else {
-            // A response to a request we never send, or garbage: answer only what carries an id.
             if let Some(id) = id
                 && !message.contains_key("result")
                 && !message.contains_key("error")
@@ -281,7 +280,6 @@ pub fn serve<H: McpHandlers + 'static>(handlers: Arc<H>, input: &mut dyn BufRead
         }
         if line.len() > MAX_LINE_BYTES && line.last() != Some(&b'\n') {
             fail(&server.out, Value::Null, INVALID_REQUEST, "Message too large");
-            // Drop the rest of the oversized line.
             let mut rest = Vec::new();
             if input.read_until(b'\n', &mut rest).unwrap_or(0) == 0 {
                 break;
@@ -300,7 +298,6 @@ pub fn serve<H: McpHandlers + 'static>(handlers: Arc<H>, input: &mut dyn BufRead
                 continue;
             }
         };
-        // Batches are not part of current MCP; treat each element as a message.
         let items = match message {
             Value::Array(items) => items,
             other => vec![other],

@@ -69,7 +69,6 @@ fn repository(cwd: &Path) -> Result<(String, PathBuf), String> {
         ));
     }
     let top = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
-    // As autoreview names a checkout it reviews without a GitHub name, so both share the store's trees.
     Ok((format!("local:{}", top.display()), top))
 }
 

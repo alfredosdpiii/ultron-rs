@@ -643,7 +643,6 @@ pub fn build_rlm_graph(snapshot: &RlmSnapshot) -> GraphNode {
     let turn_start = snapshot.turn.as_ref().and_then(|t| t.started_at);
     let frame_task_ids: HashSet<&str> = snapshot.frames.iter().filter_map(|f| f.task_id.as_str()).collect();
 
-    // Arena: nodes and their children by index.
     let mut arena: Vec<GraphNode> = Vec::new();
     let mut kids: Vec<Vec<usize>> = Vec::new();
     let add = |arena: &mut Vec<GraphNode>, kids: &mut Vec<Vec<usize>>, node: GraphNode| {
@@ -653,7 +652,6 @@ pub fn build_rlm_graph(snapshot: &RlmSnapshot) -> GraphNode {
     };
     let mut items: Vec<(usize, Option<String>, Option<f64>, bool)> = Vec::new();
 
-    // Frame groups, in first-seen order.
     let mut group_order: Vec<String> = Vec::new();
     let mut groups: HashMap<String, Vec<&RlmFrame>> = HashMap::new();
     for f in &snapshot.frames {
@@ -682,7 +680,6 @@ pub fn build_rlm_graph(snapshot: &RlmSnapshot) -> GraphNode {
         items.push((index, caller, at, false));
     }
 
-    // Frame tasks the frame listing does not cover fan out per parent.
     let mut orphan_order: Vec<String> = Vec::new();
     let mut orphans: HashMap<String, Vec<&RlmTask>> = HashMap::new();
     let mut tasks: Vec<&RlmTask> = Vec::new();
@@ -726,7 +723,6 @@ pub fn build_rlm_graph(snapshot: &RlmSnapshot) -> GraphNode {
         items.push((index, (!parent.is_empty()).then(|| parent.clone()), started, false));
     }
 
-    // Tasks, with workflow members grouped under one workflow node per run.
     let mut task_nodes: HashMap<String, usize> = HashMap::new();
     let mut workflow_order: Vec<String> = Vec::new();
     let mut workflows: HashMap<String, (Vec<&RlmTask>, Vec<usize>)> = HashMap::new();
@@ -814,7 +810,6 @@ pub fn build_rlm_graph(snapshot: &RlmSnapshot) -> GraphNode {
         items.push((index, parent, started, false));
     }
 
-    // Jobs and tool calls belong to the lane that started them.
     let mut lane_task: HashMap<String, String> = HashMap::new();
     for t in &tasks {
         if let Some(lane) = t.lane.as_deref().filter(|l| !l.is_empty()) {
@@ -835,7 +830,6 @@ pub fn build_rlm_graph(snapshot: &RlmSnapshot) -> GraphNode {
         items.push((index, owner_of(&call.lane), call.started_at, call.native));
     }
 
-    // A parent chain that loops is cut.
     let parent_of: HashMap<&str, Option<&str>> =
         tasks.iter().map(|t| (t.id.as_str(), t.parent_id.as_deref())).collect();
     let in_cycle = |id: &str| {
@@ -859,7 +853,6 @@ pub fn build_rlm_graph(snapshot: &RlmSnapshot) -> GraphNode {
         }
     }
 
-    // Attach by parent task (or the frame group of a nested frame's task), else to a root cell by time.
     let cell_list: Vec<RlmRootCell> = if !snapshot.cells.is_empty() {
         snapshot.cells.clone()
     } else {
@@ -904,7 +897,6 @@ pub fn build_rlm_graph(snapshot: &RlmSnapshot) -> GraphNode {
         }
     }
 
-    // Materialize the tree (a node is placed once; repeated placement is cut).
     fn build(i: usize, arena: &[GraphNode], kids: &[Vec<usize>], placed: &mut HashSet<usize>) -> GraphNode {
         placed.insert(i);
         let mut node = arena[i].clone();
@@ -1503,7 +1495,6 @@ pub fn budget_gauges(snapshot: &RlmSnapshot, _graph: &GraphNode) -> Vec<Gauge> {
             },
         });
     }
-    // The frame budget of the newest active (else newest) inference call.
     let mut order: Vec<String> = Vec::new();
     let mut by_budget: HashMap<String, Vec<&RlmFrame>> = HashMap::new();
     for f in &snapshot.frames {

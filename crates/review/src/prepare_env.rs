@@ -200,7 +200,6 @@ fn compare_numeric(a: &str, b: &str) -> std::cmp::Ordering {
                 let (p, q) = (x.1.trim_start_matches('0'), y.1.trim_start_matches('0'));
                 p.len().cmp(&q.len()).then_with(|| p.cmp(q))
             }
-            // A digit sorts before a letter or punctuation.
             (true, false) => Ordering::Less,
             (false, true) => Ordering::Greater,
             (false, false) => x.1.to_lowercase().cmp(&y.1.to_lowercase()),
@@ -385,11 +384,9 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
     {
         return Ok(cached(record, lock));
     }
-    // To rebuild, wait until no build runs and no review uses this environment.
     let seen = fs::read(&record_path).ok();
     locked(lock.unlock())?;
     locked(lock.lock())?;
-    // Built by another review while this one waited: used as that one left it, partial or not.
     if !options.force
         && fs::read(&record_path).ok() != seen
         && let Some(record) = any_record(&record_path).filter(|record| {
@@ -427,7 +424,6 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
     let timeout_ms = options.timeout_ms.unwrap_or(900_000);
     let local_bin = jsrt::path::join(&[&options.home, ".local", "bin"]);
     let env_path = env.get("PATH").cloned().unwrap_or_default();
-    // The toolchain's bin directories first on PATH for the build tools below.
     let mut path_parts: Vec<String> = toolchain
         .iter()
         .map(|entry| jsrt::path::join(&[&entry.path, "bin"]))
@@ -523,8 +519,6 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
                             &[("VIRTUAL_ENV", &venv), ("POETRY_VIRTUALENVS_CREATE", "false")],
                         )
                     };
-                    // The project's declared dependencies and extras, for an application that is not a buildable
-                    // package. None when its pyproject.toml declares none (the editable failure stands alone).
                     let deps_only = |project: &str| -> Option<Result<(), String>> {
                         let manifest = jsrt::path::join(&[project, "pyproject.toml"]);
                         let text = fs::read_to_string(&manifest).ok()?;
@@ -579,8 +573,6 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
                                 break;
                             }
                             if suffix.is_empty() {
-                                // An application that is not a buildable package (a flat layout of several
-                                // top-level directories): its declared dependencies, without building it.
                                 match deps_only(repo_dir) {
                                     Some(Ok(())) => {
                                         prepared.push("python: uv pip install -r pyproject.toml --all-extras".into());
@@ -597,8 +589,6 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
                             }
                         }
                     }
-                    // Sub-projects (a pyproject or setup.py below the root): installed into the same environment,
-                    // editable.
                     let manifest = Regex::new(r"(^|/)(pyproject\.toml|setup\.py)$").expect("static pattern");
                     for name in found
                         .python

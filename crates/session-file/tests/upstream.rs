@@ -699,7 +699,7 @@ fn session_file_flat_dir_lists_by_cwd() {
         .map(|s| s.path)
         .collect();
     all.sort();
-    let mut expected = vec![a.clone(), b];
+    let mut expected = vec![a, b];
     expected.sort();
     assert_eq!(all, expected);
 }

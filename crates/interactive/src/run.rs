@@ -157,7 +157,6 @@ pub fn terminal_debug(
 pub fn run_stdout(app: &mut App, events: &Receiver<UiEvent>, size: &dyn Fn() -> (u16, u16)) -> std::io::Result<()> {
     crate::qol::install_services(app, std::env::var("PATH").ok())?;
     app.set_suspend_hook(Box::new(suspend_process));
-    // Fullscreen owns the mouse (wheel, scrollbar, selection); the tracking mode follows the terminal multiplexer.
     app.set_mouse_tracking(Some(tui::mouse_tracking(&|name| std::env::var(name).ok())));
     app.set_right_click_paste(tui::right_click_paste_enabled(jsrt::process::platform(), &|name| {
         std::env::var(name).ok()
@@ -238,7 +237,6 @@ pub fn paint_loop_with(
     pending: Option<&dyn Fn() -> usize>,
     keyboard: &mut KeyboardProtocol,
 ) -> std::io::Result<()> {
-    // `PI_TUI_WRITE_LOG`: every byte written to the terminal is appended to the log too.
     let debug = app.render_debug();
     let mut logged = |data: &str| {
         if let Some(debug) = &debug {
@@ -253,7 +251,6 @@ pub fn paint_loop_with(
     let mut viewport = ViewportRenderer::new();
     let mut gate = RenderGate::new();
     let mouse = app.mouse_tracking().filter(|_| !split);
-    // `beforeTerminalStart` / `beforeTerminalStop` with the mouse captured.
     let enter = |screen: &mut AltScreen, app: &mut App| {
         app.reset_viewport();
         screen.enter_with_mouse(mouse.unwrap_or(""))
@@ -281,7 +278,6 @@ pub fn paint_loop_with(
             dirty = true;
         }
         if let Some((command, content)) = app.take_edit_request() {
-            // Pi's Ctrl+G: the TUI stops (input paused, alternate screen left, cooked mode) while the editor runs.
             let gate = app.input_gate();
             gate.store(true, Ordering::SeqCst);
             if !release.is_empty() {
@@ -304,8 +300,6 @@ pub fn paint_loop_with(
             app.reset_display = true;
         }
         if app.take_suspend_request() && app.can_suspend() {
-            // Pi's Ctrl+Z: the TUI stops (input paused, alternate screen left, cooked mode), the process suspends,
-            // and on continue everything is painted again.
             let gate = app.input_gate();
             gate.store(true, Ordering::SeqCst);
             if !release.is_empty() {
@@ -330,7 +324,6 @@ pub fn paint_loop_with(
             dirty = true;
         }
         if let Some(fragment) = keyboard.poll(Instant::now()) {
-            // A held reply fragment that never completed is input after all.
             app.handle_input(&fragment);
             dirty = true;
         }
@@ -338,8 +331,6 @@ pub fn paint_loop_with(
             dirty = true;
         }
         if app.take_reset_display() {
-            // Alt+L: forget what the terminal shows and paint everything again; the split's Kitty images (in
-            // scrollback too) are deleted before the clear, as a full redraw deletes them.
             let images = if split { viewport.delete_images() } else { String::new() };
             out(&format!("{images}\x1b[2J\x1b[3J\x1b[H"))?;
             screen = AltScreen::new();

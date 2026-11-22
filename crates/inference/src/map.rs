@@ -158,9 +158,7 @@ impl Frames {
         self.defaults(payload);
         let inference = &self.inference;
         let (mut options, admission) = inference.options(payload, self.default_map_tokens())?;
-        // The shared prefix is always materialized (it goes into the system prompt, where a handle cannot be opened).
         options.prefix = inference.views(payload.get("prefix"), 1)?;
-        // Validate every item before any frame runs or any budget is touched.
         let mut requests = Vec::new();
         for item in &items {
             let item = item.as_object().ok_or("frame must be an object")?;
@@ -176,8 +174,6 @@ impl Frames {
         let session = &inference.session;
         let options = Arc::new(options);
         let budget = Arc::new(session.budget(&admission));
-        // Each frame's first call is claimed in order at admission, so the shared pool decides deterministically
-        // which frames run.
         let frames: Vec<_> = requests
             .into_iter()
             .map(|(task, views)| {
@@ -193,7 +189,6 @@ impl Frames {
                 )
             })
             .collect();
-        // Up to `concurrency` workers take frames in order; concurrent frames' holds shrink each other's tranches.
         let next = AtomicUsize::new(0);
         let worker = || {
             while let Some(frame) = frames.get(next.fetch_add(1, Ordering::SeqCst)) {

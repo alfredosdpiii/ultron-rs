@@ -216,7 +216,7 @@ fn daemon_prompt_schedules_missed_slots_fire_once_on_start_then_wait_for_the_nex
     poke(&s);
     assert_eq!(
         deliveries.recv_timeout(HANG).unwrap(),
-        (probe.id.clone(), "sch-late".to_string(), T0 + HOUR, T0 + HOUR)
+        (probe.id, "sch-late".to_string(), T0 + HOUR, T0 + HOUR)
     );
     s.stop();
 }

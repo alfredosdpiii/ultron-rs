@@ -192,7 +192,6 @@ impl PiTree {
                 _ => place(entry, &mut out, &mut placed, &mut waiting),
             }
         }
-        // Only cycles remain; Pi cannot reach these entries from a root either.
         let rest: Vec<Value> = waiting.iter().flat_map(|(_, children)| children.clone()).collect();
         for entry in rest {
             if !placed.contains(id_of(&entry)) {
@@ -236,7 +235,6 @@ fn split_branch_local_edits(input: &[Value]) -> (Vec<Value>, HashMap<String, Str
         if !matches!(type_of(target), "message" | "custom_message") || tree.dominates(id_of(target), edit_id) {
             return false;
         }
-        // Path target .. parent(edit), oldest first; the edit must lie below its target.
         let mut path: Vec<&Value> = Vec::new();
         let mut parent_id = tree.parent_of(edit);
         while let Some(id) = parent_id {
@@ -292,7 +290,6 @@ fn split_branch_local_edits(input: &[Value]) -> (Vec<Value>, HashMap<String, Str
         for copy in copies.values_mut() {
             remap(copy, &mapping);
         }
-        // Move the edit's branch onto the copies and redirect its references to them.
         let head = next(fork);
         let mut moved: HashSet<String> = HashSet::from([head.clone()]);
         let mut queue = VecDeque::from([head.clone()]);
@@ -312,7 +309,6 @@ fn split_branch_local_edits(input: &[Value]) -> (Vec<Value>, HashMap<String, Str
                 remap(&mut entry, &mapping);
             }
             entries.push(entry);
-            // Each copy goes right after its original, so edit order (the later edit wins) is kept.
             if let Some(copy) = copies.remove(&id) {
                 entries.push(copy);
             }
@@ -374,7 +370,6 @@ fn plan_import(entries: &[Value], tree: &PiTree) -> ImportPlan {
     for edit in &edits {
         let target = str_of(edit, "targetId").and_then(|t| tree.by_id.get(t));
         let editable = target.is_some_and(|t| matches!(type_of(t), "message" | "custom_message"));
-        // Edits appear in path order along a single chain, so the later edit wins as in Pi.
         match target {
             Some(target) if editable && tree.dominates(id_of(target), id_of(edit)) => {
                 message_edits.insert(id_of(target).to_string(), edit.get("replacement").cloned());
@@ -395,7 +390,6 @@ fn plan_import(entries: &[Value], tree: &PiTree) -> ImportPlan {
                 );
             }
         }
-        // Later edits of kept entries apply on every leaf below the compaction only when they dominate it.
         for edit in &edits {
             if tree.dominates(id_of(compaction), id_of(edit)) {
                 replacements.insert(
@@ -452,7 +446,6 @@ fn to_native_entry_body(entry: &Value, plan: &ImportPlan) -> Map<String, Value> 
     match type_of(entry) {
         "message" => return edited_message_body(&entry["message"], edit.as_ref()),
         "custom_message" => {
-            // `createCustomMessage`.
             let mut message = Map::new();
             message.insert("role".into(), json!("custom"));
             put(&mut message, "customType", entry);
@@ -474,7 +467,6 @@ fn to_native_entry_body(entry: &Value, plan: &ImportPlan) -> Map<String, Value> 
         }
         "branch_summary" => {
             out.insert("type".into(), json!("branch_summary"));
-            // Pi encodes a root source as the "root" sentinel.
             match entry.get("fromId") {
                 Some(Value::String(from)) if from == "root" => {
                     out.insert("fromId".into(), Value::Null);
@@ -665,7 +657,6 @@ pub fn import_pi_session_with(
         }
     };
     let cwd = str_of(&header, "cwd").unwrap_or_default().to_string();
-    // In memory: Pi's format migrations apply without rewriting the source file.
     let manager = SessionManager::in_memory(Box::new(SystemEnv), &cwd, None, Some(file_entries))
         .map_err(|e| ImportError::Failed(e.to_string()))?;
     let pi_entries: Vec<Value> = manager.entries().into_iter().cloned().collect();
@@ -724,7 +715,6 @@ pub fn import_pi_session_with(
             match copied {
                 Some(original) => writes.push(Write::set(PI_COPY_OF, &id, json!(original))),
                 None => {
-                    // Compare with the Pi entry as written: a split may have re-parented or re-targeted this one.
                     let original = pi_by_id.get(id.as_str()).copied().unwrap_or(&Value::Null);
                     if !reproduces_pi_entry(original, &native, at) {
                         writes.push(Write::set(PI_ORIGINAL, &id, original.clone()));
@@ -735,7 +725,6 @@ pub fn import_pi_session_with(
             commit(&mut session, &writes)?;
         }
 
-        // Usage Pi reported, as one imported historical root of the session's usage ledger.
         let usage_root = pi_import_usage_root(&pi_session_id);
         let refs: Vec<&Value> = pi_entries.iter().collect();
         let reported = pi_usage_entries(&refs);
@@ -758,7 +747,6 @@ pub fn import_pi_session_with(
             ledger.import_history(&usage_root, "pi", &calls)?;
             let document = captured.lock().unwrap_or_else(PoisonError::into_inner).take();
             if let Some(document) = document {
-                // One value, as the TypeScript import writes it; the first ledger write moves the roots out.
                 commit(
                     &mut session,
                     &[Write::set(USAGE_ROOT.namespace, USAGE_ROOT.key, document)],
@@ -766,7 +754,6 @@ pub fn import_pi_session_with(
             }
         }
 
-        // Derived state at the Pi leaf: tip, labels, name, and the lane configuration Pi would resume with.
         let leaf = manager
             .leaf_id()
             .and_then(Value::as_str)
@@ -790,7 +777,6 @@ pub fn import_pi_session_with(
             if let Some(level) = &context.thinking_level {
                 configuration.insert("thinkingLevel".into(), level.clone());
             }
-            // Tools are not recorded by Pi; the host activates its own tool set when it opens the lane.
             configuration.insert("activeToolNames".into(), json!([]));
             writes.push(Write::set(LANE_CONFIG, "main", Value::Object(configuration)));
             writes.push(Write::set(
@@ -819,7 +805,6 @@ pub fn import_pi_session_with(
     let result = written();
     drop(session);
     result.map_err(|error| {
-        // Never leave a partial import behind: it would block a retry.
         let _ = std::fs::remove_file(&path);
         ImportError::Failed(error)
     })
@@ -907,7 +892,6 @@ pub fn export_native_session_to_pi(session_path: &Path, output_path: &Path) -> R
         *leaf = Some(id);
     };
 
-    // Pi resumes at its last entry: make that the native main tip.
     if let Some(tip) = &converted.tip_id
         && converted.leaf_id != leaf
     {
@@ -932,7 +916,6 @@ pub fn export_native_session_to_pi(session_path: &Path, output_path: &Path) -> R
         stamp = found["timestamp"].clone();
     }
 
-    // Labels set natively after import (or never recorded as Pi entries).
     let pi_labels = pi_labels_of(&entries);
     let native_labels: Vec<(String, String)> = state
         .scan_values(ENTRY_LABEL, "")
@@ -1021,7 +1004,7 @@ pub fn export_native_session_to_pi(session_path: &Path, output_path: &Path) -> R
     file.write_all(content.as_bytes())
         .map_err(|e| format!("{}: {e}", output.display()))?;
     Ok(ExportResult {
-        session_id: metadata.id.clone(),
+        session_id: metadata.id,
         path: output,
         entries: entries.len(),
     })

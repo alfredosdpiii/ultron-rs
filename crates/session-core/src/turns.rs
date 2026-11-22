@@ -432,8 +432,6 @@ impl TurnModels {
         on_event: &mut (dyn FnMut(&AssistantMessageEvent) + Send),
     ) -> harness::scheduler::Result<AssistantMessage> {
         let bridged = Bridged::new(signal);
-        // The request's own options (its pinned stream options, a compaction's `maxTokens`/`cacheRetention`) and
-        // provider session id, as generation.ts sends them.
         let mut options = request.simple_options();
         options.base.api_key = (self.api_key)(&model.provider);
         options.base.signal = Some(bridged.abort.clone());
@@ -500,7 +498,6 @@ impl Models for TurnModels {
         }
         loop {
             let message = self.stream_root(model, context, request, signal, on_event)?;
-            // An overflow compacts the context and asks again (once per overflow; the actor decides).
             if !crate::auto_compaction::overflowed(&message, model.context_window, model.max_tokens) {
                 return Ok(message);
             }
@@ -545,7 +542,6 @@ impl TurnModels {
         options.base.api_key = (self.api_key)(&model.provider);
         options.base.signal = Some(bridged.abort.clone());
         let mut messages = start.messages;
-        // The run's final request: tools off, and the note saying why after its context (not stored).
         if let Some(note) = &request.final_note {
             harness::chat::gate::apply_final(note, &mut messages, &mut options, jsrt::date::now_ms());
         }
@@ -585,27 +581,20 @@ impl TurnModels {
         if let Some((trace, session)) = &self.trace {
             trace.record(session, session_journal::run::MAIN_LANE, model, &llm, &message);
         }
-        // The ledger counts the response before its entry commits and before the next request or cell is gated, as
-        // the TypeScript drive's `after_response` does; a response a closing worker drops is not counted (the
-        // reopened runtime resends it).
         if (!signal.is_cancelled() || *sync::lock(&self.bridge.user_abort))
             && let Some(charge) = &self.charge
         {
             charge(ROOT_CONVERSATION_ID, &message);
         }
-        // A request that failed before its stream started has no `message_start` (the harness reports only its
-        // committed answer); an aborted one is announced, so the actor can hide it.
         if !started && message.stop_reason != StopReason::Error {
             self.bridge.send(AgentEvent::MessageStart {
                 message: Message::Assistant(message.clone()),
             });
         }
         if signal.is_cancelled() {
-            // Only the user's abort ends the turn here; the transcript keeps the aborted response as the agent loop
-            // does. A closing worker keeps nothing: the reopened runtime resends the pinned request.
             if *sync::lock(&self.bridge.user_abort) {
                 self.bridge.send(AgentEvent::MessageEnd {
-                    message: Message::Assistant(message.clone()),
+                    message: Message::Assistant(message),
                 });
             }
             return Err(signal.reason().unwrap_or_else(|| HarnessError::msg("cancelled")));
@@ -686,15 +675,12 @@ impl CellExecutor for TurnCells {
     }
 
     fn prepare(&self, arguments: &Value) -> Result<Value, String> {
-        // `prepareToolCall` of the TypeScript harness: validated and coerced against the tool's schema, with
-        // `validateToolArguments`'s error text.
         let tool = self.tool.tool();
         jsonschema::validate_tool_arguments(&tool.name, &tool.parameters, arguments)
     }
 
     fn execute(&self, call: &CellCall, progress: &CellProgress, signal: &Cancel) -> Result<CellResult, String> {
         if call.conversation_id != ROOT_CONVERSATION_ID {
-            // A subagent's cell runs in its own lane, with its own host handler.
             let lane = self
                 .children
                 .lane_of(call.conversation_id)
@@ -712,8 +698,6 @@ impl CellExecutor for TurnCells {
         }
         let bridged = Bridged::new(signal);
         *sync::lock(&self.progress) = Some(progress.clone());
-        // The root cell's start and end, on the cell's own thread: a task that ends while the cell runs is the
-        // cell's (collapse on return), whenever the actor gets to the cell's events.
         let context = self.stack.context.get().cloned();
         if let Some(context) = &context {
             context.tool_start(session_journal::run::MAIN_LANE, &call.name, &call.call_id);
@@ -738,7 +722,6 @@ impl CellExecutor for TurnCells {
                 .reason()
                 .map_or_else(|| "cancelled".to_string(), |r| r.to_string()));
         }
-        // The round's last cell: the turn ends now, so a steer it earns is placed with the round's results.
         if let Some((calls, failed)) = self.bridge.round_complete() {
             let answer = Answer::default();
             self.bridge.request(Request::RoundEnded {

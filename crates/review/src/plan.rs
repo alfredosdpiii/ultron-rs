@@ -440,7 +440,6 @@ pub fn comment_text(finding: &EngineFinding) -> String {
         (None, Some(fix)) => sentence(fix),
         _ => String::new(),
     };
-    // The scenario is the evidence when there is one; else the reason.
     let evidence = match &finding.scenario {
         Some(scenario) if !jsrt::string::trim(scenario).is_empty() => scenario.as_str(),
         _ => finding.why.as_str(),
@@ -613,7 +612,6 @@ pub fn decide_verdict_in(
     } else if !result.complete {
         decision(Verdict::Comment, "the review did not cover everything".into())
     } else if late > 0 {
-        // Not a block, and not an approval over them either.
         decision(
             Verdict::Comment,
             "nothing that changed since the last review blocks the merge".into(),
@@ -702,14 +700,12 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
         let finding = &result.findings[index];
         let level = finding.level();
         let blocking = blocks(finding, block_at, fresh);
-        // A review that asks for changes carries what must be resolved and the notes worth a look, not its nits.
         if verdict == Verdict::RequestChanges && level == "nit" {
             over_cap.push(index);
             continue;
         }
         let key = format!("{short_sha}-{}", index + 1);
         let mut comment = plan_comment(finding, index, ranges(&finding.file), &key);
-        // The same root cause at another place that is in the diff: the comment goes there, naming this place.
         if comment.is_none() {
             let also = finding.also_at.clone().unwrap_or_default();
             for (position, other) in also.iter().enumerate() {
@@ -739,7 +735,6 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
         }
         match comment {
             Some(comment) if comments.len() < max_comments => comments.push(comment),
-            // What cannot be inline is named in the body when it must be resolved, or when its line is outside the diff.
             ref other if blocking || (other.is_none() && level != "nit") => in_summary.push(index),
             _ => over_cap.push(index),
         }
@@ -764,7 +759,6 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
         .count();
     let since = options.since_sha.as_deref().map(|sha| jsrt::utf16::head(sha, 7));
 
-    // Paragraph 2: what was checked and holds.
     let assurance: Vec<String> = result
         .assurance
         .iter()
@@ -805,7 +799,6 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
         None => first,
     };
 
-    // Paragraph 1: the verdict and what must be resolved before merge.
     let mut second = vec![format!("**{}.**", verdict.title())];
     if !blockers.is_empty() {
         let named: Vec<String> = blockers
@@ -845,8 +838,6 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
     } else {
         second.push(format!("{}.", capitalized(&reason)));
     }
-    // An earlier finding that still blocks is named with what the re-check saw, so the author can fix or dispute it
-    // (fisher-ki-saas#2917: two reviews requested changes for "1 finding from an earlier review" and named none).
     let earlier_blockers: Vec<&EarlierStatus> = result
         .earlier
         .iter()
@@ -912,7 +903,6 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
         second.push(format!("Earlier findings: {}.", parts.join("; ")));
     }
 
-    // Paragraph 3: the non-blocking notes.
     let mut notes = Vec::new();
     if late > 0 {
         notes.push(format!(
@@ -1008,7 +998,6 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
         ));
     }
 
-    // What was not checked: the reasons coverage is incomplete lead; routine skips follow.
     let mut gaps: Vec<&String> = result.incomplete.iter().collect();
     gaps.extend(result.not_checked.iter().filter(|item| {
         !result.incomplete.contains(item) && !PIPELINE_ACCOUNTING.iter().any(|lead| item.starts_with(lead))

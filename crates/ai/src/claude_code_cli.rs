@@ -233,7 +233,6 @@ pub fn parse_help_flags(help: &str) -> Vec<String> {
             if !flags.contains(&flag) {
                 flags.push(flag.clone());
             }
-            // Also expand optional suffixes like `--system-prompt[-file]` listed in `claude --help`.
             if chars.get(j) == Some(&'[') && chars.get(j + 1) == Some(&'-') {
                 let mut k = j + 2;
                 while chars.get(k).is_some_and(|c| c.is_ascii_alphanumeric() || *c == '-') {
@@ -269,8 +268,6 @@ fn probe_cli(bin: &str, env: &Env, cwd: &Path) -> Result<ClaudeCliCapabilities, 
     let version_run = exec_cli(bin, &["--version"], env, cwd)?;
     let help_run = exec_cli(bin, &["--help"], env, cwd)?;
     let auth_run = exec_cli(bin, &["auth", "status", "--json"], env, cwd)?;
-    // A launcher script may print its own lines before it starts the CLI (mise's `claude` wrapper reports the tool
-    // on stdout): the version is the CLI's last line, and the login state starts where the JSON does.
     let version = version_run
         .stdout
         .lines()
@@ -502,8 +499,6 @@ impl CliProcess {
                     }
                 }
                 let status = child.wait();
-                // The stderr tail is complete before the exit is reported (a process it left running may hold the
-                // pipe, so only for a while).
                 let _ = stderr_done.recv_timeout(signals::child::PIPE_GRACE);
                 use std::os::unix::process::ExitStatusExt;
                 let _ = sender.send(ChildEvent::Exited(
@@ -887,8 +882,6 @@ fn plan_request(
         args.push(format!("--json-schema={}", jsrt::json::stringify(schema)));
     }
     let mut env = base_env.clone();
-    // Same isolation & non-SDK caller identity as claude-subscription: avoids sdk-cli's ~2x heavier subscription
-    // metering, suppresses MEMORY.md / managed CLAUDE.md injection, and stops background title/update requests.
     for (k, v) in crate::claude_subscription::process::ALWAYS_QUIET
         .iter()
         .chain(crate::claude_subscription::process::CALLER_IDENTITY)
@@ -969,7 +962,6 @@ pub fn reset_text(info: Option<&RateLimitInfo>) -> String {
             } else {
                 resets_at
             };
-            // `toISOString` throws for a time beyond TimeClip's range; the reset hint is then left out.
             jsrt::date::time_clip(ms)
                 .map_or_else(String::new, |ms| format!("; resets at {}", jsrt::date::iso_string(ms)))
         }
@@ -1345,7 +1337,6 @@ impl Run<'_, '_, CliStream> {
             let event = match next {
                 Some(ChildEvent::Line(event)) => event,
                 Some(ChildEvent::Exited(code, signal)) => {
-                    // Lines the reader sent before the exit are already delivered; there was no result.
                     return Err(self.exit_error(child, code, signal));
                 }
                 None => return Err(self.exit_error(child, None, None)),

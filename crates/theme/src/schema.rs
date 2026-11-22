@@ -272,7 +272,6 @@ pub fn assert_theme_name_is_valid(name: &str) -> Result<(), String> {
 fn color_value(value: &Value) -> ColorValue {
     match value {
         Value::String(s) => ColorValue::Str(s.clone()),
-        // Validation guarantees an integer in 0..=255 here.
         other => ColorValue::Index(other.as_f64().map_or(0, |n| n as u8)),
     }
 }

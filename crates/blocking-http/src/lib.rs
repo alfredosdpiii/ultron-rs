@@ -97,7 +97,6 @@ async fn exchange(
     let method = reqwest::Method::from_bytes(request.method.as_bytes()).map_err(|_| TransportError::Failed)?;
     let mut builder = client.request(method, &request.url);
     for (name, value) in &request.headers {
-        // Values are Latin-1 (validated by the client): sent as their byte values, as fetch's ByteString does.
         let bytes: Vec<u8> = value.chars().map(|c| c as u32 as u8).collect();
         let value = reqwest::header::HeaderValue::from_bytes(&bytes).map_err(|_| TransportError::Failed)?;
         builder = builder.header(name.as_str(), value);
@@ -158,7 +157,6 @@ impl Transport for ReqwestTransport {
                 let _ = done.send(exchange(client, request, max_bytes).await);
             }
         });
-        // An abort drops the exchange, and with it the sender this waits on.
         let abort = task.abort_handle();
         let _link = signal.link(move |_| abort.abort());
         let result = match outcome.recv_timeout(timeout) {
@@ -167,7 +165,6 @@ impl Transport for ReqwestTransport {
             Err(mpsc::RecvTimeoutError::Disconnected) if signal.is_aborted() => Err(TransportError::Aborted),
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(TransportError::Failed),
         };
-        // Dropping the exchange closes its connection.
         task.abort();
         result
     }

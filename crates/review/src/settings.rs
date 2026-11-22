@@ -695,8 +695,6 @@ pub fn saved(global: &Map<String, Value>) -> Map<String, Value> {
     put("signature", flag("signature"));
     put("learn", flag("learn"));
     put("skipBots", flag("skipBots"));
-    // `ban`: reviewing account (login, `host/login` or `*`) to the logins it never reviews; keys and logins
-    // trimmed, anything but a list of logins dropped.
     if let Some(Value::Object(ban)) = c.get("ban") {
         let mut parsed = Map::new();
         for (key, logins) in ban {

@@ -79,7 +79,6 @@ pub fn settings(
     };
     let reserve_tokens = resolve("reserveTokens", defaults.reserve_tokens)?;
     let keep_recent_tokens = resolve("keepRecentTokens", defaults.keep_recent_tokens)?;
-    // `compaction.enabled ?? true`, as JavaScript reads it.
     let configured = match compaction.and_then(|c| c.get("enabled")) {
         None | Some(Value::Null) => true,
         Some(Value::Bool(on)) => *on,

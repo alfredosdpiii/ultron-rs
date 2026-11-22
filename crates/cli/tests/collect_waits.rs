@@ -179,7 +179,7 @@ fn cli_collect_waits_a_native_child_lane_waits_in_its_cell_for_a_grandchild() {
     let (port, seen) = scripted(vec![
         Route {
             marker: Some("GRAND-BRIEF"),
-            replies: vec![Reply::After(gate.clone(), anthropic_text("grand answer"))],
+            replies: vec![Reply::After(gate, anthropic_text("grand answer"))],
         },
         Route {
             marker: Some("CHILD-BRIEF"),
@@ -196,7 +196,7 @@ fn cli_collect_waits_a_native_child_lane_waits_in_its_cell_for_a_grandchild() {
                     "toolu_s",
                     "h = await rlm.spawn('CHILD-BRIEF: delegate', name='kid', depth=1)\nprint('spawned')",
                 )),
-                Reply::Then(turn_ended.clone(), anthropic_text("waiting for the child")),
+                Reply::Then(turn_ended, anthropic_text("waiting for the child")),
                 Reply::Now(anthropic_tool(
                     "toolu_c",
                     "r = await rlm.collect([h])\nprint(r[0]['result']['value'])",
@@ -253,7 +253,7 @@ fn cli_collect_waits_a_root_with_events_off_waits_in_its_cell() {
     let (port, seen) = scripted(vec![
         Route {
             marker: Some("CHILD-BRIEF"),
-            replies: vec![Reply::After(gate.clone(), anthropic_text("child answer"))],
+            replies: vec![Reply::After(gate, anthropic_text("child answer"))],
         },
         Route {
             marker: None,
@@ -302,7 +302,7 @@ fn cli_collect_waits_print_mode_waits_for_a_typed_task_it_started() {
                     "j = await background.start('TASK-BRIEF: work')\nprint('started')",
                 )),
                 // The root ends its turn with the task running; only then may the task answer.
-                Reply::Then(gate.clone(), anthropic_text("started it")),
+                Reply::Then(gate, anthropic_text("started it")),
                 Reply::Now(anthropic_text("saw the task")),
             ],
         },

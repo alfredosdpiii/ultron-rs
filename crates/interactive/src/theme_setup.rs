@@ -150,7 +150,6 @@ impl ThemeController {
         self.terminal = detection.theme;
         let detected = self.terminal_theme();
         if self.detection_confident && self.active.as_deref() == Some(detected) {
-            // `COLORFGBG` already chose and saved this theme.
             return None;
         }
         self.detection_confident = true;

@@ -44,7 +44,6 @@ impl SessionLanes {
     fn ask(&self, call: LaneCall) -> Option<LaneAnswer> {
         let (reply, answer) = channel();
         sync::lock(&self.actor).send(Input::EventLane(call, reply)).ok()?;
-        // The actor drops the reply when it closes: the session is going away.
         answer.recv().ok()
     }
 }
@@ -128,7 +127,6 @@ impl EventLanes for SessionLanes {
                 _ => Err("the session is closing".into()),
             };
         }
-        // A child conversation's run places its steers itself: what it did not take stays its own.
         Ok(Cancelled::AlreadyConsumed)
     }
 }
@@ -165,20 +163,15 @@ pub(super) fn install(
     }));
     options.enabled = stack.events.enabled();
     options.max_runs = max_event_runs_from_env((env.var)(ASYNC_EVENTS_MAX_RUNS_ENV).as_deref());
-    // With events on, the dispatcher re-invokes the idle root when its work ends: the root lane is woken
-    // (crate::wake), so its rlm.collect never waits; without them it waits in its cell like every other lane.
     stack.wake.set(options.enabled);
-    // A completion re-invokes the root only within the budget of the request that started the work.
     let usage = stack.usage.clone();
     options.refuse = Some(Arc::new(move |root: &str| usage.reinvoke_refusal(root).ok().flatten()));
-    // Esc on a root turn stops the shell jobs it started.
     let host = stack.host.clone();
     let tools = stack.tool_calls().clone();
     options.on_root_aborted = Some(Arc::new(move |root: &str| {
         host.cancel_root(root);
         tools.cancel_root(root);
     }));
-    // Aborted roots and each chain's automatic runs outlive this worker (a hand-over, a restart).
     options.chains = crate::async_events::Chains::from_value(
         lock_session(&session).value(session_journal::ns::MODULE, crate::async_events::CHAINS_MODULE),
     );
@@ -189,9 +182,7 @@ pub(super) fn install(
             chains.to_value(),
         )]);
     }));
-    // Event summaries are masked with the session's secrets (`maskCellOutput`).
     options.mask = Some(stack.mask());
-    // A backgrounded cell's end carries the context reminder its result would have carried.
     let reminders = stack.context_reminders.clone();
     options.note = Some(Arc::new(move |lane: &str, text: &str| {
         reminders.reminder(lane, text, 0)
@@ -203,7 +194,6 @@ pub(super) fn install(
         waiting: Mutex::new(Vec::new()),
     });
     let dispatcher = Dispatcher::new(options, lanes);
-    // A job belongs to the lane that started it and to that lane's root turn.
     let (roots_children, roots_agents) = (children.clone(), stack.agents.clone());
     stack.host.set_roots(Arc::new(move |lane: &str| {
         if lane == MAIN_LANE {
@@ -224,10 +214,9 @@ pub(super) fn install(
             summary: event["summary"].as_str().unwrap_or_default().into(),
             fetch: event["fetch"].as_str().unwrap_or_default().into(),
             lane: end.record.lane.clone(),
-            root_id: end.record.root_id.clone(),
+            root_id: end.record.root_id,
         });
     }));
-    // A detached REPL tool call's end is announced like a job's (`toolEvent`), under the root that started it.
     let (tool_roots_children, tool_roots_agents) = (children.clone(), stack.agents.clone());
     stack.tool_calls().set_roots(Arc::new(move |lane: &str| {
         if lane == MAIN_LANE {
@@ -255,11 +244,9 @@ pub(super) fn install(
                 root_id: end.call["rootId"].as_str().map(str::to_string),
             });
         }));
-    // Subagents', typed tasks' and detached cells' ends, forwarded until the session closes.
     let (forward, events, agents) = (Arc::downgrade(&dispatcher), stack.events.clone(), stack.agents.clone());
     std::thread::spawn(move || {
         while !stop.is_cancelled() {
-            // Returns as soon as an end arrives; the wait only bounds how long a closed session keeps this thread.
             let ends = events.recv(std::time::Duration::from_secs(1));
             let Some(dispatcher) = forward.upgrade() else { return };
             publish_ends(ends, &children, &agents, &dispatcher);
@@ -318,7 +305,6 @@ impl Core {
                 if queued {
                     self.remove_queued(&[entry]).map(|_| Cancelled::Cancelled)
                 } else {
-                    // Placed by the run (or withdrawn with it): the run had it.
                     Ok(Cancelled::AlreadyConsumed)
                 }
             }),
@@ -355,10 +341,6 @@ impl Core {
     /// event waiting for delivery (TypeScript's `holdActivity`). Reported as an `activity` event (the worker does not retire while it
     /// is active), on every tick and before a run's end.
     pub(super) fn report_activity(&mut self) {
-        // Running work is read before its ends are forwarded: work that ends in between has queued its end (a
-        // subagent queues it in the step that ends it), which the forward then publishes. Forwarding first, a
-        // subagent ending between the forward and the read was neither running nor pending, and an unattached
-        // worker retired without its child_done event.
         let running = self.run.is_some()
             || self.compacting.is_some()
             || self.turn_guard_checking()
@@ -374,7 +356,6 @@ impl Core {
             lane: MAIN_LANE.into(),
             active,
         });
-        // A session quiet for a while keeps its tail now, not only when it closes (crate::auto_memory::IDLE_RETAIN).
         if self.auto_memory.idle_due(active, std::time::Instant::now()) {
             self.retain_tail(true);
         }
@@ -382,10 +363,8 @@ impl Core {
 
     /// Root-owned work whose completion may still re-invoke the root (`async.pending`).
     pub(super) fn async_pending(&mut self) -> Value {
-        // A completion that arrived but is not forwarded yet still has to re-invoke the root.
         let stack = self.lane.stack.clone();
         forward_ends(&stack.events, &self.durable.children, &stack.agents, &self.events);
-        // Turn-end checks in progress may continue the turn (core::turn_guard): counted with the run.
         let checking = usize::from(self.turn_guard_checking());
         let events = &self.events;
         if !events.enabled() {
@@ -394,8 +373,6 @@ impl Core {
         let aborted = |root: Option<&str>| events.root_aborted(root);
         let jobs = self.lane.stack.host.running(MAIN_LANE, &aborted);
         let tools = self.lane.stack.tool_calls().running(MAIN_LANE, &aborted);
-        // Subagents, typed tasks whose end is announced to the root (`task_done`), and detached root cells
-        // (`cell_done`): each end re-invokes the root, so a print run waits for them.
         let tasks = self.lane.stack.delegation.running(MAIN_LANE).len()
             + self.lane.stack.agents.running_announced(MAIN_LANE)
             + self.lane.stack.lanes.detached_running(MAIN_LANE);

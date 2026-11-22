@@ -237,7 +237,6 @@ pub fn read_clipboard_image(sources: ImageSources<'_, '_>) -> ImageRead {
         if image == ImageRead::Failed {
             image = via_xclip(run);
         }
-        // Linux's empty/unavailable distinction stays when Windows has no image either.
         if wsl && !matches!(image, ImageRead::Image { .. }) {
             image = via_powershell(run, &temp_file()).unwrap_or(image);
         }

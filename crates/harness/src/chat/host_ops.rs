@@ -150,8 +150,6 @@ impl HostOps {
             .and_then(Value::as_str)
             .filter(|name| !name.trim().is_empty())
             .ok_or("rlm.spawn name must be a non-empty string")?;
-        // A persistent child runs in the session's directory as a child conversation of its own: no worktree, no
-        // nested delegation, no forked history. An option it would drop is refused rather than ignored.
         for (key, unset) in [
             ("worktree", &[Value::Null, Value::Bool(false)][..]),
             ("worktree_setup", &[Value::Null][..]),
@@ -261,7 +259,6 @@ impl HostOps {
                     break;
                 }
                 if record.state.status() != TaskStatus::Terminal && !is_keep(&record) {
-                    // An ordinary child becomes terminal: wait for its record, bounded by the cell and the timeout.
                     let (done, expired) = (Cancel::new(), Cancel::new());
                     let limit = timeout.map(|deadline| deadline.saturating_duration_since(Instant::now()));
                     let timer = limit.map(|limit| {
@@ -505,7 +502,6 @@ impl HostHandler for CellOps {
                 None => Err(format!("Unknown host request {kind}")),
             };
         }
-        // The kernel's signal ends with the cell; mirror it for host-side waits.
         let cancel = Cancel::new();
         let watcher = {
             let (cancel, signal) = (cancel.clone(), signal.clone());
@@ -527,7 +523,6 @@ impl HostHandler for CellOps {
                 None => Err(format!("Unknown host request {kind}")),
             },
         };
-        // The watcher sees the cancellation within one poll and exits; nothing waits for it.
         cancel.abort();
         drop(watcher);
         result

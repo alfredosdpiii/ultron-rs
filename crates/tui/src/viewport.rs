@@ -97,7 +97,6 @@ fn kitty_header(line: &str) -> Option<(Vec<u32>, usize)> {
         let Some((key, value)) = param.split_once('=') else {
             continue;
         };
-        // `Number(value)`: an integer in 1..=0xffffffff.
         let Some(n) = value
             .trim()
             .parse::<u64>()
@@ -255,7 +254,6 @@ impl ViewportRenderer {
         let height = height.max(1);
         let skip = plan.viewport.len().saturating_sub(height);
         let mut rows: Vec<String> = plan.viewport[skip..].to_vec();
-        // An image cut by the top of the screen shows its visible rows on the first row.
         crate::screen::crop_images(&plan.viewport, skip, &mut rows);
         let cursor = extract_cursor(&mut rows);
         let rows: Vec<String> = rows.iter().map(|r| Self::prepare(r, width)).collect();
@@ -273,8 +271,6 @@ impl ViewportRenderer {
 
         let shrunk = self.painted && self.clear_on_shrink && rows.len() < self.max_rows;
         if self.trace {
-            // `logRedraw`: why the viewport is painted whole, as tui-main-screen.ts words it (a forced repaint is its
-            // `resetRenderState`, previousWidth -1). A history batch alone is appended, not a full redraw.
             let reason = if !self.painted {
                 Some("first render".to_string())
             } else if self.force_repaint {
@@ -299,8 +295,6 @@ impl ViewportRenderer {
         let mut out = String::from(SYNC_BEGIN);
         let mut dump = None;
         if !self.painted || history.is_some() || geometry_changed || self.force_repaint || shrunk {
-            // The images being repainted go first (`deleteKittyImages(previousKittyImageIds)`); a replay clears
-            // scrollback, so the images written there go too.
             let mut deleted: BTreeSet<u32> = self.prev.iter().flat_map(|l| kitty_ids(l)).collect();
             if replay {
                 deleted.append(&mut self.history_images);
@@ -332,8 +326,6 @@ impl ViewportRenderer {
         } else {
             self.max_rows = self.max_rows.max(rows.len());
             let changed = changed_rows(&self.prev, &rows);
-            // `deleteChangedKittyImages`: the images shown on changed rows (or rows now gone) are deleted before
-            // anything is drawn.
             let deleted: BTreeSet<u32> = self
                 .prev
                 .iter()

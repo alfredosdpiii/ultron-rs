@@ -56,7 +56,6 @@ impl MemoryChildren {
     fn run(&self, factory: &ChildAgentFactory, run: ChildRun) -> Result<String, String> {
         let (options, stream) = factory(&run);
         let mut agent = Agent::new(options, stream);
-        // The conversation as the loop has it, for the lane's context meter.
         let conversation = Arc::new(Mutex::new(agent.messages.clone()));
         let seen = conversation.clone();
         agent.subscribe(move |event| {
@@ -66,7 +65,7 @@ impl MemoryChildren {
         });
         let lane = run.lane_name.clone();
         if let Some(reminders) = self.reminders.get() {
-            let meter = conversation.clone();
+            let meter = conversation;
             reminders.set_lane_meter(
                 &lane,
                 Some(Arc::new(move || {

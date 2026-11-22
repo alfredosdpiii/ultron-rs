@@ -174,7 +174,7 @@ fn interactive_rlm_views_replay_typescript_fixture() {
             80,
             16,
             &FocusRenderOptions {
-                hints: Some(hints.clone()),
+                hints: Some(hints),
                 spinner_frame: 1,
                 ..FocusRenderOptions::default()
             },
@@ -1256,7 +1256,7 @@ fn interactive_rlm_pane_work_runs_live_or_from_the_running_turn() {
         keys_of(pane_work_runs(&build_dag_runs(&live), None)),
         ["turn", "workflow:wf-01a07520"]
     );
-    let mut finished = live.clone();
+    let mut finished = live;
     for t in &mut finished.tasks {
         t.state = "completed".into();
     }

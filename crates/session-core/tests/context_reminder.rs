@@ -174,7 +174,7 @@ fn session_core_context_reminder_adds_the_result_to_the_meter() {
     // No meter (the external Claude Code root has no session actor): no reminder.
     assert_eq!(reminders.reminder("main", "x", 0), None);
     let used = Arc::new(Mutex::new(163_610u64));
-    let seen = used.clone();
+    let seen = used;
     reminders.set_meter(Arc::new(move |lane: &str| {
         (lane == "main").then(|| at(*seen.lock().unwrap()))
     }));
@@ -247,7 +247,7 @@ fn session_core_context_reminder_measures_a_frame_lane_by_its_own_meter_until_it
     *used.lock().unwrap() = Some(31_000);
     assert_eq!(reminders.reminder("frame-1", "x", 0), None);
     // A new frame on the same lane name starts armed.
-    let again = used.clone();
+    let again = used;
     reminders.set_frame_lane("frame-1", Some((window, Arc::new(move || *again.lock().unwrap()))));
     assert!(reminders.reminder("frame-1", "x", 0).is_some());
 }

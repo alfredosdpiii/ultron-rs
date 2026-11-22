@@ -259,7 +259,6 @@ pub const TRUST_OVERRIDE_ENV: &str = "__ULTRON_PROJECT_TRUST";
 /// store that cannot be read (held lock, torn or invalid `trust.json`) fails closed: the decision stored there may
 /// be "do not trust", so the project is not trusted.
 pub fn worker_project_trusted(cwd: &Path, agent_dir: &Path, home: &Path) -> bool {
-    // `--approve` / `--no-approve` of the run that started this worker decide it outright.
     match std::env::var(TRUST_OVERRIDE_ENV).as_deref() {
         Ok("1") => return true,
         Ok("0") => return false,

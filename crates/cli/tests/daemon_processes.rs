@@ -284,12 +284,7 @@ fn cli_daemon_worker_crash_restarts_with_committed_state() {
     let connection = Connection::connect(&route.path, &route.server_id).unwrap();
     let target = connection.server_target();
     let created = connection
-        .call(
-            target.clone(),
-            protocol::names::SESSION_MANAGEMENT,
-            "create",
-            json!([{}]),
-        )
+        .call(target, protocol::names::SESSION_MANAGEMENT, "create", json!([{}]))
         .unwrap()
         .unwrap();
     let id = created["sessionId"].as_str().unwrap().to_string();
@@ -452,7 +447,7 @@ fn cli_daemon_two_clients_share_one_server_and_session() {
     assert_eq!(transcript_roles(&b, &transcripts[1]), ["user", "assistant"]);
     // A client on the same server can also take the run's result through runClient.
     let listed = run_client(&ClientCommand::default(), &route).unwrap();
-    assert_eq!(listed, ClientResult::List(vec![(route.server_id.clone(), id.clone())]));
+    assert_eq!(listed, ClientResult::List(vec![(route.server_id, id)]));
     a.disconnect();
     b.disconnect();
     drop(server);
@@ -482,7 +477,7 @@ fn cli_daemon_attach_to_unknown_session_and_detached_calls_fail_like_typescript(
         ))
     );
     let fake = protocol::RpcTarget::Session(protocol::SessionTarget {
-        server_id: route.server_id.clone(),
+        server_id: route.server_id,
         session_id: "s".into(),
         attachment_id: "a".into(),
     });

@@ -278,7 +278,6 @@ impl DemandLedger {
             (false, AttachmentDemand::Withdrawing, Ok(()) | Err(DemandError::Failed(_))) => {
                 self.attachments.remove(attachment);
             }
-            // A detach that timed out stays owed; an answer for a state the attachment left changes nothing.
             _ => {}
         }
     }
@@ -452,7 +451,6 @@ impl Manager {
             loop {
                 std::thread::sleep(period);
                 let Some(this) = this.upgrade() else { return };
-                // Live peers; hung workers (pid, session, silence); detaches each live worker still owes.
                 type Owed = Vec<(String, Vec<String>)>;
                 let (live, hung, owed): (Vec<String>, Vec<(u32, String, Duration)>, Owed) = {
                     let inner = this.lock();
@@ -486,7 +484,6 @@ impl Manager {
                 for peer in live {
                     let _ = this.send(&peer, json!({"type": "ping", "nonce": jsrt::random::uuid_v4()}));
                 }
-                // Detaches a worker did not confirm: sent again (the worker answers each; see `handle_message`).
                 for (peer, attachments) in owed {
                     for attachment in attachments {
                         let message = this.demand_message(&jsrt::random::uuid_v4(), &attachment, false);
@@ -566,7 +563,6 @@ impl Manager {
                 if inner.detached || inner.shutting_down || inner.releasing {
                     None
                 } else if inner.by_session.contains_key(&meta.path) || inner.pending.contains_key(&meta.path) {
-                    // A client's attach launched it already.
                     Some(Ok(()))
                 } else {
                     drop(inner);
@@ -721,7 +717,6 @@ impl Manager {
             self.check_session_options(&meta.path, &meta.id, options)?;
             return handle;
         }
-        // Another server may own this session's worker, or have released it as an orphan.
         self.discover();
         if let Some(handle) = self.existing(meta) {
             self.check_session_options(&meta.path, &meta.id, options)?;
@@ -926,12 +921,9 @@ impl Manager {
         self.settle_demand(&handle.peer, &attachment, true, &outcome);
         if let Err(error) = outcome {
             if error == DemandError::TimedOut {
-                // The worker may hold the attach after all: withdraw it.
                 self.withdraw(&handle.peer, &attachment);
             }
             let error = error.to_string();
-            // The worker went idle and is retiring (its announcement may still be in flight): the caller waits for
-            // it to end and starts a new one.
             if error.ends_with(RETIRING_REJECTION) || handle.terminated.is_resolved() {
                 return Err(ServiceError::coded(protocol::names::WORKER_RETIRING_CODE, error));
             }
@@ -999,7 +991,6 @@ impl Manager {
             None => Err(DemandError::Failed(
                 "Session worker disconnected during demand update".into(),
             )),
-            // Unanswered (or the manager detached, which forgets the worker and its ledger).
             Some((_, None)) => Err(DemandError::TimedOut),
         }
     }
@@ -1357,17 +1348,12 @@ impl Manager {
             .is_some_and(|p| p.peer == peer && p.outcome.is_none());
         if pending_here {
             let error = ServiceError::internal(format!("Session worker exited before readiness ({describe})"));
-            // A worker that refuses its session (`worker_failed`, such as another process owning it) says so
-            // through the coordinator and exits; the exit, observed directly, can win that race. While the
-            // coordinator still lists the worker, its relayed messages and then its disconnect are still to come,
-            // in that order: the disconnect settles the launch with this error, unless the refusal did first.
             if self.coordinator().peer_snapshot().contains(peer) {
                 let mut inner = self.lock();
                 if let Some(pending) = inner.pending.get_mut(path)
                     && pending.peer == peer
                     && pending.outcome.is_none()
                 {
-                    // Reaped: its pid may be reused, so nothing may signal it any more.
                     pending.pid = 0;
                     pending.exited = Some(error);
                 }
@@ -1387,8 +1373,6 @@ impl Manager {
             self.remove_worker(peer, error);
             return;
         }
-        // A clean exit may be a retirement whose announcement is still in flight through the coordinator: forget
-        // the worker now and judge the exit once its disconnect arrives.
         if let Some(worker) = self.forget(peer, None) {
             let terminated = worker.terminated.clone();
             self.lock().exited.insert(peer.to_string(), worker);
@@ -1504,8 +1488,6 @@ impl Manager {
                         entry.1 = Some(outcome);
                     }
                 }
-                // A detach's answer settles it in the ledger whoever asked: a late answer to one that timed out, or
-                // to one the heartbeat sent again.
                 if message["attached"] == false
                     && owns(&inner, &path)
                     && let (Some(attachment), Some(worker)) =

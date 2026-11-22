@@ -308,7 +308,7 @@ fn harness_crash_while_the_mark_commit_is_in_storage_the_run_resumes() {
         let log: Log = Arc::default();
         let (storage, opened, id) = crashed_run(backend, &log);
         let held = storage.hold_commits();
-        let h = opened.harness.clone();
+        let h = opened.harness;
         spawn(move || h.abort_task(id, &bg()));
         held.wait_entered();
         let (recovered, _) = recover(&storage, &log);
@@ -1114,7 +1114,7 @@ fn harness_handover_rejects_a_runtime_commit_of_the_old_invocation_queued_behind
         let registry = Registry::new();
         registry.install(Extension::tasks(HANDOVER, vec![old.clone()])).unwrap();
         let opened = open_tasks(
-            storage.clone(),
+            storage,
             vec![],
             OpenOptions {
                 registry: Some(registry),

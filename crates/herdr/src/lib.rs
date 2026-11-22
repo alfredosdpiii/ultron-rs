@@ -381,7 +381,6 @@ pub struct SocketTransport {
 pub fn connect(path: &std::path::Path) -> std::io::Result<UnixStream> {
     use rustix::net::sockopt::{Timeout, set_socket_timeout};
     use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
-    // apple's socket() has no SOCK_CLOEXEC, so it is set with fcntl there (nothing forks between the two calls)
     #[cfg(not(target_vendor = "apple"))]
     let fd = rustix::net::socket_with(AddressFamily::UNIX, SocketType::STREAM, SocketFlags::CLOEXEC, None)?;
     #[cfg(target_vendor = "apple")]
@@ -402,7 +401,6 @@ impl Transport for SocketTransport {
         stream
             .write_all(format!("{line}\n").as_bytes())
             .map_err(|e| e.to_string())?;
-        // The reply is read (so herdr is not cut off mid-answer) and ignored.
         let mut reply = [0u8; 4096];
         let mut read = 0;
         while read < reply.len() {
@@ -532,7 +530,6 @@ impl Shared {
 
     fn next(&self, q: &mut Queue, now: Instant) -> Next {
         if q.releasing {
-            // The last state is sent at once (a `-p` run's end), then the release.
             if q.state.is_some() {
                 return Next::Send(self.state_request(q));
             }
@@ -619,7 +616,6 @@ fn metadata_params(sent: Option<&Metadata>, now: &Metadata) -> Option<Map<String
     for (key, value) in &now.tokens {
         tokens.insert(key.clone(), value.clone().into());
     }
-    // A token no longer known is cleared.
     for key in sent.tokens.keys().filter(|k| !now.tokens.contains_key(*k)) {
         if tokens.len() < MAX_TOKENS {
             tokens.insert(key.clone(), Value::Null);

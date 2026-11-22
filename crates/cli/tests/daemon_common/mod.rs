@@ -1,6 +1,6 @@
 //! Shared helpers for the daemon process tests: a scripted Anthropic SSE server, private temp homes, the Rust server
 //! process, and a check that every process a test started is gone.
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};

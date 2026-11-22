@@ -159,7 +159,6 @@ fn start_phase(_services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -
     let task_id = runtime.task_id();
     let now = runtime.now()?;
     runtime.commit(&runtime.ctx(), |tx, _| {
-        // A forked child's conversation starts as its parent's history up to the fork entry.
         let conversation = match input.fork {
             Some(fork) => {
                 let id = tx
@@ -199,7 +198,6 @@ fn start_phase(_services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -
             )?;
         }
         let submission = place_initial_input(tx, conversation, &json!(input.prompt), now)?;
-        // The registry learns what the child holds: its brief is its first work.
         let mut brief = input.prompt.clone();
         if brief.chars().count() > 200 {
             brief = brief.chars().take(200).collect::<String>() + "…";
@@ -258,7 +256,6 @@ fn wait_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> 
         .get()
         .cloned()
         .ok_or_else(|| HarnessError::msg("Child tasks need an open ChatHarness"))?;
-    // The deadline is durable: a timer on the Harness clock cancels the wait when it is reached.
     let deadline = Cancel::new();
     if let Some(until) = until {
         let (timer, sleeper, done) = (deadline.clone(), runtime.clone(), runtime.signal().clone());
@@ -271,9 +268,6 @@ fn wait_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> 
     let linked = Cancel::any(&[runtime.signal(), &deadline]);
     let ctx = Ctx::with_signal(linked.signal());
     let mut settled = submissions.wait(submission, &ctx);
-    // A message steered into the child while it answered continues it: the final boundary that settles the brief
-    // starts a run for what it placed, and the child answers when that run (and any after it) settles, as an agent
-    // loop takes steering before it ends.
     let mut waited = submission;
     while let Ok(record) = &settled
         && record.status == SubmissionStatus::Done
@@ -294,7 +288,6 @@ fn wait_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> 
         Err(_) if deadline.is_cancelled() => {
             let timeout = input.timeout_ms.unwrap_or_default();
             let error = format!("Subagent {} timed out after {timeout} ms", input.name);
-            // Ending `failed` records cancellation intent: the child's conversation work is aborted.
             return runtime.commit(&runtime.ctx(), |_, _| {
                 Ok(Some(NextState::Terminal {
                     outcome: TaskOutcome::Failed {
@@ -388,7 +381,6 @@ pub fn child_report(record: &TaskRecord) -> Option<Value> {
             }
             TaskOutcome::Orphaned { reason } => json!({ "result": result("interrupted", None, Some(reason.clone())) }),
         },
-        // A persistent child reports its first answer while it stays alive.
         TaskState::Running { checkpoint } | TaskState::Pending { checkpoint } if checkpoint["phase"] == "idle" => {
             json!({ "result": checkpoint["result"], "conversation": checkpoint["conversation"] })
         }

@@ -171,7 +171,6 @@ impl KeptContracts {
                 })
             }
             Err(problems) => {
-                // Bounded as a one-shot child's finishes are (`Delegation`'s finish request), per answer.
                 let rejections = count(&kept, "rejections") + 1;
                 kept["rejections"] = json!(rejections);
                 let list = problems.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n");
@@ -363,7 +362,6 @@ impl KeptContracts {
             }
             let _ = self.keep(id, kept);
         }
-        // The child's own claim for this answer, beside the host's verdict (as a one-shot child's result has it).
         checked["verdict"] = self.kept(id).map_or(Value::Null, |kept| kept["verdict"].clone());
         checked
     }

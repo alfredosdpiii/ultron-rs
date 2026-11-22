@@ -97,7 +97,6 @@ impl<T: Read + Write> Client<T> {
         if !self.connected {
             return Err(ClientError::Disconnected("Client is disconnected".into()));
         }
-        // The ID is consumed even when the call is rejected locally, like TS.
         self.sequence += 1;
         if parse_service_call(call).is_none() {
             return Err(ClientError::InvalidCall);

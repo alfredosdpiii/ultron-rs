@@ -149,7 +149,6 @@ fn from_env_link(input: &ChainInput<'_>) -> Result<AwsCredentials> {
 fn from_env(input: &ChainInput<'_>) -> Result<AwsCredentials> {
     match (input.var("AWS_ACCESS_KEY_ID"), input.var("AWS_SECRET_ACCESS_KEY")) {
         (Some(access_key_id), Some(secret_access_key)) => {
-            // `...(expiry && { expiration: new Date(expiry) })`.
             let expiry = input.var("AWS_CREDENTIAL_EXPIRATION").filter(|e| !e.is_empty());
             input.expiration.set(expiry.as_deref().and_then(jsrt::date::parse_date));
             Ok(AwsCredentials {
@@ -806,7 +805,6 @@ async fn from_process(input: &ChainInput<'_>, profile: &str) -> Result<AwsCreden
             "Profile {profile} credential_process returned expired credentials."
         )));
     }
-    // `...(data.Expiration && { expiration: new Date(data.Expiration) })`.
     input.expiration.set(
         data.get("Expiration")
             .filter(|e| !e.is_null() && *e != "" && *e != false && *e != 0)

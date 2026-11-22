@@ -493,12 +493,7 @@ fn kernel_apis_memory_evidence_quotes_go_to_hindsight_never_to_the_journal() {
         ),
     ] {
         assert!(
-            request(
-                &memory,
-                "memory.propose",
-                json!({"text": "t", "evidence": evidence.clone()})
-            )
-            .is_err(),
+            request(&memory, "memory.propose", json!({"text": "t", "evidence": evidence})).is_err(),
             "{evidence}"
         );
     }

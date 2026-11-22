@@ -2,7 +2,7 @@
 //! run by the interpreter), a fake upstream Messages server and a raw HTTP client on loopback. No
 //! test runs the real CLI, reads real credentials or reaches api.anthropic.com: every config injects a whole
 //! environment and a loopback upstream.
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 pub mod isolate;
 pub use isolate::seal;

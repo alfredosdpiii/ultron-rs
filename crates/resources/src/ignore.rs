@@ -145,7 +145,6 @@ fn segment(glob: &[char], last_of_pattern: bool, after_slash: bool) -> Option<St
             '*' => {
                 let trailing = last_of_pattern && glob[i..].iter().all(|c| *c == '*');
                 if trailing {
-                    // `ignore`'s trailing wildcard: after a slash it needs one character (`abc/*` is not `abc/`).
                     out.push_str(if after_slash && i == 0 { "[^/]+" } else { "[^/]*" });
                     out.push_str("(?:$|/$)");
                     return Some(out);

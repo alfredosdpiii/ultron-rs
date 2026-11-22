@@ -86,7 +86,6 @@ impl ExtensionUiBridge {
                         }
                     }
                     other => {
-                        // Wakes for a new deadline; looks again at least every second so a dropped bridge ends this.
                         let wait = other.map_or(Duration::from_secs(1), |at| (at - now).min(Duration::from_secs(1)));
                         drop(this.changed.wait_timeout(state, wait));
                     }
@@ -123,7 +122,6 @@ impl ExtensionUiBridge {
         let mut wire = Map::new();
         wire.insert("type".into(), json!("extension_ui_request"));
         wire.extend(request);
-        // Undefined fields are dropped, as in Pi's JSONL output.
         wire.retain(|_, v| !v.is_null());
         json!({ "seq": state.seq, "request": wire })
     }
@@ -131,9 +129,7 @@ impl ExtensionUiBridge {
     /// `poll(after, waitMs)`: requests after `after`; `None` starts serving now and returns only the open dialogs.
     pub fn poll(&self, requested_after: Option<u64>, wait: Duration) -> Value {
         let mut state = self.lock();
-        // A cursor from before this worker started (a reattached client) restarts from the beginning.
         let mut after = requested_after.map(|a| if a > state.seq { 0 } else { a });
-        // The first client of a worker started for it also receives what was queued before it arrived.
         if after.is_none() && !state.polled && self.expected_until.is_some() {
             after = Some(0);
         }
@@ -222,7 +218,6 @@ impl ExtensionUiBridge {
             if let Some(answer) = state.dialogs[index].1.answer.clone() {
                 break answer;
             }
-            // Once nobody serves, open dialogs get Pi's defaults instead of waiting for an answer that cannot come.
             if state.closed || cancelled() || deadline.is_some_and(|d| Instant::now() >= d) || !self.serving_in(&state)
             {
                 break None;
@@ -234,7 +229,6 @@ impl ExtensionUiBridge {
                 .0;
         };
         state.dialogs.retain(|(d, _)| *d != id);
-        // `{cancelled: true}` is no answer.
         answer.filter(|a| a.get("cancelled").is_none())
     }
 

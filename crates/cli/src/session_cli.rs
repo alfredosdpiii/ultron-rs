@@ -46,7 +46,7 @@ fn send_message(env: &Env, id: &str, message: &str, out: &mut dyn Write) -> Resu
     let connection = client::runtime::Connection::connect(&socket, &server.server_id).map_err(io)?;
     let answer = connection.call(
         RpcTarget::Server {
-            server_id: server.server_id.clone(),
+            server_id: server.server_id,
         },
         protocol::names::SESSION_INBOX,
         "send",

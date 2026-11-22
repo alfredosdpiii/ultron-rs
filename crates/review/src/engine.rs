@@ -270,7 +270,6 @@ impl HostHandler for Router {
         } else {
             self.default_ref.clone()
         };
-        // A model the engine cannot resolve fails the frames that name it, not the review.
         match self.frames(&model) {
             Ok(frames) => frames.handle(kind, payload, signal),
             Err(error) => Err(format!("Admission refused: model {model}: {error}")),

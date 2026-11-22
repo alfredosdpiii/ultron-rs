@@ -151,7 +151,6 @@ pub fn sign_request(
         if ALWAYS_UNSIGNABLE.contains(&lower.as_str()) || lower.starts_with("proxy-") || lower.starts_with("sec-") {
             continue;
         }
-        // `value.trim().replace(/\s+/g, " ")`.
         let collapsed = jsrt::string::flatten(value);
         canonical.insert(lower, collapsed);
     }

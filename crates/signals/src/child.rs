@@ -88,7 +88,6 @@ pub fn start(command: &mut Command, input: Option<&[u8]>, bound: Bound) -> std::
     let mut child = command.spawn()?;
     if let (Some(mut stdin), Some(input)) = (child.stdin.take(), input) {
         let input = input.to_vec();
-        // A child may exit, or stop reading, before it took all of it.
         std::thread::spawn(move || {
             let _ = stdin.write_all(&input);
         });
@@ -237,7 +236,6 @@ impl Watched {
         let shared: Arc<(Mutex<State>, Condvar)> = Arc::default();
         let waiter = shared.clone();
         std::thread::spawn(move || {
-            // Wait without reaping, so a signal sent under the lock below never reaches another process.
             while let Err(rustix::io::Errno::INTR) =
                 rustix::process::waitid(WaitId::Pid(pid), WaitIdOptions::EXITED | WaitIdOptions::NOWAIT)
             {}

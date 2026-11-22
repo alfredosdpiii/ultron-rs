@@ -103,7 +103,6 @@ impl Core {
             return Err(NAVIGATE_WHILE_STREAMING.into());
         }
         let tip = self.tip();
-        // AgentSession: already there is a no-op.
         if target == tip {
             return Ok(json!({"tipId": tip}));
         }
@@ -129,7 +128,6 @@ impl Core {
             instructions: instructions.map(str::to_string),
             label,
         };
-        // AgentSession's branch summary state (`isCompacting`) spans the summary.
         let signal = ai::AbortSignal::new();
         self.compacting = Some(signal.clone());
         self.navigating = true;
@@ -155,8 +153,6 @@ impl Core {
             Some(target) => compaction::collect_entries_for_branch_summary(&pi, tip.as_deref(), target),
             None => (Vec::new(), None),
         };
-        // AgentSession summarizes only a branch with entries. A navigation without a summary decides before it is
-        // admitted (`navigation.ready_to_commit` is decided).
         if !request.summarize || entries.is_empty() {
             let op = CompactionOp::begin_direct_navigation(
                 &mut lock_session(&self.session),
@@ -186,7 +182,6 @@ impl Core {
         self.navigation_start(&operation, &request.leaf);
         let ended = match self.summarized(op, &request, &entries, signal) {
             Ok(done) => Ok(done),
-            // The operation still open ends with the outcome; a failed terminal write is the error then.
             Err((stopped, Some(op))) => {
                 let mut session = lock_session(&self.session);
                 let closed = match &stopped {
@@ -216,7 +211,7 @@ impl Core {
         if signal.aborted() {
             return Err((Stopped::Aborted, Some(Box::new(op))));
         }
-        let session = &self.session.clone(); // held across the off-actor summary
+        let session = &self.session.clone();
         let retry = self.summary_retry();
         if let Err(error) = op.request(&mut lock_session(session), retry) {
             return Err((Stopped::Failed(error), Some(Box::new(op))));

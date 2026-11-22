@@ -7,6 +7,8 @@
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
+type KernelFactory<'a, K> = Box<dyn FnOnce() -> Result<K, String> + 'a>;
+
 /// The part of a kernel the pool needs. `snapshot` returns the names it could not save, or the error text.
 pub trait PoolableKernel {
     fn snapshot(&mut self, path: &str) -> Result<Vec<String>, String>;
@@ -122,12 +124,7 @@ impl<K: PoolableKernel> KernelPool<K> {
         self.acquire_inner(lane, Some(Box::new(create)))
     }
 
-    #[allow(clippy::type_complexity)]
-    fn acquire_inner(
-        &mut self,
-        lane: &str,
-        create: Option<Box<dyn FnOnce() -> Result<K, String> + '_>>,
-    ) -> Result<Lease, String> {
+    fn acquire_inner(&mut self, lane: &str, create: Option<KernelFactory<'_, K>>) -> Result<Lease, String> {
         if self.closed {
             return Err("RLM kernel pool is closed".into());
         }
@@ -243,7 +240,6 @@ impl<K: PoolableKernel> KernelPool<K> {
                 return self.record(refuse("pinned"));
             }
         }
-        // Only close reaches a running kernel; its snapshot would wait behind the cell.
         let busy = self.entries[index].1.running > 0;
         let path = if busy {
             None

@@ -374,7 +374,7 @@ fn delegation_spawn_contract_a_cancelled_check_stops_its_command() {
         cwd: dir.path().to_path_buf(),
         env: Vec::new(),
         timeout: Duration::from_secs(120),
-        signal: signal.clone(),
+        signal,
     };
     let started = dir.path().join("started.txt");
     let waiter = std::thread::spawn(move || {

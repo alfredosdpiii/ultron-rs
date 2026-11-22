@@ -3,7 +3,7 @@
 //! the real ones; what the TS tests fake, this fakes the same way: a lane is a script from (lane, prompt, the task's
 //! abort signal) to the assistant text at the completed tip, and every lane opened, prompt, model and abort is
 //! recorded.
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use delegation::agents::{
     Adapter, AdapterRequest, Agents, AgentsOptions, LaneCheck, LaneMessage, LaneRelease, LaneReply, LaneRun, TaskEnd,

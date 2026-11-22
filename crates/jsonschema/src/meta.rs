@@ -49,7 +49,6 @@ fn schema_list(value: &Value, path: &str) -> Result<(), String> {
 
 /// `validateJsonSchema(value, path)` of definition-registry.ts.
 pub fn validate_json_schema(value: &Value, path: &str) -> Result<(), String> {
-    // typebox's IsSchema takes an array too; its entries are then read as keywords named by index.
     if let Some(items) = value.as_array() {
         return match items.is_empty() {
             true => Ok(()),

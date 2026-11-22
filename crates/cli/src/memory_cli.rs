@@ -25,8 +25,6 @@ pub fn run(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
     }
     let agent_dir = env.agent_dir();
     let var = |key: &str| (env.var)(key);
-    // The backend sessions use: memorantado once chosen, even when it is down, so an import never lands in Hindsight
-    // instead.
     let backend = |project: Option<&Path>| -> Result<Arc<dyn MemoryBackend>, String> {
         let settings = config::settings::SettingsManager::create(&env.cwd, &agent_dir, false);
         let chosen = session_core::compose::memory_backend(&var, &settings, &agent_dir);

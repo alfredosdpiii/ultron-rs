@@ -60,7 +60,6 @@ const OFF_VALUES: [&str; 5] = ["off", "0", "false", "no", "none"];
 /// proceeds unchecked, when it is a positive safe integer. Unset or invalid: None, no limit (TypeScript: 5 s), so a
 /// check slowed by machine load still decides the write instead of letting it through unchecked.
 pub fn loki_timeout(value: Option<&str>) -> Option<std::time::Duration> {
-    // `Number(value)`: surrounding whitespace is ignored, and integral forms like "250.0" or "1e3" are integers.
     let n: f64 = value?.trim().parse().ok()?;
     (jsrt::number::is_safe_integer(n) && n > 0.0).then(|| std::time::Duration::from_millis(n as u64))
 }
@@ -188,7 +187,6 @@ impl LokiGuard {
             } else {
                 fresh.push(line.clone());
             }
-            // A line that names no file cannot be followed from cell to cell.
             if !path.is_empty() {
                 match now.iter_mut().find(|(p, _)| *p == path) {
                     Some((_, keys)) => {
@@ -253,7 +251,6 @@ impl FileWriteGuard for LokiGuard {
     }
 
     fn before_write(&self, path: &Path, content: &str, _cwd: &Path, _lane: &str) -> Result<Verdict, String> {
-        // A write into another repository (a sibling worktree) is checked against that repository's own policy.
         let (root, relative) = match inside(&self.root, path) {
             Some(relative) => (self.root.clone(), relative),
             None => {
@@ -316,8 +313,6 @@ impl FileWriteGuard for LokiGuard {
         }
         let checked: Vec<String> = targets.iter().take(MAX_HOOK_FILES).cloned().collect();
         let report = (self.hook)(&self.root, &checked).map_err(|error| error.describe())?;
-        // Loki compares against the committed policy: while .loki/ itself has uncommitted changes every post-write
-        // check reports that and stops. Say so once.
         if report.blocked_by_policy_changes() {
             if self.paused_shown.swap(true, Ordering::SeqCst) {
                 return Ok(None);

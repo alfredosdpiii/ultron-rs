@@ -207,7 +207,7 @@ fn review_register_reads_the_state_records_and_knowledge_store_of_one_repository
     std::fs::write(
         &paths.state,
         json!({"version": 1, "accounts": {}, "pulls": {}, "recent": [],
-            "lessons": {"github.com/o/r": [rejected.clone()], "github.com/x/y": [rejected]}})
+            "lessons": {"github.com/o/r": [rejected], "github.com/x/y": [rejected]}})
         .to_string(),
     )
     .unwrap();

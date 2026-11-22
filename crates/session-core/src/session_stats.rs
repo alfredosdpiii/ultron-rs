@@ -166,7 +166,6 @@ pub struct SessionStats {
 
 impl Drop for SessionStats {
     fn drop(&mut self) {
-        // A scheduled save of a recorder nobody holds is not waited for.
         sync::lock(&self.shared.state).timer = false;
         self.shared.wake.notify_all();
     }
@@ -233,7 +232,6 @@ impl SessionStats {
                 stored["root"] = state.document["root"].clone();
                 state.document = stored;
             }
-            // A store that could not be read is not overwritten either: its saved totals may be fine.
             Ok(Stored::Foreign) | Err(_) => state.foreign = true,
             Ok(Stored::Fresh) => {}
         }
@@ -275,7 +273,6 @@ impl SessionStats {
                 .wake
                 .wait_timeout_while(state, shared.flush_after, |s| s.timer)
                 .unwrap_or_else(PoisonError::into_inner);
-            // A flush or close that came first took the save over.
             if !state.timer {
                 return;
             }
@@ -325,10 +322,8 @@ impl SessionStats {
     /// One guard outcome (Loki, extensions).
     pub fn guard(&self, record: &GuardOutcome<'_>) {
         let (name, ms) = (record.guard.to_string(), record.ms);
-        // A shell command checked before it runs counts as a before-write check: it is one.
         let before = matches!(record.phase, "before_write" | "before_shell");
         let (blocked, unchecked) = (record.outcome == "blocked", record.outcome == "unchecked");
-        // Advisory-only reports are not findings to fix.
         let findings = matches!(record.outcome, "findings" | "unchecked");
         self.change(move |document| {
             let Some(guards) = document["guards"].as_object_mut() else {

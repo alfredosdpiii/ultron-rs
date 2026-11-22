@@ -15,7 +15,7 @@
 //! - Nothing else survives except a few harmless runtime variables ([`KEEP`]): no CLAUDE_CODE_OAUTH_TOKEN, no
 //!   ANTHROPIC_*, no proxies, no ULTRON_CLAUDE_COMMAND or ULTRON_CLAUDE_CODE_BIN (either names the `claude` run).
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

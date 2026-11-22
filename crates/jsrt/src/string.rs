@@ -86,7 +86,6 @@ mod tests {
         assert_eq!("  x \u{feff}".trim_end_matches(is_space), "  x");
         assert_eq!(flatten(" a\u{85}b\u{feff} \u{2028}c\t"), "a\u{85}b c");
         assert_eq!(flatten(" \t\n "), "");
-        // Exactly Unicode White_Space without U+0085, plus U+FEFF.
         for c in (0..=0x3000u32).filter_map(char::from_u32) {
             assert_eq!(
                 is_space(c),

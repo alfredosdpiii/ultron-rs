@@ -74,7 +74,7 @@ fn session_core_queued_messages_with_the_same_text_keep_their_own_entries() {
         .filter(|(_, text)| text == "same")
         .map(|(id, _)| id)
         .collect();
-    assert_eq!(same, [steer.clone(), follow_up.clone()]);
+    assert_eq!(same, [steer.clone(), follow_up]);
     // Once the steer was placed, the queue held the follow-up, never the steer alone.
     let updates = w.events("queue_update");
     assert!(

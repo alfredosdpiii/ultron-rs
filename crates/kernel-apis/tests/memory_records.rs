@@ -565,7 +565,7 @@ fn kernel_apis_memory_pointers_reach_the_file_hooks_pending_lines() {
         BTreeMap::new(),
         BTreeMap::from([("src/lib.rs".to_string(), "1".to_string())]),
     ]));
-    let source = pictures.clone();
+    let source = pictures;
     let hooks = FileHooks::with_snapshots(
         "/w",
         Arc::new(move |root: &Path| {

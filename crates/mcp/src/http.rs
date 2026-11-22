@@ -415,7 +415,6 @@ impl Shared {
                     SseItem::Event(event) => event,
                 };
                 cursor.received = true;
-                // Events without data prime resumption; other event types are not JSON-RPC.
                 if event.data.trim().is_empty() || event.event.as_deref().is_some_and(|e| e != "message") {
                     continue;
                 }
@@ -568,7 +567,6 @@ impl Shared {
                     let Some(response) = opened else { return Ok(false) };
                     let opened_at = Instant::now();
                     self.consume(response, &mut cursor, &mut |_| {})?;
-                    // A stream that stayed up for a while counts as healthy, even if it was idle.
                     if cursor.received || opened_at.elapsed() > self.max_delay() {
                         attempt = 0;
                     }
@@ -717,7 +715,6 @@ impl Transport for HttpTransport {
             state.closed = true;
             (state.started, state.session_id.clone())
         };
-        // Resolving the auth header may fail; the session then expires on the server.
         if started
             && session.is_some()
             && let Ok((request, _)) = shared.request(reqwest::Method::DELETE)

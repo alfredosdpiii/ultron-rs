@@ -98,7 +98,6 @@ pub fn detect_ecosystems(repo: &Path) -> Ecosystems {
             .flatten()
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect();
-        // Node's readdir lists names in byte order.
         names.sort();
         extra = names
             .into_iter()
@@ -139,7 +138,6 @@ fn walk(repo: &Path, dir: &str, depth: usize, nested: &mut Vec<String>) {
         } else {
             format!("{dir}/{name}")
         };
-        // The entry's own type: a symlink to a directory is not walked.
         let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
         if is_dir {
             if depth < NESTED_DEPTH && !name.starts_with('.') && !NOT_A_SERVICE_DIR.contains(&name.as_str()) {
@@ -192,7 +190,6 @@ pub fn toolchain_requests(repo: &Path) -> ToolchainRequests {
             let mut words = jsrt::string::trim(line)
                 .split(jsrt::string::is_space)
                 .filter(|word| !word.is_empty());
-            // `"".split(/\s+/)` is `[""]`: an empty line names no tool.
             let (tool, version) = (words.next().unwrap_or(""), words.next());
             if let Some(version) = version {
                 if tool == "python" && out.python.is_none() {

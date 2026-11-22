@@ -158,8 +158,6 @@ pub fn wire(lane: &Lane, session: SharedSession, host: &LaneRootHost, sink: Arc<
     let stack = &lane.stack;
     let context = Arc::new(kernel_apis::ContextControl::new(Arc::new(ExternalBranches { session })));
     let _ = stack.context.set(context);
-    // `budgetLine(await usage.remaining(host.usageRootForLane(lane, ...)))`: the root's cells are charged to the turn
-    // that is open, another lane's to its task's root.
     let (usage, agents, root) = (stack.usage.clone(), stack.agents.clone(), host.root.clone());
     let explicit_token_cap = usage.limits().max_total_tokens.is_some();
     let _ = stack.budget_note.set(Arc::new(move |lane: &str| {
@@ -171,7 +169,6 @@ pub fn wire(lane: &Lane, session: SharedSession, host: &LaneRootHost, sink: Arc<
         let remaining = usage.remaining(root.as_deref()).ok()?;
         delegation::usage::budget_line(&remaining, explicit_token_cap)
     }));
-    // A root's shell job belongs to the turn that started it.
     let roots = host.root.clone();
     stack.host.set_roots(Arc::new(move |lane: &str| {
         if lane == MAIN_LANE {
@@ -183,8 +180,6 @@ pub fn wire(lane: &Lane, session: SharedSession, host: &LaneRootHost, sink: Arc<
     if !stack.events.enabled() {
         return;
     }
-    // Summaries are masked with the session's secrets (values MCP servers resolved included), as native event lanes
-    // mask them (`maskCellOutput`).
     let (jobs, job_mask) = (sink.clone(), stack.mask());
     stack.host.on_job_end(Arc::new(move |end: host::JobEnd| {
         if end.record.lane != MAIN_LANE {
@@ -199,7 +194,7 @@ pub fn wire(lane: &Lane, session: SharedSession, host: &LaneRootHost, sink: Arc<
                 summary: event["summary"].as_str().unwrap_or_default().into(),
                 fetch: event["fetch"].as_str().unwrap_or_default().into(),
                 lane: end.record.lane.clone(),
-                root_id: end.record.root_id.clone(),
+                root_id: end.record.root_id,
             }],
             &job_mask,
         ));

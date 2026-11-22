@@ -703,7 +703,6 @@ pub fn builtin_provider_auth_with_clock(
             api_key: builtin_api_key_auth(provider_id),
             oauth: oauth(OAuthProvider::Anthropic),
         },
-        // OpenRouter's OAuth login (crate::oauth_openrouter) exchanges the code for a permanent API key.
         "openrouter" => ProviderAuth {
             api_key: env("OpenRouter API key", &["OPENROUTER_API_KEY"]),
             oauth: Some(Arc::new(crate::oauth_openrouter::OpenRouterOAuth {
@@ -947,7 +946,6 @@ impl CredentialStore for FileCredentialStore {
     ) -> BoxFuture<'a, Result<Option<Credential>, StoreError>> {
         Box::pin(async move {
             let store = |e: String| StoreError::Store(e);
-            // Queued behind this process's writers and the file lock: an abort ends it before anything runs.
             let (_local, file) = unless_aborted(signal, async {
                 let local = self.local.lock().await;
                 let path = self.path.clone();
@@ -958,9 +956,6 @@ impl CredentialStore for FileCredentialStore {
                 Ok((local, file))
             })
             .await?;
-            // Under the lock the callback runs to its end (it has the signal and stops on it), and a credential it
-            // returns is written even when the signal fired meanwhile: a provider that rotated the refresh token has
-            // already spent the stored one, so dropping its answer would force a new login.
             let text = file.read().map_err(store)?;
             let mut data = if text.trim().is_empty() {
                 Map::new()
@@ -1116,10 +1111,10 @@ async fn resolve_stored_oauth(
         let refresh: ModifyFn<'_> = Box::new(move |current| {
             Box::pin(async move {
                 let Some(Credential::OAuth(current)) = current else {
-                    return Ok(None); // logged out meanwhile
+                    return Ok(None);
                 };
                 if !expires_soon(&current) {
-                    return Ok(None); // refreshed by someone else
+                    return Ok(None);
                 }
                 let result = tokio::time::timeout(
                     DEFAULT_OAUTH_REFRESH_TIMEOUT,

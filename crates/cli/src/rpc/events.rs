@@ -35,8 +35,6 @@ impl RpcEventTranslator {
                 ..
             } => {
                 let mut events = self.close_turn();
-                // A run that failed before any response has no assistant error message; Pi clients learn of a
-                // failed run from one, so it is shown as one.
                 let answered_with_error = self
                     .run_messages
                     .last()
@@ -64,7 +62,6 @@ impl RpcEventTranslator {
                 events.push(json!({"type": "message_start", "message": message}));
                 events
             }
-            // The usage rides on the event (protocol::watch::stream_fold); an older worker's update carries its message.
             WatchEvent::MessageUpdate {
                 frame, usage, message, ..
             } => {
@@ -146,8 +143,6 @@ impl RpcEventTranslator {
             WatchEvent::ConfigUpdate { property, value, .. } if property == "thinkingLevel" => {
                 vec![json!({"type": "thinking_level_changed", "level": value.as_str().unwrap_or_default()})]
             }
-            // AgentSession's `summarization_retry_scheduled` / `_attempt_start` / `_finished` (a compaction's or
-            // branch summary's retry), as the RPC stream carries them.
             event @ (WatchEvent::SummarizationRetryScheduled { .. }
             | WatchEvent::SummarizationRetryAttemptStart { .. }
             | WatchEvent::SummarizationRetryFinished { .. }) => {
@@ -157,7 +152,6 @@ impl RpcEventTranslator {
                 }
                 vec![shown]
             }
-            // The run's generation failed and is retried (rpc-events.ts `auto_retry_start`).
             WatchEvent::RetryScheduled {
                 attempt,
                 max_attempts,
@@ -168,7 +162,6 @@ impl RpcEventTranslator {
                 json!({"type": "auto_retry_start", "attempt": attempt, "maxAttempts": max_attempts,
                 "delayMs": delay_ms, "errorMessage": error_message}),
             ],
-            // The run's retries ended (rpc-events.ts `auto_retry_end`).
             WatchEvent::RetryEnd {
                 success,
                 attempt,
@@ -181,7 +174,6 @@ impl RpcEventTranslator {
                 }
                 vec![event]
             }
-            // A chunk of a user command's output (AgentSession `bash_execution_update`), under the command's id.
             WatchEvent::BashExecutionUpdate { id, delta, .. } => {
                 let mut event = json!({"type": "bash_execution_update"});
                 if let Some(id) = id {
@@ -190,7 +182,6 @@ impl RpcEventTranslator {
                 event["delta"] = delta.into();
                 vec![event]
             }
-            // The session was renamed (AgentSession `session_info_changed`).
             WatchEvent::SessionInfoChanged { name, .. } => {
                 let mut event = json!({"type": "session_info_changed"});
                 if let Some(name) = name {
@@ -243,7 +234,6 @@ pub fn frame_to_assistant_message_event(event: &Value) -> Option<Value> {
         }
         "text_delta" | "thinking_delta" | "toolcall_delta" => {
             let delta = event.get("delta")?.clone();
-            // The frame encoder drops empty tool-call deltas.
             if kind == "toolcall_delta" && delta.as_str() == Some("") {
                 return None;
             }
@@ -255,7 +245,6 @@ pub fn frame_to_assistant_message_event(event: &Value) -> Option<Value> {
             out.insert("content".into(), event.get("content")?.clone());
         }
         "toolcall_start" => {
-            // A frame names the call; a provider event carries it in its partial message.
             let (id, name) = match (event.get("id"), event.get("toolName")) {
                 (Some(id), Some(name)) => (id.clone(), name.clone()),
                 _ => {

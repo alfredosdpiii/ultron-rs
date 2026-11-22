@@ -347,7 +347,7 @@ fn review_ban_added_during_the_model_turn_posts_nothing() {
     let mut context = setup(json!({}), Some(engine.clone()));
     let bans = live_bans(&mut context);
     context.hub.add_pull(by(BANNED, 1, &[BOT]));
-    let during = bans.clone();
+    let during = bans;
     *engine.on_review.lock().expect("hook") = Some(Box::new(move || {
         *during.lock().expect("bans") = ban_all(BANNED);
     }));
@@ -444,7 +444,7 @@ fn review_ban_request_or_mention_by_a_banned_login_is_ignored() {
 #[test]
 fn review_ban_unreadable_list_keeps_the_last_one() {
     let reads = Arc::new(Mutex::new(vec![None, Some(ban_all(BANNED)), Some(BanList::default())]));
-    let next = reads.clone();
+    let next = reads;
     let bans = Bans::reloading(Arc::new(move || next.lock().expect("reads").pop().flatten()));
     let account = Account::new(BOT, "github.com");
     assert!(bans.get().is_empty());

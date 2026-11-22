@@ -106,7 +106,7 @@ fn cli_memory_migrate_dry_run_then_copy_then_nothing_new() {
         home.path(),
         vec![
             ("ULTRON_HINDSIGHT_URL", source.clone()),
-            ("ULTRON_MEMORANTADO_URL", target.clone()),
+            ("ULTRON_MEMORANTADO_URL", target),
         ],
     );
 

@@ -71,7 +71,6 @@ fn parse(args: &[String]) -> Option<Parsed> {
             "--models" => models_flag = true,
             "--force" => force = true,
             "--extensions" | "--extension" | "--all" => return Some(Parsed::Unsupported),
-            // Project trust only mattered for package storage.
             "--approve" | "-a" | "--no-approve" | "-na" => {}
             a if a.starts_with('-') => return Some(Parsed::InvalidOption(a.to_string())),
             a if source.is_none() => source = Some(a),
@@ -240,7 +239,6 @@ pub(crate) fn latest_release(env: &Env, url: &str, retries: u32) -> Result<Optio
         .map_err(|e| e.to_string())?;
     let user_agent = ai::model_refresh::management_user_agent();
     runtime.block_on(async {
-        // The run's proxies (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, the `httpProxy` setting), as Pi's HTTP stack.
         let client = ai::net::ClientConfig::from_lookup(&*env.var).client()?;
         let work = async {
             const RETRYABLE: [u16; 7] = [408, 425, 429, 500, 502, 503, 504];
@@ -298,7 +296,6 @@ fn self_update(env: &Env, force: bool, io: &mut Io, endpoints: &Endpoints) -> Re
         let _ = writeln!(io.out, "ultron is already up to date (v{env_version})");
         return Ok(0);
     }
-    // `printSelfUpdateUnavailable` for a self-contained binary (TypeScript's `bun-binary` method).
     let _ = writeln!(io.err, "error: ultron cannot self-update this installation.");
     let _ = writeln!(io.err, "Download from: {RELEASES_URL}/latest");
     if let Ok(exe) = std::env::current_exe() {

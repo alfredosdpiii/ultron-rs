@@ -1,7 +1,7 @@
 //! A fake GitHub for the autoreview tests (`test/ultron-autoreview-fixtures.ts`): an in-memory model of accounts,
 //! pull requests, notifications and search behind the injected Runner (`gh auth`, `gh api -i`, and the `git`
 //! commands of the checkout). Every call is recorded with its argv, environment and stdin. No process is run.
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared test helper used across integration test binaries")]
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -837,7 +837,7 @@ impl FakeHub {
                 id: new_id,
                 user: account.clone(),
                 body: body["body"].as_str().unwrap_or("").into(),
-                created_at: stamp.clone(),
+                created_at: stamp,
                 path: body["path"].as_str().map(String::from),
                 line: body["line"].as_i64(),
                 ..FakeComment::default()

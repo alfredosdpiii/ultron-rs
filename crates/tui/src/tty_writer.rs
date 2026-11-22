@@ -90,7 +90,6 @@ fn pump<W: Write>(mut out: W, inner: &Inner) {
                 let dropped = back.len() + (front.len() - written);
                 back.clear();
                 inner.pending.fetch_sub(dropped, Ordering::AcqRel);
-                // Under the lock and after the drop, so a writer seen dead has no output pending.
                 inner.dead.store(true, Ordering::Release);
             }
         }
@@ -141,7 +140,6 @@ impl TtyWriter {
         {
             let mut back = self.inner.lock();
             back.extend_from_slice(data);
-            // Account while still holding the lock, so the pump cannot drain and subtract first.
             self.inner.pending.fetch_add(data.len(), Ordering::AcqRel);
         }
         self.inner.cv.notify_all();

@@ -178,7 +178,6 @@ pub fn running_work(snapshot: &RlmSnapshot, cells: &[DetachedCell]) -> Vec<Runni
         WorkKind::Job => 2,
         WorkKind::Cell => 3,
     };
-    // Stable: a kind's items without a start keep their listing order, after those with one.
     work.sort_by(|a, b| {
         rank(a.kind).cmp(&rank(b.kind)).then(
             a.started_at
@@ -236,10 +235,8 @@ fn work_line(item: &RunningWork, width: usize, style: &RlmStyle, now: f64) -> St
         visible_width(&elapsed) + 2
     };
     if head_width + tail_width > width {
-        // Too narrow for the time: the head alone, cut.
         return truncate_to_width(&head, width, "…", false);
     }
-    // The detail takes what the head and the time leave (after a two-column gap), else it is left out.
     let room = width - head_width - tail_width;
     let detail = if room > 2 && !item.detail.is_empty() {
         truncate_to_width(&style.fg(Fg::Muted, &item.detail), room - 2, "…", false)

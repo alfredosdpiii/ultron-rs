@@ -129,7 +129,6 @@ impl HintsModule {
         entry["muted"] = json!(muted);
         if kind != "hints.muted" {
             let document = json!({"version": 1, "lanes": lanes});
-            // As in TS, a failed journal write does not fail the request.
             let _ = self.store.write(&document);
         }
         Ok(json!({"muted": muted}))

@@ -320,7 +320,6 @@ impl RadiusOAuth {
             callback = &mut receiver => match callback {
                 Ok(Some(code)) => Outcome::Code(code),
                 Ok(None) => Outcome::Denied,
-                // The port was taken: the login continues with a pasted redirect URL.
                 Err(_) => Outcome::Manual(manual.as_mut().await),
             },
             input = manual.as_mut() => Outcome::Manual(input),

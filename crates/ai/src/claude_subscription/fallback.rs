@@ -285,7 +285,10 @@ impl Router {
     }
 
     /// The call on API credits while held until `until`; a failed one ends the hold.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal wiring helper; parameters match distinct caller inputs"
+    )]
     async fn api_held(
         &self,
         until: i64,
@@ -343,7 +346,6 @@ impl Router {
         if stored.get("type").and_then(Value::as_str) != Some("api_key") {
             return None;
         }
-        // The store resolves `$VAR` templates the way every other reader does.
         let resolved = config::auth::AuthStorage::create(path).read("anthropic").ok()??;
         resolved
             .get("key")
@@ -387,7 +389,6 @@ impl Router {
         if self.options.subscription.is_some() {
             return Some(self.subscription(&subscription, context, options, sink).await);
         }
-        // The `claude` the claude-code provider runs (ULTRON_CLAUDE_CODE_BIN, else PATH), never one found elsewhere.
         let config = super::config_for(&subscription, options).and_then(|(mut config, _)| {
             let cli_env = crate::claude_code_cli::child_env(&options.base);
             let bin = crate::claude_code_cli::resolve_claude_cli(&cli_env).map_err(super::ClaudeError::Missing)?;
@@ -415,7 +416,6 @@ impl Router {
             return self.subscription(model, context, options, sink).await;
         }
         let now = (self.options.clock)();
-        // Back on the subscription because the hold ran out: said on this call's message.
         let mut expired = false;
         if let Some(until) = self.held_until() {
             if now < until {
@@ -477,7 +477,10 @@ impl Router {
     }
 
     /// The call on API credits: same model id, same context, the fallback key.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal wiring helper; parameters match distinct caller inputs"
+    )]
     async fn api(
         &self,
         model: &Model,

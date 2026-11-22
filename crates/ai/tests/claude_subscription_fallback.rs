@@ -499,7 +499,6 @@ fn ai_claude_subscription_fallback_a_failing_api_ends_the_hold_before_the_reset(
     let reset = NOW / 1000 + 5 * 24 * 3600;
     let answered = Arc::new(AtomicUsize::new(0));
     let upstream = {
-        let answered = answered.clone();
         Upstream::start(move |_, stream| {
             if answered.fetch_add(1, Ordering::SeqCst) == 0 {
                 let body = r#"{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."}}"#;

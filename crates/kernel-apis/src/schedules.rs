@@ -327,7 +327,6 @@ impl SchedulesModule {
             }
             "schedules.tick" => {
                 kernel::ops::fields("schedules.tick", payload)?;
-                // Firings outlive the request that happened to drive the tick.
                 self.tick_locked(document, host)
             }
             "goals.create" => self.create_goal(document, payload, caller, host),
@@ -526,7 +525,6 @@ impl SchedulesModule {
                     .and_then(|goals| goals.iter().find(|goal| goal["id"] == goal_id))
                     .cloned()
             });
-            // A missing goal cannot be verified or paused, so its schedules stay idle.
             if !current["goal_id"].is_null() && goal.as_ref().is_none_or(|goal| goal["state"] != "active") {
                 continue;
             }
@@ -561,7 +559,6 @@ impl SchedulesModule {
                     Err(error) => failure = Some(error),
                 }
             }
-            // The slot stays claimed on failure: the next attempt is the next slot, never a retry loop.
             self.update(document, |draft| {
                 let schedule = find(draft, "schedules", &id).ok_or("Unknown schedule")?;
                 schedule["pending_slot"] = Value::Null;
@@ -686,7 +683,6 @@ impl SchedulesModule {
             } else {
                 "unachieved"
             };
-            // A newer round supersedes this one; its record is the one that counts.
             if goal["verification"]["round"]
                 .as_i64()
                 .is_none_or(|recorded| recorded < round)

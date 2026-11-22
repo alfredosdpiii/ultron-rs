@@ -143,7 +143,6 @@ pub(crate) fn command(launch: Launch<'_>) -> Command {
             push_unique(&mut policy.writable, dir);
         }
     }
-    // Code skills are imported from their directory directly (writes to it go through the host).
     let skills = policy
         .env
         .iter()
@@ -159,7 +158,6 @@ pub(crate) fn command(launch: Launch<'_>) -> Command {
         .iter()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
-    // The launcher's own environment and PATH are the session's (`Policy::launch`), never this process's.
     policy.command(launch.mechanism, &argv, launch.cwd)
 }
 

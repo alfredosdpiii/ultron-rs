@@ -9,13 +9,10 @@ use std::path::PathBuf;
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
-    // Before any thread starts: SIGINT/SIGTERM/SIGHUP are read on a thread of their own (crates/daemon `signals`);
-    // without a handler they act as they would have.
     if let Err(error) = signals::install() {
         eprintln!("Signal handling unavailable: {error}");
     }
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    // The claude-subscription provider's inert MCP inventory server (Claude Code spawns it; it executes nothing).
     if let [internal, role, args @ ..] = &argv[..]
         && internal == "__internal"
         && role == "inert-mcp"
@@ -26,8 +23,6 @@ fn main() {
         }
         std::process::exit(0);
     }
-    // The package files (runtime.py and its modules, skills, docs): embedded, installed where first needed
-    // (cli::assets). Here only their location is known; a session worker always needs them.
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     let source = match cli::assets::source(&|k| std::env::var(k).ok(), &home) {
         Ok(source) => source,
@@ -46,7 +41,7 @@ fn main() {
     let env = cli::Env {
         cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         var: std::sync::Arc::new(|k| std::env::var(k).ok()),
-        package: source.dir().to_path_buf(),
+        package: source.dir(),
         home,
     };
     match daemon::process::role(&argv) {
@@ -60,7 +55,6 @@ fn main() {
                     daemon::process::trace_startup("coordinator.entry");
                     daemon::coordinator::run(args).map_err(|e| e.to_string())
                 }
-                // A detached server runs its relay too (opt-out: PI_OFFLINE), with the stored Radius credential.
                 daemon::process::Role::Server => {
                     daemon::server::run_server_process(args, Some(cli::radius_relay::relay_config(&env)))
                 }
@@ -77,13 +71,11 @@ fn main() {
         }
         Ok(None) => {}
     }
-    // `ultron-s` (a link to this binary): the durable instance's home session.
     let invoked = std::env::args().next().unwrap_or_default();
     if cli::durable_client::is_home_command(&invoked) {
         let code = cli::durable_client::run_home(&argv, &env, &mut std::io::stdout(), &mut std::io::stderr());
         std::process::exit(code);
     }
-    // Unlocked handles: threads of the interactive TUI (its terminal writer) and of RPC mode write too.
     let code = cli::run(&argv, &env, &mut std::io::stdout(), &mut std::io::stderr());
     std::process::exit(code);
 }

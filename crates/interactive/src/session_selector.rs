@@ -79,7 +79,6 @@ fn parse_query(query: &str) -> Option<Result<Vec<Token>, fancy_regex::Regex>> {
         buf.push(c);
     }
     if quoted {
-        // Unbalanced quotes: plain whitespace tokens.
         return Some(Ok(trimmed
             .split_whitespace()
             .map(|t| Token::Fuzzy(t.to_string()))
@@ -319,7 +318,6 @@ impl SessionSelector {
             .cloned()
             .collect();
         let order = if self.sort == SortMode::Threaded && query.trim().is_empty() {
-            // Native sessions carry no parent path: the threaded tree is the newest-first list.
             (0..named.len()).collect()
         } else {
             filter_and_sort(&named, &query, self.sort)
