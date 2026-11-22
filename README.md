@@ -629,7 +629,7 @@ unset it. See [settings](packages/coding-agent/docs/settings.md#models-of-rlm-wo
 `ultron acp [session options]` serves the Agent Client Protocol (v1, JSON-RPC on stdio), so editors that speak it
 (Zed, CodeCompanion.nvim, avante.nvim) drive Ultron. Each cell is reported as one tool call with its code and output,
 and files a cell changed come back as edits with diffs. Neovim setup:
-[docs/rust-rewrite/acp-neovim.md](docs/rust-rewrite/acp-neovim.md).
+[docs/acp-neovim.md](docs/acp-neovim.md).
 
 ## The REPL at a glance
 
@@ -936,15 +936,14 @@ See [AGENTS.md](AGENTS.md) for the rules agents and contributors follow.
 - `crates/`: the Cargo workspace. `cli` is the `ultron` binary; `kernel` supervises the Python REPL; `host`,
   `kernel-apis`, `inference` and `delegation` implement the operations behind it; `session-core`, `daemon`,
   `server`, `client` and `protocol` run sessions; `ai` is the provider layer; `tui` and `interactive` the terminal
-  UI; `loki` the write-time guardrails; `review` the `/review` and `ultron autoreview` engine; `sandbox` the shell
+  UI; `review` the `/review` and `ultron autoreview` engine; `sandbox` the shell
   sandbox; `judge` the judge seat; `memorantado` and `hindsight` the memory backends; `claude-root` the Claude Code
-  modes.
+  and Antigravity launcher modes.
 - `packages/coding-agent/`: the assets the binary embeds or the tests read, kept at their original paths: the Python
-  runtime (`src/ultron/rlm/*.py`, `secret-patterns.json`), the Loki engine, the bundled `skills/`, `docs/`,
+  runtime (`src/ultron/rlm/*.py`, `secret-patterns.json`), the bundled `skills/`, `docs/`,
   `CHANGELOG.md` and `package.json` (the version), the `--export` HTML template and the built-in themes.
 - `scripts/rust-release.sh`, `scripts/rust-release/`: the release archive (binary, `install.sh`, licenses).
 - `specs/`: TLA+ specs of Ultron's protocols and `check.sh`.
-- `docs/rust-rewrite/`: the rewrite's baseline, decision log and feature ledger.
 
 ## Credits and license
 
