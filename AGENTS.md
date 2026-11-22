@@ -106,7 +106,7 @@ adding code, decide what it changes with and put it there.
 
 Several agent sessions may work in this checkout at once.
 
-- Commit only when the user asks, and only files you changed: stage explicit paths, check `git status` first.
+- Commit only files you changed: stage explicit paths, check `git status` first.
 - No `Co-Authored-By` or "Generated with" lines in commits or PRs.
 - Never: `git reset --hard`, `git checkout .`, `git clean -fd`, `git stash`, `git add -A`, `git add .`,
   `git commit --no-verify`, force pushes. On rebase conflicts in files you didn't change, stop and ask.
