@@ -29,7 +29,7 @@ const PROMPT_BUDGET: usize = 150_000;
 const MANIFEST_BUDGET: usize = 48_000;
 const STDERR_TAIL: usize = 4096;
 const FRAME_LIMIT: u64 = 8 << 20;
-const RULES: &str = "For tool calls use only the ultron MCP server, never native tools.";
+const RULES: &str = "For tool calls use only the ultron MCP server, never native tools. An MCP timeout or dropped tool wait does not mean the underlying Ultron cell or job stopped; check `await rlm.cells()` or `await rlm.job(...)` before retrying mutating work.";
 
 /// The transcript as one prompt of at most about `budget` characters: the newest messages whole, then the system
 /// text cut to the room left. A final message over the budget is an error, since agy would cut it.
@@ -1130,6 +1130,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sessions_keep_live_agy_when_user_or_runtime_event_arrives_mid_tool_call() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".gemini/config")).unwrap();
+        let config = r#"{"mcpServers":{"ultron":{"command":"python3"}}}"#;
+        std::fs::write(home.path().join(".gemini/config/mcp_config.json"), config).unwrap();
+        let mut options = fake_agy_options();
+        let env = options.base.env.as_mut().unwrap();
+        env.insert("ULTRON_AGY_SESSIONS".into(), "1".into());
+        env.insert("HOME".into(), home.path().display().to_string());
+        let model = crate::models::antigravity_model("offline-test").unwrap();
+        let mut messages = vec![
+            system(rlm_tool()),
+            message(json!({"role":"user","content":"go","timestamp":0})),
+        ];
+        for (i, output) in ["32", "olleh"].into_iter().enumerate() {
+            let reply = stream_simple(
+                &model,
+                &TranscriptContext {
+                    messages: messages.clone(),
+                },
+                &options,
+                &mut |_| {},
+            )
+            .await
+            .unwrap();
+            assert_eq!(reply.stop_reason, StopReason::ToolUse, "{:?}", reply.error_message);
+            let AssistantContent::ToolCall(call) = &reply.content[0] else {
+                panic!()
+            };
+            messages.push(Message::Assistant(reply.clone()));
+            messages.push(message(
+                json!({"role":"toolResult","toolCallId":call.id,"toolName":"rlm","content":[{"type":"text","text":output}],"isError":false,"timestamp":0}),
+            ));
+            if i == 1 {
+                messages.push(message(
+                    json!({"role":"user","content":"<runtime_event kind=\"cell_done\" id=\"cell-1\"/>","timestamp":0}),
+                ));
+            }
+        }
+        let done = stream_simple(
+            &model,
+            &TranscriptContext {
+                messages: messages.clone(),
+            },
+            &options,
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+        let report = reply_text(&done);
+        assert_eq!(report["prompts"].as_u64(), Some(1), "agy must stay in one live turn");
+        assert_eq!(
+            report["echo"],
+            json!([
+                {"type": "text", "text": "olleh"},
+                {"type": "text", "text": "[Message received while tool ran]\n<runtime_event kind=\"cell_done\" id=\"cell-1\"/>"}
+            ])
+        );
+    }
+
+    #[tokio::test]
     async fn session_load_resumes_with_delta_prompt_and_ignores_replay_chunks() {
         let model = crate::models::antigravity_model("offline-test").unwrap();
         let options = fake_agy_options();
@@ -1169,8 +1230,10 @@ mod tests {
         }))];
         let blocks = prompt_blocks(&messages, 150_000).unwrap();
         assert_eq!(blocks.len(), 2);
-        assert!(blocks[0]["text"].as_str().unwrap().contains("[attached image #1]"));
-        assert!(!blocks[0]["text"].as_str().unwrap().contains("QUJD"));
+        let text = blocks[0]["text"].as_str().unwrap();
+        assert!(text.contains("[attached image #1]"));
+        assert!(text.contains("An MCP timeout or dropped tool wait does not mean"));
+        assert!(!text.contains("QUJD"));
         assert_eq!(
             blocks[1],
             json!({"type": "image", "data": "QUJD", "mimeType": "image/png"})

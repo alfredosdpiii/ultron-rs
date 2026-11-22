@@ -4,7 +4,9 @@
 //! agy is driven from one process-lifetime runtime thread.
 use super::{Agy, AgyDelta, Step, delta_prompt};
 use crate::env::ProviderEnv;
-use crate::types::{AssistantContent, Message, Model, ToolResultMessage, TranscriptContext, Usage, UserContent};
+use crate::types::{
+    AssistantContent, Message, Model, ToolResultMessage, TranscriptContext, Usage, UserContent, UserMessageContent,
+};
 use serde_json::{Value, json};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
@@ -369,14 +371,15 @@ fn continuation(live: &mut Live, messages: &[Message]) -> Option<Step> {
         // agy timed the call out, so it has already ended the step without this result.
         Some((_, reply)) if reply.is_closed() => None,
         Some((id, _)) => match delta {
-            [Message::Assistant(call), Message::ToolResult(result)]
+            [Message::Assistant(call), Message::ToolResult(result), trailing @ ..]
                 if result.tool_call_id == *id
                     && call
                         .content
                         .iter()
-                        .any(|c| matches!(c, AssistantContent::ToolCall(t) if t.id == *id)) =>
+                        .any(|c| matches!(c, AssistantContent::ToolCall(t) if t.id == *id))
+                    && trailing.iter().all(|m| matches!(m, Message::User(_))) =>
             {
-                Some(Step::Answer(tool_result(result)))
+                Some(Step::Answer(tool_result(result, trailing)))
             }
             _ => None,
         },
@@ -391,9 +394,10 @@ fn continuation(live: &mut Live, messages: &[Message]) -> Option<Step> {
     }
 }
 
-/// A tool result as an MCP `CallToolResult`.
-fn tool_result(result: &ToolResultMessage) -> Value {
-    let content: Vec<Value> = result
+/// A tool result as an MCP `CallToolResult`, carrying any `User` messages (runtime events, steering) that arrived
+/// while the tool ran so the live `agy` turn continues instead of restarting with a truncated replay.
+fn tool_result(result: &ToolResultMessage, trailing: &[Message]) -> Value {
+    let mut content: Vec<Value> = result
         .content
         .iter()
         .map(|block| match block {
@@ -401,6 +405,27 @@ fn tool_result(result: &ToolResultMessage) -> Value {
             UserContent::Image(image) => json!({"type": "image", "data": image.data, "mimeType": image.mime_type}),
         })
         .collect();
+    for message in trailing {
+        let Message::User(user) = message else {
+            continue;
+        };
+        match &user.content {
+            UserMessageContent::Text(text) => {
+                content.push(json!({"type": "text", "text": format!("[Message received while tool ran]\n{text}")}));
+            }
+            UserMessageContent::Blocks(blocks) => {
+                content.push(json!({"type": "text", "text": "[Message received while tool ran]"}));
+                for block in blocks {
+                    match block {
+                        UserContent::Text(text) => content.push(json!({"type": "text", "text": text.text})),
+                        UserContent::Image(image) => {
+                            content.push(json!({"type": "image", "data": image.data, "mimeType": image.mime_type}))
+                        }
+                    }
+                }
+            }
+        }
+    }
     json!({"content": content, "isError": result.is_error})
 }
 
