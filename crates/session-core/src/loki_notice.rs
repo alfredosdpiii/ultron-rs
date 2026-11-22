@@ -59,8 +59,7 @@ impl LokiNotice {
         if config.loki == host::loki_guard::LokiMode::Off {
             return LokiNotice::known(None);
         }
-        // loki-guardrails 0.2.2 writes `.loki/loki.json` (no `loki.py`), while its `auto_setup::setup` only checks
-        // `.loki/loki.py`; treat an existing `.loki/loki.json` as already set up.
+        // loki-guardrails 0.2.2 omits loki.py, so auto_setup::setup alone misses an initialized .loki/loki.json.
         if config
             .loki_root
             .as_deref()

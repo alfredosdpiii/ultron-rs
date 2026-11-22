@@ -562,13 +562,34 @@ that input (a check, a rewrite, a hold), the level is at least medium, however r
     ),
 ];
 
-/// Where the Rust investigator frames differ from the recorded ones (recorded, Rust): `checked` also accounts for
-/// each owed check.
-const INVESTIGATOR_EDITS: [(&str, &str); 1] = [(
-    "each naming the file and line.\n- done:",
-    "each naming the file and line; plus
+/// Where the Rust investigator and finder frames differ from the recorded ones (recorded, Rust).
+const INVESTIGATOR_EDITS: [(&str, &str); 6] = [
+    (
+        "each naming the file and line.\n- done:",
+        "each naming the file and line; plus
   one line for each owed check (T<n>) you made that holds or that does not apply, starting with its id.\n- done:",
-)];
+    ),
+    (
+        "Errors: exceptions swallowed or reported as success, failure paths that leave partial state, cleanup that never runs.",
+        "Errors: check for swallowed exceptions and skipped cleanup. After a durable write, trace the next fallible call. If it fails, what stays committed, what does the caller see, and what will a retry read? Check rollback.",
+    ),
+    (
+        "  report a missing test for it.\n- consequence:",
+        "  report a missing test for it. SQL CHECK constraints, triggers and migrations with database tests ARE behaviours:\n  check that the tests actually exercise the new branch, lane or constraint.\n- consequence:",
+    ),
+    (
+        "  {\"read\": {\"path\": \"...\", \"start\": 1, \"end\": 80}}   lines of a file (200 at most)\n",
+        "  {\"read\": {\"path\": \"...\", \"start\": 1, \"end\": 200}}   lines of a file (400 at most)\n  {\"read_diff\": {\"path\": \"...\", \"start\": 1, \"end\": 400}}   rendered diff hunks of a changed file (use for files past the diff cut)\n",
+    ),
+    (
+        "  {\"recall\": {\"id\": \"r1.2\"}}   an earlier result in full again (after round 1 they are listed by id, one line each)",
+        "  {\"recall\": {\"id\": \"r1.2\"}}   an earlier result in full again (after round 1 they are listed by id, one line each)\n  {\"probe\": {\"code\": \"...\"}}   run a tiny stdlib-only Python snippet (re, json, math, collections, itertools, functools, string, difflib, statistics, datetime; 5s cap, no fs/network) to test a regex, edge input or timing; print() what you want to see",
+    ),
+    (
+        "--- view 8: literal (317 chars) ---\nEvidence the investigator cites, as the host reads it at the reviewed commit (the quoted lines were checked to be there):\ncalc.py (cited line 12):\n    6 |     return result\n",
+        "--- view 8: literal (492 chars) ---\nEvidence the investigator cites, as the host reads it at the reviewed commit (the quoted lines were checked to be there):\ncalc.py (cited line 12):\n    1 | def total(items):\n    2 |     \"\"\"Sum of item prices.\"\"\"\n    3 |     result = 0\n    4 |     for i in range(len(items) - 1):\n    5 |         result += items[i][\"price\"]\n    6 |     return result\n",
+    ),
+];
 
 /// `value` with [`VERIFIER_EDITS`] and [`INVESTIGATOR_EDITS`] made in every string it holds.
 pub(crate) fn with_rust_verifier(value: &mut Value) {
@@ -644,11 +665,10 @@ fn assert_case(world: &World, recorded: &Value, name: &str) -> (Value, String) {
     assert_eq!(requests.len(), wanted.len(), "{name}: distinct requests");
     for (index, (got, want)) in requests.iter().zip(&wanted).enumerate() {
         let mut want = want.clone();
-        // The verifier's task grew (VERIFIER_EDITS), and with it the frame's token estimate: under a budget its
-        // output cap is a little higher.
+        // The verifier and finder tasks grew (VERIFIER_EDITS / INVESTIGATOR_EDITS), and with them the frame's token
+        // estimate: under a budget its output cap is a little higher.
         let cap = "max_completion_tokens";
-        if want.to_string().contains("introduced: \\\"this_change\\\"")
-            && let (Some(got_cap), Some(want_cap)) = (got[cap].as_i64(), want[cap].as_i64())
+        if let (Some(got_cap), Some(want_cap)) = (got[cap].as_i64(), want[cap].as_i64())
             && (0..=128).contains(&(got_cap - want_cap))
         {
             want[cap] = got_cap.into();

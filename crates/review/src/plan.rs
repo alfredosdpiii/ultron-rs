@@ -677,7 +677,10 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
     let block_at = options.block_at.as_deref().unwrap_or(DEFAULT_BLOCK_AT);
     let max_comments = options.max_comments.unwrap_or(DEFAULT_MAX_COMMENTS).max(0) as usize;
     let fresh = options.fresh_lines.as_ref();
-    let Decision { verdict: raw_verdict, reason } = decide_verdict_in(
+    let Decision {
+        verdict: raw_verdict,
+        reason,
+    } = decide_verdict_in(
         result,
         options.self_authored,
         &options.state,

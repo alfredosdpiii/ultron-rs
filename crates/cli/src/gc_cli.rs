@@ -96,11 +96,9 @@ fn collect(agent_dir: &Path, max_age: Duration, orphan_grace: Duration, dry_run:
     let stale_cutoff = now.checked_sub(max_age);
     let orphan_cutoff = now.checked_sub(orphan_grace);
 
-    // 1. Orphaned .unsigned / .tmp files under rlm-snapshots.
     let snapshots_root = agent_dir.join("rlm-snapshots");
     sweep_orphans(&snapshots_root, orphan_cutoff, dry_run, &mut summary);
 
-    // 2. Stale session directories under rlm-snapshots, rlm-output, rlm-tmp.
     for bucket in ["rlm-snapshots", "rlm-output", "rlm-tmp"] {
         let root = agent_dir.join(bucket);
         let Ok(entries) = std::fs::read_dir(&root) else {
@@ -124,7 +122,6 @@ fn collect(agent_dir: &Path, max_age: Duration, orphan_grace: Duration, dry_run:
         }
     }
 
-    // 3. Stale .jsonl session logs under sessions/.
     let sessions_root = agent_dir.join("sessions");
     sweep_stale_sessions(&sessions_root, stale_cutoff, dry_run, &mut summary);
 

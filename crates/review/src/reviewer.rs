@@ -876,11 +876,13 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
             skip_bots: deps.config.skip_bots,
             requested_at: &requested_at,
         })?;
-        let has_new_mention = mention_at.as_deref().is_some_and(|m| last_at.as_deref().is_none_or(|l| m > l));
+        let has_new_mention = mention_at
+            .as_deref()
+            .is_some_and(|m| last_at.as_deref().is_none_or(|l| m > l));
         if decided.review && deps.config.quiet_minutes.0 > 0.0 && !has_new_mention {
             let quiet_ms = deps.config.quiet_minutes.0 * 60_000.0;
-            let last_activity = jsrt::date::parse_date(&pull.updated_at)
-                .or_else(|| jsrt::date::parse_date(&pull.created_at));
+            let last_activity =
+                jsrt::date::parse_date(&pull.updated_at).or_else(|| jsrt::date::parse_date(&pull.created_at));
             if let Some(at) = last_activity
                 && (jsrt::date::now_ms() as f64 - at as f64) < quiet_ms
             {

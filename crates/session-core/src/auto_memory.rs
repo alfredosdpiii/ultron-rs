@@ -587,7 +587,13 @@ fn distill_and_store(
     let reply = match ask(SYSTEM, &prompt(keep)) {
         Ok(reply) => reply,
         Err(err) => {
-            let detail: String = err.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(160).collect();
+            let detail: String = err
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(160)
+                .collect();
             let code = if detail.is_empty() {
                 "MODEL_ERROR".into()
             } else {

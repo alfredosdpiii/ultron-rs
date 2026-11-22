@@ -214,7 +214,17 @@ macro_rules! parity {
 
         #[test]
         fn cli_interactive_cmds_fixture_has_a_test_per_scenario() {
-            let tested = [$($name,)* "usage", "logout", "login-api-key", "rlm-panel", "settings-models", "changelog"];
+            let tested = [
+                $($name,)*
+                "usage",
+                "logout",
+                "login-api-key",
+                "rlm-panel",
+                "settings",
+                "settings-models",
+                "settings-thinking",
+                "changelog",
+            ];
             for scenario in fixture()["scenarios"].as_array().unwrap() {
                 let name = scenario["name"].as_str().unwrap();
                 assert!(tested.contains(&name), "scenario {name} has no parity test");
@@ -251,17 +261,29 @@ parity! {
     cli_interactive_tree_empty_like_ts => "tree-empty",
     cli_interactive_tree_summarize_like_ts => "tree-summarize",
     cli_interactive_resume_selector_like_ts => "resume-selector",
-    cli_interactive_settings_like_ts => "settings",
     cli_interactive_review_expands_like_ts => "review",
     cli_interactive_logout_without_credentials_like_ts => "logout-empty",
     cli_interactive_share_without_gh_login_like_ts => "share-no-gh",
     cli_interactive_external_editor_like_ts => "external-editor",
     cli_interactive_external_editor_missing_like_ts => "external-editor-missing",
     cli_interactive_external_editor_failure_keeps_text_like_ts => "external-editor-fails",
-    cli_interactive_settings_model_thinking_like_ts => "settings-thinking",
     cli_interactive_resume_switch_like_ts => "resume-switch",
     cli_interactive_resume_after_compaction_like_ts => "compact-resume",
     cli_interactive_history_search_empty_matches_ts => "history-search-empty",
+}
+
+/// Rust-only `/settings` rows (autoreview mode/quiet/neverRequestChanges/deepRounds/systemPrefix, self-review,
+/// turn-end checks, situational skills, observer, Loki hygiene) increase the settings count from 36 to 46.
+const SETTINGS_COUNT_DIVERGENCES: &[(&str, &str)] = &[("  (1/36)", "  (1/46)"), ("  (2/36)", "  (2/46)")];
+
+#[test]
+fn cli_interactive_settings_like_ts() {
+    replay_with("settings", SETTINGS_COUNT_DIVERGENCES);
+}
+
+#[test]
+fn cli_interactive_settings_model_thinking_like_ts() {
+    replay_with("settings-thinking", SETTINGS_COUNT_DIVERGENCES);
 }
 
 /// `/settings` -> Models. Rust-only (wave 47): claude-code models are offered for the Session and sub-agent rows
@@ -283,6 +305,7 @@ fn cli_interactive_settings_models_like_ts() {
     replay_full(
         "settings-models",
         &[
+            ("  (1/36)", "  (1/46)"),
             (
                 "  Ultron sub-agent model       default model (none)",
                 "  Ultron sub-agent model       root's subscription model",

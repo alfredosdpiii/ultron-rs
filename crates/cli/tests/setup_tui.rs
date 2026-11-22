@@ -245,7 +245,10 @@ fn replay(name: &str) {
             continue;
         }
         let want = bundled_loki
-            .replace_all(&without_node(scenario["captures"][index].as_str().unwrap()), "✓ Bundled Loki <VER>")
+            .replace_all(
+                &without_node(scenario["captures"][index].as_str().unwrap()),
+                "✓ Bundled Loki <VER>",
+            )
             .into_owned();
         // Wait for the recorded screen (hang guard 120 s); a real difference fails after the guard.
         let deadline = Instant::now() + Duration::from_secs(120);

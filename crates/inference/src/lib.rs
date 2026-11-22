@@ -487,7 +487,12 @@ impl Engine {
         )];
         messages.extend(history.iter().cloned());
         let context = ai::TranscriptContext { messages };
-        let options = self.options(tranche, frame.thinking.as_deref(), frame.contract.as_ref(), frame.session_id.as_deref());
+        let options = self.options(
+            tranche,
+            frame.thinking.as_deref(),
+            frame.contract.as_ref(),
+            frame.session_id.as_deref(),
+        );
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
