@@ -53,12 +53,7 @@ fn read_journal(path: &Path) -> Map<String, Value> {
 }
 
 fn write_journal(path: &Path, journal: &Map<String, Value>) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let temp = path.with_extension(format!("{}.tmp", std::process::id()));
-    std::fs::write(&temp, Value::Object(journal.clone()).to_string()).map_err(|e| e.to_string())?;
-    std::fs::rename(&temp, path).map_err(|e| e.to_string())
+    jsrt::fs::atomic_write(path, Value::Object(journal.clone()).to_string()).map_err(|e| e.to_string())
 }
 
 pub fn run(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {

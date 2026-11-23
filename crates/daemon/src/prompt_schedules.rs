@@ -361,10 +361,7 @@ fn write_error(path: &Path, session: &str, id: &str, failure: Option<(&str, i64,
             }
         }
     }
-    let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    if std::fs::write(&temp, format!("{value}\n")).is_ok() && std::fs::rename(&temp, path).is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
+    let _ = jsrt::fs::atomic_write(path, format!("{value}\n"));
 }
 
 /// Every session of `session_dir` with schedules, and its schedules.

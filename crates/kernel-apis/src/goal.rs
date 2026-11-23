@@ -400,7 +400,7 @@ impl GoalDriver {
                 Ok(())
             }
             Ok(job) => {
-                state.goal.as_mut().expect("a goal")["job"] = job.as_str().into();
+                Self::goal_mut(state)?["job"] = job.as_str().into();
                 let persisted = self.persist(state);
                 let ended = early.iter().position(|(id, _)| *id == job).map(|at| early.remove(at));
                 match ended {
@@ -409,7 +409,7 @@ impl GoalDriver {
                 }
             }
             Err(error) if waiting => {
-                let goal = state.goal.as_mut().expect("a goal");
+                let goal = Self::goal_mut(state)?;
                 goal["status"] = "paused".into();
                 goal["reason"] = format!("the goal job could not start: {error}").into();
                 self.persist(state)
@@ -495,25 +495,39 @@ impl GoalDriver {
         jsrt::sync::lock(&self.state).closed = true;
     }
 
+    fn goal(state: &State) -> Result<&Value, String> {
+        state
+            .goal
+            .as_ref()
+            .ok_or_else(|| "There is no session goal".to_string())
+    }
+
+    fn goal_mut(state: &mut State) -> Result<&mut Value, String> {
+        state
+            .goal
+            .as_mut()
+            .ok_or_else(|| "There is no session goal".to_string())
+    }
+
     /// Writes the goal's next run, then has its job started once the lock is released.
     fn start_job(&self, state: &mut State) -> Result<(), String> {
         if state.closed {
             return Ok(());
         }
         let now = self.now();
-        let goal = state.goal.as_mut().expect("a goal");
+        let goal = Self::goal_mut(state)?;
         goal["runs"] = (int_of(goal, "runs") + 1).into();
         goal["run_progress"] = false.into();
         goal["updated_at"] = now.into();
         goal["job"] = Value::Null;
         let key = run_key(goal);
         if let Err(error) = self.persist(state) {
-            let goal = state.goal.as_mut().expect("a goal");
+            let goal = Self::goal_mut(state)?;
             goal["status"] = "paused".into();
             goal["reason"] = format!("{error}; /goal resume retries").into();
             return Err(error);
         }
-        let goal = state.goal.as_ref().expect("a goal");
+        let goal = Self::goal(state)?;
         let effect = Effect::Start {
             key: key.clone(),
             brief: goal_brief(goal),
@@ -526,7 +540,7 @@ impl GoalDriver {
 
     fn set_status(&self, state: &mut State, status: &str, reason: Option<&str>) -> Result<(), String> {
         let now = self.now();
-        let goal = state.goal.as_mut().expect("a goal");
+        let goal = Self::goal_mut(state)?;
         goal["status"] = status.into();
         goal["reason"] = reason.map_or(Value::Null, Value::from);
         goal["updated_at"] = now.into();
@@ -570,7 +584,7 @@ impl GoalDriver {
                 _ => return Ok(Reply::Status("")),
             }
             self.set_status(state, "active", None)?;
-            state.goal.as_mut().expect("a goal")["stuck"] = 0.into();
+            Self::goal_mut(state)?["stuck"] = 0.into();
             self.start_job(state)?;
             return Ok(Reply::Status(""));
         }
@@ -672,7 +686,7 @@ impl GoalDriver {
 
     /// Records a check's result on the goal it ran for.
     fn record_check(&self, state: &mut State, command: String, result: GoalCheckResult) -> Result<Value, String> {
-        let goal = state.goal.as_mut().expect("a goal");
+        let goal = Self::goal_mut(state)?;
         let passed = result.exit_code == Some(0) && !result.timed_out;
         let signature = check_signature(&result);
         let same = goal["last_signature"] == signature.as_str();
@@ -739,7 +753,7 @@ impl GoalDriver {
                 return Err("The session goal changed while its check ran: read it with goal.get()".into());
             }
             if kind == "goal.complete" {
-                Self::current(state.goal.as_ref().expect("a goal"), payload.get("revision"))?;
+                Self::current(Self::goal(state)?, payload.get("revision"))?;
             }
             let run = this.record_check(state, check.command, result)?;
             this.checked(state, kind, payload, run)
@@ -814,14 +828,14 @@ impl GoalDriver {
             if run["passed"] != true {
                 return Ok(json!({
                     "complete": false,
-                    "status": state.goal.as_ref().expect("a goal")["status"],
+                    "status": Self::goal(state)?["status"],
                     "check": run,
                     "message": "The check failed, so the goal is not complete: fix the cause and call goal.complete again.",
                 }));
             }
             return self.complete(state, payload, true);
         }
-        let goal = state.goal.as_ref().expect("a goal");
+        let goal = Self::goal(state)?;
         if goal["status"] == "active" && int_of(goal, "stuck") >= STUCK_CHECKS {
             let stuck = int_of(goal, "stuck");
             self.set_status(
@@ -831,7 +845,7 @@ impl GoalDriver {
                     "{stuck} failing checks in a row gave the same result; /goal resume continues"
                 )),
             )?;
-            let goal = state.goal.as_mut().expect("a goal");
+            let goal = Self::goal_mut(state)?;
             if let Some(stopping) = goal["job"].as_str().map(str::to_string) {
                 let jobs = self.jobs.clone();
                 std::thread::spawn(move || {
@@ -852,10 +866,10 @@ impl GoalDriver {
         let summary = text(payload.get("summary"), "summary")?;
         let evidence = evidence_list(payload.get("evidence"))?;
         let now = self.now();
-        state.goal.as_mut().expect("a goal")["completion"] =
+        Self::goal_mut(state)?["completion"] =
             json!({"summary": summary, "evidence": evidence, "verified": verified, "at": now});
         self.set_status(state, "complete", None)?;
-        let goal = state.goal.as_ref().expect("a goal");
+        let goal = Self::goal(state)?;
         Ok(json!({"complete": true, "status": goal["status"], "verified": verified, "check": goal["last_check"]}))
     }
 }

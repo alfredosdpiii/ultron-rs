@@ -78,7 +78,7 @@ use std::sync::Arc;
 /// A session switch's "off": `off`, `0` or `false`, in any case and with surrounding space (the TypeScript
 /// `["off", "0", "false"].includes(value.trim().toLowerCase())`).
 pub fn flag_off(value: Option<&str>) -> bool {
-    value.is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false"))
+    jsrt::env::flag_off(value)
 }
 
 pub type VarLookup = config::auth::Vars;

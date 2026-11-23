@@ -22,6 +22,7 @@ pub mod base64;
 pub mod collate;
 pub mod date;
 pub mod diff;
+pub mod env;
 pub mod fs;
 pub mod hash;
 pub mod json;

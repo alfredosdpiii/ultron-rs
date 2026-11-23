@@ -205,9 +205,7 @@ pub fn ensure_agy_hooks(home: &Path) -> std::io::Result<()> {
         map.insert("ultron".into(), entry);
         let mut bytes = serde_json::to_vec_pretty(&root)?;
         bytes.push(b'\n');
-        let tmp = file.with_extension(format!("tmp-{}", std::process::id()));
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, &file)?;
+        jsrt::fs::atomic_write(&file, &bytes)?;
     }
     Ok(())
 }

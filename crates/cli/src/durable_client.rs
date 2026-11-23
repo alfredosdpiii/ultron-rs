@@ -129,10 +129,7 @@ fn resume_through_home(instance_dir: &std::path::Path) {
 }
 
 fn set_home(instance_dir: &std::path::Path, id: &str) -> Result<(), String> {
-    std::fs::create_dir_all(instance_dir).map_err(|e| e.to_string())?;
-    let temp = instance_dir.join(format!("{HOME_FILE}.{}.tmp", std::process::id()));
-    std::fs::write(&temp, format!("{id}\n")).map_err(|e| e.to_string())?;
-    std::fs::rename(&temp, instance_dir.join(HOME_FILE)).map_err(|e| e.to_string())
+    jsrt::fs::atomic_write(&instance_dir.join(HOME_FILE), format!("{id}\n")).map_err(|e| e.to_string())
 }
 
 /// `ultron-s [--new | --session <id> [--home] | --session-id <id> | -c | -r | --fork <id> | --list] [options]

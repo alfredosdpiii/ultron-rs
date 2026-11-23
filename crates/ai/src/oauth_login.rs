@@ -257,7 +257,7 @@ impl CallbackServer {
                     let _ = stream.write_all(reply.body.as_bytes()).await;
                     let _ = stream.shutdown().await;
                     if let Some(code) = reply.code
-                        && let Some(sender) = sender.lock().expect("callback sender").take()
+                        && let Some(sender) = jsrt::sync::lock(&sender).take()
                     {
                         let _ = sender.send(code);
                     }

@@ -59,7 +59,7 @@ pub struct RuntimeEvent {
 pub fn async_events_enabled(value: Option<&str>) -> bool {
     match value.map(str::trim) {
         None | Some("") => true,
-        Some(value) => !["off", "0", "false", "no"].contains(&value.to_lowercase().as_str()),
+        Some(value) => !jsrt::env::flag_off_or_no(Some(value)),
     }
 }
 

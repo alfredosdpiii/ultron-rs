@@ -13,7 +13,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Once, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
 /// Idle eviction for live `agy` processes (30 min); evicted sessions can still reattach via ACP `session/load`.
@@ -64,9 +64,7 @@ struct PersistedSession {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
+    jsrt::date::now_ms().max(0) as u64
 }
 
 fn store_dir(env: Option<&ProviderEnv>) -> Option<PathBuf> {
@@ -277,9 +275,7 @@ fn install_relay(config: &Path, path: &str) -> io::Result<()> {
 }
 
 fn write_atomic(target: &Path, bytes: &[u8]) -> io::Result<()> {
-    let temporary = target.with_extension(format!("tmp-{}", std::process::id()));
-    std::fs::write(&temporary, bytes)?;
-    std::fs::rename(&temporary, target)
+    jsrt::fs::atomic_write(target, bytes)
 }
 
 pub(super) async fn submit(
@@ -331,7 +327,7 @@ async fn reap(registry: Registry) {
     let mut tick = tokio::time::interval(Duration::from_secs(30));
     loop {
         tick.tick().await;
-        let mut pool = registry.lock().expect("agy registry");
+        let mut pool = jsrt::sync::lock(&registry);
         let mut i = 0;
         while i < pool.live.len() {
             if pool.live[i].used.elapsed() >= IDLE {
@@ -369,7 +365,7 @@ async fn run(mut job: Job, registry: Registry) {
     {
         live.used = Instant::now();
         persist_live(&live, job.env.as_ref());
-        let mut pool = registry.lock().expect("agy registry");
+        let mut pool = jsrt::sync::lock(&registry);
         pool.live.push(live);
         while pool.live.len() > MAX_LIVE {
             let oldest = (0..pool.live.len())
@@ -388,7 +384,7 @@ fn take(
     messages: &[Message],
     env: Option<&ProviderEnv>,
 ) -> (Option<Live>, Option<Archived>) {
-    let mut pool = registry.lock().expect("agy registry");
+    let mut pool = jsrt::sync::lock(registry);
     if let Some(index) = (0..pool.live.len())
         .filter(|&i| {
             let live = &pool.live[i];

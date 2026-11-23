@@ -194,7 +194,7 @@ fn answer(inventory: &Inventory, request: &Request) -> Reply {
     let Some(id) = message.get("id") else {
         if message["method"] == "notifications/cancelled" {
             let request = message["params"]["requestId"].to_string();
-            if let Some(cancel) = inventory.cancels.lock().expect("bridge cancels").remove(&request) {
+            if let Some(cancel) = jsrt::sync::lock(&inventory.cancels).remove(&request) {
                 let _ = cancel.send(());
             }
         }

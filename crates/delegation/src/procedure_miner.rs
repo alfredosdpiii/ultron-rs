@@ -811,15 +811,10 @@ impl ProcedureStore {
     }
 
     fn write_unlocked(&self, procedures: &[MinedProcedure]) -> Result<(), String> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("create_dir_all {}: {e}", parent.display()))?;
-        }
         let encoded: Vec<Value> = procedures.iter().map(MinedProcedure::to_json).collect();
         let body = serde_json::to_string_pretty(&json!({"version": 1, "procedures": encoded}))
             .map_err(|e| format!("serialize procedures: {e}"))?;
-        let tmp = self.path.with_extension(format!("json.{}.tmp", std::process::id()));
-        std::fs::write(&tmp, body).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-        std::fs::rename(&tmp, &self.path).map_err(|e| format!("rename {}: {e}", self.path.display()))
+        jsrt::fs::atomic_write(&self.path, body).map_err(|e| format!("write {}: {e}", self.path.display()))
     }
 
     pub fn list(&self) -> Vec<MinedProcedure> {

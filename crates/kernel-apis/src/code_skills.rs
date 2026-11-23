@@ -99,9 +99,7 @@ fn evidence_value(value: Option<&Value>) -> Result<Value, String> {
 }
 
 fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
-    let temporary = PathBuf::from(format!("{}.{}.tmp", path.display(), jsrt::random::uuid_v4()));
-    std::fs::write(&temporary, content).map_err(|error| error.to_string())?;
-    std::fs::rename(&temporary, path).map_err(|error| error.to_string())
+    jsrt::fs::atomic_write(path, content).map_err(|error| error.to_string())
 }
 
 fn read_history(base: &Path, name: &str) -> Result<Value, String> {

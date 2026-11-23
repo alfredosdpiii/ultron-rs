@@ -17,7 +17,7 @@ use services::{Branch, BranchSource, LocalServices};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use protocol::custom_types::REFINEMENTS;
 
@@ -151,14 +151,9 @@ impl ScopedStore {
     }
 
     fn write_records(path: &Path, records: &[Value]) -> Result<(), String> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("create_dir_all {}: {e}", parent.display()))?;
-        }
         let body = serde_json::to_string_pretty(&json!({"version": 1, "records": records}))
             .map_err(|e| format!("serialize refinements: {e}"))?;
-        let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-        std::fs::write(&tmp, body).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-        std::fs::rename(&tmp, path).map_err(|e| format!("rename {}: {e}", path.display()))
+        jsrt::fs::atomic_write(path, body).map_err(|e| format!("write {}: {e}", path.display()))
     }
 
     /// Every record across project and global stores (project first, then global).
@@ -695,9 +690,7 @@ fn prompt(summary: &str, records: &[Value], scoped_records: &[Value]) -> String 
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
+    jsrt::date::now_ms().max(0) as u64
 }
 
 /// One proposal pass over the compaction `compaction_id`'s `summary`, in the background: `ask(system, prompt)` is

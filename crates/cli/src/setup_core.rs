@@ -122,21 +122,11 @@ pub fn check_loki_analyzers(probe: &ProbeCommand) -> Vec<LokiAnalyzerCheck> {
 
 /// `writePrivateFile`: readable only by the user (0600), in a directory only the user can list (0700 when created).
 pub fn write_private_file(path: &Path, content: &str) -> std::io::Result<()> {
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::DirBuilderExt;
     if let Some(dir) = path.parent() {
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
     }
-    let temporary = format!("{}.{}.tmp", path.display(), std::process::id());
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temporary)?;
-    file.write_all(content.as_bytes())?;
-    drop(file);
-    std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))?;
-    std::fs::rename(&temporary, path)
+    jsrt::fs::atomic_write_mode(path, content, 0o600)
 }
 
 /// `validateProviderId`: `/^[a-z0-9][a-z0-9._-]*$/`.

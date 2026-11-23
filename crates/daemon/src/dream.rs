@@ -183,9 +183,6 @@ fn create_session(instance_dir: &Path, session_dir: &Path, cwd: &Path) -> Result
         SESSION_NAME.into(),
     )])?;
     let id = session.metadata().id.clone();
-    std::fs::create_dir_all(instance_dir).map_err(|e| e.to_string())?;
-    let temp = instance_dir.join(format!("{SESSION_FILE}.{}.tmp", std::process::id()));
-    std::fs::write(&temp, format!("{id}\n")).map_err(|e| e.to_string())?;
-    std::fs::rename(&temp, instance_dir.join(SESSION_FILE)).map_err(|e| e.to_string())?;
+    jsrt::fs::atomic_write(&instance_dir.join(SESSION_FILE), format!("{id}\n")).map_err(|e| e.to_string())?;
     Ok(id)
 }

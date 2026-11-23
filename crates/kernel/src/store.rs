@@ -79,12 +79,7 @@ impl DocumentStore for FileDocumentStore {
     }
 
     fn write(&self, document: &Value) -> Result<(), String> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        let temporary = PathBuf::from(format!("{}.{}.tmp", self.path.display(), jsrt::random::uuid_v4()));
-        std::fs::write(&temporary, serde_json::to_string(document).unwrap_or_default())
-            .map_err(|error| error.to_string())?;
-        std::fs::rename(&temporary, &self.path).map_err(|error| error.to_string())
+        jsrt::fs::atomic_write(&self.path, serde_json::to_string(document).unwrap_or_default())
+            .map_err(|error| error.to_string())
     }
 }

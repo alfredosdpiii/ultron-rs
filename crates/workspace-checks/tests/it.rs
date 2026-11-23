@@ -245,3 +245,180 @@ fn no_unwrap_in_prod_src() {
         hits.join("\n")
     );
 }
+
+/// Production code in `crates/*/src` must use `jsrt::sync::lock` instead of `.lock().expect(...)` /
+/// `.read().expect(...)` / `.write().expect(...)`, so a panic in one thread never cascades into mutex-poison panics.
+#[test]
+fn no_lock_expect_in_prod_src() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut files = Vec::new();
+    for entry in fs::read_dir(&crates).unwrap() {
+        rust_files(&entry.unwrap().path().join("src"), &mut files);
+    }
+    let mut hits = Vec::new();
+    for file in files {
+        let text = fs::read_to_string(&file).unwrap();
+        let prod = text.split("\n#[cfg(test)]").next().unwrap_or(&text);
+        let rel = file.strip_prefix(&crates).unwrap_or(&file).display();
+        for (idx, line) in prod.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("///") || trimmed.starts_with("//!") {
+                continue;
+            }
+            if line.contains(".lock().expect(") || line.contains(".read().expect(") || line.contains(".write().expect(")
+            {
+                hits.push(format!("crates/{rel}:{}: {}", idx + 1, trimmed));
+            }
+        }
+    }
+    hits.sort();
+    assert!(
+        hits.is_empty(),
+        "production lock/rwlock .expect() calls found (use jsrt::sync::lock):\n{}",
+        hits.join("\n")
+    );
+}
+
+/// `crates/session-core/src` reads environment variables through injected `RunEnv` rather than ambient `std::env::var`,
+/// keeping session tests isolated. Only the process entrypoints and crash-injection hook are exempt.
+#[test]
+fn no_direct_env_var_in_session_core() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../session-core/src");
+    let mut files = Vec::new();
+    rust_files(&dir, &mut files);
+    const EXEMPT: [&str; 3] = ["lane.rs", "lib.rs", "turns.rs"];
+    let mut hits = Vec::new();
+    for file in files {
+        let rel = file.strip_prefix(&dir).unwrap_or(&file).display().to_string();
+        if EXEMPT.contains(&rel.as_str()) {
+            continue;
+        }
+        let text = fs::read_to_string(&file).unwrap();
+        let prod = text.split("\n#[cfg(test)]").next().unwrap_or(&text);
+        for (idx, line) in prod.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("///") || trimmed.starts_with("//!") {
+                continue;
+            }
+            if line.contains("std::env::var(") || line.contains("std::env::var_os(") {
+                hits.push(format!("crates/session-core/src/{rel}:{}: {}", idx + 1, trimmed));
+            }
+        }
+    }
+    hits.sort();
+    assert!(
+        hits.is_empty(),
+        "ambient std::env::var calls in session-core (use RunEnv):\n{}",
+        hits.join("\n")
+    );
+}
+
+/// Atomic file writes in `crates/*/src` must go through `jsrt::fs::atomic_write` / `jsrt::fs::atomic_write_mode`
+/// instead of hand-rolling `.tmp` + `std::fs::rename`.
+#[test]
+fn no_hand_rolled_tmp_rename_in_prod_src() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut files = Vec::new();
+    for entry in fs::read_dir(&crates).unwrap() {
+        rust_files(&entry.unwrap().path().join("src"), &mut files);
+    }
+    const EXEMPT: [&str; 8] = [
+        "cli/src/assets.rs",
+        "config/src/paths.rs",
+        "delegation/src/worktrees.rs",
+        "diagram/src/lib.rs",
+        "jsrt/src/fs.rs",
+        "kernel/src/lib.rs",
+        "review/src/checkout.rs",
+        "review/src/state.rs",
+    ];
+    let mut hits = Vec::new();
+    for file in files {
+        let rel = file.strip_prefix(&crates).unwrap_or(&file).display().to_string();
+        if EXEMPT.contains(&rel.as_str()) {
+            continue;
+        }
+        let text = fs::read_to_string(&file).unwrap();
+        let prod = text.split("\n#[cfg(test)]").next().unwrap_or(&text);
+        if prod.contains("std::fs::rename(") && (prod.contains(".tmp") || prod.contains("tmp-")) {
+            hits.push(format!(
+                "crates/{rel} hand-rolls tmp+rename (use jsrt::fs::atomic_write)"
+            ));
+        }
+    }
+    hits.sort();
+    assert!(hits.is_empty(), "{}", hits.join("\n"));
+}
+
+/// Ratchet on source file size in `crates/*/src`: no new file may exceed 1,200 lines, and grandfathered files may not
+/// grow past their recorded ceiling (split into submodules when adding features).
+#[test]
+fn no_new_god_files() {
+    const MAX_LINES: usize = 1_200;
+    const GRANDFATHERED: [(&str, usize); 43] = [
+        ("ai/src/anthropic.rs", 1247),
+        ("ai/src/antigravity/mod.rs", 1358),
+        ("ai/src/aws_credentials.rs", 1410),
+        ("ai/src/bedrock.rs", 1607),
+        ("ai/src/claude_code_cli.rs", 1634),
+        ("ai/src/openai_completions.rs", 1481),
+        ("ai/src/openai_responses.rs", 1281),
+        ("claude-root/src/mcp_server.rs", 1598),
+        ("cli/src/autoreview_cli.rs", 2395),
+        ("cli/src/interactive.rs", 2268),
+        ("cli/src/setup_wizard.rs", 1759),
+        ("client/src/runtime.rs", 1306),
+        ("daemon/src/workers.rs", 1705),
+        ("delegation/src/agents/mod.rs", 2186),
+        ("delegation/src/host.rs", 2281),
+        ("delegation/src/usage.rs", 1397),
+        ("delegation/src/worktrees.rs", 1739),
+        ("durable/src/transaction.rs", 1312),
+        ("harness/src/scheduler/mod.rs", 2014),
+        ("host/src/file_hooks.rs", 1226),
+        ("host/src/lib.rs", 1480),
+        ("interactive/src/agent_hub.rs", 1240),
+        ("interactive/src/app.rs", 5464),
+        ("interactive/src/components.rs", 1342),
+        ("interactive/src/settings_selector.rs", 2596),
+        ("interactive/src/tree_selector.rs", 1344),
+        ("kernel-apis/src/memory.rs", 2262),
+        ("kernel/src/lib.rs", 2419),
+        ("review/src/github.rs", 1232),
+        ("review/src/reviewer.rs", 2015),
+        ("rlm-views/src/graph.rs", 2022),
+        ("rlm-views/src/pane.rs", 1665),
+        ("rlm-views/src/visualizer.rs", 1226),
+        ("session-core/src/compose/mod.rs", 2118),
+        ("session-core/src/core.rs", 3036),
+        ("session-core/src/lane.rs", 1487),
+        ("tui/src/editor.rs", 1494),
+        ("tui/src/fullscreen.rs", 1381),
+        ("tui/src/latex.rs", 1850),
+        ("tui/src/marked.rs", 1986),
+        ("tui/src/tables.rs", 1839),
+        ("tui/src/vim.rs", 1400),
+        ("usage/src/report.rs", 1223),
+    ];
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut files = Vec::new();
+    for entry in fs::read_dir(&crates).unwrap() {
+        rust_files(&entry.unwrap().path().join("src"), &mut files);
+    }
+    let mut violations = Vec::new();
+    for file in files {
+        let rel = file.strip_prefix(&crates).unwrap_or(&file).display().to_string();
+        let count = fs::read_to_string(&file).unwrap().lines().count();
+        let limit = GRANDFATHERED
+            .iter()
+            .find(|(path, _)| *path == rel)
+            .map_or(MAX_LINES, |(_, cap)| *cap);
+        if count > limit {
+            violations.push(format!(
+                "crates/{rel} has {count} lines (limit {limit}; split into submodules)"
+            ));
+        }
+    }
+    violations.sort();
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
+}

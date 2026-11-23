@@ -68,9 +68,7 @@ impl Store {
         }
         let version = versions.len() as u64 + 1;
         versions.push(json!({"version": version, "config": config, "createdAt": at}));
-        let temp = path.with_extension("json.tmp");
-        std::fs::write(&temp, format!("{:#}\n", Value::Object(all))).map_err(io(&temp))?;
-        std::fs::rename(&temp, &path).map_err(io(&path))?;
+        jsrt::fs::atomic_write(&path, format!("{:#}\n", Value::Object(all))).map_err(io(&path))?;
         Ok(version)
     }
 
