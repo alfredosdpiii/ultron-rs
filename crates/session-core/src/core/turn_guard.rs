@@ -17,10 +17,13 @@
 //! when the setting names checks.
 
 use super::{Core, Input, MAIN_LANE};
+use crate::durable_store::lock as lock_session;
 use delegation::spawn_contract::{CheckPlace, Hop, HostCheck, SpawnContract};
 use jsrt::sync;
 use kernel::Signal;
 use serde_json::{Map, Value, json};
+use session_journal::Write;
+use session_journal::ns::MODULE;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -29,6 +32,7 @@ pub const MAX_EMPTY: u32 = 2;
 /// Turns continued for failed `turnEndChecks` since the user's last input.
 pub const MAX_CHECK_CONTINUES: u32 = 5;
 pub const CHECKS_KEY: &str = "turnEndChecks";
+pub const STATE_KEY: &str = "turn_guard";
 pub const EMPTY_TEXT: &str = "Your last reply was empty. Continue the work; if it is done, say in a sentence or two what was done and what is left.";
 
 #[derive(Default)]
@@ -37,8 +41,7 @@ pub(super) struct TurnGuard {
     last_empty: bool,
     /// Empty replies continued in a row.
     empty: u32,
-    /// Subagents whose left items the root was already given.
-    // ponytail: in memory, so a restarted worker gives earlier subagents' items once more; keep the ids beside the
+    /// Subagents whose left items the root was already given (persisted under `ultron.module/turn_guard`).
     left_seen: HashSet<String>,
     /// Turns continued for failed checks since the user's last input.
     check_continues: u32,
@@ -126,6 +129,29 @@ pub fn checks_text(failed: &[String]) -> String {
 }
 
 impl Core {
+    /// Load persisted turn-guard state (`leftSeen`) from the session journal.
+    pub(super) fn turn_guard_load(&mut self) {
+        let saved = lock_session(&self.session).value(MODULE, STATE_KEY).cloned();
+        let ids = saved
+            .as_ref()
+            .and_then(|value| value.get("leftSeen"))
+            .and_then(Value::as_array)
+            .map_or_default(Vec::as_slice);
+        self.turn_guard.left_seen = ids.iter().filter_map(Value::as_str).map(str::to_string).collect();
+    }
+
+    fn turn_guard_save(&self) {
+        let mut ids: Vec<&str> = self.turn_guard.left_seen.iter().map(String::as_str).collect();
+        ids.sort_unstable();
+        let value = json!({ "leftSeen": ids });
+        let _ = match &self.runtime.services.values {
+            Some(values) => values.set(MODULE, STATE_KEY, &value),
+            None => lock_session(&self.session)
+                .commit(&[Write::set(MODULE, STATE_KEY, value)])
+                .map(drop),
+        };
+    }
+
     /// An assistant message of the run ended.
     pub(super) fn turn_guard_assistant(&mut self, message: &Value) {
         self.turn_guard.last_empty = is_empty_reply(message);
@@ -174,6 +200,7 @@ impl Core {
             let mut left = self.lane.stack.delegation.left_items(MAIN_LANE);
             left.retain(|(id, _, _)| self.turn_guard.left_seen.insert(id.clone()));
             if !left.is_empty() {
+                self.turn_guard_save();
                 let _ = self.prompt_with(nudge("work left by subagents", None, left_text(&left)), None, true);
                 return;
             }

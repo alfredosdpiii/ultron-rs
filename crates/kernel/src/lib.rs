@@ -61,7 +61,6 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -1494,9 +1493,9 @@ impl Shared {
             ("request", Value::from("snapshot")),
             ("path", Value::from(unsigned.to_string_lossy().into_owned())),
         ]);
-        let outcome = self.request(op, generation, frame).and_then(|reply| {
+        let outcome = self.request(op, generation, frame).map(|reply| {
             if reply.result.status != Status::Ok {
-                return Ok(reply);
+                return reply;
             }
             let failed = |error: String| KernelReply::from_result(snapshot::snapshot_error(error));
             let limit = snapshot::max_snapshot_bytes();
@@ -1504,38 +1503,26 @@ impl Shared {
                 && let Ok(meta) = std::fs::metadata(&unsigned)
                 && meta.len() > limit
             {
-                return Ok(failed(format!(
+                return failed(format!(
                     "snapshot skipped: {} bytes exceeds limit of {} bytes ({})",
                     meta.len(),
                     limit,
                     snapshot::ENV_MAX_SNAPSHOT_BYTES
-                )));
+                ));
             }
             let content = match std::fs::read(&unsigned) {
                 Ok(content) => content,
-                Err(error) => return Ok(failed(format!("snapshot signing failed: {error}"))),
+                Err(error) => return failed(format!("snapshot signing failed: {error}")),
             };
             let reported = reply
                 .snapshot
                 .as_ref()
                 .and_then(|report| report.content_sha256.as_deref());
             if reported != Some(jsrt::hash::sha256_hex(&content).as_str()) {
-                return Ok(failed(
-                    "snapshot changed after the kernel wrote it; refusing to sign it".into(),
-                ));
+                return failed("snapshot changed after the kernel wrote it; refusing to sign it".into());
             }
-            let temporary = directory.join(format!(".{name}.{}.tmp", random_uuid()?));
-            let written = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&temporary)
-                .and_then(|mut file| file.write_all(&sign_snapshot(&self.snapshot_key, &content)))
-                .and_then(|()| std::fs::rename(&temporary, path));
-            let _ = std::fs::remove_file(&temporary);
-            if let Err(error) = written {
-                return Ok(failed(format!("snapshot signing failed: {error}")));
+            if let Err(error) = jsrt::fs::atomic_write_mode(path, sign_snapshot(&self.snapshot_key, &content), 0o600) {
+                return failed(format!("snapshot signing failed: {error}"));
             }
             if self.options.snapshot_path.as_deref() == Some(path) {
                 let mut state = jsrt::sync::lock(&self.state);
@@ -1548,7 +1535,7 @@ impl Shared {
                     state.no_auto_restore = false;
                 }
             }
-            Ok(reply)
+            reply
         });
         let _ = std::fs::remove_file(&unsigned);
         outcome

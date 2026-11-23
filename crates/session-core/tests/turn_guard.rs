@@ -272,3 +272,45 @@ fn session_core_turn_guard_without_checks_or_hooks_does_not_report_checking() {
     let pending = a.call(Op::AsyncPending).unwrap().unwrap();
     assert_eq!(pending["pending"], false, "{pending}");
 }
+
+#[test]
+fn session_core_turn_guard_persists_left_seen_across_reopen() {
+    let root = "import asyncio\nh = await rlm.spawn('CHILD: fix parser', name='fixer')\nfor _ in range(12000):\n    try:\n        r = (await rlm.collect([h]))[0]['result']\n        break\n    except RuntimeError:\n        await asyncio.sleep(0.01)\nprint(r['verdict']['left'])";
+    let child = "print(await rlm.finish('failed', 'half done', left=['untested retry path']))";
+    let script: Script = Box::new(move |request, _| {
+        let first = user_texts(request)
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|t| !t.starts_with("[clock]"))
+            .unwrap_or_default()
+            .to_string();
+        let has_results = !tool_results(request).is_empty();
+        match (first.starts_with("ROOT"), has_results) {
+            (true, false) => tool("toolu_root", root),
+            (true, true) => text("root done"),
+            (false, false) => tool("toolu_child", child),
+            (false, true) => text("child done"),
+        }
+    });
+    let a = actor(script, Setup::default());
+    let ended = a.prompt("ROOT: delegate");
+    assert_eq!(ended["error"], Value::Null, "{ended}");
+    a.events.wait("the left items' run", |events| {
+        let at = events
+            .iter()
+            .position(|e| e["type"] == "message_end" && e["message"]["details"]["guard"] == "work left by subagents")?;
+        events[at..].iter().any(|e| e["type"] == "run_end").then_some(())
+    });
+    settle(&a);
+    assert_eq!(nudges(&a, "work left by subagents").len(), 1);
+    let saved = a
+        .writes()
+        .into_iter()
+        .rev()
+        .find(|w| {
+            w["namespace"] == session_journal::ns::MODULE && w["key"] == session_core::core::turn_guard::STATE_KEY
+        })
+        .expect("turn_guard state persisted in session journal");
+    let seen = saved["value"]["leftSeen"].as_array().expect("leftSeen array");
+    assert_eq!(seen.len(), 1, "{saved}");
+}

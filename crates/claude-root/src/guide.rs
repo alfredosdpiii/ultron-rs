@@ -105,7 +105,7 @@ pub fn load_prompt_resources(env: &RunEnv, bundled: Option<&Path>, flags: Resour
     if flags.no_context_files && flags.no_skills {
         return shaped;
     }
-    let engineering = settings.settings().get("engineering") == Some(&serde_json::Value::Bool(true));
+    let engineering = config::keys::engineering(settings.settings());
     let cwd = env.cwd.display().to_string();
     let agent_dir = agent_dir_path.display().to_string();
     let skills = if flags.no_skills {

@@ -22,7 +22,7 @@ use kernel::Signal;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -430,22 +430,9 @@ pub fn record_json(record: &WorktreeRecord) -> String {
 
 /// Writes the record beside its final path and renames it there, so a crash never leaves a truncated record.
 pub fn save_record(record: &WorktreeRecord) -> Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::create_dir_all(records_dir(Path::new(&record.common_dir)))?;
     let path = record_path(record);
-    let partial = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    let written = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&partial)
-        .and_then(|mut file| file.write_all(format!("{}\n", record_json(record)).as_bytes()))
-        .and_then(|()| std::fs::rename(&partial, &path));
-    if written.is_err() {
-        let _ = std::fs::remove_file(&partial);
-    }
-    written.map_err(Into::into)
+    jsrt::fs::atomic_write_mode(&path, format!("{}\n", record_json(record)).as_bytes(), 0o600)?;
+    Ok(())
 }
 
 fn delete_record(record: &WorktreeRecord) {

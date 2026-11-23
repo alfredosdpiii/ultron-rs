@@ -751,13 +751,8 @@ fn choose_thinking<U: SetupUi>(ui: &mut U, deps: &SetupDeps, model: &Model) -> R
     if levels.len() <= 1 {
         return Ok(None);
     }
-    let current = deps
-        .settings
-        .settings()
-        .get("defaultThinkingLevel")
-        .and_then(Value::as_str)
-        .unwrap_or(model_scope::DEFAULT_THINKING_LEVEL)
-        .to_string();
+    let current = config::keys::default_thinking_level(deps.settings.settings())
+        .unwrap_or_else(|| model_scope::DEFAULT_THINKING_LEVEL.to_string());
     let mut choices = vec![(Choice::new(format!("Keep {current}")), None)];
     choices.extend(
         levels

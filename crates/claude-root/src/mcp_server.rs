@@ -959,7 +959,7 @@ impl Server {
         session_core::playbook_route::route(prompt)?;
         let settings =
             config::settings::SettingsManager::for_worker(&self.env.cwd, &self.env.agent_dir(), &self.env.home);
-        if settings.settings().get("engineering") != Some(&Value::Bool(true)) {
+        if !config::keys::engineering(settings.settings()) {
             return None;
         }
         let bundled = session_core::session_resources::bundled_skills(&self.env.skills(), &*self.env.var)?;

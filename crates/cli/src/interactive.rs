@@ -1846,13 +1846,10 @@ fn run_tui(
     };
     let model = model.map_or_default(|m| catalog_info(&m));
     let hide_thinking = settings.settings().get("hideThinkingBlock") == Some(&Value::Bool(true));
-    let enabled_models: Vec<String> = parsed.models.clone().unwrap_or_else(|| {
-        settings
-            .settings()
-            .get("enabledModels")
-            .and_then(Value::as_array)
-            .map_or_default(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
-    });
+    let enabled_models: Vec<String> = parsed
+        .models
+        .clone()
+        .unwrap_or_else(|| config::keys::enabled_models(settings.settings()));
     let highlight = interactive::rlm_highlight::rlm_highlighter(&theme);
     let options = AppOptions {
         theme,

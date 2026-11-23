@@ -145,6 +145,19 @@ impl Guard for Strict {
     fn before_write(&self, _lane: &str, _path: &str, content: &str) -> Value {
         json!({ "blocked": content.contains("FORBIDDEN"), "reason": "loki: forbidden word", "notes": ["[loki] checked"] })
     }
+    fn guard_stats(&self) -> Vec<Value> {
+        AllowAll.guard_stats()
+    }
+    fn begin_turn(&self) {}
+    fn cell_started(&self, _lane: &str) {}
+    fn cell_ended(&self, _lane: &str) {}
+    fn take_pending(&self, _lane: &str) -> Option<String> {
+        None
+    }
+    fn settled(&self) {}
+    fn is_checking(&self) -> bool {
+        false
+    }
 }
 
 /// Expectations are runtime.py's literal messages for a write hook's block and notes (`_check_write`) and the
@@ -196,11 +209,27 @@ fn host_guard_blocks_writes_edits_and_shell_commands() {
 /// write whose content holds "MINE" is being checked, the file gets other text.
 struct Interloper;
 impl Guard for Interloper {
+    fn before_shell(&self, _lane: &str, _command: &str) -> Option<String> {
+        None
+    }
     fn before_write(&self, _lane: &str, path: &str, content: &str) -> Value {
         if content.contains("MINE") {
             std::fs::write(path, "theirs\n").unwrap();
         }
         json!({ "blocked": false })
+    }
+    fn guard_stats(&self) -> Vec<Value> {
+        AllowAll.guard_stats()
+    }
+    fn begin_turn(&self) {}
+    fn cell_started(&self, _lane: &str) {}
+    fn cell_ended(&self, _lane: &str) {}
+    fn take_pending(&self, _lane: &str) -> Option<String> {
+        None
+    }
+    fn settled(&self) {}
+    fn is_checking(&self) -> bool {
+        false
     }
 }
 

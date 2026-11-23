@@ -322,13 +322,11 @@ fn no_hand_rolled_tmp_rename_in_prod_src() {
     for entry in fs::read_dir(&crates).unwrap() {
         rust_files(&entry.unwrap().path().join("src"), &mut files);
     }
-    const EXEMPT: [&str; 7] = [
+    const EXEMPT: [&str; 5] = [
         "cli/src/assets.rs",
         "config/src/paths.rs",
-        "delegation/src/worktrees.rs",
         "diagram/src/lib.rs",
         "jsrt/src/fs.rs",
-        "kernel/src/lib.rs",
         "review/src/checkout.rs",
     ];
     let mut hits = Vec::new();
@@ -349,12 +347,55 @@ fn no_hand_rolled_tmp_rename_in_prod_src() {
     assert!(hits.is_empty(), "{}", hits.join("\n"));
 }
 
+/// Settings keys already owned by `config::keys` must be read through its typed accessors rather than raw
+/// `.get("<key>")` lookups in `crates/*/src` outside `crates/config/src`.
+#[test]
+fn no_raw_settings_get_for_owned_keys() {
+    const OWNED: [&str; 7] = [
+        "engineering",
+        "alwaysSkills",
+        "enabledModels",
+        "defaultThinkingLevel",
+        "modelThinkingLevels",
+        "shellPath",
+        "shellCommandPrefix",
+    ];
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut files = Vec::new();
+    for entry in fs::read_dir(&crates).unwrap() {
+        rust_files(&entry.unwrap().path().join("src"), &mut files);
+    }
+    let mut hits = Vec::new();
+    for file in files {
+        let rel = file.strip_prefix(&crates).unwrap_or(&file).display().to_string();
+        if rel.starts_with("config/src/") {
+            continue;
+        }
+        let text = fs::read_to_string(&file).unwrap();
+        let prod = text.split("\n#[cfg(test)]").next().unwrap_or(&text);
+        for (idx, line) in prod.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("///") || trimmed.starts_with("//!") {
+                continue;
+            }
+            for key in OWNED {
+                let needle = format!(".get(\"{key}\")");
+                if line.contains(&needle) {
+                    hits.push(format!("crates/{rel}:{}: raw {needle} (use config::keys)", idx + 1));
+                }
+            }
+        }
+    }
+    hits.sort();
+    assert!(hits.is_empty(), "{}", hits.join("\n"));
+}
+
 /// Ratchet on source file size in `crates/*/src`: no new file may exceed 1,200 lines, and grandfathered files may not
 /// grow past their recorded ceiling (split into submodules when adding features).
 #[test]
 fn no_new_god_files() {
     const MAX_LINES: usize = 1_200;
-    const GRANDFATHERED: [(&str, usize); 40] = [
+    const GRANDFATHERED: [(&str, usize); 37] = [
         ("ai/src/anthropic.rs", 1247),
         ("ai/src/antigravity/mod.rs", 1358),
         ("ai/src/aws_credentials.rs", 1410),
@@ -373,8 +414,6 @@ fn no_new_god_files() {
         ("delegation/src/worktrees.rs", 1739),
         ("durable/src/transaction.rs", 1312),
         ("harness/src/scheduler/mod.rs", 2014),
-        ("host/src/file_hooks.rs", 1226),
-        ("host/src/lib.rs", 1480),
         ("interactive/src/agent_hub.rs", 1240),
         ("interactive/src/app.rs", 5464),
         ("interactive/src/components.rs", 1342),
@@ -387,7 +426,6 @@ fn no_new_god_files() {
         ("rlm-views/src/graph.rs", 2022),
         ("rlm-views/src/pane.rs", 1665),
         ("rlm-views/src/visualizer.rs", 1226),
-        ("session-core/src/core.rs", 3036),
         ("session-core/src/lane.rs", 1487),
         ("tui/src/editor.rs", 1494),
         ("tui/src/fullscreen.rs", 1381),

@@ -130,14 +130,12 @@ pub(super) fn build_cells(
         match entry.kind {
             EntryKind::Assistant => {
                 for call in &entry.tool_calls {
-                    if call.name == "rlm" {
-                        transcript[kind].count += 1.0;
-                        for api in call.apis.iter().flatten() {
-                            *transcript[kind].apis.entry(api.to_string()).or_default() += 1.0;
-                        }
-                    } else {
+                    if call.name != "rlm" {
                         other_tools.entry(call.name.clone()).or_default().0 += 1.0;
+                        continue;
                     }
+                    transcript[kind].count += 1.0;
+                    record_call_apis(&mut transcript[kind], call.apis.as_deref().unwrap_or_default());
                 }
             }
             EntryKind::ToolResult => {
@@ -209,6 +207,27 @@ pub(super) fn build_cells(
     }
 }
 
+fn record_call_apis(cells: &mut Cells, apis: &[&str]) {
+    for api in apis {
+        *cells.apis.entry((*api).to_string()).or_default() += 1.0;
+    }
+}
+
+fn collect_hint_counts(log: &SessionLog) -> IndexMap<String, f64> {
+    let mut hints: IndexMap<String, f64> = IndexMap::new();
+    let Some(lanes) = record(record(log.value(ns::MODULE, "hints")).and_then(|h| h.get("lanes"))) else {
+        return hints;
+    };
+    for fired in lanes.values().filter_map(|lane| record(lane.get("fired"))) {
+        for (tag, n) in fired {
+            if let Some(n) = n.as_f64().filter(|n| *n > 0.0) {
+                *hints.entry(tag.clone()).or_default() += n;
+            }
+        }
+    }
+    hints
+}
+
 pub(super) fn build_guardrails(
     log: &SessionLog,
     external: bool,
@@ -218,18 +237,7 @@ pub(super) fn build_guardrails(
     nudges: &[f64; 3],
     unrecorded: &mut Map<String, Value>,
 ) -> Value {
-    let mut hints: IndexMap<String, f64> = IndexMap::new();
-    if let Some(lanes) = record(record(log.value(ns::MODULE, "hints")).and_then(|h| h.get("lanes"))) {
-        for lane in lanes.values() {
-            if let Some(fired) = record(lane.get("fired")) {
-                for (tag, n) in fired {
-                    if let Some(n) = n.as_f64().filter(|n| *n > 0.0) {
-                        *hints.entry(tag.clone()).or_default() += n;
-                    }
-                }
-            }
-        }
-    }
+    let hints = collect_hint_counts(log);
     if stats.is_none() {
         unrecorded.insert(
             "guardrails.guards".into(),
