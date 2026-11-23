@@ -101,6 +101,16 @@ fn signal(pid: i32, signal: Signal) {
     }
 }
 
+/// Sends `SIGINT` to `pid` (subject to [`process_target`]) so an active Python cell can exit in-band without killing
+/// its kernel process.
+pub(crate) fn interrupt_process(pid: i32) -> bool {
+    let own = rustix::process::getpid().as_raw_nonzero().get();
+    match process_target(pid, own) {
+        Some(target) => kill_process(target, Signal::INT).is_ok(),
+        None => false,
+    }
+}
+
 /// What else a tree kill reaches (`KillTreeOptions` of tree-memory.ts).
 #[derive(Default)]
 pub(crate) struct KillExtras<'a> {

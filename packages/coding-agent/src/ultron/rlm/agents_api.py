@@ -114,3 +114,25 @@ class Workflows:
             error = str(failure)
         outcomes = await self._bridge.request('workflows.run', payload)
         return WorkflowResult(outcomes, estimate, error)
+
+    async def start(self, nodes, key=None):
+        """Validate the graph and start it asynchronously; returns {id, status, completed, pending, outputs}."""
+        payload = {'nodes': nodes}
+        if key is not None:
+            payload['key'] = key
+        return await self._bridge.request('workflows.start', payload)
+
+    async def status(self, workflow_id):
+        """Return live state and completed node outputs of an async workflow started with `workflows.start`."""
+        return await self._bridge.request('workflows.status', {'id': workflow_id})
+
+    async def stop(self, workflow_id, reason=None):
+        """Stop a running async workflow while preserving already-completed node outputs for later resume."""
+        payload = {'id': workflow_id}
+        if reason is not None:
+            payload['reason'] = reason
+        return await self._bridge.request('workflows.stop', payload)
+
+    async def resume(self, workflow_id):
+        """Resume a stopped or failed async workflow, skipping nodes that already succeeded."""
+        return await self._bridge.request('workflows.resume', {'id': workflow_id})

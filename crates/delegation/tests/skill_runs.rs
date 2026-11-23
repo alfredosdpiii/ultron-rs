@@ -123,6 +123,7 @@ fn fixture_in(content: String, verdict: Value, store: Arc<dyn DocumentStore>) ->
         env: vec![("PATH".into(), "/usr/bin:/bin".into())],
         runner,
         proposals: tmp.path().join("skill-proposals"),
+        mined: None,
         session_id: Some("sess-1".into()),
         now: clock,
     };
@@ -554,6 +555,7 @@ fn skill_runs_a_run_a_dead_worker_left_running_is_marked_interrupted() {
         env: Vec::new(),
         runner: Arc::new(OnceLock::new()),
         proposals: f.cwd.join("skill-proposals"),
+        mined: None,
         session_id: Some("sess-1".into()),
         now: Arc::new(|| 4_000),
     };

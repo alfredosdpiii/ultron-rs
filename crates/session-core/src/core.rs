@@ -1754,6 +1754,7 @@ impl Core {
         }
         self.persona_run_ended(aborted, failed);
         self.turn_guard_run_ended(aborted, failed);
+        self.observe_mined_procedures(aborted, failed);
     }
 
     /// `appendCustomEntry`: a `custom` entry at the tip of `main`, announced; after the run in progress (a custom
@@ -2418,9 +2419,9 @@ impl Core {
         crate::playbook_route::playbook_message(text, &rigor, &shown, now_ms() as u64)
     }
 
-    /// The `ultron.refinements` message a root user run opens with, when the active refinements differ from what the
-    /// context shows (crate::auto_refine).
-    fn refinements_message(&self) -> Option<Value> {
+    /// The `ultron.refinements` message a root user run opens with, when the active refinements ranked for `prompt`
+    /// differ from what the context shows (crate::auto_refine).
+    fn refinements_message(&self, prompt: &str) -> Option<Value> {
         if !self.auto_refine.on {
             return None;
         }
@@ -2428,8 +2429,75 @@ impl Core {
             .branch_entries(MAIN_LANE)
             .unwrap_or_default();
         let shown = crate::auto_refine::shown(&entries);
-        let active = self.lane.stack.ledger.active();
+        let recent_turns: Vec<String> = entries
+            .iter()
+            .rev()
+            .filter(|entry| entry["type"] == "message")
+            .filter_map(|entry| {
+                let message = &entry["message"];
+                let role = message["role"].as_str()?;
+                if role != "user" && role != "assistant" {
+                    return None;
+                }
+                let text = message_text(message);
+                (!text.trim().is_empty()).then_some(text)
+            })
+            .take(4)
+            .collect();
+        let active = self.lane.stack.ledger.active_ranked(prompt, &recent_turns);
         crate::auto_refine::message(&active, shown.as_deref(), now_ms() as u64)
+    }
+
+    /// Selects a uniquely matched admitted mined procedure for pre-planning execution, if any.
+    fn mined_procedure_message(&self, prompt: &str) -> Option<Value> {
+        let procedures = self.lane.stack.mined_procedures.list();
+        let plan = delegation::procedure_miner::select_pre_run(prompt, &procedures)?;
+        Some(delegation::procedure_miner::pre_run_message(&plan, now_ms() as u64))
+    }
+
+    /// Observes completed root turns in the background to mine recurring procedures and record telemetry.
+    fn observe_mined_procedures(&self, aborted: bool, failed: bool) {
+        if aborted {
+            return;
+        }
+        let entries = lock_session(&self.session)
+            .branch_entries(MAIN_LANE)
+            .unwrap_or_default();
+        let store = self.lane.stack.mined_procedures.clone();
+        let ok = !failed;
+        let ts = now_ms() as u64;
+        std::thread::spawn(move || {
+            let traces = delegation::procedure_miner::extract_traces(&entries);
+            if let Some(last_proc_id) = entries
+                .iter()
+                .rev()
+                .take_while(|entry| entry["type"] != "message" || entry["message"]["role"] != "user")
+                .chain(
+                    entries
+                        .iter()
+                        .rev()
+                        .skip_while(|entry| entry["type"] != "message" || entry["message"]["role"] != "user")
+                        .skip(1)
+                        .take(3),
+                )
+                .find(|entry| {
+                    entry["type"] == "message"
+                        && entry["message"]["role"] == "custom"
+                        && entry["message"]["customType"] == protocol::custom_types::PROCEDURE
+                })
+                .and_then(|entry| entry["message"]["details"]["procedureId"].as_str())
+            {
+                let (requests, tokens) = traces
+                    .last()
+                    .filter(|t| t.used_procedure)
+                    .map_or((1, 0), |t| (t.requests, t.tokens));
+                store.record_run(last_proc_id, ok, requests, tokens, ts);
+            }
+            if ok {
+                let mined = delegation::procedure_miner::mine(&traces, ts);
+                let _ = store.upsert_mined(mined, ts);
+            }
+        });
     }
 
     /// Propose refinements from the newest compaction's summary in the background, when automatic refinement is on
@@ -2617,7 +2685,8 @@ impl Core {
         if prompt["role"] == "user" && !continuation {
             opening.extend(self.recalled_memory(&text));
             opening.extend(self.routed_playbook(&text));
-            opening.extend(self.refinements_message());
+            opening.extend(self.refinements_message(&text));
+            opening.extend(self.mined_procedure_message(&text));
         }
         for message in opening {
             self.announce_message(&message);

@@ -301,8 +301,7 @@ fn delegation_cell_outliving_its_budget_detaches_or_cancels() {
     wait_until("the late cell ends", || r.lanes.list()[0]["cell"].is_null());
     let late = r.lanes.detach(&cell).unwrap().unwrap().unwrap();
     assert_eq!(late.result.unwrap(), "'late'");
-    // Over budget and cancelled: a cell not parked on the host is ended by killing its kernel; the next cell starts
-    // a fresh kernel without the earlier state.
+    // Over budget and cancelled: a normal sleep is interrupted in-band, preserving the kernel PID and namespace.
     let pid = r.lanes.kernel("main").unwrap().pid().unwrap();
     let (cell, _) = running(
         r.lanes
@@ -311,11 +310,32 @@ fn delegation_cell_outliving_its_budget_detaches_or_cancels() {
     );
     let (lanes, id) = (r.lanes.clone(), cell);
     let started = Instant::now();
+    let interrupted = std::thread::spawn(move || lanes.cancel(&id, "stop"))
+        .join()
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(started.elapsed() < HANG_GUARD);
+    assert_eq!(interrupted.status, Status::Error);
+    assert_eq!(r.lanes.kernel("main").unwrap().pid(), Some(pid));
+    assert_eq!(ok(&r.lanes, "main", "y").result.unwrap(), "5");
+    assert!(r.ends.try_recv().is_err());
+    // A cell that swallows BaseException cannot be interrupted in-band: after the grace period its kernel is killed.
+    let (cell, _) = running(
+        r.lanes
+            .run(
+                "main",
+                "while True:\n    try:\n        time.sleep(3600)\n    except BaseException:\n        pass",
+                Duration::from_millis(50),
+            )
+            .unwrap(),
+    );
+    let (lanes, id) = (r.lanes.clone(), cell);
+    let started = Instant::now();
     let cancelled = std::thread::spawn(move || lanes.cancel(&id, "stop"))
         .join()
         .unwrap()
         .unwrap();
-    // Killed after the grace period, not after the cell's hour-long sleep.
     assert!(started.elapsed() < HANG_GUARD);
     assert_eq!(cancelled.unwrap_err(), "stop");
     assert_eq!(ok(&r.lanes, "main", "'y' in globals()").result.unwrap(), "False");

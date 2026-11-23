@@ -858,6 +858,33 @@ impl Kernel {
         jsrt::sync::lock(&self.shared.state).continuity.checkpoint.clone()
     }
 
+    /// Sends an in-band interrupt frame and `SIGINT` to the currently executing cell without killing the kernel
+    /// process, so an awaiting or looping cell can unwind while keeping the kernel PID and namespace alive.
+    pub fn interrupt_active(&self) -> bool {
+        let (writer, frame, pid) = {
+            let state = jsrt::sync::lock(&self.shared.state);
+            let Some(generation) = state.generation.as_ref() else {
+                return false;
+            };
+            let Some(cell_id) = generation.active_cell.clone() else {
+                return false;
+            };
+            let frame = object([("request", Value::from("interrupt")), ("id", Value::from(cell_id))]);
+            let target_pid = generation.cpu_pid.unwrap_or(generation.pid);
+            (generation.writer.clone(), frame, target_pid)
+        };
+        let mut sent = false;
+        if let Ok(line) = encode_frame(&frame)
+            && writer.send(line).is_ok()
+        {
+            sent = true;
+        }
+        if process::interrupt_process(pid) {
+            sent = true;
+        }
+        sent
+    }
+
     /// Permanently closes this kernel: kills its process tree, rejects every call, and waits (bounded) for the exit.
     pub fn shutdown(&self) {
         let exit = {

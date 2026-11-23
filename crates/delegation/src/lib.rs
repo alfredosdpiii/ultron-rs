@@ -12,6 +12,7 @@ pub mod fork;
 pub mod git_baseline;
 pub mod host;
 pub mod procedure;
+pub mod procedure_miner;
 pub mod progress;
 pub mod skill_runs;
 pub mod spawn_contract;

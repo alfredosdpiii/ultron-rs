@@ -5,6 +5,8 @@ import asyncio
 import base64
 import contextlib
 import contextvars
+import datetime
+from decimal import Decimal, InvalidOperation
 import hashlib
 import io
 import json
@@ -18,9 +20,10 @@ import threading
 import time
 import tokenize
 import traceback
+import uuid
 import weakref
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from agents_api import Agents, Workflows
 from budget_api import BudgetEstimator
@@ -993,6 +996,8 @@ class RuntimeState:
     def __init__(self) -> None:
         self.bridge = HostBridge()
         self.cell_active = False
+        self.active_task: asyncio.Task[Any] | None = None
+        self.active_request_id: str | None = None
         self.execution_lock = asyncio.Lock()
         # asyncio is pre-imported: the guide batches independent work with asyncio.gather.
         self.namespace: dict[str, Any] = {"__name__": "__main__", "asyncio": asyncio}
@@ -1186,6 +1191,20 @@ def _flush_raw_output(request_id: Any) -> dict[str, bool] | None:
 _SNAPSHOT_FORMAT = "ultron-rlm-snapshot"
 _SNAPSHOT_VERSION = 2
 _SCALARS = frozenset((type(None), bool, int, str, float))
+_PATH_TYPE = type(Path())
+_SNAPSHOT_VAR_MAX_BYTES_DEFAULT = 2 * 1024 * 1024
+_SNAPSHOT_MAX_BYTES_DEFAULT = 16 * 1024 * 1024
+
+
+def _snapshot_cap(env_name: str, default: int) -> int:
+    raw = os.environ.get(env_name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else 0
 
 
 class _NonRestorable(Exception):
@@ -1201,14 +1220,33 @@ def _type_name(kind: type) -> str:
 
 
 def _encode_value(value: Any, mutable: set[int]) -> Any:
-    """Encode only exact builtin data types. Every JSON object in the encoding is a tag, so tuples, sets, bytes and
-    non-string dict keys round-trip as their own types. A large container of scalars only is copied at C speed."""
+    """Encode exact builtin and safe immutable stdlib data types. Every JSON object in the encoding is a tag, so
+    tuples, sets, bytes, non-string dict keys, paths, datetimes, decimals, UUIDs and regex patterns round-trip as
+    their own types. A large container of scalars only is copied at C speed."""
     kind, scalars, encode = type(value), _SCALARS, _encode_value
     if kind in scalars:
         return value
     if kind is not list and isinstance(value, list) and getattr(kind, "_snapshot_as_list", False):
         # A list subclass that only adds metadata (rlm.map's MapResults) is kept as its plain items.
         kind = list
+    if kind is _PATH_TYPE:
+        return {"$path": str(value)}
+    if kind is PurePosixPath:
+        return {"$pure_posix_path": str(value)}
+    if kind is PureWindowsPath:
+        return {"$pure_windows_path": str(value)}
+    if kind is datetime.datetime:
+        return {"$datetime": value.isoformat()}
+    if kind is datetime.date:
+        return {"$date": value.isoformat()}
+    if kind is datetime.timedelta:
+        return {"$timedelta": [value.days, value.seconds, value.microseconds]}
+    if kind is Decimal:
+        return {"$decimal": str(value)}
+    if kind is uuid.UUID:
+        return {"$uuid": str(value)}
+    if kind is re.Pattern and type(value.pattern) is str:
+        return {"$regex": [value.pattern, value.flags]}
     if kind in (bytes, bytearray):
         if kind is bytearray:
             if id(value) in mutable:
@@ -1243,8 +1281,45 @@ def _decode_value(value: Any) -> Any:
     if tag in ("$bytes", "$bytearray") and type(body) is str:
         raw = base64.b64decode(body.encode("ascii"), validate=True)
         return raw if tag == "$bytes" else bytearray(raw)
+    if tag == "$path" and type(body) is str:
+        return Path(body)
+    if tag == "$pure_posix_path" and type(body) is str:
+        return PurePosixPath(body)
+    if tag == "$pure_windows_path" and type(body) is str:
+        return PureWindowsPath(body)
+    if tag == "$datetime" and type(body) is str:
+        try:
+            return datetime.datetime.fromisoformat(body)
+        except ValueError as error:
+            raise SnapshotIntegrityError(f"snapshot contains a malformed datetime: {error}") from error
+    if tag == "$date" and type(body) is str:
+        try:
+            return datetime.date.fromisoformat(body)
+        except ValueError as error:
+            raise SnapshotIntegrityError(f"snapshot contains a malformed date: {error}") from error
+    if tag == "$decimal" and type(body) is str:
+        try:
+            return Decimal(body)
+        except InvalidOperation as error:
+            raise SnapshotIntegrityError(f"snapshot contains a malformed decimal: {error}") from error
+    if tag == "$uuid" and type(body) is str:
+        try:
+            return uuid.UUID(body)
+        except ValueError as error:
+            raise SnapshotIntegrityError(f"snapshot contains a malformed uuid: {error}") from error
     if type(body) is not list:
         raise SnapshotIntegrityError("snapshot contains a malformed value")
+    if tag == "$timedelta":
+        if len(body) != 3 or any(type(part) is not int for part in body):
+            raise SnapshotIntegrityError("snapshot contains a malformed timedelta")
+        return datetime.timedelta(days=body[0], seconds=body[1], microseconds=body[2])
+    if tag == "$regex":
+        if len(body) != 2 or type(body[0]) is not str or type(body[1]) is not int:
+            raise SnapshotIntegrityError("snapshot contains a malformed regex")
+        try:
+            return re.compile(body[0], body[1])
+        except re.error as error:
+            raise SnapshotIntegrityError(f"snapshot contains a malformed regex: {error}") from error
     if tag == "$tuple":
         return tuple(_decode_value(item) for item in body)
     if tag == "$set":
@@ -1311,12 +1386,19 @@ def _checked_definitions(value: Any) -> list[tuple[str, str]]:
 
 def _persistable_namespace() -> tuple[dict[str, str], dict[str, str], list[tuple[str, str]]]:
     """Encode restorable names, each once to its compact JSON text, keep the source of names a def, class or import
-    bound, and give every other user name an explicit reason."""
-    encoded: dict[str, Any] = {}
+    bound, enforce per-variable and aggregate byte caps (encoding `state` first), and give every other user name an
+    explicit reason."""
+    encoded: dict[str, str] = {}
+    sizes: dict[str, int] = {}
     reasons: dict[str, str] = {}
     owners: dict[int, str] = {}
     defined: set[str] = set()
-    for name, value in list(_STATE.namespace.items()):
+    var_cap = _snapshot_cap("ULTRON_SNAPSHOT_VAR_MAX_BYTES", _SNAPSHOT_VAR_MAX_BYTES_DEFAULT)
+    total_cap = _snapshot_cap("ULTRON_SNAPSHOT_MAX_BYTES", _SNAPSHOT_MAX_BYTES_DEFAULT)
+    total_bytes = 0
+    items = list(_STATE.namespace.items())
+    items.sort(key=lambda pair: 0 if pair[0] == "state" else 1)
+    for name, value in items:
         if name.startswith("__") or (name in _STATE.bindings and value is _STATE.bindings[name]):
             continue
         mutable: set[int] = set()
@@ -1332,17 +1414,28 @@ def _persistable_namespace() -> tuple[dict[str, str], dict[str, str], list[tuple
         except Exception as error:
             reasons[name] = f"not encodable: {type(error).__name__}"
             continue
+        size = len(candidate.encode("utf-8"))
+        if var_cap > 0 and size > var_cap:
+            reasons[name] = f"exceeds per-variable snapshot cap ({size} > {var_cap} bytes)"
+            continue
+        if total_cap > 0 and total_bytes + size > total_cap:
+            reasons[name] = f"exceeds aggregate snapshot cap ({total_bytes + size} > {total_cap} bytes)"
+            continue
         # Restoring separately encoded names would silently split an alias into copies.
         shared = sorted({owners[item] for item in mutable if item in owners})
         if shared:
             reasons[name] = "aliases mutable data of " + ", ".join(shared)
             for other in shared:
-                encoded.pop(other, None)
+                if other in encoded:
+                    encoded.pop(other, None)
+                    total_bytes -= sizes.pop(other, 0)
                 reasons.setdefault(other, "aliases mutable data of " + name)
             continue
         for item in mutable:
             owners[item] = name
         encoded[name] = candidate
+        sizes[name] = size
+        total_bytes += size
     return encoded, reasons, [(name, source) for name, (source, _) in _DEFINITIONS.items() if name in defined]
 
 
@@ -2158,9 +2251,31 @@ _STATE.namespace["knowledge"] = KnowledgeApi(_STATE.bridge)
 _STATE.bindings = {name: value for name, value in _STATE.namespace.items() if name != "state"}
 
 
+def _in_cell_frame(frame: Any) -> bool:
+    cur = frame
+    while cur is not None:
+        code = cur.f_code
+        if code.co_filename == "<rlm-cell>" or code is execute_cell.__code__:
+            return True
+        cur = cur.f_back
+    return False
+
+
+def _on_interrupt(_signum: int, frame: Any) -> None:
+    if not _STATE.cell_active:
+        return
+    if _in_cell_frame(frame):
+        raise KeyboardInterrupt("cell interrupted")
+    task = _STATE.active_task
+    if task is not None and not task.done():
+        task.cancel()
+
+
 async def execute_cell(request_id: str, source: str) -> None:
     async with _STATE.execution_lock:
         _CELL.set(request_id)
+        _STATE.active_task = asyncio.current_task()
+        _STATE.active_request_id = request_id
         budget = _output_budget()
         spill_dir = _spill_dir()
         stdout = _MiddleTextIO(budget, "stdout", spill_dir)
@@ -2211,6 +2326,7 @@ async def execute_cell(request_id: str, source: str) -> None:
             emit("result", id=request_id, result=result_text)
             emit("done", id=request_id, status="ok", flush=_flush_raw_output(request_id))
         except BaseException as error:
+            _STATE.cell_active = False
             _LiveOutput.close(live)
             try:
                 emit("stdout", id=request_id, text=stdout.getvalue())
@@ -2229,6 +2345,10 @@ async def execute_cell(request_id: str, source: str) -> None:
                 # The cell cannot be reported in-band (e.g. no memory left to encode it): exit with a code
                 # the host maps to a clear error, rather than leaving the cell pending forever.
                 _exit_for(error, secondary)
+        finally:
+            if _STATE.active_request_id == request_id:
+                _STATE.active_task = None
+                _STATE.active_request_id = None
 
 
 def _exit_for(*errors: BaseException) -> None:
@@ -2274,6 +2394,10 @@ async def handle_request(frame: dict[str, Any]) -> None:
     request_id = frame.get("id")
     if request_type == "execute":
         asyncio.create_task(execute_cell(request_id, str(frame.get("code", ""))))
+    elif request_type == "interrupt":
+        task = _STATE.active_task
+        if task is not None and not task.done() and (request_id is None or _STATE.active_request_id == request_id):
+            task.cancel()
     elif request_type == "host_reply":
         _STATE.bridge.resolve(str(frame.get("id")), frame.get("payload"), frame.get("error"))
     elif isinstance(request_type, str) and request_type in _OPS:
@@ -2284,6 +2408,8 @@ async def handle_request(frame: dict[str, Any]) -> None:
 
 
 async def main() -> None:
+    if hasattr(signal, "SIGINT"):
+        signal.signal(signal.SIGINT, _on_interrupt)
     # Output before this marker (interpreter warnings, for example) is startup diagnostics, not a cell's output.
     _flush_raw_output("ready")
     emit("ready", protocol=1, pid=os.getpid())
@@ -2414,7 +2540,8 @@ class _CellStream(io.TextIOBase):
         return self._target.write(text)
 
     def flush(self) -> None:
-        self._target.flush()
+        if not getattr(self._target, "closed", False):
+            self._target.flush()
 
     def getvalue(self) -> str:
         return self._target.getvalue()  # type: ignore[attr-defined]

@@ -11,5 +11,7 @@ pub const MEMORY_KEPT: &str = "ultron.memory-kept";
 pub const MEMORY_PAUSED: &str = "ultron.memory-paused";
 /// The active instruction refinements.
 pub const REFINEMENTS: &str = "ultron.refinements";
+/// A matched admitted learned procedure for deterministic pre-planning execution.
+pub const PROCEDURE: &str = "ultron.procedure";
 /// A fired schedule's prompt.
 pub const SCHEDULE: &str = "ultron.schedule";

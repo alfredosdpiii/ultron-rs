@@ -144,6 +144,8 @@ pub struct SkillRuns {
     pub runner: Arc<OnceLock<CheckRunner>>,
     /// `<agent dir>/skill-proposals`.
     pub proposals: PathBuf,
+    /// Per-project store of automatically mined procedures (`procedure.mined` / `admit` / `retire`).
+    pub mined: Option<Arc<crate::procedure_miner::ProcedureStore>>,
     pub session_id: Option<String>,
     pub now: Clock,
 }
@@ -679,6 +681,40 @@ impl SkillRuns {
             (self.now)(),
         )
     }
+
+    fn mined_list(&self, request: &Request<'_>) -> Result<Value, String> {
+        kernel::ops::fields("procedure.mined", request.payload)?;
+        let procedures: Vec<Value> = self.mined.as_ref().map_or_default(|store| {
+            store
+                .list()
+                .iter()
+                .map(crate::procedure_miner::MinedProcedure::to_json)
+                .collect()
+        });
+        Ok(json!({"procedures": procedures}))
+    }
+
+    fn mined_admit(&self, request: &Request<'_>) -> Result<Value, String> {
+        kernel::ops::fields("procedure.admit", request.payload)?;
+        let id = jsrt::payload::nonempty_string(request.payload.get("id"), "id")?;
+        let store = self
+            .mined
+            .as_ref()
+            .ok_or_else(|| "mined procedures are not configured in this host".to_string())?;
+        let updated = store.admit(&id, (self.now)().max(0) as u64)?;
+        Ok(updated.to_json())
+    }
+
+    fn mined_retire(&self, request: &Request<'_>) -> Result<Value, String> {
+        kernel::ops::fields("procedure.retire", request.payload)?;
+        let id = jsrt::payload::nonempty_string(request.payload.get("id"), "id")?;
+        let store = self
+            .mined
+            .as_ref()
+            .ok_or_else(|| "mined procedures are not configured in this host".to_string())?;
+        let updated = store.retire(&id, (self.now)().max(0) as u64)?;
+        Ok(updated.to_json())
+    }
 }
 
 impl ApiModule for SkillRuns {
@@ -693,6 +729,9 @@ impl ApiModule for SkillRuns {
             "procedure.abort" => self.abort(request),
             "procedure.coverage" => self.coverage(request),
             "procedure.propose" => self.propose(request),
+            "procedure.mined" => self.mined_list(request),
+            "procedure.admit" => self.mined_admit(request),
+            "procedure.retire" => self.mined_retire(request),
             other => Err(format!("Unsupported procedure request: {other}")),
         }
     }

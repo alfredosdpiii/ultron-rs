@@ -719,3 +719,106 @@ fn kernel_snapshot_changed_after_the_kernel_wrote_it_is_not_signed_and_the_previ
         .collect();
     assert_eq!(names, ["lane.snapshot"]);
 }
+
+#[test]
+fn kernel_snapshot_round_trips_rich_stdlib_data_types() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("rich.snapshot");
+    let first = kernel(&KEY, None);
+    value(
+        &first,
+        "import datetime, re, uuid\n\
+         from decimal import Decimal\n\
+         from pathlib import Path, PurePosixPath\n\
+         p = Path('/tmp/ultron/example.txt')\n\
+         pp = PurePosixPath('a/b/c.py')\n\
+         dt = datetime.datetime(2026, 11, 23, 9, 30, 15, tzinfo=datetime.timezone.utc)\n\
+         d = datetime.date(2026, 11, 23)\n\
+         td = datetime.timedelta(days=2, seconds=45, microseconds=123)\n\
+         dec = Decimal('12345.67890')\n\
+         u = uuid.UUID('12345678-1234-5678-1234-567812345678')\n\
+         rx = re.compile(r'foo\\d+', re.IGNORECASE)\n\
+         bundle = {'path': p, 'dt': dt, 'dec': dec, 'uuid': u, 'rx': rx}",
+    );
+    let saved = first.snapshot(Some(&path)).unwrap().snapshot.unwrap();
+    for expected in ["bundle", "d", "dec", "dt", "p", "pp", "rx", "td", "u"] {
+        assert!(
+            saved.saved.contains(&expected.to_string()),
+            "missing {expected} in {:?}",
+            saved.saved
+        );
+    }
+
+    let second = kernel(&KEY, None);
+    assert_eq!(second.restore(Some(&path)).unwrap().result.status, Status::Ok);
+    assert_eq!(
+        value(
+            &second,
+            "import datetime, re, uuid\n\
+             from decimal import Decimal\n\
+             from pathlib import Path, PurePosixPath\n\
+             (type(p) is type(Path()), str(p), type(pp) is PurePosixPath, str(pp), \
+              dt == datetime.datetime(2026, 11, 23, 9, 30, 15, tzinfo=datetime.timezone.utc), \
+              d == datetime.date(2026, 11, 23), \
+              td == datetime.timedelta(days=2, seconds=45, microseconds=123), \
+              dec == Decimal('12345.67890'), \
+              u == uuid.UUID('12345678-1234-5678-1234-567812345678'), \
+              bool(rx.match('FOO42')), \
+              bundle['dec'] == Decimal('12345.67890'))"
+        ),
+        "(True, '/tmp/ultron/example.txt', True, 'a/b/c.py', True, True, True, True, True, True, True)"
+    );
+}
+
+#[test]
+fn kernel_snapshot_enforces_per_variable_and_aggregate_caps_prioritizing_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("capped.snapshot");
+    let mut opts = options(&KEY, None);
+    opts.env = vec![
+        ("ULTRON_SNAPSHOT_VAR_MAX_BYTES".into(), "128".into()),
+        ("ULTRON_SNAPSHOT_MAX_BYTES".into(), "180".into()),
+    ];
+    let first = kernel_with(opts);
+    value(
+        &first,
+        "huge_var = 'x' * 256\n\
+         first_scratch = 'a' * 90\n\
+         second_scratch = 'b' * 90\n\
+         state['important'] = 'kept'",
+    );
+    let saved = first.snapshot(Some(&path)).unwrap().snapshot.unwrap();
+    assert!(
+        saved.saved.contains(&"state".to_string()),
+        "state must always be prioritized"
+    );
+    assert!(saved.saved.contains(&"first_scratch".to_string()));
+    assert!(
+        saved
+            .reasons
+            .get("huge_var")
+            .and_then(Value::as_str)
+            .is_some_and(|r| r.contains("per-variable snapshot cap")),
+        "reasons={:?}",
+        saved.reasons
+    );
+    assert!(
+        saved
+            .reasons
+            .get("second_scratch")
+            .and_then(Value::as_str)
+            .is_some_and(|r| r.contains("aggregate snapshot cap")),
+        "reasons={:?}",
+        saved.reasons
+    );
+
+    let second = kernel(&KEY, None);
+    assert_eq!(second.restore(Some(&path)).unwrap().result.status, Status::Ok);
+    assert_eq!(
+        value(
+            &second,
+            "(state.get('important'), 'huge_var' in globals(), 'second_scratch' in globals(), len(first_scratch))"
+        ),
+        "('kept', False, False, 90)"
+    );
+}

@@ -259,7 +259,6 @@ fn ok_result(value: &str) -> ExecutionResult {
 
 #[test]
 fn delegation_rlm_cancel_from_a_side_lane_stops_the_stuck_cell_and_frees_its_lane() {
-    // A short grace: the stuck cell is not parked on the host, so its kernel is killed once it passes.
     let r = root(4, Duration::from_secs(1));
     r.run("main", "z = 3");
     let stuck = r.start("main", "import time\ntime.sleep(3600)");
@@ -268,15 +267,26 @@ fn delegation_rlm_cancel_from_a_side_lane_stops_the_stuck_cell_and_frees_its_lan
     r.lanes.wait(&side.cell, HANG_GUARD).unwrap();
     let (side, cancelled) = r.run("main", &format!("await rlm.cancel({:?})", stuck.cell));
     assert_eq!(side.lane, "main-side-1");
-    assert_eq!(
-        cancelled.result.unwrap(),
-        "{'cancelled': True, 'status': 'error', 'error': 'cancelled from another cell'}"
-    );
+    assert_eq!(cancelled.result.unwrap(), "{'cancelled': True, 'status': 'error'}");
     // A cancelled cell's end is the canceller's, not an event.
     assert!(r.ends.try_recv().is_err());
+    let (back, result) = r.run("main", "z");
+    assert_eq!((back.lane.as_str(), back.note), ("main", None));
+    // Cell-level interrupt stopped time.sleep in-band: main kept its kernel and variables.
+    assert_eq!(result.result.unwrap(), "3");
+    assert_eq!(lane_names(&r.lanes), ["main"]);
+    // A cell that swallows BaseException cannot be interrupted in-band: after the grace period its kernel is killed.
+    let uninterruptible = r.start(
+        "main",
+        "import time\nwhile True:\n    try:\n        time.sleep(3600)\n    except BaseException:\n        pass",
+    );
+    let (_, killed) = r.run("main", &format!("await rlm.cancel({:?})", uninterruptible.cell));
+    assert_eq!(
+        killed.result.unwrap(),
+        "{'cancelled': True, 'status': 'error', 'error': 'cancelled from another cell'}"
+    );
     let (back, result) = r.run("main", "'z' in globals()");
     assert_eq!((back.lane.as_str(), back.note), ("main", None));
-    // Its kernel was killed: main starts over.
     assert_eq!(result.result.unwrap(), "False");
     assert_eq!(lane_names(&r.lanes), ["main"]);
     // A cell cannot cancel itself, through either name.
@@ -357,7 +367,12 @@ fn delegation_no_room_for_a_side_lane_says_how_to_stop_the_busy_cell() {
 #[test]
 fn delegation_a_cancelled_cells_waiting_call_gets_its_outcome_too() {
     let r = root(4, HANG_GUARD);
-    let cell = r.start("main", &r.blocking("slow"));
+    let graceful = format!(
+        "import os, time\nopen({began:?}, 'w').close()\nwhile not os.path.exists({go:?}):\n    try:\n        time.sleep(0.01)\n    except KeyboardInterrupt:\n        pass\nprint('slow done')",
+        began = r.path("slow.began"),
+        go = r.path("slow.go"),
+    );
+    let cell = r.start("main", &graceful);
     r.began("slow");
     // Its own call waits for it (as the rlm tool does while it cancels the cell on an abort).
     let (lanes, id) = (r.lanes.clone(), cell.cell.clone());

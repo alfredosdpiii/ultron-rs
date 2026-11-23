@@ -939,6 +939,10 @@ impl Runtime {
         let ledger = crate::auto_refine::Ledger {
             services: local.clone(),
             branch: branch.clone(),
+            store: Some(crate::auto_refine::ScopedStore::new(
+                config.agent_dir.clone(),
+                config.cwd.clone(),
+            )),
         };
         let gateway = config.mcp_gateway();
         let notices = gateway.start(self.services.mcp_notices.clone());
@@ -976,6 +980,10 @@ impl Runtime {
         ));
         let skills = Arc::new(SkillsModule::new(modules("skills"), loader, clock.clone(), Some(code)));
         let skill_checks: Arc<std::sync::OnceLock<delegation::spawn_contract::CheckRunner>> = Arc::default();
+        let mined_procedures = Arc::new(delegation::procedure_miner::ProcedureStore::new(
+            config.agent_dir.clone(),
+            config.cwd.clone(),
+        ));
         let procedures = Arc::new(delegation::skill_runs::SkillRuns {
             book: skill_runs.clone(),
             skills: skills.clone(),
@@ -984,6 +992,7 @@ impl Runtime {
             env: config.child_env(),
             runner: skill_checks.clone(),
             proposals: config::paths::AgentPaths::new(&config.agent_dir).skill_proposals(),
+            mined: Some(mined_procedures.clone()),
             session_id: Some(session_id.to_string()),
             now: clock.clone(),
         });
@@ -1267,6 +1276,7 @@ impl Runtime {
                 wake,
                 memory_children: memory_children_on,
                 ledger,
+                mined_procedures,
             }
         });
         built?;
@@ -1574,6 +1584,8 @@ pub struct Stack {
     memory_children: bool,
     /// The session's refinements ledger (crate::auto_refine proposes into it and delivers from it).
     pub ledger: crate::auto_refine::Ledger,
+    /// Per-project store of automatically mined procedures (delegation::procedure_miner).
+    pub mined_procedures: Arc<delegation::procedure_miner::ProcedureStore>,
 }
 
 impl Stack {

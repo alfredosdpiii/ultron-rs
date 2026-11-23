@@ -206,13 +206,16 @@ pub const OPS: &[Op] = &[
     ),
     op("memory.why", "kernel_apis::memory", &["taskId"], &[]),
     op("procedure.abort", "delegation::skill_runs", &["reason", "run"], &[]),
+    op("procedure.admit", "delegation::skill_runs", &["id"], &[]),
     op("procedure.coverage", "delegation::skill_runs", &["name"], &[]),
+    op("procedure.mined", "delegation::skill_runs", &[], &[]),
     op(
         "procedure.propose",
         "delegation::skill_runs",
         &["content", "evidence", "name"],
         &[],
     ),
+    op("procedure.retire", "delegation::skill_runs", &["id"], &[]),
     op(
         "procedure.start",
         "delegation::skill_runs",
@@ -373,7 +376,11 @@ pub const OPS: &[Op] = &[
         &[],
     ),
     op("background.stop", "delegation::agents", &["id"], &[]),
+    op("workflows.resume", "delegation::agents", &["id"], &[]),
     op("workflows.run", "delegation::agents", &["key", "nodes"], &[]),
+    op("workflows.start", "delegation::agents", &["key", "nodes"], &[]),
+    op("workflows.status", "delegation::agents", &["id"], &[]),
+    op("workflows.stop", "delegation::agents", &["id", "reason"], &[]),
     op("budget.estimate", "delegation::agents", &["plan", "workflow"], &[]),
     op(
         "rlm.collect",

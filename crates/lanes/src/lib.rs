@@ -127,6 +127,8 @@ pub struct CellEnd {
 
 struct Cell {
     lane: String,
+    /// The lane kernel running this cell, used to send an in-band interrupt before falling back to killing it.
+    kernel: Arc<Kernel>,
     /// The lane kernel's lease, released when the cell ends.
     lease: Option<Lease>,
     /// Aborted when the cell ends or is cancelled: ends its host waits.
@@ -636,6 +638,7 @@ impl Lanes {
             id.clone(),
             Cell {
                 lane: lane.to_string(),
+                kernel: kernel.clone(),
                 lease: Some(lease),
                 waits: waits.clone(),
                 kill: kill.clone(),
@@ -779,23 +782,36 @@ impl Lanes {
         Ok(None)
     }
 
-    /// Cancels a running cell and returns its outcome: its host waits end first (the cell raises and its kernel
-    /// keeps its state); a cell still running after the grace period has its kernel killed.
+    /// Cancels a running cell and returns its outcome: its host waits end first (so a parked host call raises its
+    /// structured cancellation error), then an active Python cell is interrupted in-band (`interrupt` frame + `SIGINT`)
+    /// so awaiting or looping cells unwind while keeping the kernel alive; a cell still running after the grace period
+    /// has its kernel killed.
     pub fn cancel(&self, id: &str, reason: &str) -> Result<Result<ExecutionResult, String>, String> {
-        let (waits, kill) = {
+        let (kernel, waits, kill) = {
             let mut state = sync::lock(&self.inner.state);
             let cell = state.cells.get_mut(id).ok_or_else(|| format!("Unknown cell: {id}"))?;
             cell.cancelled = true;
             cell.cancellers += 1;
-            (cell.waits.clone(), cell.kill.clone())
+            (cell.kernel.clone(), cell.waits.clone(), cell.kill.clone())
         };
         waits.abort(reason);
-        let outcome = match self.await_end(id, self.inner.options.cancel_grace) {
-            Some(outcome) => Ok(outcome),
-            None => {
-                kill.abort(reason);
-                self.await_end(id, Duration::from_secs(10))
-                    .ok_or_else(|| format!("cell {id} did not end after its kernel was killed"))
+        let grace = self.inner.options.cancel_grace;
+        let wait_grace = Duration::from_millis(250).min(grace / 2);
+        let outcome = if let Some(outcome) = (!wait_grace.is_zero())
+            .then(|| self.await_end(id, wait_grace))
+            .flatten()
+        {
+            Ok(outcome)
+        } else {
+            let _ = kernel.interrupt_active();
+            let remaining = grace.saturating_sub(wait_grace);
+            match self.await_end(id, remaining) {
+                Some(outcome) => Ok(outcome),
+                None => {
+                    kill.abort(reason);
+                    self.await_end(id, Duration::from_secs(10))
+                        .ok_or_else(|| format!("cell {id} did not end after its kernel was killed"))
+                }
             }
         };
         let mut state = sync::lock(&self.inner.state);

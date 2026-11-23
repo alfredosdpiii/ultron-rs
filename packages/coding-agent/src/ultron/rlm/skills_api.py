@@ -70,6 +70,18 @@ class Skills:
         the user publishes it with `ultron skills approve <id>` (or rejects it)."""
         return await self._bridge.request('procedure.propose', {'name': name, 'content': content, 'evidence': evidence})
 
+    async def mined(self):
+        """List automatically mined procedures for this project (candidate, admitted, suspended, retired)."""
+        return await self._bridge.request('procedure.mined', {})
+
+    async def admit_mined(self, procedure_id):
+        """Admit a mined procedure candidate so it can be selected for pre-planning execution."""
+        return await self._bridge.request('procedure.admit', {'id': procedure_id})
+
+    async def retire_mined(self, procedure_id):
+        """Retire a mined procedure so it is no longer selected for pre-planning execution."""
+        return await self._bridge.request('procedure.retire', {'id': procedure_id})
+
     # Code skills (procedural memory as tested code) import as `from code_skills import <name>`. The package is
     # named `code_skills` so it never shadows this `skills` object.
 

@@ -259,6 +259,7 @@ struct State {
     closed: bool,
     loaded: Option<Result<(), String>>,
     workflow_runs: Vec<Value>,
+    managed_workflows: HashMap<String, ManagedWorkflow>,
     root_turn: Option<String>,
     root_turn_active: bool,
     root_aliases: Vec<(String, String)>,
@@ -463,6 +464,56 @@ fn verdict_gate(result: Value) -> Value {
     gated
 }
 
+const WORKFLOW_FOREACH_DEFAULT_MAX: usize = 32;
+const WORKFLOW_FOREACH_HARD_MAX: usize = 256;
+
+#[derive(Clone, Debug)]
+struct ForEach {
+    from: String,
+    field: Option<String>,
+    as_field: Option<String>,
+    max_items: usize,
+}
+
+#[derive(Clone, Debug)]
+struct BoundedLoop {
+    max_rounds: u64,
+    until_field: Option<String>,
+    until_equals: Value,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkflowStatus {
+    Running,
+    Stopped,
+    Completed,
+    Failed,
+}
+
+impl WorkflowStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            WorkflowStatus::Running => "running",
+            WorkflowStatus::Stopped => "stopped",
+            WorkflowStatus::Completed => "completed",
+            WorkflowStatus::Failed => "failed",
+        }
+    }
+}
+
+struct ManagedWorkflow {
+    id: String,
+    nodes: Vec<Node>,
+    parent: Option<String>,
+    status: WorkflowStatus,
+    completed_outputs: Map<String, Value>,
+    cancel: Signal,
+    started_at: f64,
+    updated_at: f64,
+    ended_at: Option<f64>,
+    error: Option<String>,
+}
+
 /// One validated workflow node.
 #[derive(Clone, Debug)]
 struct Node {
@@ -475,6 +526,8 @@ struct Node {
     when: Option<(String, Option<String>, Value)>,
     join_any: bool,
     revise: Option<(String, Option<String>, Value, u64)>,
+    foreach: Option<ForEach>,
+    bounded_loop: Option<BoundedLoop>,
     model: Option<String>,
     key: Option<String>,
     timeout_ms: u64,
@@ -507,6 +560,7 @@ impl Agents {
                     closed: false,
                     loaded: None,
                     workflow_runs: Vec::new(),
+                    managed_workflows: HashMap::new(),
                     root_turn: None,
                     root_turn_active: false,
                     root_aliases: Vec::new(),
@@ -1756,6 +1810,16 @@ impl Agents {
                 }
                 self.run_workflow(nodes, cell, parent)
             }
+            Request::WorkflowsStart => {
+                let mut nodes = self.workflow(&payload)?;
+                for node in &mut nodes {
+                    node.lane = lane.to_string();
+                }
+                self.start_workflow(nodes, parent)
+            }
+            Request::WorkflowsStatus => self.workflow_status(&payload),
+            Request::WorkflowsStop => self.stop_workflow(&payload),
+            Request::WorkflowsResume => self.resume_workflow(&payload),
             Request::BudgetEstimate => self.estimate(&payload, parent),
         }
     }
@@ -1796,17 +1860,25 @@ impl Agents {
         Some(unit)
     }
 
-    /// A workflow's units: each node once, a revision loop's node and reviewer once per round at most.
+    /// A workflow's units: each node once, a revision or bounded loop's node once per round at most.
     fn workflow_units(&self, nodes: &[Node]) -> Vec<Unit> {
-        let rounds = |id: &str| {
+        let rounds = |node: &Node| {
+            if let Some(lp) = &node.bounded_loop {
+                return lp.max_rounds;
+            }
             nodes
                 .iter()
-                .find_map(|n| n.revise.as_ref().filter(|r| n.id == id || r.0 == id).map(|r| r.3))
+                .find_map(|n| {
+                    n.revise
+                        .as_ref()
+                        .filter(|r| n.id == node.id || r.0 == node.id)
+                        .map(|r| r.3)
+                })
                 .unwrap_or(1)
         };
         nodes
             .iter()
-            .filter_map(|node| self.node_unit(node, rounds(&node.id)))
+            .filter_map(|node| self.node_unit(node, rounds(node)))
             .collect()
     }
 
@@ -2060,6 +2132,8 @@ impl Agents {
                     "when",
                     "join",
                     "revise",
+                    "foreach",
+                    "loop",
                     "worktree",
                     "brief",
                     "role",
@@ -2202,6 +2276,75 @@ impl Agents {
                     Some((from, field, equals, rounds as u64))
                 }
             };
+            let foreach = match node.get("foreach") {
+                None => None,
+                Some(value) => {
+                    let fe = object_input(Some(value))?;
+                    jsrt::payload::fields(fe, &["from", "field", "as", "maxItems"])?;
+                    let from = nonempty_string(fe.get("from"), "foreach.from")?;
+                    if !depends_on.contains(&from) {
+                        return Err("foreach.from must name a dependency".into());
+                    }
+                    let field = match fe.get("field") {
+                        None | Some(Value::Null) => None,
+                        f => Some(nonempty_string(f, "foreach.field")?),
+                    };
+                    let as_field = match fe.get("as") {
+                        None | Some(Value::Null) => None,
+                        a => Some(nonempty_string(a, "foreach.as")?),
+                    };
+                    let max_items = match fe.get("maxItems") {
+                        None | Some(Value::Null) => WORKFLOW_FOREACH_DEFAULT_MAX,
+                        Some(v) => v
+                            .as_u64()
+                            .filter(|n| (1..=WORKFLOW_FOREACH_HARD_MAX as u64).contains(n))
+                            .ok_or_else(|| {
+                                format!("foreach.maxItems must be an integer between 1 and {WORKFLOW_FOREACH_HARD_MAX}")
+                            })? as usize,
+                    };
+                    Some(ForEach {
+                        from,
+                        field,
+                        as_field,
+                        max_items,
+                    })
+                }
+            };
+            let bounded_loop = match node.get("loop") {
+                None => None,
+                Some(value) => {
+                    let lp = object_input(Some(value))?;
+                    jsrt::payload::fields(lp, &["maxRounds", "max_rounds", "until"])?;
+                    let raw_rounds = lp.get("maxRounds").or_else(|| lp.get("max_rounds"));
+                    let max_rounds = raw_rounds
+                        .and_then(Value::as_f64)
+                        .filter(|n| n.fract() == 0.0 && *n >= 1.0 && *n <= WORKFLOW_MAX_ROUNDS as f64)
+                        .ok_or_else(|| {
+                            format!("loop.maxRounds must be an integer between 1 and {WORKFLOW_MAX_ROUNDS}")
+                        })? as u64;
+                    let Some(until) = lp.get("until") else {
+                        return Err("loop.until is required".into());
+                    };
+                    let until = object_input(Some(until))?;
+                    jsrt::payload::fields(until, &["field", "equals"])?;
+                    let (until_field, until_equals) = condition(until, "loop.until")?;
+                    Some(BoundedLoop {
+                        max_rounds,
+                        until_field,
+                        until_equals,
+                    })
+                }
+            };
+            let control_count =
+                usize::from(revise.is_some()) + usize::from(foreach.is_some()) + usize::from(bounded_loop.is_some());
+            if control_count > 1 {
+                return Err(format!(
+                    "Workflow node {id}: specify at most one of revise, foreach, or loop"
+                ));
+            }
+            if foreach.is_some() && input_from.is_some() {
+                return Err(format!("Workflow node {id}: foreach cannot be combined with inputFrom"));
+            }
             match &input_from {
                 Some(sources) => {
                     let list = match sources {
@@ -2213,6 +2356,15 @@ impl Agents {
                     }
                     if node.contains_key("input") {
                         return Err("Specify input or inputFrom, not both".into());
+                    }
+                }
+                None if foreach.is_some() => {
+                    if let Some(input) = node.get("input")
+                        && !input.is_object()
+                    {
+                        return Err(format!(
+                            "Workflow node {id}: foreach static input must be a JSON object"
+                        ));
                     }
                 }
                 None => {
@@ -2247,6 +2399,8 @@ impl Agents {
                 when,
                 join_any,
                 revise,
+                foreach,
+                bounded_loop,
                 model,
                 timeout_ms,
             });
@@ -2567,36 +2721,185 @@ impl Agents {
         }
     }
 
-    /// `runWorkflow`: ready nodes run together; a dependency is satisfied only by its durable terminal result.
-    fn run_workflow(&self, nodes: Vec<Node>, cell: Option<&Signal>, parent: Option<&str>) -> Result<Value, String> {
-        let run = format!("wf-{}", &random::uuid_v4()[..8]);
-        {
-            let mut state = self.state();
-            let mut record = json!({ "run": run });
-            if let Some(parent) = parent {
-                record["parentId"] = json!(parent);
+    /// `workflowForeach`: fans out `node` over an array from `foreach.from` (up to `max_items`) in parallel.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal wiring helper; parameters match distinct caller inputs"
+    )]
+    fn workflow_foreach(
+        &self,
+        node: &Node,
+        foreach: &ForEach,
+        output: &Map<String, Value>,
+        cell: Option<&Signal>,
+        parent: Option<&str>,
+        run: &str,
+        admitted: Option<&Sender<()>>,
+    ) -> Value {
+        let signal_admitted = || {
+            if let Some(sender) = admitted {
+                let _ = sender.send(());
             }
-            record["startedAt"] = json::number(self.now());
-            record["nodes"] = Value::from(
-                nodes
-                    .iter()
-                    .map(|n| {
-                        json!({ "id": n.id, "definition": n.definition, "dependsOn": n.depends_on,
-                                     "join": if n.join_any { "any" } else { "all" } })
-                    })
-                    .collect::<Vec<_>>(),
-            );
-            record["ended"] = json!({});
-            state.workflow_runs.push(record);
-            let excess = state.workflow_runs.len().saturating_sub(GRAPH_WORKFLOW_LIMIT);
-            state.workflow_runs.drain(..excess);
+        };
+        let source = bound_value(output.get(&foreach.from));
+        let target = match (&source, &foreach.field) {
+            (Some(val), Some(field)) => val.get(field),
+            (Some(val), None) => Some(val),
+            (None, _) => None,
+        };
+        let Some(items) = target.and_then(Value::as_array) else {
+            signal_admitted();
+            return failed(format!(
+                "foreach source {}{} is not a JSON array",
+                foreach.from,
+                foreach.field.as_ref().map_or_default(|f| format!(".{f}"))
+            ));
+        };
+        if items.len() > foreach.max_items {
+            signal_admitted();
+            return failed(format!(
+                "foreach exceeded maxItems ({} > {})",
+                items.len(),
+                foreach.max_items
+            ));
         }
+        if items.is_empty() {
+            signal_admitted();
+            return json!({ "status": "succeeded", "value": [], "items": [] });
+        }
+        let item_inputs: Vec<Value> = items
+            .iter()
+            .map(|item| match (&node.input, &foreach.as_field) {
+                (Some(Value::Object(base)), as_name) => {
+                    let mut merged = base.clone();
+                    merged.insert(as_name.clone().unwrap_or_else(|| "item".to_string()), item.clone());
+                    Value::Object(merged)
+                }
+                (None, Some(as_name)) => json!({ as_name: item }),
+                _ => item.clone(),
+            })
+            .collect();
+        signal_admitted();
+        let outcomes: Vec<Value> = std::thread::scope(|scope| {
+            let handles: Vec<_> = item_inputs
+                .into_iter()
+                .enumerate()
+                .map(|(idx, input)| {
+                    let item_key = node.key.as_ref().map(|k| format!("{k}:item-{idx}"));
+                    scope.spawn(move || self.workflow_task(node, input, item_key, cell, parent, run, true, None))
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap_or_else(|_| failed("foreach worker panicked")))
+                .collect()
+        });
+        let all_ok = outcomes.iter().all(|o| o["status"] == "succeeded");
+        if all_ok {
+            let values: Vec<Value> = outcomes
+                .iter()
+                .map(|o| bound_value(Some(o)).unwrap_or(Value::Null))
+                .collect();
+            json!({ "status": "succeeded", "value": values, "items": outcomes })
+        } else {
+            let first_err = outcomes
+                .iter()
+                .find(|o| o["status"] != "succeeded")
+                .and_then(|o| o.get("error").and_then(Value::as_str))
+                .unwrap_or("one or more foreach items failed");
+            json!({ "status": "failed", "error": first_err, "items": outcomes })
+        }
+    }
+
+    /// `workflowBoundedLoop`: repeats a single node up to `max_rounds` until `until` matches its output.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal wiring helper; parameters match distinct caller inputs"
+    )]
+    fn workflow_bounded_loop(
+        &self,
+        node: &Node,
+        lp: &BoundedLoop,
+        first: Value,
+        cell: Option<&Signal>,
+        parent: Option<&str>,
+        run: &str,
+        admitted: Option<&Sender<()>>,
+    ) -> Value {
+        let mut rounds: Vec<Value> = Vec::new();
+        let mut input = first.clone();
+        let finish = |outcome: &str, mut result: Value, rounds: &[Value]| {
+            result["loop"] = json!({
+                "outcome": outcome,
+                "rounds": rounds.len(),
+                "maxRounds": lp.max_rounds,
+            });
+            result["rounds"] = Value::from(rounds.to_vec());
+            result
+        };
+        for round in 1..=lp.max_rounds {
+            if cell.is_some_and(Signal::is_aborted) {
+                if round == 1
+                    && let Some(sender) = admitted
+                {
+                    let _ = sender.send(());
+                }
+                return finish("cancelled", json!({ "status": "cancelled" }), &rounds);
+            }
+            let round_key = node.key.as_ref().map(|k| format!("{k}:loop-{round}"));
+            let first_round = if round == 1 { admitted } else { None };
+            let result = self.workflow_task(node, input.clone(), round_key, cell, parent, run, true, first_round);
+            rounds.push(json!({ "round": round, "result": result }));
+            if result["status"] != "succeeded" {
+                return finish("failed", result, &rounds);
+            }
+            let current_val = bound_value(Some(&result));
+            if condition_met(current_val.as_ref(), lp.until_field.as_deref(), &lp.until_equals) {
+                return finish("converged", result, &rounds);
+            }
+            if round == lp.max_rounds {
+                let mut exhausted = json!({ "status": "exhausted" });
+                if let Some(val) = result.get("value") {
+                    exhausted["value"] = val.clone();
+                }
+                return finish("exhausted", exhausted, &rounds);
+            }
+            let next_val = current_val.unwrap_or(Value::Null);
+            let direct_valid = self
+                .definition(&node.definition)
+                .ok()
+                .is_some_and(|def| self.state().registry.is_valid_input(&def, &next_val));
+            input = if direct_valid {
+                next_val
+            } else {
+                json!({
+                    "input": first,
+                    "previous": next_val,
+                    "round": round + 1,
+                })
+            };
+        }
+        finish("exhausted", json!({ "status": "exhausted" }), &rounds)
+    }
+
+    fn execute_workflow_graph(
+        &self,
+        run: &str,
+        nodes: &[Node],
+        initial: Map<String, Value>,
+        cell: Option<&Signal>,
+        parent: Option<&str>,
+        managed_id: Option<&str>,
+    ) -> Map<String, Value> {
         let reviewers: Vec<String> = nodes
             .iter()
             .filter_map(|n| n.revise.as_ref().map(|(from, ..)| from.clone()))
             .collect();
-        let mut output = Map::new();
+        let mut output = initial;
         while output.len() < nodes.len() {
+            if cell.is_some_and(Signal::is_aborted) {
+                break;
+            }
             let ready: Vec<&Node> = nodes
                 .iter()
                 .filter(|n| {
@@ -2612,7 +2915,7 @@ impl Agents {
             let results: Vec<Vec<(String, Value)>> = std::thread::scope(|scope| {
                 let mut handles = Vec::new();
                 for node in &ready {
-                    let (snapshot, run, nodes) = (&snapshot, &run, &nodes);
+                    let snapshot = &snapshot;
                     let (admitted, wait) = channel::<()>();
                     handles.push(scope.spawn(move || {
                         let reviewer = node
@@ -2621,6 +2924,7 @@ impl Agents {
                             .and_then(|(from, ..)| nodes.iter().find(|n| &n.id == from));
                         match Self::workflow_input(node, snapshot) {
                             Err(outcome) => {
+                                let _ = admitted.send(());
                                 let mut out = vec![(node.id.clone(), outcome.clone())];
                                 if let Some(reviewer) = reviewer {
                                     out.push((
@@ -2632,8 +2936,8 @@ impl Agents {
                                 }
                                 out
                             }
-                            Ok(input) => match reviewer {
-                                Some(reviewer) => {
+                            Ok(input) => {
+                                if let Some(reviewer) = reviewer {
                                     let (work, review) = self.workflow_loop(
                                         node,
                                         reviewer,
@@ -2645,21 +2949,40 @@ impl Agents {
                                         Some(&admitted),
                                     );
                                     vec![(node.id.clone(), work), (reviewer.id.clone(), review)]
+                                } else if let Some(foreach) = &node.foreach {
+                                    vec![(
+                                        node.id.clone(),
+                                        self.workflow_foreach(
+                                            node,
+                                            foreach,
+                                            snapshot,
+                                            cell,
+                                            parent,
+                                            run,
+                                            Some(&admitted),
+                                        ),
+                                    )]
+                                } else if let Some(lp) = &node.bounded_loop {
+                                    vec![(
+                                        node.id.clone(),
+                                        self.workflow_bounded_loop(node, lp, input, cell, parent, run, Some(&admitted)),
+                                    )]
+                                } else {
+                                    vec![(
+                                        node.id.clone(),
+                                        self.workflow_task(
+                                            node,
+                                            input,
+                                            node.key.clone(),
+                                            cell,
+                                            parent,
+                                            run,
+                                            true,
+                                            Some(&admitted),
+                                        ),
+                                    )]
                                 }
-                                None => vec![(
-                                    node.id.clone(),
-                                    self.workflow_task(
-                                        node,
-                                        input,
-                                        node.key.clone(),
-                                        cell,
-                                        parent,
-                                        run,
-                                        true,
-                                        Some(&admitted),
-                                    ),
-                                )],
-                            },
+                            }
                         }
                     }));
                     let _ = wait.recv();
@@ -2667,21 +2990,251 @@ impl Agents {
                 handles.into_iter().map(|h| h.join().unwrap_or_default()).collect()
             });
             let mut state = self.state();
+            let now = self.now();
             for (id, result) in results.into_iter().flatten() {
                 let reason = result
                     .get("reason")
                     .and_then(Value::as_str)
                     .or_else(|| result.get("error").and_then(Value::as_str));
-                if let Some(record) = state.workflow_runs.iter_mut().find(|r| r["run"] == run.as_str()) {
+                if let Some(record) = state.workflow_runs.iter_mut().find(|r| r["run"] == run) {
                     let mut ended = json!({ "status": result["status"] });
                     if let Some(reason) = reason {
                         ended["reason"] = json!(json::preview(&json!(reason), GRAPH_TEXT_CHARS));
                     }
                     record["ended"][&id] = ended;
                 }
+                if let Some(mid) = managed_id
+                    && let Some(wf) = state.managed_workflows.get_mut(mid)
+                {
+                    wf.completed_outputs.insert(id.clone(), result.clone());
+                    wf.updated_at = now;
+                }
                 output.insert(id, result);
             }
         }
+        output
+    }
+
+    fn record_workflow_start(&self, run: &str, nodes: &[Node], parent: Option<&str>) {
+        let mut state = self.state();
+        let mut record = json!({ "run": run });
+        if let Some(parent) = parent {
+            record["parentId"] = json!(parent);
+        }
+        record["startedAt"] = json::number(self.now());
+        record["nodes"] = Value::from(
+            nodes
+                .iter()
+                .map(|n| {
+                    json!({ "id": n.id, "definition": n.definition, "dependsOn": n.depends_on,
+                                 "join": if n.join_any { "any" } else { "all" } })
+                })
+                .collect::<Vec<_>>(),
+        );
+        record["ended"] = json!({});
+        state.workflow_runs.push(record);
+        let excess = state.workflow_runs.len().saturating_sub(GRAPH_WORKFLOW_LIMIT);
+        state.workflow_runs.drain(..excess);
+    }
+
+    fn managed_workflow_view(wf: &ManagedWorkflow) -> Value {
+        let completed: Vec<String> = wf
+            .nodes
+            .iter()
+            .filter(|n| wf.completed_outputs.contains_key(&n.id))
+            .map(|n| n.id.clone())
+            .collect();
+        let pending: Vec<String> = wf
+            .nodes
+            .iter()
+            .filter(|n| !wf.completed_outputs.contains_key(&n.id))
+            .map(|n| n.id.clone())
+            .collect();
+        let mut out = json!({
+            "id": wf.id,
+            "status": wf.status.as_str(),
+            "completed": completed,
+            "pending": pending,
+            "outputs": Value::Object(wf.completed_outputs.clone()),
+            "startedAt": json::number(wf.started_at),
+            "updatedAt": json::number(wf.updated_at),
+        });
+        if let Some(ended) = wf.ended_at {
+            out["endedAt"] = json::number(ended);
+        }
+        if let Some(error) = &wf.error {
+            out["error"] = json!(error);
+        }
+        out
+    }
+
+    fn spawn_managed_workflow(
+        &self,
+        id: String,
+        nodes: Vec<Node>,
+        initial: Map<String, Value>,
+        cancel: Signal,
+        parent: Option<String>,
+    ) {
+        let agents = self.clone();
+        std::thread::spawn(move || {
+            let outputs =
+                agents.execute_workflow_graph(&id, &nodes, initial, Some(&cancel), parent.as_deref(), Some(&id));
+            let now = agents.now();
+            let mut state = agents.state();
+            if let Some(record) = state.workflow_runs.iter_mut().find(|r| r["run"] == id.as_str()) {
+                record["endedAt"] = json::number(now);
+            }
+            if let Some(wf) = state.managed_workflows.get_mut(&id) {
+                wf.completed_outputs = outputs.clone();
+                wf.updated_at = now;
+                if cancel.is_aborted() {
+                    wf.status = WorkflowStatus::Stopped;
+                    wf.ended_at = Some(now);
+                } else {
+                    let any_failed = outputs
+                        .values()
+                        .any(|o| matches!(o["status"].as_str(), Some("failed" | "exhausted" | "cancelled")));
+                    wf.status = if any_failed {
+                        WorkflowStatus::Failed
+                    } else {
+                        WorkflowStatus::Completed
+                    };
+                    wf.ended_at = Some(now);
+                    if any_failed {
+                        wf.error = outputs
+                            .values()
+                            .find_map(|o| o.get("error").and_then(Value::as_str).map(str::to_string));
+                    }
+                }
+            }
+            agents.inner.changed.notify_all();
+        });
+    }
+
+    /// `workflows.start`: validates the graph and runs it asynchronously, returning `{id, status, ...}` at once.
+    fn start_workflow(&self, nodes: Vec<Node>, parent: Option<&str>) -> Result<Value, String> {
+        let id = format!("wf-{}", &random::uuid_v4()[..8]);
+        let now = self.now();
+        let cancel = Signal::new();
+        self.record_workflow_start(&id, &nodes, parent);
+        let view = {
+            let mut state = self.state();
+            let wf = ManagedWorkflow {
+                id: id.clone(),
+                nodes: nodes.clone(),
+                parent: parent.map(str::to_string),
+                status: WorkflowStatus::Running,
+                completed_outputs: Map::new(),
+                cancel: cancel.clone(),
+                started_at: now,
+                updated_at: now,
+                ended_at: None,
+                error: None,
+            };
+            let view = Self::managed_workflow_view(&wf);
+            state.managed_workflows.insert(id.clone(), wf);
+            view
+        };
+        self.spawn_managed_workflow(id, nodes, Map::new(), cancel, parent.map(str::to_string));
+        Ok(view)
+    }
+
+    /// `workflows.status`: inspects a managed workflow's live state and completed node outputs.
+    fn workflow_status(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &["id"])?;
+        let id = nonempty_string(payload.get("id"), "id")?;
+        let state = self.state();
+        let wf = state
+            .managed_workflows
+            .get(&id)
+            .ok_or_else(|| format!("Unknown workflow: {id}"))?;
+        Ok(Self::managed_workflow_view(wf))
+    }
+
+    /// `workflows.stop`: signals a running managed workflow to stop while preserving completed node outputs.
+    fn stop_workflow(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &["id", "reason"])?;
+        let id = nonempty_string(payload.get("id"), "id")?;
+        let reason = payload
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("Workflow stopped")
+            .to_string();
+        let cancel = {
+            let mut state = self.state();
+            let wf = state
+                .managed_workflows
+                .get_mut(&id)
+                .ok_or_else(|| format!("Unknown workflow: {id}"))?;
+            let cancel = wf.cancel.clone();
+            if wf.status == WorkflowStatus::Running {
+                wf.status = WorkflowStatus::Stopped;
+                wf.updated_at = self.now();
+                wf.ended_at = Some(wf.updated_at);
+            }
+            cancel
+        };
+        cancel.abort(&reason);
+        let state = self.state();
+        let wf = state
+            .managed_workflows
+            .get(&id)
+            .ok_or_else(|| format!("Unknown workflow: {id}"))?;
+        Ok(Self::managed_workflow_view(wf))
+    }
+
+    /// `workflows.resume`: resumes a stopped or failed managed workflow, skipping already-succeeded nodes.
+    fn resume_workflow(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &["id"])?;
+        let id = nonempty_string(payload.get("id"), "id")?;
+        let (nodes, initial, cancel, parent, resumed_from, view) = {
+            let mut state = self.state();
+            let wf = state
+                .managed_workflows
+                .get_mut(&id)
+                .ok_or_else(|| format!("Unknown workflow: {id}"))?;
+            if wf.status == WorkflowStatus::Running {
+                return Err(format!("Workflow {id} is already running"));
+            }
+            if wf.status == WorkflowStatus::Completed {
+                return Err(format!("Workflow {id} already completed"));
+            }
+            let succeeded: Map<String, Value> = wf
+                .completed_outputs
+                .iter()
+                .filter(|(_, v)| v["status"] == "succeeded")
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let resumed_from: Vec<String> = succeeded.keys().cloned().collect();
+            let cancel = Signal::new();
+            wf.completed_outputs = succeeded.clone();
+            wf.cancel = cancel.clone();
+            wf.status = WorkflowStatus::Running;
+            wf.error = None;
+            wf.ended_at = None;
+            wf.updated_at = self.now();
+            let view = Self::managed_workflow_view(wf);
+            (
+                wf.nodes.clone(),
+                succeeded,
+                cancel,
+                wf.parent.clone(),
+                resumed_from,
+                view,
+            )
+        };
+        self.spawn_managed_workflow(id, nodes, initial, cancel, parent);
+        let mut out = view;
+        out["resumedFrom"] = json!(resumed_from);
+        Ok(out)
+    }
+
+    /// `runWorkflow`: ready nodes run together; a dependency is satisfied only by its durable terminal result.
+    fn run_workflow(&self, nodes: Vec<Node>, cell: Option<&Signal>, parent: Option<&str>) -> Result<Value, String> {
+        let run = format!("wf-{}", &random::uuid_v4()[..8]);
+        self.record_workflow_start(&run, &nodes, parent);
+        let output = self.execute_workflow_graph(&run, &nodes, Map::new(), cell, parent, None);
         let mut state = self.state();
         let now = self.now();
         if let Some(record) = state.workflow_runs.iter_mut().find(|r| r["run"] == run.as_str()) {
@@ -2901,6 +3454,10 @@ enum Request {
     Task,
     Finish,
     WorkflowsRun,
+    WorkflowsStart,
+    WorkflowsStatus,
+    WorkflowsStop,
+    WorkflowsResume,
     BudgetEstimate,
 }
 
@@ -2918,8 +3475,245 @@ impl Request {
             "agents.inspect" | "agents.result" | "agents.cancel" => Request::Task,
             "rlm.finish" => Request::Finish,
             "workflows.run" => Request::WorkflowsRun,
+            "workflows.start" => Request::WorkflowsStart,
+            "workflows.status" => Request::WorkflowsStatus,
+            "workflows.stop" => Request::WorkflowsStop,
+            "workflows.resume" => Request::WorkflowsResume,
             "budget.estimate" => Request::BudgetEstimate,
             _ => return None,
         })
+    }
+}
+
+#[cfg(test)]
+mod workflow_state_machine_tests {
+    use super::*;
+    use kernel::store::MemoryDocumentStore;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    fn test_options() -> AgentsOptions {
+        let mut opts = AgentsOptions::new(Box::new(MemoryDocumentStore::default()));
+        opts.definition_store = Some(Box::new(MemoryDocumentStore::default()));
+        opts
+    }
+
+    fn register_det(agents: &Agents, id: &str, input_schema: Value, output_schema: Value) {
+        let def = json!({
+            "id": id,
+            "version": "1",
+            "strategy": "deterministic",
+            "instructions": "test",
+            "inputSchema": input_schema,
+            "outputSchema": output_schema,
+            "maxRepairs": 0,
+            "inputDescription": "test",
+            "outputDescription": "test"
+        });
+        agents
+            .handle("agents.register", json!({ "definition": def }), "main", None)
+            .unwrap();
+    }
+
+    fn call(agents: &Agents, kind: &str, body: Value) -> Result<Value, String> {
+        agents.handle(kind, body, "main", None)
+    }
+
+    #[test]
+    fn workflow_foreach_fans_out_and_enforces_max_items() {
+        let mut opts = test_options();
+        opts.deterministic = Some(Arc::new(|req| match req.definition["id"].as_str() {
+            Some("list-items") => Ok(json!({ "items": [2, 3, 5] })),
+            Some("double-item") => {
+                let n = req.input["x"].as_i64().unwrap();
+                let mul = req.input["mul"].as_i64().unwrap_or(2);
+                Ok(json!({ "out": n * mul }))
+            }
+            other => Err(format!("unexpected def {other:?}")),
+        }));
+        let (agents, _rx) = Agents::new(opts);
+        let any_obj = json!({ "type": "object" });
+        register_det(&agents, "list-items", any_obj.clone(), any_obj.clone());
+        register_det(&agents, "double-item", any_obj.clone(), any_obj);
+
+        let result = call(
+            &agents,
+            "workflows.run",
+            json!({
+                "nodes": [
+                    { "id": "src", "definition": "list-items@1", "input": {} },
+                    {
+                        "id": "mapped",
+                        "definition": "double-item@1",
+                        "dependsOn": ["src"],
+                        "input": { "mul": 10 },
+                        "foreach": { "from": "src", "field": "items", "as": "x", "maxItems": 8 }
+                    }
+                ]
+            }),
+        )
+        .unwrap();
+        assert_eq!(result["mapped"]["status"], "succeeded");
+        assert_eq!(
+            result["mapped"]["value"],
+            json!([{ "out": 20 }, { "out": 30 }, { "out": 50 }])
+        );
+
+        let capped = call(
+            &agents,
+            "workflows.run",
+            json!({
+                "nodes": [
+                    { "id": "src", "definition": "list-items@1", "input": {} },
+                    {
+                        "id": "mapped",
+                        "definition": "double-item@1",
+                        "dependsOn": ["src"],
+                        "foreach": { "from": "src", "field": "items", "as": "x", "maxItems": 2 }
+                    }
+                ]
+            }),
+        )
+        .unwrap();
+        assert_eq!(capped["mapped"]["status"], "failed");
+        assert!(capped["mapped"]["error"].as_str().unwrap().contains("maxItems"));
+    }
+
+    #[test]
+    fn workflow_bounded_loop_converges_and_exhausts() {
+        let mut opts = test_options();
+        opts.deterministic = Some(Arc::new(|req| {
+            let n = req.input["n"].as_i64().unwrap_or(0) + 1;
+            Ok(json!({ "n": n, "done": n >= 3 }))
+        }));
+        let (agents, _rx) = Agents::new(opts);
+        let schema = json!({ "type": "object", "required": ["n"] });
+        register_det(&agents, "step", schema, json!({ "type": "object" }));
+
+        let converged = call(
+            &agents,
+            "workflows.run",
+            json!({
+                "nodes": [{
+                    "id": "iter",
+                    "definition": "step@1",
+                    "input": { "n": 0 },
+                    "loop": { "maxRounds": 5, "until": { "field": "done", "equals": true } }
+                }]
+            }),
+        )
+        .unwrap();
+        assert_eq!(converged["iter"]["status"], "succeeded");
+        assert_eq!(converged["iter"]["value"]["n"], 3);
+        assert_eq!(converged["iter"]["loop"]["outcome"], "converged");
+        assert_eq!(converged["iter"]["loop"]["rounds"], 3);
+
+        let exhausted = call(
+            &agents,
+            "workflows.run",
+            json!({
+                "nodes": [{
+                    "id": "iter",
+                    "definition": "step@1",
+                    "input": { "n": 0 },
+                    "loop": { "maxRounds": 2, "until": { "field": "done", "equals": true } }
+                }]
+            }),
+        )
+        .unwrap();
+        assert_eq!(exhausted["iter"]["status"], "exhausted");
+        assert_eq!(exhausted["iter"]["loop"]["outcome"], "exhausted");
+        assert_eq!(exhausted["iter"]["loop"]["rounds"], 2);
+    }
+
+    #[test]
+    fn workflow_async_start_status_stop_and_resume_reuses_completed_nodes() {
+        let a_runs = Arc::new(AtomicUsize::new(0));
+        let b_runs = Arc::new(AtomicUsize::new(0));
+        let (b_started_tx, b_started_rx) = channel::<()>();
+        let b_started_tx = Arc::new(Mutex::new(Some(b_started_tx)));
+        let a_counter = a_runs.clone();
+        let b_counter = b_runs.clone();
+
+        let mut opts = test_options();
+        opts.deterministic = Some(Arc::new(move |req| match req.definition["id"].as_str() {
+            Some("node-a") => {
+                a_counter.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({ "val": 42 }))
+            }
+            Some("node-b") => {
+                let attempt = b_counter.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    if let Some(tx) = jsrt::sync::lock(&b_started_tx).take() {
+                        let _ = tx.send(());
+                    }
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while !req.signal.is_aborted() && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    return Err("stopped mid-flight".into());
+                }
+                let v = req.input["val"].as_i64().unwrap();
+                Ok(json!({ "final": v + 8 }))
+            }
+            other => Err(format!("unexpected {other:?}")),
+        }));
+        let (agents, _rx) = Agents::new(opts);
+        let obj = json!({ "type": "object" });
+        register_det(&agents, "node-a", obj.clone(), obj.clone());
+        register_det(&agents, "node-b", obj.clone(), obj);
+
+        let started = call(
+            &agents,
+            "workflows.start",
+            json!({
+                "nodes": [
+                    { "id": "a", "definition": "node-a@1", "input": {} },
+                    { "id": "b", "definition": "node-b@1", "dependsOn": ["a"], "inputFrom": "a" }
+                ]
+            }),
+        )
+        .unwrap();
+        let wf_id = started["id"].as_str().unwrap().to_string();
+        assert_eq!(started["status"], "running");
+
+        b_started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("node_b should start after node_a completes");
+
+        let mid = call(&agents, "workflows.status", json!({ "id": wf_id })).unwrap();
+        assert_eq!(mid["completed"], json!(["a"]));
+        assert_eq!(mid["pending"], json!(["b"]));
+
+        let stopped = call(&agents, "workflows.stop", json!({ "id": wf_id, "reason": "pause" })).unwrap();
+        assert_eq!(stopped["status"], "stopped");
+
+        let wait_stopped = Instant::now() + Duration::from_secs(5);
+        while b_runs.load(Ordering::SeqCst) < 1 && Instant::now() < wait_stopped {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+
+        let resumed = call(&agents, "workflows.resume", json!({ "id": wf_id })).unwrap();
+        assert_eq!(resumed["status"], "running");
+        assert_eq!(resumed["resumedFrom"], json!(["a"]));
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let done = loop {
+            let st = call(&agents, "workflows.status", json!({ "id": wf_id })).unwrap();
+            if st["status"] != "running" {
+                break st;
+            }
+            assert!(Instant::now() < deadline, "resumed workflow did not finish: {st}");
+            std::thread::sleep(Duration::from_millis(15));
+        };
+        assert_eq!(done["status"], "completed");
+        assert_eq!(done["outputs"]["b"]["value"]["final"], 50);
+        assert_eq!(a_runs.load(Ordering::SeqCst), 1, "node_a must NOT re-run on resume");
+        assert_eq!(
+            b_runs.load(Ordering::SeqCst),
+            2,
+            "node_b should run once stopped, once resumed"
+        );
     }
 }

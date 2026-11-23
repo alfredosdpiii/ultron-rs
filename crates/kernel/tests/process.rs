@@ -1158,3 +1158,46 @@ fn kernel_environment_reaches_python_without_credentials() {
     // The kernel leads its own process group.
     assert_eq!(value(&kernel, "os.getpgrp() == os.getpid()"), "True");
 }
+
+#[test]
+fn kernel_interrupt_active_stops_async_and_sync_cells_while_keeping_pid_and_namespace() {
+    let kernel = Arc::new(kernel_with(options(), null_handler()));
+    run(&kernel, "kept = 'alive_across_interrupt'");
+    let pid_before = kernel.pid().unwrap();
+
+    for (label, code) in [
+        ("async", "import asyncio\nawait asyncio.sleep(30)"),
+        ("sync", "while True:\n    pass"),
+    ] {
+        let (tx, rx) = mpsc::channel();
+        let running = kernel.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(running.execute(code, None, None));
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !kernel.interrupt_active() {
+            assert!(Instant::now() < deadline, "{label} cell never became active");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let outcome = rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|_| panic!("{label} cell did not unwind after interrupt_active"))
+            .unwrap_or_else(|err| panic!("{label} interrupt killed kernel instead of unwinding: {err}"));
+        assert_eq!(outcome.status, Status::Error, "{label} cell should end with error");
+        let err = outcome.error.unwrap();
+        assert!(
+            err.ename == "CancelledError" || err.ename == "KeyboardInterrupt",
+            "{label} unexpected error: {err:?}"
+        );
+        assert_eq!(
+            kernel.pid(),
+            Some(pid_before),
+            "{label} interrupt must preserve the kernel PID"
+        );
+        assert_eq!(
+            value(&kernel, "kept"),
+            "'alive_across_interrupt'",
+            "{label} interrupt must preserve non-state Python variables"
+        );
+    }
+}
