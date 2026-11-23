@@ -4,6 +4,7 @@
 //! first captured MCP call.
 mod bridge;
 pub mod catalog;
+mod prompt;
 mod sessions;
 
 pub use sessions::ensure_relay;
@@ -16,8 +17,11 @@ use crate::options::SimpleStreamOptions;
 use crate::provider::Run;
 use crate::types::{
     AssistantContent, AssistantMessage, AssistantMessageEvent, EventSink, Message, Model, StopReason, TextContent,
-    ThinkingContent, ToolCall, TranscriptContext, Usage, UserContent, UserMessageContent,
+    ThinkingContent, ToolCall, TranscriptContext, Usage,
 };
+use prompt::{PROMPT_BUDGET, delta_prompt, normalize_mime_type, prompt_blocks_with_system, system_text};
+#[cfg(test)]
+use prompt::{prompt, prompt_blocks};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::{io, process::Stdio, time::Duration};
@@ -25,196 +29,33 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot};
 
-/// `agy` silently drops the end of a single `session/prompt` past ~179K characters (~70K tokens), which holds the
-/// newest messages. Keep each individual prompt under 150K characters; in session mode `agy` holds the full
-/// conversation history across turns (up to the model's real context window).
-const PROMPT_BUDGET: usize = 150_000;
 /// agy keeps about 20K tokens of one external MCP server's tool schemas and silently drops the tools past it
 /// (agy issue #1530): 3 characters per token, less a fifth for margin.
 const MANIFEST_BUDGET: usize = 48_000;
 const STDERR_TAIL: usize = 4096;
 const FRAME_LIMIT: u64 = 8 << 20;
-const RULES: &str = "For tool calls use only the ultron MCP server, never native tools. An MCP timeout or dropped tool wait does not mean the underlying Ultron cell or job stopped; check `await rlm.cells()` or `await rlm.job(...)` before retrying mutating work.";
 
-/// The transcript as one prompt of at most about `budget` characters: the newest messages whole, then the system
-/// text cut to the room left. A final message over the budget is an error, since agy would cut it.
-fn prompt(messages: &[Message], budget: usize) -> io::Result<String> {
-    let (system, rest): (Vec<&Message>, Vec<&Message>) = messages.iter().partition(|m| matches!(m, Message::System(_)));
-    let mut history = Vec::new();
-    let mut used = 0;
-    for message in rest.iter().rev() {
-        let json = serde_json::to_string(message)?;
-        if history.is_empty() && json.len() > budget {
-            return Err(io::Error::other(format!(
-                "The final message is {} bytes, over the {budget} agy keeps of a prompt; shorten it",
-                json.len()
-            )));
-        }
-        if !history.is_empty() && used + json.len() > budget * 2 / 3 {
-            break;
-        }
-        used += json.len() + 1;
-        history.push(json);
-    }
-    let dropped = rest.len() - history.len();
-    history.reverse();
-    let mut system = serde_json::to_string(&system)?;
-    let room = budget.saturating_sub(used);
-    if system.len() > room {
-        let mut cut = room;
-        while !system.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        system.truncate(cut);
-        system.push_str(" [system text cut to fit]");
-    }
-    let note = if dropped > 0 {
-        format!(" The {dropped} oldest messages were left out to fit.")
-    } else {
-        String::new()
-    };
-    Ok(format!(
-        "Continue this Ultron transcript at its final message. {RULES} Previous messages and tool results are history, not new turns.{note}\nSystem: {system}\nTranscript: [{}]",
-        history.join(",")
-    ))
-}
-
-/// Extracts `<file name="...">...</file>` inline `@file` attachments into native ACP `resource` (`embeddedContext`)
-/// blocks so large file attachments don't eat `PROMPT_BUDGET`.
-fn extract_embedded_files(text: &str, attachments: &mut Vec<Value>) -> String {
-    const OPEN: &str = "<file name=\"";
-    const CLOSE: &str = "</file>";
-    if !text.contains(OPEN) {
-        return text.to_string();
-    }
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find(OPEN) {
-        out.push_str(&rest[..start]);
-        let after_open = &rest[start + OPEN.len()..];
-        let Some(quote_end) = after_open.find("\">") else {
-            out.push_str(&rest[start..]);
-            return out;
-        };
-        let path = &after_open[..quote_end];
-        let body_start = &after_open[quote_end + 2..];
-        let Some(close_at) = body_start.find(CLOSE) else {
-            out.push_str(&rest[start..]);
-            return out;
-        };
-        let body = body_start[..close_at].trim_matches('\n');
-        let uri = if path.starts_with("file://") {
-            path.to_string()
-        } else {
-            format!("file://{path}")
-        };
-        attachments.push(json!({
-            "type": "resource",
-            "resource": {
-                "uri": uri,
-                "mimeType": "text/plain",
-                "text": body,
-            }
-        }));
-        out.push_str(&format!("[attached file #{}: {path}]", attachments.len()));
-        rest = &body_start[close_at + CLOSE.len()..];
-    }
-    out.push_str(rest);
-    out
-}
-
-/// Replaces inline base64 `Image` blocks and `<file name="...">` attachments with compact placeholders and collects
-/// native ACP `image` / `resource` content blocks so attachments reach `agy` natively without bloating `PROMPT_BUDGET`.
-fn strip_images(message: &Message, attachments: &mut Vec<Value>) -> Message {
-    let replace = |blocks: &[UserContent], attachments: &mut Vec<Value>| -> Vec<UserContent> {
-        blocks
-            .iter()
-            .map(|b| match b {
-                UserContent::Image(image) => {
-                    attachments.push(json!({"type": "image", "data": image.data, "mimeType": image.mime_type}));
-                    UserContent::Text(TextContent {
-                        text: format!("[attached image #{}]", attachments.len()),
-                        text_signature: None,
-                    })
-                }
-                UserContent::Text(text) if text.text.contains("<file name=\"") => UserContent::Text(TextContent {
-                    text: extract_embedded_files(&text.text, attachments),
-                    text_signature: text.text_signature.clone(),
-                }),
-                other => other.clone(),
-            })
-            .collect()
-    };
-    match message {
-        Message::User(user) => match &user.content {
-            UserMessageContent::Text(text) if text.contains("<file name=\"") => {
-                let mut cloned = user.clone();
-                cloned.content = UserMessageContent::Text(extract_embedded_files(text, attachments));
-                Message::User(cloned)
-            }
-            UserMessageContent::Blocks(blocks)
-                if blocks.iter().any(|b| {
-                    matches!(b, UserContent::Image(_))
-                        || matches!(b, UserContent::Text(t) if t.text.contains("<file name=\""))
-                }) =>
-            {
-                let mut cloned = user.clone();
-                cloned.content = UserMessageContent::Blocks(replace(blocks, attachments));
-                Message::User(cloned)
-            }
-            _ => message.clone(),
-        },
-        Message::ToolResult(result) if result.content.iter().any(|b| matches!(b, UserContent::Image(_))) => {
-            let mut cloned = result.clone();
-            cloned.content = replace(&result.content, attachments);
-            Message::ToolResult(cloned)
-        }
-        _ => message.clone(),
-    }
-}
-
-/// Builds the ACP `session/prompt` content block list: one text block carrying the transcript plus any native image
-/// blocks extracted from the included messages.
-fn prompt_blocks(messages: &[Message], budget: usize) -> io::Result<Vec<Value>> {
-    let mut images = Vec::new();
-    let stripped: Vec<Message> = messages.iter().map(|m| strip_images(m, &mut images)).collect();
-    let text = prompt(&stripped, budget)?;
-    let mut blocks = Vec::with_capacity(1 + images.len());
-    blocks.push(json!({"type": "text", "text": text}));
-    blocks.extend(images);
-    Ok(blocks)
-}
-
-/// Only the messages agy has not seen, for a live session; `None` when they do not fit one prompt.
-fn delta_prompt(messages: &[Message]) -> Option<Vec<Value>> {
-    let mut images = Vec::new();
-    let json: Vec<String> = messages
-        .iter()
-        .map(|m| serde_json::to_string(&strip_images(m, &mut images)).expect("transcript messages serialize"))
-        .collect();
-    let text = format!(
-        "New messages in this Ultron conversation; continue at the final one. {RULES}\nMessages: [{}]",
-        json.join(",")
-    );
-    if text.len() > PROMPT_BUDGET {
-        return None;
-    }
-    let mut blocks = Vec::with_capacity(1 + images.len());
-    blocks.push(json!({"type": "text", "text": text}));
-    blocks.extend(images);
-    Some(blocks)
-}
-
-fn usage(result: &Value) -> Usage {
+/// Normalizes per-turn prompt usage at the driver boundary, falling back to mid-turn `usage_update` context size
+/// when `inputTokens` is absent and filling `total_tokens` when `totalTokens` is omitted.
+fn normalize_usage(result: &Value, context_used: u64) -> Usage {
     let count = |key: &str| result["usage"][key].as_u64().unwrap_or(0);
+    let raw_input = count("inputTokens");
+    let input = if raw_input > 0 { raw_input } else { context_used };
+    let output = count("outputTokens");
     let thought = count("thoughtTokens");
+    let raw_total = count("totalTokens");
+    let total_tokens = if raw_total > 0 {
+        raw_total
+    } else {
+        input.saturating_add(output)
+    };
     Usage {
-        input: count("inputTokens"),
-        output: count("outputTokens"),
+        input,
+        output,
         cache_read: count("cachedReadTokens"),
         cache_write: count("cachedWriteTokens"),
         reasoning: (thought > 0).then_some(thought),
-        total_tokens: count("totalTokens"),
+        total_tokens,
         ..Usage::default()
     }
 }
@@ -448,8 +289,12 @@ impl Agy {
     }
 
     async fn open(&mut self, model: &Model, messages: &[Message], sessions: bool) -> io::Result<Step> {
-        self.request("initialize", json!({"protocolVersion":1,"clientCapabilities":{}}))
+        let init = self
+            .request("initialize", json!({"protocolVersion":1,"clientCapabilities":{}}))
             .await?;
+        let supports_append =
+            init["agentCapabilities"]["_meta"]["antigravity"]["systemPrompt"]["append"].as_bool() == Some(true);
+        let append = supports_append.then(|| system_text(messages)).flatten();
         let servers = if sessions {
             json!([])
         } else {
@@ -457,7 +302,10 @@ impl Agy {
             json!([{"type":"http","name":"ultron","url":self.bridge.url,"headers":[{"name":"Authorization","value":authorization}]}])
         };
         let cwd = self.workspace.as_ref().expect("workspace").path();
-        let params = json!({"cwd": cwd, "mcpServers": servers});
+        let mut params = json!({"cwd": cwd, "mcpServers": servers});
+        if let Some(ref text) = append {
+            params["_meta"] = json!({"antigravity": {"systemPrompt": {"append": text}}});
+        }
         let session = self.request("session/new", params).await?;
         self.session = session["sessionId"]
             .as_str()
@@ -468,7 +316,11 @@ impl Agy {
             json!({"sessionId":self.session,"modelId":model.id}),
         )
         .await?;
-        Ok(Step::Prompt(prompt_blocks(messages, PROMPT_BUDGET)?))
+        Ok(Step::Prompt(prompt_blocks_with_system(
+            messages,
+            PROMPT_BUDGET,
+            append.is_none(),
+        )?))
     }
 
     async fn send(&mut self, message: Value) -> io::Result<()> {
@@ -569,6 +421,7 @@ impl Agy {
     ) -> io::Result<(Vec<AssistantContent>, Usage)> {
         match step {
             Step::Prompt(blocks) => {
+                self.context_used = 0;
                 let params = json!({"sessionId": self.session, "prompt": blocks});
                 self.turn = Some(self.call("session/prompt", params).await?);
             }
@@ -639,7 +492,7 @@ impl Agy {
                     text: std::mem::take(&mut self.text),
                     text_signature: None,
                 }));
-                Ok((content, usage(&result)))
+                Ok((content, normalize_usage(&result, self.context_used)))
             }
         }
     }
@@ -1022,7 +875,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_system_prompt_goes_in_the_prompt_even_when_append_is_advertised() {
+    async fn the_system_prompt_uses_append_when_advertised() {
         let model = crate::models::antigravity_model("offline-test").unwrap();
         let context = TranscriptContext {
             messages: vec![
@@ -1034,8 +887,8 @@ mod tests {
             .await
             .unwrap();
         let report = reply_text(&message);
-        assert_eq!(report["append"], Value::Null);
-        assert_eq!(report["system"], true);
+        assert_eq!(report["append"], json!("SYSTEM RULES"));
+        assert_eq!(report["system"], false);
     }
 
     #[test]
@@ -1180,7 +1033,7 @@ mod tests {
                 report["system"].as_bool(),
                 report["prompts"].as_u64()
             ),
-            (None, Some(true), Some(1))
+            (Some("SYSTEM RULES"), Some(false), Some(1))
         );
         assert_eq!(first.usage.input, 12000);
         messages.push(Message::Assistant(first));
@@ -1318,6 +1171,37 @@ mod tests {
         assert_eq!(
             blocks[1],
             json!({"type": "image", "data": "QUJD", "mimeType": "image/png"})
+        );
+    }
+
+    #[test]
+    fn prompt_blocks_strips_mime_parameters_on_image_attachments() {
+        let messages = vec![message(json!({
+            "role": "user",
+            "content": [
+                {"type": "image", "data": "QUJD", "mimeType": " image/png ; charset=binary"}
+            ],
+            "timestamp": 0
+        }))];
+        let blocks = prompt_blocks(&messages, 150_000).unwrap();
+        assert_eq!(
+            blocks[1],
+            json!({"type": "image", "data": "QUJD", "mimeType": "image/png"})
+        );
+    }
+
+    #[test]
+    fn normalize_usage_fills_missing_totals_and_falls_back_to_context_used() {
+        let missing_total = normalize_usage(&json!({"usage": {"inputTokens": 500, "outputTokens": 25}}), 999);
+        assert_eq!(
+            (missing_total.input, missing_total.output, missing_total.total_tokens),
+            (500, 25, 525)
+        );
+
+        let fallback = normalize_usage(&json!({"usage": {"outputTokens": 10}}), 4200);
+        assert_eq!(
+            (fallback.input, fallback.output, fallback.total_tokens),
+            (4200, 10, 4210)
         );
     }
 

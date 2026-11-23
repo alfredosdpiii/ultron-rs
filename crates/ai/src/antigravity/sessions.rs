@@ -2,7 +2,7 @@
 //! of its own config (`~/.gemini/config/mcp_config.json`), the only place that raises its 3-minute MCP call timeout.
 //! Ultron's model loop builds a runtime per call, and tokio IO stays on the runtime that created it, so every live
 //! agy is driven from one process-lifetime runtime thread.
-use super::{Agy, AgyDelta, Step, WorkspaceDir, delta_prompt};
+use super::{Agy, AgyDelta, Step, WorkspaceDir, delta_prompt, normalize_mime_type};
 use crate::env::ProviderEnv;
 use crate::types::{
     AssistantContent, Message, Model, ToolResultMessage, TranscriptContext, Usage, UserContent, UserMessageContent,
@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
-/// Idle eviction for live `agy` processes (30 min); evicted sessions can still reattach via ACP `session/load`.
-const IDLE: Duration = Duration::from_mins(30);
+/// Idle eviction for live `agy` processes (2 min); evicted sessions free memory and reattach via ACP `session/load`.
+const IDLE: Duration = Duration::from_mins(2);
 const MAX_LIVE: usize = 8;
 /// Archived (process-stopped) sessions kept for ACP `session/load` reattachment.
 const ARCHIVE_TTL: Duration = Duration::from_hours(24);
@@ -516,7 +516,11 @@ fn tool_result(result: &ToolResultMessage, trailing: &[Message]) -> Value {
         .iter()
         .map(|block| match block {
             UserContent::Text(text) => json!({"type": "text", "text": text.text}),
-            UserContent::Image(image) => json!({"type": "image", "data": image.data, "mimeType": image.mime_type}),
+            UserContent::Image(image) => json!({
+                "type": "image",
+                "data": image.data,
+                "mimeType": normalize_mime_type(&image.mime_type)
+            }),
         })
         .collect();
     for message in trailing {
@@ -533,7 +537,11 @@ fn tool_result(result: &ToolResultMessage, trailing: &[Message]) -> Value {
                     match block {
                         UserContent::Text(text) => content.push(json!({"type": "text", "text": text.text})),
                         UserContent::Image(image) => {
-                            content.push(json!({"type": "image", "data": image.data, "mimeType": image.mime_type}));
+                            content.push(json!({
+                                "type": "image",
+                                "data": image.data,
+                                "mimeType": normalize_mime_type(&image.mime_type)
+                            }));
                         }
                     }
                 }
