@@ -260,3 +260,15 @@ fn session_core_turn_end_checks_keep_the_session_busy_and_a_new_prompt_cancels_t
     assert_eq!(a.events("run_start").len(), 2);
     assert!(nudges(&a, "turn-end checks failed").is_empty());
 }
+
+#[test]
+fn session_core_turn_guard_without_checks_or_hooks_does_not_report_checking() {
+    let script = in_order(vec![tool("t1", "print(1)"), text("Done.")]);
+    let a = actor(script, Setup::default());
+    let ended = a.prompt("run a cell");
+    assert_eq!(ended["error"], Value::Null, "{ended}");
+    let state = a.call(Op::State).unwrap().unwrap();
+    assert_eq!(state.get("isChecking"), None, "{state}");
+    let pending = a.call(Op::AsyncPending).unwrap().unwrap();
+    assert_eq!(pending["pending"], false, "{pending}");
+}

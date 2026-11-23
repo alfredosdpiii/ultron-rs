@@ -76,6 +76,10 @@ pub trait Guard: Send + Sync {
     }
     /// Waits for the after-cell checks already started.
     fn settled(&self) {}
+    /// Whether any after-cell check is still running in the background.
+    fn is_checking(&self) -> bool {
+        false
+    }
 }
 
 pub struct AllowAll;
@@ -510,6 +514,11 @@ impl Host {
     pub fn settled_pending(&self, lane: &str) -> Option<String> {
         self.guard.settled();
         self.guard.take_pending(lane)
+    }
+
+    /// Whether any after-cell check is still running in the background.
+    pub fn is_checking(&self) -> bool {
+        self.guard.is_checking()
     }
 
     /// `cwd` is where commands run; job spill files go to `jobs_dir/<id>.log`, blocking-bash spill files to

@@ -130,6 +130,22 @@ fn cli_sessions_model_title_replaces_the_automatic_name() {
 }
 
 #[test]
+fn cli_sessions_model_title_survives_turn_ending_before_naming_reply() {
+    let (port, seen) = mock_server(
+        vec![anthropic_text("ok")],
+        Naming::AfterFirstReply("\"**Fix Login Tests.**\"".into()),
+    );
+    let sandbox = Sandbox::new(port);
+    let long = format!("Fix the login tests {}", "x".repeat(3000));
+    let output = run(&sandbox, &["--mode", "json", "--model", MODEL, &long]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let list = listings(&sandbox);
+    assert_eq!(list[0].name.as_deref(), Some("Fix Login Tests"));
+    assert!(list[0].automatic_name);
+    assert_eq!(seen.lock().unwrap().naming.len(), 1);
+}
+
+#[test]
 fn cli_sessions_naming_setting_selects_the_model() {
     let (port, seen) = mock_server(vec![anthropic_text("ok")], Naming::Title("Chosen".into()));
     let sandbox = Sandbox::new(port);

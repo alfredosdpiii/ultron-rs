@@ -460,3 +460,67 @@ pub fn neo4j_settings(global: &Settings) -> Option<Neo4jSettings> {
         user: text_setting(neo4j.get("user")).unwrap_or_else(|| NEO4J_DEFAULT_USER.into()),
     })
 }
+
+/// `engineering`: engineering mode (`alwaysSkills` active in the system prompt, proactive skill routing).
+pub fn engineering(settings: &Settings) -> bool {
+    settings.get("engineering") == Some(&Value::Bool(true))
+}
+
+/// `alwaysSkills`: string skill names included in the system prompt when engineering mode is on.
+pub fn always_skills(settings: &Settings) -> Vec<String> {
+    settings
+        .get("alwaysSkills")
+        .and_then(Value::as_array)
+        .map_or_default(|names| names.iter().filter_map(Value::as_str).map(str::to_string).collect())
+}
+
+/// `enabledModels`: scoped model patterns for initial model selection.
+pub fn enabled_models(settings: &Settings) -> Vec<String> {
+    settings
+        .get("enabledModels")
+        .and_then(Value::as_array)
+        .map_or_default(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+}
+
+/// `defaultThinkingLevel`: global fallback thinking level.
+pub fn default_thinking_level(settings: &Settings) -> Option<String> {
+    settings
+        .get("defaultThinkingLevel")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// `modelThinkingLevels`: per-model thinking-level overrides (`provider/model` -> level), in insertion order.
+pub fn model_thinking_levels(settings: &Settings) -> Vec<(String, String)> {
+    settings
+        .get("modelThinkingLevels")
+        .and_then(Value::as_object)
+        .map_or_default(|map| {
+            map.iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                .collect()
+        })
+}
+
+/// `modelThinkingLevels["<provider>/<model_id>"]`, falling back to `defaultThinkingLevel`.
+pub fn model_thinking_level(settings: &Settings, provider: &str, model_id: &str) -> Option<String> {
+    settings
+        .get("modelThinkingLevels")
+        .and_then(|levels| levels.get(format!("{provider}/{model_id}")))
+        .and_then(Value::as_str)
+        .or_else(|| settings.get("defaultThinkingLevel").and_then(Value::as_str))
+        .map(str::to_string)
+}
+
+/// `rlm.maxLiveKernels`: live kernel pool cap (default 16, clamped to 1..=1024).
+pub fn max_live_kernels(settings: &Value) -> usize {
+    settings["rlm"]["maxLiveKernels"]
+        .as_u64()
+        .filter(|n| *n >= 1)
+        .map_or(16, |n| n.min(1024) as usize)
+}
+
+/// `rootBudget`: root-turn budget settings object (or `Value::Null` when absent).
+pub fn root_budget(settings: &Value) -> &Value {
+    &settings["rootBudget"]
+}

@@ -291,15 +291,11 @@ fn claude_root_mcp_cancelled_call_cancels_its_stuck_cell_and_the_next_call_runs_
     let (text, error) = server.result(stuck);
     assert!(error);
     assert_eq!(text, "Abort requested");
-    // The cell's kernel was killed with its git child.
+    // The cell was interrupted in-band and its git child ended.
     wait_until("git ends", || ended(git));
-    // The next call runs in lane main, with no note and no side lane: a new kernel there, which restored the
-    // lane's checkpoint.
+    // The next call runs in lane main, with no note and no side lane, keeping the live kernel and its namespace.
     let next = server.cell("print('x' in globals(), [l['lane'] for l in await rlm.lanes()])");
-    assert!(
-        next.starts_with("True ['main']\n[RLM kernel restarted after: Abort requested]\n"),
-        "{next}"
-    );
+    assert_eq!(next, "True ['main']");
     assert_eq!(
         server.cell("print([(j.id, j.running, j.cancelled) for j in await rlm.jobs()])"),
         format!("[('{job}', False, True)]")
@@ -425,9 +421,6 @@ fn claude_root_native_root_lane_routes_past_a_busy_lane_and_rlm_cancel_stops_the
     assert_eq!(noted_cell(&cancelled), cell);
     wait_until("git ends", || ended(git));
     let next = run(&lane, "print(x, [l['lane'] for l in await rlm.lanes()])").unwrap();
-    assert!(
-        next.starts_with("1 ['main']\n[RLM kernel restarted after: cancelled from another cell]\n"),
-        "{next}"
-    );
+    assert_eq!(next, "1 ['main']");
     lane.shutdown();
 }

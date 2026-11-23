@@ -711,6 +711,11 @@ impl FileHooks {
         }
     }
 
+    /// Whether any after-cell check is still running in the background.
+    pub fn is_checking(&self) -> bool {
+        *sync::lock(&self.inner.queued) > 0
+    }
+
     /// Findings from after-cell checks not yet shown to `lane`, as one block of text (and forget them).
     pub fn take_pending(&self, lane: &str) -> Option<String> {
         let pending = sync::lock(&self.inner.pending).remove(lane)?;
@@ -1196,6 +1201,10 @@ impl Guard for FileHooks {
 
     fn settled(&self) {
         FileHooks::settled(self);
+    }
+
+    fn is_checking(&self) -> bool {
+        FileHooks::is_checking(self)
     }
 }
 

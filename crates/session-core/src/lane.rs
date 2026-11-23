@@ -273,11 +273,8 @@ impl PromptMode {
     pub fn from_settings(settings: &config::settings::SettingsManager) -> PromptMode {
         let settings = settings.settings();
         PromptMode {
-            engineering: settings.get("engineering") == Some(&Value::Bool(true)),
-            always_skills: settings
-                .get("alwaysSkills")
-                .and_then(Value::as_array)
-                .map_or_default(|names| names.iter().filter_map(Value::as_str).map(str::to_string).collect()),
+            engineering: config::keys::engineering(settings),
+            always_skills: config::keys::always_skills(settings),
             persona: resources::persona::enabled(settings),
             ..PromptMode::default()
         }
@@ -563,10 +560,7 @@ fn initial_choice(flags: &ModelFlags, env: &Env, continuing: bool) -> Option<Mod
     let available = available_models(env);
     let patterns: Vec<String> = match &flags.models {
         Some(patterns) => patterns.clone(),
-        None => all
-            .get("enabledModels")
-            .and_then(Value::as_array)
-            .map_or_default(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()),
+        None => config::keys::enabled_models(all),
     };
     let (default_provider, default_model) = (text(settings.default_provider()), text(settings.default_model()));
     let choice = |model: Model, thinking: Option<String>| ModelChoice {
@@ -584,21 +578,11 @@ fn initial_choice(flags: &ModelFlags, env: &Env, continuing: bool) -> Option<Mod
             return Some(choice(pick.model.clone(), pick.thinking_level.clone()));
         }
     }
-    let levels = all
-        .get("modelThinkingLevels")
-        .and_then(Value::as_object)
-        .map_or_default(|m| {
-            m.iter()
-                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
-                .collect()
-        });
+    let levels = config::keys::model_thinking_levels(all);
     let initial = ai::model_resolver::InitialSettings {
         default_provider,
         default_model_id: default_model,
-        default_thinking_level: all
-            .get("defaultThinkingLevel")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        default_thinking_level: config::keys::default_thinking_level(all),
         model_thinking_levels: levels,
     };
     let configured: Vec<String> = available.iter().map(|m| m.provider.clone()).collect();
@@ -617,12 +601,8 @@ fn initial_choice(flags: &ModelFlags, env: &Env, continuing: bool) -> Option<Mod
 /// The thinking level a session starts with when nothing names one: the settings' level for `model`
 /// (`modelThinkingLevels`), else `defaultThinkingLevel`, else medium.
 fn initial_level(all: &serde_json::Map<String, Value>, model: &Model) -> String {
-    all.get("modelThinkingLevels")
-        .and_then(|levels| levels.get(format!("{}/{}", model.provider, model.id)))
-        .and_then(Value::as_str)
-        .or_else(|| all.get("defaultThinkingLevel").and_then(Value::as_str))
-        .unwrap_or(model_scope::DEFAULT_THINKING_LEVEL)
-        .to_string()
+    config::keys::model_thinking_level(all, &model.provider, &model.id)
+        .unwrap_or_else(|| model_scope::DEFAULT_THINKING_LEVEL.to_string())
 }
 
 /// The thinking level a session starts with when `--thinking` is not given: the settings' level for `model`
@@ -1013,7 +993,7 @@ pub fn cell_yield_after(raw: Option<&str>) -> Option<Duration> {
     if raw.is_empty() {
         return Some(DEFAULT_CELL_YIELD_AFTER);
     }
-    if matches!(raw.as_str(), "off" | "none" | "false" | "no") {
+    if jsrt::env::flag_off_or_none(Some(&raw)) {
         return None;
     }
     match raw.parse::<f64>() {

@@ -189,6 +189,12 @@ impl Core {
         let settings =
             config::settings::SettingsManager::create(&self.env.cwd, &config.agent_dir, config.project_trusted);
         let checks = parse_checks(settings.settings()).unwrap_or_default();
+        if checks.is_empty() && !self.lane.stack.host.is_checking() {
+            if let Some(findings) = self.lane.stack.host.take_pending(MAIN_LANE) {
+                self.apply_turn_check(Vec::new(), Some(findings));
+            }
+            return;
+        }
         self.turn_guard.check_seq += 1;
         let (id, signal) = (self.turn_guard.check_seq, Signal::new());
         self.turn_guard.checking = Some((id, signal.clone()));
@@ -232,6 +238,11 @@ impl Core {
             return;
         }
         self.turn_guard.checking = None;
+        self.apply_turn_check(failed, findings);
+        self.report_activity();
+    }
+
+    fn apply_turn_check(&mut self, failed: Vec<String>, findings: Option<String>) {
         if (!failed.is_empty() || findings.is_some()) && self.run.is_none() {
             self.turn_guard.check_continues += 1;
             let count = Some((self.turn_guard.check_continues, MAX_CHECK_CONTINUES));
@@ -244,6 +255,5 @@ impl Core {
             };
             let _ = self.prompt_with(nudge(guard, count, parts.join("\n\n")), None, true);
         }
-        self.report_activity();
     }
 }

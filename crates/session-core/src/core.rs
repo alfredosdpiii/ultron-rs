@@ -702,6 +702,7 @@ pub struct Core {
     /// Queued messages committed with the generation that takes them, until their `message_end` arrives.
     taken: Vec<String>,
     auto_name: bool,
+    naming: Option<naming::Pending>,
     /// What opening the session settled (crate::recovery), until [`Op::Recover`] acts on it.
     recovered: Option<crate::recovery::Recovered>,
     /// The durable runtime that runs every turn (crate::turns).
@@ -1117,6 +1118,7 @@ impl Core {
             announced,
             taken: Vec::new(),
             auto_name,
+            naming: None,
             recovered: Some(recovered),
             durable,
             resumed: None,
@@ -1197,6 +1199,7 @@ impl Core {
                 Input::ObserverCompleted(completion) => self.observer_completed(completion),
                 Input::Agent(event) => self.on_agent_event(*event),
                 Input::Title(response) => {
+                    self.naming = None;
                     if record_naming(&mut lock_session(&self.session), &response).is_ok() {
                         self.name_changed();
                     }
@@ -1834,6 +1837,18 @@ impl Core {
     fn stop(&mut self, hand_over: bool) {
         self.observer.shutdown();
         if !hand_over && self.run.is_none() {
+            if let Some(pending) = self.naming.take()
+                && pending.wait_on_close()
+                && let Some(inputs) = self.inputs.take()
+            {
+                while let Ok(input) = inputs.try_recv() {
+                    if let Input::Title(response) = input
+                        && record_naming(&mut lock_session(&self.session), &response).is_ok()
+                    {
+                        self.name_changed();
+                    }
+                }
+            }
             self.retain_tail(false);
         }
         if let Some(run) = &self.run {
@@ -2728,19 +2743,13 @@ impl Core {
         }
         let captured: Vec<Value> = captured.into_iter().map(|(_, message)| message).collect();
         if let Some((naming_model, key, text)) = naming_request {
-            let (tx, provider) = (self.tx.clone(), self.provider.clone());
-            std::thread::spawn(move || {
-                let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
-                    return;
-                };
-                let request = naming::request(&text);
-                let options = naming::options(key);
-                let mut sink = |_: &ai::AssistantMessageEvent| {};
-                let call = provider.stream(&naming_model, &request, &options, &mut sink);
-                if let Ok(title) = runtime.block_on(async { tokio::time::timeout(naming::TIMEOUT, call).await }) {
-                    let _ = tx.send(Input::Title(Box::new(title)));
-                }
-            });
+            self.naming = Some(naming::Pending::spawn(
+                self.provider.clone(),
+                naming_model,
+                key,
+                text,
+                self.tx.clone(),
+            ));
         }
         journal.ledger_counts_turns();
         journal.set_retry_policy(self.summary_retry().journal_value());

@@ -57,6 +57,10 @@ impl Guard for SandboxGuard {
     fn settled(&self) {
         self.inner.settled();
     }
+
+    fn is_checking(&self) -> bool {
+        self.inner.is_checking()
+    }
 }
 
 /// The environment a sandbox policy is built from: the host's base environment (the session's, see

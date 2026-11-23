@@ -15,7 +15,6 @@
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
-use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -431,16 +430,7 @@ impl StateStore {
         if before.as_deref() == Some(text.as_str()) {
             return Ok(result);
         }
-        let temporary = format!("{}.{}.tmp", self.path, std::process::id());
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&temporary)?;
-        file.write_all(text.as_bytes())?;
-        drop(file);
-        std::fs::rename(&temporary, &self.path)?;
+        jsrt::fs::atomic_write_mode(Path::new(&self.path), text.as_bytes(), 0o600)?;
         Ok(result)
     }
 

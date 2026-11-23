@@ -68,7 +68,7 @@ fn matches(re: &Regex, text: &str) -> bool {
 
 /// Hints are off unless ULTRON_HINTS is on (or 1, true, yes).
 pub fn hints_enabled(value: Option<&str>) -> bool {
-    value.is_some_and(|v| ["on", "1", "true", "yes"].contains(&v.trim().to_lowercase().as_str()))
+    jsrt::env::flag_on(value)
 }
 
 /// `hintMaxPerTag`: ULTRON_HINTS_MAX, a non-negative integer, else 3.

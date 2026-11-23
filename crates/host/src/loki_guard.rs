@@ -54,8 +54,6 @@ pub enum LokiMode {
     Off,
 }
 
-const OFF_VALUES: [&str; 5] = ["off", "0", "false", "no", "none"];
-
 /// `lokiTimeoutMs`: ULTRON_LOKI_TIMEOUT_MS, how long a before-write (or before-shell) check may take before the write
 /// proceeds unchecked, when it is a positive safe integer. Unset or invalid: None, no limit (TypeScript: 5 s), so a
 /// check slowed by machine load still decides the write instead of letting it through unchecked.
@@ -66,9 +64,9 @@ pub fn loki_timeout(value: Option<&str>) -> Option<std::time::Duration> {
 
 /// `lokiMode`: ULTRON_LOKI (off | advise | on), else the `loki.mode` setting, else on.
 pub fn loki_mode(env: Option<&str>, settings: &Map<String, Value>) -> LokiMode {
-    let raw = env.map(|v| v.trim().to_lowercase()).filter(|v| !v.is_empty());
+    let raw = env.map(|v| v.trim().to_ascii_lowercase()).filter(|v| !v.is_empty());
     match raw.as_deref() {
-        Some(v) if OFF_VALUES.contains(&v) => LokiMode::Off,
+        Some(v) if jsrt::env::flag_off_or_none(Some(v)) => LokiMode::Off,
         Some("advise") => LokiMode::Advise,
         Some(_) => LokiMode::On,
         None => match settings.get("mode").and_then(Value::as_str) {

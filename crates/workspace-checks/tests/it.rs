@@ -322,7 +322,7 @@ fn no_hand_rolled_tmp_rename_in_prod_src() {
     for entry in fs::read_dir(&crates).unwrap() {
         rust_files(&entry.unwrap().path().join("src"), &mut files);
     }
-    const EXEMPT: [&str; 8] = [
+    const EXEMPT: [&str; 7] = [
         "cli/src/assets.rs",
         "config/src/paths.rs",
         "delegation/src/worktrees.rs",
@@ -330,7 +330,6 @@ fn no_hand_rolled_tmp_rename_in_prod_src() {
         "jsrt/src/fs.rs",
         "kernel/src/lib.rs",
         "review/src/checkout.rs",
-        "review/src/state.rs",
     ];
     let mut hits = Vec::new();
     for file in files {
@@ -355,7 +354,7 @@ fn no_hand_rolled_tmp_rename_in_prod_src() {
 #[test]
 fn no_new_god_files() {
     const MAX_LINES: usize = 1_200;
-    const GRANDFATHERED: [(&str, usize); 43] = [
+    const GRANDFATHERED: [(&str, usize); 40] = [
         ("ai/src/anthropic.rs", 1247),
         ("ai/src/antigravity/mod.rs", 1358),
         ("ai/src/aws_credentials.rs", 1410),
@@ -369,7 +368,6 @@ fn no_new_god_files() {
         ("cli/src/setup_wizard.rs", 1759),
         ("client/src/runtime.rs", 1306),
         ("daemon/src/workers.rs", 1705),
-        ("delegation/src/agents/mod.rs", 2186),
         ("delegation/src/host.rs", 2281),
         ("delegation/src/usage.rs", 1397),
         ("delegation/src/worktrees.rs", 1739),
@@ -389,7 +387,6 @@ fn no_new_god_files() {
         ("rlm-views/src/graph.rs", 2022),
         ("rlm-views/src/pane.rs", 1665),
         ("rlm-views/src/visualizer.rs", 1226),
-        ("session-core/src/compose/mod.rs", 2118),
         ("session-core/src/core.rs", 3036),
         ("session-core/src/lane.rs", 1487),
         ("tui/src/editor.rs", 1494),
@@ -398,7 +395,6 @@ fn no_new_god_files() {
         ("tui/src/marked.rs", 1986),
         ("tui/src/tables.rs", 1839),
         ("tui/src/vim.rs", 1400),
-        ("usage/src/report.rs", 1223),
     ];
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut files = Vec::new();

@@ -4,7 +4,7 @@
 use serde_json::{Map, Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 /// The system line of a session-naming request.
@@ -19,6 +19,8 @@ pub enum Naming {
     Fail,
     /// Wait this long, then reply with this title.
     Slow(Duration, String),
+    /// Wait until the first non-naming reply is written, then reply with this title.
+    AfterFirstReply(String),
 }
 
 #[derive(Default)]
@@ -68,6 +70,7 @@ pub fn mock_server(replies: Vec<String>, naming: Naming) -> (u16, Arc<Mutex<Seen
     let port = listener.local_addr().unwrap().port();
     let seen = Arc::new(Mutex::new(Seen::default()));
     let shared = seen.clone();
+    let first_reply = Arc::new((Mutex::new(false), Condvar::new()));
     std::thread::spawn(move || {
         let mut next = 0;
         for stream in listener.incoming() {
@@ -98,27 +101,29 @@ pub fn mock_server(replies: Vec<String>, naming: Naming) -> (u16, Arc<Mutex<Seen
             if body.to_string().contains(NAMING_SYSTEM) {
                 shared.lock().unwrap().naming.push(record);
                 let naming = naming.clone();
+                let gate = first_reply.clone();
                 std::thread::spawn(move || {
+                    let format_title = |t: &str| {
+                        if completions {
+                            completions_text(t)
+                        } else {
+                            anthropic_text(t)
+                        }
+                    };
                     let (status, reply) = match naming {
                         Naming::Fail => ("500 Internal Server Error", "{\"error\":\"down\"}".to_string()),
-                        Naming::Title(t) => (
-                            "200 OK",
-                            if completions {
-                                completions_text(&t)
-                            } else {
-                                anthropic_text(&t)
-                            },
-                        ),
+                        Naming::Title(t) => ("200 OK", format_title(&t)),
                         Naming::Slow(wait, t) => {
                             std::thread::sleep(wait);
-                            (
-                                "200 OK",
-                                if completions {
-                                    completions_text(&t)
-                                } else {
-                                    anthropic_text(&t)
-                                },
-                            )
+                            ("200 OK", format_title(&t))
+                        }
+                        Naming::AfterFirstReply(t) => {
+                            let (lock, ready) = &*gate;
+                            let mut sent = lock.lock().unwrap();
+                            while !*sent {
+                                sent = ready.wait(sent).unwrap();
+                            }
+                            ("200 OK", format_title(&t))
                         }
                     };
                     let head = format!(
@@ -139,6 +144,9 @@ pub fn mock_server(replies: Vec<String>, naming: Naming) -> (u16, Arc<Mutex<Seen
             );
             stream.write_all(head.as_bytes()).unwrap();
             stream.write_all(reply.as_bytes()).unwrap();
+            let (lock, ready) = &*first_reply;
+            *lock.lock().unwrap() = true;
+            ready.notify_all();
         }
     });
     (port, seen)

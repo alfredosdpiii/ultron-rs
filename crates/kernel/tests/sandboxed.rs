@@ -235,7 +235,7 @@ def attempt(path, text='x'):
         return 'wrote'
     except OSError as error:
         return type(error).__name__
-def read(path):
+def read_file(path):
     try:
         with open(path) as handle:
             return handle.read()
@@ -248,8 +248,8 @@ results = {{
     'outside': attempt({outside:?}),
     'host_tmp': attempt({host_tmp:?}),
     'private_tmp': attempt('/tmp/private.txt'),
-    'ssh': read(os.path.expanduser('~/.ssh/id_test')),
-    'auth': read(os.path.expanduser('~/.ultron/auth.json')),
+    'ssh': read_file(os.path.expanduser('~/.ssh/id_test')),
+    'auth': read_file(os.path.expanduser('~/.ultron/auth.json')),
     'secret_env': os.environ.get('SECRET_TOKEN'),
     'home_env': os.environ.get('HOME'),
 }}

@@ -1853,8 +1853,40 @@ class ReplGlobalOverwrite(RuntimeError):
     """Raised during AST pre-flight when a cell attempts to overwrite or delete a protected host binding."""
 
 
-# Pre-imported stdlib convenience names may be re-imported (`import os`, `from pathlib import Path`) by cells.
-_STDLIB_BINDINGS = frozenset({"asyncio", "re", "json", "os", "Path"})
+# Core host-provided REPL bindings that cells must not shadow or delete; stdlib convenience imports and
+# secondary/optional namespaces (such as `notes`) remain rebindable as ordinary cell variables.
+_CORE_HOST_BINDINGS = frozenset(
+    {
+        "rlm",
+        "bash",
+        "read",
+        "edit",
+        "write",
+        "view_image",
+        "preview",
+        "console",
+        "tools",
+        "mcp",
+        "ctx",
+        "agents",
+        "workflows",
+        "background",
+        "skills",
+        "memory",
+        "hints",
+        "agent",
+        "Agent",
+        "AgentCallError",
+        "agent_message",
+        "Budget",
+        "ToolCall",
+        "ToolResult",
+        "ToolError",
+        "McpError",
+        "SpawnHandle",
+        "ShellJob",
+    }
+)
 _PROTECTED_BINDINGS: frozenset[str] = frozenset()
 
 
@@ -2609,9 +2641,7 @@ _STATE.namespace["sessions"] = Sessions(_STATE.bridge)
 _STATE.namespace["judge"] = Judge(_STATE.bridge)
 _STATE.namespace["knowledge"] = KnowledgeApi(_STATE.bridge)
 _STATE.bindings = {name: value for name, value in _STATE.namespace.items() if name != "state"}
-_PROTECTED_BINDINGS = frozenset(
-    name for name in _STATE.bindings if not name.startswith("__") and name not in _STDLIB_BINDINGS
-)
+_PROTECTED_BINDINGS = frozenset(name for name in _STATE.bindings if name in _CORE_HOST_BINDINGS)
 
 
 def _in_cell_frame(frame: Any) -> bool:

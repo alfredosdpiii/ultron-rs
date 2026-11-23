@@ -13,6 +13,10 @@ use serde_json::{Map, Value, json};
 use session_journal::ns;
 use std::collections::{HashMap, HashSet};
 
+mod depth;
+mod sections;
+mod usage_buckets;
+
 pub const SESSION_REPORT_SCHEMA: &str = "ultron.session-report/1";
 /// Billed through a subscription login whatever the caller passes (session-report.ts `SUBSCRIPTION_PROVIDERS`).
 const SUBSCRIPTION_PROVIDERS: [&str; 1] = [config::providers::CLAUDE_CODE];
@@ -325,57 +329,7 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
     for entry in &log.entries {
         entry_by_id.insert(&entry.id, entry);
     }
-    let mut root_ids: HashMap<String, String> = HashMap::new();
-    let tree_root = |id: &str, root_ids: &mut HashMap<String, String>| -> String {
-        let mut path: IndexSet<String> = IndexSet::new();
-        let mut current = Some(id.to_string());
-        let mut root = id.to_string();
-        while let Some(c) = current {
-            if let Some(known) = root_ids.get(&c) {
-                root = known.clone();
-                break;
-            }
-            path.insert(c.clone());
-            root = c.clone();
-            let parent = entry_by_id.get(c.as_str()).and_then(|e| e.parent_id.clone());
-            current = parent.filter(|p| !path.contains(p));
-        }
-        for visited in path {
-            root_ids.insert(visited, root.clone());
-        }
-        root
-    };
-    let mut tree_lane: HashMap<String, String> = HashMap::new();
-    let mut claim = |entry_id: Option<&str>, lane: &str, root_ids: &mut HashMap<String, String>| {
-        let Some(entry_id) = entry_id.filter(|id| entry_by_id.contains_key(id)) else {
-            return;
-        };
-        let root = tree_root(entry_id, root_ids);
-        if !tree_lane.contains_key(&root) || lane == "main" {
-            tree_lane.insert(root, lane.to_string());
-        }
-    };
-    for (lane, tip) in log.values_of(ns::BRANCH_TIP) {
-        claim(tip.as_str(), lane, &mut root_ids);
-    }
-    for result in &log.results {
-        let Some(op) = log.operations.get(&result.operation_id) else {
-            continue;
-        };
-        claim(result.tip_id.as_deref(), &op.lane, &mut root_ids);
-        claim(result.from_tip_id.as_deref(), &op.lane, &mut root_ids);
-    }
-    let lanes: Vec<Option<String>> = log
-        .entries
-        .iter()
-        .map(|entry| tree_lane.get(&tree_root(&entry.id, &mut root_ids)).cloned())
-        .collect();
-    let mut lane_models: HashMap<&str, String> = HashMap::new();
-    for (lane, config) in log.values_of(ns::LANE_CONFIG) {
-        if let Some(model) = model_name(config) {
-            lane_models.insert(lane, model);
-        }
-    }
+    let sections::LaneAttribution { lanes, lane_models } = sections::resolve_lanes(log, &entry_by_id);
 
     let main_entries: Vec<&LogEntry> = log
         .entries
@@ -435,609 +389,50 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
         .as_ref()
         .is_some_and(|s| s.since <= first_activity + COUNTER_SLACK_MS);
 
-    let turns = if external {
-        match &stats {
-            None => {
-                unrecorded.insert(
-                    "turns".into(),
-                    "Claude Code owns the root conversation; this session predates Ultron's turn count".into(),
-                );
-                Value::Null
-            }
-            Some(s) => json!({
-                "count": jsrt::json::number(s.external_turns.0),
-                "completed": jsrt::json::number(s.external_turns.0),
-                "aborted": 0,
-                "failed": 0,
-                "running": 0,
-                "wallMs": jsrt::json::number(s.external_turns.1),
-            }),
-        }
-    } else {
-        let ended: HashSet<&str> = log.results.iter().map(|r| r.operation_id.as_str()).collect();
-        let running = log
-            .operations
-            .values()
-            .filter(|o| o.lane == "main" && o.kind == "run" && !ended.contains(o.id.as_str()))
-            .count() as f64;
-        let with = |f: &dyn Fn(&str) -> bool| main_runs.iter().filter(|r| f(&r.status)).count() as f64;
-        json!({
-            "count": jsrt::json::number(main_runs.len() as f64 + running),
-            "completed": jsrt::json::number(with(&|s| s == "completed")),
-            "aborted": jsrt::json::number(with(&|s| s == "aborted")),
-            "failed": jsrt::json::number(with(&|s| s == "failed" || s == "declined")),
-            "running": jsrt::json::number(running),
-            "wallMs": jsrt::json::number(main_runs.iter().fold(0.0, |t, r| t + (r.ended_at - r.started_at).max(0.0))),
-        })
-    };
-
-    let mut buckets = Buckets {
-        subscription: &subscription,
-        lanes: Default::default(),
-        models: IndexMap::new(),
-        by_lane: HashMap::new(),
-        total: Bucket::default(),
-    };
-    let mut root_models: IndexMap<String, f64> = IndexMap::new();
-    let mut attributed: HashSet<&str> = HashSet::new();
-    for (entry, lane) in log.entries.iter().zip(&lanes) {
-        let Some(usage) = &entry.usage else { continue };
-        let lane = lane.as_deref();
-        let kind = lane_kind(lane);
-        if entry.kind == EntryKind::Assistant {
-            let model = format!(
-                "{}/{}",
-                entry.provider.as_deref().unwrap_or("unknown"),
-                entry.model.as_deref().unwrap_or("unknown")
-            );
-            buckets.add(kind, &model, usage, lane);
-            if kind == Lane::Root {
-                *root_models.entry(model).or_default() += 1.0;
-            }
-        } else {
-            let model = lane
-                .and_then(|l| lane_models.get(l))
-                .map_or("unknown (summaries)", String::as_str);
-            buckets.add(kind, model, usage, lane);
-        }
-        attributed.insert(&entry.id);
-    }
-    let lane_of_id: HashMap<&str, Option<&str>> = log
-        .entries
-        .iter()
-        .zip(&lanes)
-        .map(|(e, l)| (e.id.as_str(), l.as_deref()))
-        .collect();
-    for row in &log.usage_rows {
-        if row.entry_id.as_deref().is_some_and(|id| attributed.contains(id)) {
-            continue;
-        }
-        match row.entry_id.as_deref().filter(|id| entry_by_id.contains_key(id)) {
-            None => buckets.add(
-                Lane::Other,
-                if row.adjustment {
-                    "imported history"
-                } else {
-                    "unattributed"
-                },
-                &row.usage,
-                None,
-            ),
-            Some(id) => {
-                let lane = lane_of_id.get(id).copied().flatten();
-                let model = lane.and_then(|l| lane_models.get(l)).map_or("unknown", String::as_str);
-                buckets.add(lane_kind(lane), model, &row.usage, lane);
-            }
-        }
-    }
-    let mut child_models: HashMap<&str, String> = HashMap::new();
-    let ledger_calls: Vec<&Value> = usage_roots
-        .values()
-        .filter_map(|root| root.get("calls").and_then(Value::as_array))
-        .flatten()
-        .collect();
-    let mut process_children: HashSet<&str> = HashSet::new();
-    for task in &tasks {
-        if !external || task.definition != "rlm-child" || lane_models.contains_key(child_lane(&task.id).as_str()) {
-            continue;
-        }
-        process_children.insert(&task.id);
-        let model = stats
-            .as_ref()
-            .and_then(|s| s.child_models.get(&task.id).cloned())
-            .unwrap_or_else(|| "claude-code/(model not recorded)".into());
-        child_models.insert(&task.id, model.clone());
-        let call = ledger_calls.iter().find(|item| {
-            item.get("kind").and_then(Value::as_str) == Some("model")
-                && item.get("taskId").and_then(Value::as_str) == Some(&task.id)
-        });
-        let measured = record(call.and_then(|c| c.get("usage")));
-        let Some(measured) = measured.filter(|m| m.get("totalTokens").is_some_and(Value::is_number)) else {
-            if task.state != "admitted" && task.state != "running" {
-                buckets.unmeasured(Lane::Subagents, &model);
-            }
-            continue;
-        };
-        let mut usage = Map::new();
-        for (to, from) in [
-            ("input", "inputTokens"),
-            ("output", "outputTokens"),
-            ("totalTokens", "totalTokens"),
-        ] {
-            if let Some(v) = measured.get(from) {
-                usage.insert(to.into(), v.clone());
-            }
-        }
-        if let Some(cost) = measured.get("cost").filter(|c| c.is_number()) {
-            usage.insert("cost".into(), json!({"total": cost}));
-        }
-        if let Some(usage) = log_usage(Some(&Value::Object(usage))) {
-            buckets.add(Lane::Subagents, &model, &usage, Some(&child_lane(&task.id)));
-        }
-    }
-
-    let mut durable_other = Bucket::default();
-    {
-        for response in &log.durable_responses {
-            let kind = match lane_kind(response.lane.as_deref()) {
-                Lane::Frames => Lane::Frames,
-                _ if response.owned => Lane::Subagents,
-                _ => Lane::Other,
-            };
-            buckets.add(kind, &response.model, &response.usage, response.lane.as_deref());
-            if kind == Lane::Other {
-                let notional = subscription.contains(provider_of(&response.model));
-                durable_other.add(&response.usage, notional);
-            }
-        }
-    }
-
-    if !external {
-        let field = |root: &Value, name: &str| {
-            root.get("turns")
-                .and_then(|t| t.get(name))
-                .and_then(Value::as_f64)
-                .unwrap_or(0.0)
-        };
-        let (ledger_responses, ledger_tokens, ledger_cost) =
-            usage_roots.values().fold((0.0, 0.0, 0.0), |(r, t, c), root| {
-                (
-                    r + field(root, "count"),
-                    t + field(root, "tokens"),
-                    c + field(root, "cost"),
-                )
-            });
-        let mut seen: Vec<&Bucket> = [Lane::Root, Lane::Frames, Lane::Subagents]
-            .map(|kind| &buckets.lanes[Buckets::index(kind)])
-            .to_vec();
-        seen.push(&durable_other);
-        let seen_tokens: f64 = seen.iter().map(|b| b.total_tokens).sum();
-        let seen_responses: f64 = seen.iter().map(|b| b.responses).sum();
-        let seen_cost: f64 = seen
-            .iter()
-            .map(|b| b.reported_usd.unwrap_or(0.0) + b.subscription_usd.unwrap_or(0.0))
-            .sum();
-        if ledger_tokens > seen_tokens && ledger_responses > seen_responses {
-            let notional = root_models
-                .keys()
-                .next()
-                .is_some_and(|model| subscription.contains(provider_of(model)));
-            buckets.add_totals(
-                Lane::Subagents,
-                DURABLE_CHILDREN_MODEL,
-                ledger_responses - seen_responses,
-                ledger_tokens - seen_tokens,
-                (ledger_cost - seen_cost).max(0.0),
-                notional,
-            );
-        }
-    }
-
-    let mut transcript: [Cells; 3] = Default::default();
-    let mut other_tools: IndexMap<String, (f64, f64)> = IndexMap::new();
-    let mut redactions = 0.0;
-    let mut nudges = [0.0; 3];
-    for (entry, lane) in log.entries.iter().zip(&lanes) {
-        let kind = match lane_kind(lane.as_deref()) {
-            Lane::Root => 0,
-            Lane::Subagents => 1,
-            Lane::Frames | Lane::Other => 2,
-        };
-        match entry.kind {
-            EntryKind::Assistant => {
-                for call in &entry.tool_calls {
-                    if call.name == "rlm" {
-                        transcript[kind].count += 1.0;
-                        for api in call.apis.iter().flatten() {
-                            *transcript[kind].apis.entry(api.to_string()).or_default() += 1.0;
-                        }
-                    } else {
-                        other_tools.entry(call.name.clone()).or_default().0 += 1.0;
-                    }
-                }
-            }
-            EntryKind::ToolResult => {
-                redactions += entry.redactions;
-                if !entry.is_error {
-                    continue;
-                }
-                match entry.tool_name.as_deref() {
-                    Some("rlm") => transcript[kind].failed += 1.0,
-                    Some(name) => other_tools.entry(name.to_string()).or_default().1 += 1.0,
-                    None => {}
-                }
-            }
-            EntryKind::User => {
-                if let Some(nudge) = entry.nudge {
-                    nudges[["toolRounds", "wait", "skill"]
-                        .iter()
-                        .position(|n| *n == nudge)
-                        .unwrap_or(0)] += 1.0;
-                }
-            }
-            _ => {}
-        }
-    }
-    let other_tools_value = Value::Object(
-        other_tools
-            .iter()
-            .map(|(name, (calls, failed))| {
-                (
-                    name.clone(),
-                    json!({"calls": jsrt::json::number(*calls), "failed": jsrt::json::number(*failed)}),
-                )
-            })
-            .collect(),
+    let turns = sections::build_turns(log, &main_runs, external, stats.as_ref(), &mut unrecorded);
+    let usage_buckets::CollectedUsage {
+        buckets,
+        root_models,
+        child_models,
+        process_children,
+    } = usage_buckets::collect_usage(
+        log,
+        &lanes,
+        &entry_by_id,
+        &lane_models,
+        &tasks,
+        usage_roots,
+        external,
+        stats.as_ref(),
+        &subscription,
     );
-    let cells_from = |source: &str, by: &[Cells; 3]| -> Value {
-        let mut total = Cells::default();
-        for part in by {
-            total.count += part.count;
-            total.failed += part.failed;
-            for (api, n) in &part.apis {
-                *total.apis.entry(api.clone()).or_default() += n;
-            }
-        }
-        json!({
-            "source": source,
-            "total": cells_value(&total),
-            "root": cells_value(&by[0]),
-            "subagents": cells_value(&by[1]),
-            "other": cells_value(&by[2]),
-            "otherTools": other_tools_value,
-        })
-    };
-    let cells = if !external {
-        cells_from("transcript", &transcript)
-    } else if let Some(s) = &stats {
-        cells_from("counters", &s.cells)
-    } else {
-        unrecorded.insert(
-            "cells".into(),
-            "Claude Code owns the transcript; this session predates Ultron's cell count".into(),
-        );
-        Value::Null
-    };
-
-    let children: Vec<&Task> = tasks.iter().filter(|t| t.definition == "rlm-child").collect();
-    let child_depth = |task: &Task| -> f64 {
-        let mut depth = 0.0;
-        let mut seen: HashSet<&str> = HashSet::new();
-        let mut current = Some(task);
-        while let Some(c) = current {
-            if seen.contains(c.id.as_str()) {
-                break;
-            }
-            seen.insert(&c.id);
-            if c.definition == "rlm-child" {
-                depth += 1.0;
-            }
-            current = c.parent_id.as_deref().and_then(|p| task_by_id.get(p).copied());
-        }
-        depth
-    };
-    let level_of_task =
-        |id: Option<&str>| -> f64 { id.and_then(|i| task_by_id.get(i)).map_or(0.0, |t| child_depth(t)) };
-    let state =
-        |items: &[&Task], states: &[&str]| items.iter().filter(|t| states.contains(&t.state.as_str())).count() as f64;
-    let mut verdicts = [0.0; 6];
-    let mut claims = [0.0; 3];
-    let mut worktrees = Vec::new();
-    let mut child_by_model: IndexMap<String, ModelCount> = IndexMap::new();
-    let mut durable_models: HashMap<&str, &str> = HashMap::new();
-    for response in &log.durable_responses {
-        if let Some(lane) = &response.lane {
-            durable_models.entry(lane.as_str()).or_insert(response.model.as_str());
-        }
-    }
-    for child in &children {
-        let lane = child_lane(&child.id);
-        let model = lane_models
-            .get(lane.as_str())
-            .cloned()
-            .or_else(|| durable_models.get(lane.as_str()).map(std::string::ToString::to_string))
-            .or_else(|| child_models.get(child.id.as_str()).cloned())
-            .or_else(|| stats.as_ref().and_then(|s| s.child_models.get(&child.id).cloned()))
-            .unwrap_or_else(|| "not recorded".into());
-        let tokens = buckets.by_lane.get(&lane).map(|b| b.total_tokens);
-        let by_model = child_by_model.entry(model).or_default();
-        by_model.count += 1.0;
-        by_model.tokens += tokens.unwrap_or(0.0);
-        if tokens.is_none() && process_children.contains(child.id.as_str()) && child.result.is_some() {
-            by_model.unmeasured += 1.0;
-        }
-        let Some(result) = &child.result else { continue };
-        let verdict = record(result.get("verdict"));
-        let outcome = record(result.get("check"))
-            .and_then(|c| c.get("outcome"))
-            .and_then(Value::as_str);
-        match (verdict, outcome) {
-            (None, Some("invalid")) => verdicts[3] += 1.0,
-            (None, _) => verdicts[5] += 1.0,
-            (Some(_), Some("verified")) => verdicts[0] += 1.0,
-            (Some(_), Some("contradicted")) => verdicts[1] += 1.0,
-            (Some(_), _) => verdicts[4] += 1.0,
-        }
-        match verdict.and_then(|v| v.get("status")).and_then(Value::as_str) {
-            Some("passed") => claims[0] += 1.0,
-            Some("failed") => claims[1] += 1.0,
-            Some("blocked") => claims[2] += 1.0,
-            _ => {}
-        }
-        let worktree = record(result.get("worktree"));
-        if let Some(w) = worktree
-            && let Some(branch) = w.get("branch").and_then(Value::as_str)
-        {
-            let merge = stats
-                .as_ref()
-                .and_then(|s| s.merges.get(&child.id).cloned())
-                .map_or_else(
-                    || {
-                        if w.get("commit") == Some(&Value::Null) {
-                            Value::String("empty".into())
-                        } else {
-                            Value::Null
-                        }
-                    },
-                    Value::String,
-                );
-            worktrees.push(json!({
-                "task": child.id,
-                "branch": branch,
-                "changedFiles": jsrt::json::number(w.get("changed_files").and_then(Value::as_array).map_or(0, Vec::len) as f64),
-                "merge": merge,
-            }));
-        }
-    }
-    verdicts[2] = verdicts[3] + verdicts[4] + verdicts[5];
-    let depths: Vec<f64> = children.iter().map(|c| child_depth(c)).collect();
-    let max_child_depth = depths.iter().fold(0.0_f64, |m, d| m.max(*d));
-
-    let mut trace_by_id: IndexMap<String, &Map<String, Value>> = IndexMap::new();
-    for (key, value) in log.values_of(ns::RLM_FRAMES) {
-        if key == "index" {
-            continue;
-        }
-        if let Some(trace) = value.as_object()
-            && let Some(id) = trace.get("id").and_then(Value::as_str)
-        {
-            trace_by_id.insert(id.to_string(), trace);
-        }
-    }
-    let frame_tasks: Vec<&Task> = tasks.iter().filter(|t| t.definition == "rlm-frame").collect();
-    let mut traced: HashSet<&str> = HashSet::new();
-    let mut frames = [0.0; 7];
-    let mut incomplete_reasons: IndexMap<String, f64> = IndexMap::new();
-    let mut budget_tokens = 0.0;
-    let mut frame_by_model: IndexMap<String, ModelCount> = IndexMap::new();
-    let mut frame_levels: HashMap<String, f64> = HashMap::new();
-    fn frame_level(
-        trace: &Map<String, Value>,
-        seen: &mut HashSet<String>,
-        levels: &mut HashMap<String, f64>,
-        traces: &IndexMap<String, &Map<String, Value>>,
-        level_of_task: &dyn Fn(Option<&str>) -> f64,
-    ) -> f64 {
-        let id = trace.get("id").map_or_default(|v| jsrt::value::string(Some(v)));
-        if let Some(known) = levels.get(&id) {
-            return *known;
-        }
-        seen.insert(id.clone());
-        let parent = trace
-            .get("parentFrame")
-            .and_then(Value::as_str)
-            .filter(|p| !seen.contains(*p))
-            .and_then(|p| traces.get(p).copied());
-        let level = match parent {
-            Some(parent) => frame_level(parent, seen, levels, traces, level_of_task) + 1.0,
-            None => level_of_task(trace.get("callerTaskId").and_then(Value::as_str)) + 1.0,
-        };
-        levels.insert(id, level);
-        level
-    }
-    let mut max_frame_level: f64 = 0.0;
-    let count_frame = |model: String, lane: Option<&str>, by_model: &mut IndexMap<String, ModelCount>| {
-        let tokens = lane.and_then(|l| buckets.by_lane.get(l)).map(|b| b.total_tokens);
-        let entry = by_model.entry(model).or_default();
-        entry.count += 1.0;
-        entry.tokens += tokens.unwrap_or(0.0);
-    };
-    for trace in trace_by_id.values() {
-        frames[0] += 1.0;
-        if let Some(task_id) = trace.get("taskId").and_then(Value::as_str) {
-            traced.insert(task_id);
-        }
-        match trace.get("status").and_then(Value::as_str) {
-            Some("complete") => frames[1] += 1.0,
-            Some("incomplete") => {
-                frames[2] += 1.0;
-                let reason = trace.get("reason").and_then(Value::as_str).unwrap_or("unknown");
-                *incomplete_reasons.entry(reason.to_string()).or_default() += 1.0;
-            }
-            Some("error") => frames[3] += 1.0,
-            _ => frames[5] += 1.0,
-        }
-        if let Some(spent) = record(trace.get("spent"))
-            .and_then(|s| s.get("tokens"))
-            .and_then(Value::as_f64)
-            && spent.is_finite()
-        {
-            budget_tokens += spent;
-        }
-        let level = frame_level(
-            trace,
-            &mut HashSet::new(),
-            &mut frame_levels,
-            &trace_by_id,
-            &level_of_task,
-        );
-        if level > 1.0 {
-            frames[6] += 1.0;
-        }
-        max_frame_level = max_frame_level.max(level);
-        let lane = match (
-            trace.get("lane").and_then(Value::as_str),
-            trace.get("taskId").and_then(Value::as_str),
-        ) {
-            (Some(lane), _) => Some(lane.to_string()),
-            (None, Some(task)) => Some(frame_lane(task)),
-            _ => None,
-        };
-        let model = trace
-            .get("model")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| lane.as_deref().and_then(|l| lane_models.get(l).cloned()))
-            .unwrap_or_else(|| "not recorded".into());
-        count_frame(model, lane.as_deref(), &mut frame_by_model);
-    }
-    for task in &frame_tasks {
-        if traced.contains(task.id.as_str()) {
-            continue;
-        }
-        frames[0] += 1.0;
-        match task.state.as_str() {
-            "completed" => frames[1] += 1.0,
-            "cancelled" | "interrupted" => frames[4] += 1.0,
-            "failed" => frames[3] += 1.0,
-            _ => frames[5] += 1.0,
-        }
-        let level = level_of_task(task.parent_id.as_deref()) + 1.0;
-        if level > 1.0 {
-            frames[6] += 1.0;
-        }
-        max_frame_level = max_frame_level.max(level);
-        let lane = frame_lane(&task.id);
-        let model = lane_models
-            .get(lane.as_str())
-            .cloned()
-            .unwrap_or_else(|| "not recorded".into());
-        count_frame(model, Some(&lane), &mut frame_by_model);
-    }
-
-    let typed: Vec<&Task> = tasks
-        .iter()
-        .filter(|t| !["rlm-child", "rlm-frame", "background-job"].contains(&t.definition.as_str()))
-        .collect();
-    let mut by_definition: IndexMap<String, f64> = IndexMap::new();
-    for task in &typed {
-        *by_definition.entry(task.definition.clone()).or_default() += 1.0;
-    }
-    let background: Vec<&Task> = tasks.iter().filter(|t| t.definition == "background-job").collect();
-    let other_level = typed
-        .iter()
-        .chain(&background)
-        .fold(0.0_f64, |m, t| m.max(level_of_task(t.parent_id.as_deref()) + 1.0));
-    let level = max_child_depth.max(max_frame_level).max(other_level);
-    let nested_children = depths.iter().filter(|d| **d > 1.0).count() as f64;
-    if !stats_cover {
-        let reason = if stats.is_none() {
-            "this session predates Ultron's runtime counters"
-        } else {
-            "the runtime counters began after this session did"
-        };
-        unrecorded.insert("depth.workflows".into(), reason.into());
-        unrecorded.insert("depth.frames.calls".into(), reason.into());
-    }
-
-    let mut hints: IndexMap<String, f64> = IndexMap::new();
-    if let Some(lanes) = record(record(log.value(ns::MODULE, "hints")).and_then(|h| h.get("lanes"))) {
-        for lane in lanes.values() {
-            if let Some(fired) = record(lane.get("fired")) {
-                for (tag, n) in fired {
-                    if let Some(n) = n.as_f64().filter(|n| *n > 0.0) {
-                        *hints.entry(tag.clone()).or_default() += n;
-                    }
-                }
-            }
-        }
-    }
-    if stats.is_none() {
-        unrecorded.insert(
-            "guardrails.guards".into(),
-            "kept only in the worker's memory when this session ran".into(),
-        );
-        unrecorded.insert(
-            "guardrails.usageLimitBlocks".into(),
-            "this session predates the count".into(),
-        );
-    }
-    let nudges_value = |n: &[f64; 3]| json!({"toolRounds": jsrt::json::number(n[0]), "wait": jsrt::json::number(n[1]), "skill": jsrt::json::number(n[2])});
-    let (secrets_masked, reported_nudges) = if !external {
-        (jsrt::json::number(redactions), nudges_value(&nudges))
-    } else if let Some(s) = &stats {
-        (jsrt::json::number(s.secrets_masked), nudges_value(&s.nudges))
-    } else {
-        unrecorded.insert(
-            "guardrails.secretsMasked".into(),
-            "cell output went to Claude Code; this session predates the count".into(),
-        );
-        unrecorded.insert(
-            "guardrails.nudges".into(),
-            "steers went to Claude Code with a cell result; this session predates the count".into(),
-        );
-        (Value::Null, Value::Null)
-    };
-
-    let memory = record(log.value(ns::MEMORY_STATE, "root"))
-        .and_then(|m| m.get("operations"))
-        .and_then(Value::as_array)
-        .filter(|ops| !ops.is_empty());
-    let recalls: Vec<_> = log.entries.iter().filter_map(|entry| entry.recall).collect();
-    let recall = (!recalls.is_empty()).then(|| {
-        json!({
-            "messages": recalls.len(),
-            "memories": recalls.iter().map(|r| r.memories).sum::<usize>(),
-            "briefs": recalls.iter().filter(|r| r.brief).count(),
-            "stale": recalls.iter().map(|r| r.stale).sum::<usize>(),
-        })
-    });
-    let operations = match memory {
-        Some(ops) => {
-            let mut counted: IndexMap<String, f64> = IndexMap::new();
-            for op in ops {
-                let field = |k: &str| match op.as_object().and_then(|o| o.get(k)) {
-                    None | Some(Value::Null) => "unknown".to_string(),
-                    Some(v) => jsrt::value::string(Some(v)),
-                };
-                *counted
-                    .entry(format!("{}.{}", field("kind"), field("state")))
-                    .or_default() += 1.0;
-            }
-            counts_value(&counted)
-        }
-        None => {
-            unrecorded.insert(
-                "memory.operations".into(),
-                if recall.is_some() {
-                    "the model made no memory call; automatic recall is below".into()
-                } else {
-                    "no memory operation recorded: Hindsight not configured, or memory unused".into()
-                },
-            );
-            Value::Null
-        }
-    };
+    let sections::CellsSection {
+        cells,
+        redactions,
+        nudges,
+    } = sections::build_cells(log, &lanes, external, stats.as_ref(), &mut unrecorded);
+    let depth = depth::build_depth(
+        log,
+        &tasks,
+        &task_by_id,
+        &lane_models,
+        &buckets,
+        &child_models,
+        &process_children,
+        stats.as_ref(),
+        stats_cover,
+        &mut unrecorded,
+    );
+    let guardrails = sections::build_guardrails(
+        log,
+        external,
+        stats.as_ref(),
+        stats_cover,
+        redactions,
+        &nudges,
+        &mut unrecorded,
+    );
+    let memory = sections::build_memory(log, &mut unrecorded);
     if external {
         unrecorded.insert(
             "root.models".into(),
@@ -1057,51 +452,6 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
             .partial_cmp(&a.1.total_tokens)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| jsrt::collate::locale_compare(&a.0, &b.0))
-    });
-    let mut frames_value = json!({
-        "count": jsrt::json::number(frames[0]),
-        "complete": jsrt::json::number(frames[1]),
-        "incomplete": jsrt::json::number(frames[2]),
-        "failed": jsrt::json::number(frames[3]),
-        "cancelled": jsrt::json::number(frames[4]),
-        "running": jsrt::json::number(frames[5]),
-        "nested": jsrt::json::number(frames[6]),
-        "incompleteReasons": counts_value(&incomplete_reasons),
-        "budgetTokens": jsrt::json::number(budget_tokens),
-        "byModel": by_model_list(frame_by_model),
-    });
-    let host_call = |name: &str| {
-        jsrt::json::number(
-            stats
-                .as_ref()
-                .and_then(|s| s.host_calls.get(name).copied())
-                .unwrap_or(0.0),
-        )
-    };
-    frames_value["calls"] = if stats_cover {
-        json!({"infer": host_call("rlm.infer"), "map": host_call("rlm.map")})
-    } else {
-        Value::Null
-    };
-    let guards = stats.as_ref().map_or(Value::Null, |s| {
-        Value::Object(
-            s.guards
-                .iter()
-                .map(|(name, g)| {
-                    (
-                        name.clone(),
-                        json!({
-                            "checks": jsrt::json::number(g.checks),
-                            "blocked": jsrt::json::number(g.blocked),
-                            "unchecked": jsrt::json::number(g.unchecked),
-                            "afterChecks": jsrt::json::number(g.after_checks),
-                            "afterFindings": jsrt::json::number(g.after_findings),
-                            "ms": jsrt::json::number(g.ms),
-                        }),
-                    )
-                })
-                .collect(),
-        )
     });
     json!({
         "schema": SESSION_REPORT_SCHEMA,
@@ -1124,48 +474,7 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
                 .collect::<Vec<_>>(),
         },
         "cells": cells,
-        "depth": {
-            "verdict": depth_verdict(
-                level,
-                frames[0],
-                children.len() as f64,
-                nested_children,
-                typed.len() as f64,
-                background.len() as f64,
-            ),
-            "level": jsrt::json::number(level),
-            "frames": frames_value,
-            "subagents": {
-                "count": jsrt::json::number(children.len() as f64),
-                "maxDepth": jsrt::json::number(max_child_depth),
-                "nested": jsrt::json::number(nested_children),
-                "completed": jsrt::json::number(state(&children, &["completed"])),
-                "failed": jsrt::json::number(state(&children, &["failed"])),
-                "cancelled": jsrt::json::number(state(&children, &["cancelled"])),
-                "interrupted": jsrt::json::number(state(&children, &["interrupted"])),
-                "running": jsrt::json::number(state(&children, &["admitted", "running"])),
-                "byModel": by_model_list(child_by_model),
-                "verdicts": {
-                    "verified": jsrt::json::number(verdicts[0]),
-                    "contradicted": jsrt::json::number(verdicts[1]),
-                    "unverified": jsrt::json::number(verdicts[2]),
-                    "invalid": jsrt::json::number(verdicts[3]),
-                    "unchecked": jsrt::json::number(verdicts[4]),
-                    "none": jsrt::json::number(verdicts[5]),
-                },
-                "claims": {"passed": jsrt::json::number(claims[0]), "failed": jsrt::json::number(claims[1]), "blocked": jsrt::json::number(claims[2])},
-                "worktrees": worktrees,
-            },
-            "workflows": if stats_cover { json!({"runs": host_call("workflows.run")}) } else { Value::Null },
-            "typedAgents": {"count": jsrt::json::number(typed.len() as f64), "byDefinition": counts_value(&by_definition)},
-            "backgroundJobs": {
-                "count": jsrt::json::number(background.len() as f64),
-                "completed": jsrt::json::number(state(&background, &["completed"])),
-                "failed": jsrt::json::number(state(&background, &["failed"])),
-                "cancelled": jsrt::json::number(state(&background, &["cancelled", "interrupted"])),
-                "running": jsrt::json::number(state(&background, &["admitted", "running"])),
-            },
-        },
+        "depth": depth,
         "usage": {
             "lanes": {
                 "root": buckets.lanes[0].fields(),
@@ -1184,21 +493,8 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
                 .collect::<Vec<_>>(),
             "total": buckets.total.fields(),
         },
-        "guardrails": {
-            "guards": guards,
-            "secretsMasked": secrets_masked,
-            "hints": counts_value(&hints),
-            "nudges": reported_nudges,
-            "usageLimitBlocks": stats.as_ref().map_or(Value::Null, |s| jsrt::json::number(s.usage_limit_blocks)),
-            "countersSince": match &stats {
-                Some(s) if !stats_cover => jsrt::json::number(s.since),
-                _ => Value::Null,
-            },
-        },
-        "memory": match recall {
-            Some(recall) => json!({"operations": operations, "recall": recall}),
-            None => json!({"operations": operations}),
-        },
+        "guardrails": guardrails,
+        "memory": memory,
         "unrecorded": unrecorded,
     })
 }

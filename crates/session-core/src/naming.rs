@@ -5,10 +5,12 @@
 //! session provider's cheapest catalog model, else the session model.
 
 use ai::{
-    AssistantContent, AssistantMessage, Message, Model, SimpleStreamOptions, StopReason, StreamOptions, TextContent,
-    TranscriptContext, UserContent, UserMessage, UserMessageContent,
+    AbortSignal, AssistantContent, AssistantMessage, Message, Model, SimpleStreamOptions, StopReason, StreamOptions,
+    TextContent, TranscriptContext, UserContent, UserMessage, UserMessageContent,
 };
 use serde_json::Value;
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
 pub const SYSTEM: &str = "Name this coding session in 3-6 words. Reply with the title only.";
@@ -16,6 +18,9 @@ pub const SYSTEM: &str = "Name this coding session in 3-6 words. Reply with the 
 pub const PROMPT_CHARS: usize = 2_000;
 pub const MAX_TOKENS: u64 = 24;
 pub const TIMEOUT: Duration = Duration::from_secs(10);
+/// Bounded wait at session close so an in-flight naming reply that trails a fast turn is not dropped, while a slow
+/// naming server never stalls exit.
+pub const CLOSE_WAIT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NamingSettings {
@@ -91,15 +96,74 @@ pub fn request(prompt: &str) -> TranscriptContext {
 }
 
 pub fn options(api_key: Option<String>) -> SimpleStreamOptions {
+    options_with_signal(api_key, None)
+}
+
+pub fn options_with_signal(api_key: Option<String>, signal: Option<AbortSignal>) -> SimpleStreamOptions {
     SimpleStreamOptions {
         base: StreamOptions {
             api_key,
+            signal,
             max_tokens: Some(MAX_TOKENS),
             max_retries: Some(0),
             ..Default::default()
         },
         reasoning: None,
         ..Default::default()
+    }
+}
+
+/// An in-flight background naming request tracked by the session actor so normal shutdown can wait briefly for a
+/// trailing reply without stalling on a slow server.
+pub struct Pending {
+    signal: AbortSignal,
+    done: Receiver<()>,
+}
+
+impl Pending {
+    pub fn spawn(
+        provider: Arc<crate::lane::Provider>,
+        model: Model,
+        key: Option<String>,
+        text: String,
+        tx: Sender<crate::core::Input>,
+    ) -> Pending {
+        let signal = AbortSignal::new();
+        let (done_tx, done) = channel();
+        let abort = signal.clone();
+        std::thread::spawn(move || {
+            let result = (|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .ok()?;
+                let request = request(&text);
+                let options = options_with_signal(key, Some(abort));
+                let mut sink = |_: &ai::AssistantMessageEvent| {};
+                let call = <crate::lane::Provider as agent::StreamFn>::stream(
+                    &provider, &model, &request, &options, &mut sink,
+                );
+                runtime
+                    .block_on(async { tokio::time::timeout(TIMEOUT, call).await })
+                    .ok()
+            })();
+            if let Some(title) = result {
+                let _ = tx.send(crate::core::Input::Title(Box::new(title)));
+            }
+            let _ = done_tx.send(());
+        });
+        Pending { signal, done }
+    }
+
+    /// Wait up to [`CLOSE_WAIT`] for the naming thread to finish and enqueue `Input::Title`; abort it on timeout.
+    pub fn wait_on_close(self) -> bool {
+        match self.done.recv_timeout(CLOSE_WAIT) {
+            Ok(()) => true,
+            Err(_) => {
+                self.signal.abort();
+                false
+            }
+        }
     }
 }
 

@@ -18,7 +18,6 @@ use std::time::{Duration, Instant};
 
 /// `off` (or `0`, `false`, `no`, `none`) turns the diagnostics off; overrides the `lsp.enabled` setting.
 pub const LSP_ENV: &str = "ULTRON_LSP";
-const OFF_VALUES: [&str; 5] = ["off", "0", "false", "no", "none"];
 
 /// How long one write waits for its diagnostics: under the 5 s a guard gets before the write proceeds unchecked.
 pub const BUDGET: Duration = Duration::from_secs(4);
@@ -38,9 +37,9 @@ pub fn enabled(env: Option<&str>, settings: &Value) -> bool {
     if sandbox::Settings::from_settings(settings).mode != sandbox::settings::Mode::Off {
         return false;
     }
-    match env.map(|value| value.trim().to_ascii_lowercase()) {
-        Some(value) if !value.is_empty() => !OFF_VALUES.contains(&value.as_str()),
-        _ => settings.pointer("/lsp/enabled") != Some(&Value::Bool(false)),
+    match env.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => !jsrt::env::flag_off_or_none(Some(value)),
+        None => settings.pointer("/lsp/enabled") != Some(&Value::Bool(false)),
     }
 }
 
