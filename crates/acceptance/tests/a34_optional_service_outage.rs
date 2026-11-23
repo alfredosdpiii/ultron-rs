@@ -106,8 +106,8 @@ child = await agents.spawn("rlm-child@1", {"prompt": "summarize the computed ans
 child_result = await child.result()
 unnamed = await progress.reassess(child.id, claim="complete")
 outage_verified = await progress.reassess(child.id, claim="complete", verifier="outage-check@1")
-goal = await goals.create("ship A34", ["check-pass@1", "outage-check@1"])
-goal_after = await goals.verify(goal["id"])
+created_goal = await goals.create("ship A34", ["check-pass@1", "outage-check@1"])
+goal_after = await goals.verify(created_goal["id"])
 await gates.define("a34-release", [{"name": "unit", "required": True}, {"name": "memory-regression", "required": True}], "a" * 64)
 gate = await gates.compare(
     "a34-release",

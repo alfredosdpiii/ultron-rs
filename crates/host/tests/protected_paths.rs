@@ -51,19 +51,26 @@ fn host_a_cell_cannot_write_the_profiles_protected_paths() {
         hooks.before_write("root", &agent.join("sessions/s.jsonl").display().to_string(), "{}")["blocked"],
         false
     );
-    // A shell command that may write and names a protected path, in any of the forms a shell reaches it by.
+    // A shell command that may write or mutate a protected path, in any of the forms a shell reaches it by.
     for command in [
         "echo '{}' > ~/.ultron/agent/settings.json",
         "cp evil.md $HOME/.ultron/agent/skills/x/SKILL.md",
         &format!("tee {settings} < /dev/stdin"),
+        "rm -f ~/.ultron/agent/settings.json",
+        "truncate -s 0 ~/.ultron/agent/auth.json",
+        "python3 -c \"open('/tmp/x', 'w')\" ~/.ultron/agent/settings.json",
+        "bash -c 'echo x > ~/.ultron/agent/settings.json'",
     ] {
+        let expected_path = if command.contains("skills") {
+            agent.join("skills")
+        } else if command.contains("auth.json") {
+            agent.join("auth.json")
+        } else {
+            agent.join("settings.json")
+        };
         assert_eq!(
             hooks.before_shell("root", command),
-            Some(refusal(&agent.join(if command.contains("skills") {
-                "skills"
-            } else {
-                "settings.json"
-            }))),
+            Some(refusal(&expected_path)),
             "{command}"
         );
     }
@@ -76,5 +83,5 @@ fn host_a_cell_cannot_write_the_profiles_protected_paths() {
             .all(|r| r["guard"] == "Ultron" && r["outcome"] == "blocked"),
         "{records:?}"
     );
-    assert_eq!(records.len(), 8);
+    assert_eq!(records.len(), 12);
 }

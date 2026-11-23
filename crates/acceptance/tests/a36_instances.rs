@@ -266,14 +266,17 @@ fn acceptance_a36_reset_clears_scratch_and_restores_bindings_while_declared_stat
     let kernel = kernel_in(dir.path(), null_handler());
     value(
         &kernel,
-        "scratch = 'first call'\nstate['calls'] = state.get('calls', 0) + 1\nagents = None",
+        "scratch = 'first call'\nstate['calls'] = state.get('calls', 0) + 1\nre = None",
     );
     let reset = kernel.reset_scratch().unwrap();
     assert_eq!(reset.status, Status::Ok, "{reset:?}");
     value(&kernel, "state['calls'] = state.get('calls', 0) + 1");
     assert_eq!(
-        value(&kernel, "('scratch' in globals(), state['calls'], agents is not None)"),
-        "(False, 2, True)"
+        value(
+            &kernel,
+            "('scratch' in globals(), state['calls'], re is not None, agents is not None)"
+        ),
+        "(False, 2, True, True)"
     );
     kernel.shutdown();
 }

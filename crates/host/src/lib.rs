@@ -752,7 +752,9 @@ impl Host {
             let mut proposed = Vec::new();
             for write in writes {
                 match (write.get("path"), write.get("content")) {
-                    (Some(Value::String(path)), Some(Value::String(content))) if !path.is_empty() => {
+                    (Some(Value::String(path)), Some(Value::String(content)))
+                        if !path.is_empty() && !path.contains('\0') =>
+                    {
                         proposed.push((path.as_str(), content.as_str()));
                     }
                     _ => return Err("files.before_write writes need a path and text content".into()),

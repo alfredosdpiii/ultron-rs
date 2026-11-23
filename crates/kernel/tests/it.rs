@@ -10,6 +10,8 @@ mod fixture;
 mod ops;
 #[path = "process.rs"]
 mod process;
+#[path = "repl_polish.rs"]
+mod repl_polish;
 #[path = "review_post.rs"]
 mod review_post;
 #[path = "review_receipt.rs"]

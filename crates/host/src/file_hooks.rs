@@ -359,6 +359,15 @@ static WRITERS: LazyLock<[Regex; 5]> = LazyLock::new(|| {
     ]
 });
 
+static PROTECTED_MUTATORS: LazyLock<[Regex; 4]> = LazyLock::new(|| {
+    [
+        re(r"(^|[\s;&|(])(rm|unlink|truncate|chmod|chown|ln|rsync|patch)\s"),
+        re(r"(^|[\s;&|(])(python3?|python)\s+[^|;&]*-c\b"),
+        re(r"(^|[\s;&|(])(node|ruby|perl)\s+[^|;&]*-e\b"),
+        re(r"(^|[\s;&|(])((sh|bash|zsh)\s+[^|;&]*-c\b|eval\s)"),
+    ]
+});
+
 /// `mayWriteFiles`: whether a command may write a file, cheaply and generously (a redirect, `tee`, `sed -i`,
 /// `perl -i`, `cp`/`mv`/`install`, `dd of=`). Redirects to `/dev/null` and fd duplications do not count.
 pub fn may_write_files(command: &str) -> bool {
@@ -367,6 +376,15 @@ pub fn may_write_files(command: &str) -> bool {
     WRITERS
         .iter()
         .any(|pattern| pattern.is_match(text.as_ref()).unwrap_or(false))
+}
+
+/// Whether a shell command may mutate or delete a protected path (all `may_write_files` patterns plus
+/// destructive file commands and inline interpreters that can open/write files without shell redirects).
+fn may_mutate_protected(command: &str) -> bool {
+    may_write_files(command)
+        || PROTECTED_MUTATORS
+            .iter()
+            .any(|pattern| pattern.is_match(command).unwrap_or(false))
 }
 
 /// `path.resolve(cwd, path)`: lexical, `..` and `.` removed.
@@ -1001,7 +1019,7 @@ impl Guard for FileHooks {
         {
             return Some(reason);
         }
-        if let Some(path) = may_write_files(command)
+        if let Some(path) = may_mutate_protected(command)
             .then(|| self.protected_in_command(command))
             .flatten()
         {

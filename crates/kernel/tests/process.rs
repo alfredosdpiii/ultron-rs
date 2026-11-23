@@ -560,7 +560,7 @@ fn kernel_cancelled_host_request_is_cancelled_on_the_host() {
     assert_eq!(
         value(
             &kernel,
-            "import sys\nruntime = sys.modules['__main__']\nwrite = runtime._write_frame\ndef broken(line):\n    raise OSError('pipe closed')\nruntime._write_frame = broken\ntry:\n    await rlm.host_request('test.echo')\nexcept OSError:\n    pass\nfinally:\n    runtime._write_frame = write\nlen(runtime._STATE.bridge._host_requests)"
+            "import sys\nruntime = sys.modules['__main__']\norig_write = runtime._write_frame\ndef broken(line):\n    raise OSError('pipe closed')\nruntime._write_frame = broken\ntry:\n    await rlm.host_request('test.echo')\nexcept OSError:\n    pass\nfinally:\n    runtime._write_frame = orig_write\nlen(runtime._STATE.bridge._host_requests)"
         ),
         "0"
     );
@@ -833,7 +833,7 @@ fn kernel_output_from_outside_a_cell_is_reported_once_at_the_next_cell() {
         let started = run(
             kernel,
             &format!(
-                "background = subprocess.Popen(['sh', '-c', 'i=0; while [ ! -e {} ] && [ $i -lt 12000 ]; do sleep 0.01; i=$((i+1)); done; echo late output >&2'])\n'started'",
+                "bg_proc = subprocess.Popen(['sh', '-c', 'i=0; while [ ! -e {} ] && [ $i -lt 12000 ]; do sleep 0.01; i=$((i+1)); done; echo late output >&2'])\n'started'",
                 go.display()
             ),
         );
@@ -845,7 +845,7 @@ fn kernel_output_from_outside_a_cell_is_reported_once_at_the_next_cell() {
         wait_until("the host reads the late output", || {
             kernel.stderr_tail().ends_with("late output\n")
         });
-        let next = run(kernel, "background.wait()\nprint('next cell', file=sys.stderr)");
+        let next = run(kernel, "bg_proc.wait()\nprint('next cell', file=sys.stderr)");
         assert_eq!(
             next.stderr,
             "[kernel output written outside a cell, before this one (a background thread or process):]\nlate output\n[end of output from outside a cell]\nnext cell\n"
