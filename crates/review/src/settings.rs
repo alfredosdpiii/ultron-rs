@@ -582,7 +582,7 @@ pub fn saved(global: &Map<String, Value>) -> Map<String, Value> {
             out.insert(key.into(), v);
         }
     };
-    let modes = ["fast", "deep", "both", "compiled", "hybrid", "auto"];
+    let modes = ["fast", "deep", "both", "compiled", "hybrid", "auto", "minimal"];
     put("enabled", flag("enabled"));
     put("accounts", strings("accounts"));
     put("pollSeconds", count("pollSeconds"));

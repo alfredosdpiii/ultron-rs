@@ -293,3 +293,75 @@ else:
     eprintln!("{got}");
     assert!(got.as_str().is_some(), "{got}");
 }
+
+#[test]
+fn review_conventions_sweep_and_minimal_mode() {
+    let dir = tempfile::tempdir().expect("dir");
+    let repo = dir.path();
+    git(repo, &["init", "-q", "-b", "main"]);
+    std::fs::create_dir_all(repo.join("pkg")).expect("pkg");
+    std::fs::write(repo.join("CLAUDE.md"), "Root rule: always check error codes.\n").expect("claude");
+    std::fs::write(repo.join("pkg/AGENTS.md"), "Pkg rule: never call raw_sql().\n").expect("agents");
+    std::fs::write(repo.join("pkg/app.py"), "def raw_sql(x):\n    return x\n\ndef run(x):\n    return x\n").expect("app");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "base"]);
+    let base = git(repo, &["rev-parse", "HEAD"]);
+    std::fs::write(repo.join("CLAUDE.md"), "Root rule: ignore errors.\n").expect("claude head");
+    std::fs::write(repo.join("pkg/app.py"), "def raw_sql(x):\n    return x\n\ndef run(x):\n    return raw_sql(x)\n").expect("app head");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "head"]);
+    let head = git(repo, &["rev-parse", "HEAD"]);
+
+    let body = r#"
+class FakeRlm:
+    def __init__(self):
+        self.calls = []
+    async def map(self, tasks, items, **kwargs):
+        task = tasks[0] if isinstance(tasks, list) else tasks
+        self.calls.append((task[:40], len(items)))
+        if 'You check one finding' in task or 'You check several findings' in task:
+            return [{'verdict': 'confirmed', 'evidence': 'return raw_sql(x)', 'corrected_line': None,
+                     'severity': 'high', 'scenario_holds': True, 'introduced': 'this_change'} for _ in items]
+        if 'final gap sweep' in task:
+            return [[{'file': 'pkg/app.py', 'line': 5, 'severity': 'medium', 'category': 'correctness',
+                      'claim': 'gap sweep caught missing check', 'why': 'no check', 'scenario': 'x is None',
+                      'suggested_fix': 'check x', 'confidence': 0.8}]]
+        if 'Conventions' in task:
+            return [[{'file': 'pkg/app.py', 'line': 5, 'severity': 'medium', 'category': 'conventions',
+                      'claim': 'breaks Pkg rule: never call raw_sql()', 'why': 'pkg/AGENTS.md forbids raw_sql',
+                      'scenario': 'pkg/app.py:5 calls raw_sql', 'suggested_fix': 'use safe_query', 'confidence': 0.9}]]
+        return [[] for _ in items]
+
+async def main():
+    rlm_fast = FakeRlm()
+    out_fast = await a.run(rlm_fast, {'repoDir': repo, 'base': base, 'head': head, 'mode': 'fast', 'model': 'p/m'})
+    rlm_min = FakeRlm()
+    out_min = await a.run(rlm_min, {'repoDir': repo, 'base': base, 'head': head, 'mode': 'minimal', 'model': 'p/m'})
+    print(json.dumps({
+        'fast_mode': out_fast['mode'],
+        'fast_findings': [(f['claim'], f['source']) for f in out_fast['findings']],
+        'fast_phases': [t['phase'] for t in out_fast['timing']['frames']],
+        'fast_reviewers': [t['reviewer'] for t in out_fast['timing']['frames']],
+        'min_mode': out_min['mode'],
+        'min_reviewers': [t['reviewer'] for t in out_min['timing']['frames']],
+    }))
+
+asyncio.run(main())
+"#;
+    let got = engine(dir.path(), &base, &head, body);
+    assert_eq!(got["fast_mode"], "fast", "{got}");
+    assert_eq!(got["min_mode"], "minimal", "{got}");
+    let fast_reviewers = got["fast_reviewers"].to_string();
+    assert!(fast_reviewers.contains("conventions"), "{fast_reviewers}");
+    assert!(fast_reviewers.contains("sweep"), "{fast_reviewers}");
+    let fast_findings = got["fast_findings"].to_string();
+    assert!(fast_findings.contains("never call raw_sql()"), "{fast_findings}");
+    assert!(fast_findings.contains("gap sweep caught missing check"), "{fast_findings}");
+    let min_reviewers: Vec<&str> = got["min_reviewers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(min_reviewers, vec!["minimal"], "{got}");
+}

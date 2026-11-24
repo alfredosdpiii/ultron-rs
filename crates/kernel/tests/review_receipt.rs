@@ -665,3 +665,117 @@ fn review_budget_grows_with_the_change() {
         text("paths")
     );
 }
+
+#[test]
+fn review_conventions_static_sweep_and_preexisting() {
+    let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/src/ultron/rlm/runtime.py");
+    let handler: Arc<dyn HostHandler> = Arc::new(|_: &str, _: Map<String, Value>, _: &Signal| Ok(Value::Null));
+    let kernel = Kernel::new(KernelOptions::new(env!("CARGO_MANIFEST_DIR"), runtime), handler).unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("CLAUDE.md"), "Rule R1: never use eval().\n").unwrap();
+    std::fs::write(dir.join("sub/AGENTS.md"), "Rule S1: sub/ must validate tenant_id.\n").unwrap();
+    std::fs::write(dir.join("ok.py"), "def keep(x):\n    return x\n").unwrap();
+    std::fs::write(dir.join("sub/mod.py"), "def handle(req):\n    return req\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "base"]);
+    git(dir, &["checkout", "-qb", "feat"]);
+    // Modify CLAUDE.md on the branch (must be pinned to base), break bad.py syntax (static stage),
+    // and edit ok.py + sub/mod.py.
+    std::fs::write(dir.join("CLAUDE.md"), "Rule R1: eval() is totally fine now.\n").unwrap();
+    std::fs::write(dir.join("ok.py"), "def keep(x):\n    return x + 1\n").unwrap();
+    std::fs::write(dir.join("sub/mod.py"), "def handle(req):\n    return req.get('id')\n").unwrap();
+    std::fs::write(dir.join("bad.py"), "def broken(x:\n    return x\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "feat"]);
+
+    let code = [
+        "import json, os, review_api as r",
+        &format!("d = {:?}", dir.display().to_string()),
+        "receipt_path = os.path.join(d, '.git', 'ultron-review', 'receipt.json')",
+        "class Fake:",
+        "    def __init__(self):",
+        "        self.find_tasks = []",
+        "        self.verify_views = []",
+        "        self.sweep_called = False",
+        "    async def map(self, tasks, items, **kwargs):",
+        "        if isinstance(tasks, list):",
+        "            self.find_tasks = list(tasks)",
+        "            out = []",
+        "            for task, chunk in zip(tasks, items):",
+        "                if 'Conventions' in task and chunk.startswith('File: sub/mod.py'):",
+        "                    out.append([{'file': 'sub/mod.py', 'line': 2, 'severity': 'minor', 'category': 'maintainability',",
+        "                                 'claim': 'violates Rule S1: missing tenant_id validation',",
+        "                                 'why': 'sub/AGENTS.md requires tenant_id', 'suggested_fix': 'validate', 'confidence': 0.9}])",
+        "                elif 'Correctness' in task and chunk.startswith('File: ok.py'):",
+        "                    out.append([",
+        "                        {'file': 'ok.py', 'line': 2, 'severity': 'major', 'category': 'correctness',",
+        "                         'claim': 'syntax error: file does not compile', 'why': 'bogus', 'suggested_fix': 'none', 'confidence': 0.8},",
+        "                        {'file': 'ok.py', 'line': 1, 'severity': 'major', 'category': 'correctness',",
+        "                         'claim': 'pre-existing issue in keep', 'why': 'old bug', 'suggested_fix': 'fix', 'confidence': 0.9},",
+        "                    ])",
+        "                else:",
+        "                    out.append([])",
+        "            return out",
+        "        self.verify_views = list(items)",
+        "        verdicts = []",
+        "        for views in items:",
+        "            joined = '\\n'.join(views)",
+        "            if 'pre-existing issue in keep' in joined:",
+        "                verdicts.append({'verdict': 'confirmed', 'evidence': 'def keep(x):', 'corrected_line': None, 'introduced': 'before'})",
+        "            elif 'swept bug in sub/mod.py' in joined:",
+        "                verdicts.append({'verdict': 'confirmed', 'evidence': \"return req.get('id')\", 'corrected_line': None, 'introduced': 'this_change'})",
+        "            else:",
+        "                verdicts.append({'verdict': 'confirmed', 'evidence': \"return req.get('id')\", 'corrected_line': None, 'introduced': 'this_change'})",
+        "        return verdicts",
+        "    async def infer(self, task, views, **kwargs):",
+        "        if 'final gap sweep' in task:",
+        "            self.sweep_called = True",
+        "            return [{'file': 'sub/mod.py', 'line': 2, 'severity': 'minor', 'category': 'correctness',",
+        "                     'claim': 'swept bug in sub/mod.py', 'why': 'guard dropped', 'suggested_fix': 'add guard', 'confidence': 0.8}]",
+        "        return []",
+        "fake = Fake()",
+        "rev = await r.run(fake, '--model fake/model --deep=0', cwd=d)",
+        "scope = r.resolve_scope(r.parse_args('', {}), d)",
+        "conv, conv_notes = r.conventions_inventory(r.Git(d), scope, base=scope.base)",
+        "receipt = json.load(open(receipt_path)) if os.path.exists(receipt_path) else None",
+        "print(json.dumps({",
+        "    'conv_keys': sorted(conv.keys()),",
+        "    'ok_conv': '\\n'.join(conv.get('ok.py', [])),",
+        "    'sub_conv': '\\n'.join(conv.get('sub/mod.py', [])),",
+        "    'conv_notes': conv_notes,",
+        "    'sweep_called': fake.sweep_called,",
+        "    'verified_claims': [v[0] for v in fake.verify_views],",
+        "    'report': rev.report,",
+        "    'receipt': receipt,",
+        "}))",
+    ]
+    .join("\n");
+    let result = kernel.execute(&code, None, None).unwrap();
+    assert_eq!(result.status, Status::Ok, "{result:?}");
+    let out: Value = serde_json::from_str(result.stdout.trim()).unwrap();
+
+    // Ancestor scoping + base-commit pinning: ok.py gets root CLAUDE.md (base version!), not sub/AGENTS.md;
+    // sub/mod.py gets both sub/AGENTS.md and root CLAUDE.md (base version!).
+    let ok_conv = out["ok_conv"].as_str().unwrap();
+    let sub_conv = out["sub_conv"].as_str().unwrap();
+    assert!(ok_conv.contains("never use eval()"), "{ok_conv}");
+    assert!(!ok_conv.contains("totally fine now"), "{ok_conv}");
+    assert!(!ok_conv.contains("Rule S1"), "{ok_conv}");
+    assert!(sub_conv.contains("Rule S1") && sub_conv.contains("never use eval()"), "{sub_conv}");
+
+    // Gap sweep ran and its candidate went through verification.
+    assert_eq!(out["sweep_called"], Value::Bool(true), "{out}");
+    let verified_joined = out["verified_claims"].to_string();
+    assert!(verified_joined.contains("swept bug in sub/mod.py"), "{verified_joined}");
+    // Bogus syntax-error claim on valid ok.py was contradicted by static compile stage before verification.
+    assert!(!verified_joined.contains("file does not compile"), "{verified_joined}");
+
+    let report = out["report"].as_str().unwrap();
+    assert!(report.contains("bad.py") && report.contains("no longer compiles"), "{report}");
+    assert!(report.contains("## Pre-existing, not blocking (1)"), "{report}");
+    assert!(report.contains("pre-existing issue in keep"), "{report}");
+    assert_eq!(out["receipt"]["confirmed"], 1, "{out}");
+}
