@@ -825,13 +825,33 @@ impl GitHub {
         }
         let (mut passed, mut pending) = (0, 0);
         let mut failed: Vec<String> = Vec::new();
+        let mut details: Vec<String> = Vec::new();
         for run in runs {
             if run.get("status") != Some(&json!("completed")) {
                 pending += 1;
             } else if ["success", "neutral", "skipped"].contains(&text(run.get("conclusion")).as_str()) {
                 passed += 1;
             } else {
-                failed.push(text(run.get("name")));
+                let name = text(run.get("name"));
+                if details.len() < 5
+                    && let Some(output) = run.get("output")
+                {
+                    let title = text(output.get("title"));
+                    let summary = text(output.get("summary"));
+                    let excerpt: String = [title, summary]
+                        .into_iter()
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(": ")
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if !excerpt.is_empty() {
+                        let clipped: String = excerpt.chars().take(200).collect();
+                        details.push(format!("{name}: {clipped}"));
+                    }
+                }
+                failed.push(name);
             }
         }
         let mut parts = vec![format!("{passed} passed")];
@@ -842,7 +862,12 @@ impl GitHub {
         if pending > 0 {
             parts.push(format!("{pending} pending"));
         }
-        Ok(Some(parts.join(", ")))
+        let mut summary = parts.join(", ");
+        if !details.is_empty() {
+            summary.push_str("\nFailed check details:\n- ");
+            summary.push_str(&details.join("\n- "));
+        }
+        Ok(Some(summary))
     }
 
     /// Post a comment on the pull request's conversation; returns its id.

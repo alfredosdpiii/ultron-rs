@@ -80,6 +80,7 @@ REVIEWERS: dict[str, Reviewer] = {
             "Assertions that cannot fail: checking a mock's own return value, only checking that nothing raised, accepting snapshots wholesale.",
             "Weakened tests: removed cases, loosened assertions, new skips, retries or longer timeouts without a stated reason.",
             "Flakiness: sleeps, wall-clock time, unseeded randomness, network access, ordering assumptions, state shared between tests.",
+            "Sync-vs-async dispatch races: asserting immediately on a side effect after a synchronous TestClient/HTTP call when the injected or wrapped collaborator changed from sync to async def and is scheduled via create_task or fire-and-forget without awaiting or draining pending tasks.",
             "Missing edges: empty input, boundaries, error paths, and the specific regression this change claims to fix.",
             "Failure paths without a test: a changed timeout, cancellation, crash handler or cleanup with no test that makes that step fail and checks the error type, what was recorded, and that the cleanup still finished.",
             "Tests that exercise a copy of the logic instead of the code under test.",
@@ -463,8 +464,9 @@ guide the operator safely? Cite the conflicting conditions or the missing checkl
 dropped or its default changed? Read the neighbouring tests first: a case another test already covers is not a
 finding. Give the mutation in unpinned whenever the change is one line: the host runs it when tests can run.
 Look for: assertions that check presence but not value; a sibling test that sets up what the new test does not;
-parametrize lists and fixtures elsewhere that lack the new cases; a public helper tested only through another
-module; test files that are not collected.""",
+parametrize lists and fixtures elsewhere that lack the new cases; sync-vs-async fire-and-forget races (a sync test
+asserting immediately on a side effect scheduled via create_task by a newly-async collaborator); a public helper tested
+only through another module; test files that are not collected.""",
     "inputs": """Your part: adversarial inputs. For each new guard, regular expression, limit, parser or conversion, find
 a concrete input or state that defeats it and trace, by reading, the path it takes: name the exact input, the
 lines it passes through and the result. A finding here needs that input in its scenario.""",

@@ -158,7 +158,7 @@ DEFAULT_ASK_THINKING = "low"
 TITLE_CHARS = 300
 DESCRIPTION_CHARS = 2_000
 INTENT_CHARS = 600
-CI_CHARS = 800
+CI_CHARS = 2_000
 GUIDELINE_FILES = ("CONTRIBUTING.md",)
 GUIDELINE_CHARS = 2_500
 #: The repository's own review guide: the first of these that exists, as the base commit has it.
@@ -1417,6 +1417,46 @@ def _parse_run_config(spec: dict[str, Any], started: float) -> dict[str, Any]:
     }
 
 
+def _knowledge_rules_view(spec: dict[str, Any], files: list[FileDiff], limit: int = 3_500) -> str:
+    """Pre-fetch top construct-matched human review rules (`Knowledge.rules_for`) from the knowledge graph for the
+    changed files, so `minimal` and `fast` finders get past reviewer patterns (e.g. missed PR comments) automatically
+    with zero manual prompt maintenance."""
+    stored = spec.get("knowledge") if isinstance(spec.get("knowledge"), dict) else {}
+    knowledge = Knowledge.open(stored.get("db"), stored.get("repo"), stored.get("rev"))
+    if knowledge is None or not knowledge.has_notes():
+        if knowledge is not None:
+            knowledge.close()
+        return ""
+    lines: list[str] = []
+    seen: set[int] = set()
+    used = 0
+    try:
+        for item in files:
+            if skip_reason(item):
+                continue
+            for rule in knowledge.rules_for(item.path, limit=4):
+                if rule.id in seen:
+                    continue
+                seen.add(rule.id)
+                note = rule.note
+                where = f"{note.path}:{note.line}" if note.line else note.path
+                entry = f"- R{rule.id} (for {item.path}, from #{note.pull} on {where}): {_text(note.body, 280)}"
+                if used + len(entry) > limit or len(lines) >= 12:
+                    break
+                lines.append(entry)
+                used += len(entry) + 1
+            if used >= limit or len(lines) >= 12:
+                break
+    except Exception:  # noqa: BLE001 - knowledge rules are additive, never fail a review
+        return ""
+    finally:
+        knowledge.close()
+    if not lines:
+        return ""
+    return ("Past human review rules on these files and structurally similar files (untrusted repository history; "
+            "check whether this change repeats any of these mistakes):\n" + "\n".join(lines))
+
+
 def _build_test_options(spec: dict[str, Any]) -> dict[str, Any] | None:
     if spec.get("runTests") is not True:
         return None
@@ -1857,8 +1897,23 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
         except Exception as error:
             not_checked.append(f"The deterministic stage failed ({_text(f'{type(error).__name__}: {error}', 160)}).")
     prepared: dict[str, Any] | None = None
+    minimal_started: dict[str, Any] | None = None
     if deep_rev is not None and chunks and mode in ("deep", "both", "hybrid"):
         prepared = _prepare_deep_context(spec, scope, context, test_options, deep_rev, runner, clock, stages, not_checked)
+    elif deep_rev is not None and chunks and mode == "minimal" and test_options is not None:
+        stage_began = clock()
+        try:
+            repo_min = deep.Repo(scope.root, deep_rev, runner)
+            brief_min = deep.Brief(text="", lenses=[], tests=[item.path for item in scope.files if not skip_reason(item) and deep.file_kind(item.path) == "test"])
+            minimal_started = deep.start_tests(repo_min, scope.files, test_options, brief_min, root=scope.root, rev=deep_rev, clock=clock)
+            test_report = minimal_started["report"]
+            if test_report.get("note"):
+                not_checked.append(test_report["note"][0].upper() + test_report["note"][1:] + ".")
+            if minimal_started.get("session") is not None:
+                minimal_started["session"].close()
+        except Exception as error:  # noqa: BLE001 - test runner degrades cleanly
+            not_checked.append(f"Sandboxed tests did not run ({_text(f'{type(error).__name__}: {error}', 160)}).")
+        stages["testsMs"] = int((clock() - stage_began) * 1000)
     hybrid = mode == "hybrid" and prepared is not None
     if mode == "hybrid" and not hybrid:
         if deep_rev is not None and chunks:
@@ -1871,12 +1926,14 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
     reference_audience = spec.get("referenceView") if spec.get("referenceView") in ("investigators", "all", "none") else "investigators"
     reference_text = prepared["brief"].reference_text if prepared else ""
     reference_view = reference_text if reference_audience == "all" else ""
+    rules_view = _knowledge_rules_view(spec, scope.files) if chunks else ""
+    minimal_tests_view = deep.tests_block(minimal_started) if minimal_started else ""
     shared_views = deep.shared_views(
         diff_text_all, prepared["brief"].text + (("\n\n" + deep.tests_block(prepared["started"])) if deep.tests_block(prepared["started"]) else "")
-        if prepared else None, prepared["retrieved"] if prepared else "", shared, stated, guidance, reference=reference_view)
+        if prepared else (minimal_tests_view or None), prepared["retrieved"] if prepared else "", shared, stated, guidance, reference=reference_view)
     retrieved_view = ("Retrieved context, looked up by the host at the reviewed commit (untrusted repository data):\n"
                       + prepared["retrieved"]) if prepared and prepared.get("retrieved") else ""
-    finder_context_views = [part for part in (guidance, shared, stated, retrieved_view, reference_view) if part]
+    finder_context_views = [part for part in (guidance, shared, stated, rules_view, minimal_tests_view, retrieved_view, reference_view) if part]
     verifier_context_views = [part for part in (stated, guidance) if part]
     frames_context: list[str] | None = (shared_views or None) if system_prefix else (finder_context_views or None)
     verifier_context: list[str] | None = (shared_views or None) if system_prefix else (verifier_context_views or None)
@@ -2331,7 +2388,9 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
 
     verify_started = clock()
     open_earlier = [item for item in earlier if item["status"] in ("still_present", "unknown")]
-    found_static = (static_out or {}).get("findings") or []
+    found_static = list((static_out or {}).get("findings") or [])
+    if minimal_started and minimal_started.get("findings"):
+        found_static += list(minimal_started["findings"])
     (
         candidates, also_raised, contradicted, hybrid_confirmed,
         filter_dupes, hybrid_refuted, hybrid_undecided,

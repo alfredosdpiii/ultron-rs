@@ -1221,6 +1221,100 @@ async def _lessons(rlm: Any) -> list[str]:
     return found[:MAX_LESSONS]
 
 
+def _knowledge_rules(git: Git, files: list[FileDiff], limit: int = 8) -> list[str]:
+    """Construct-matched human review rules from the local knowledge graph (`~/.ultron/agent/knowledge/graph.db`),
+    if this repository is indexed there. Returns short rule lines to include with review lessons."""
+    try:
+        from knowledge_api import Knowledge
+    except Exception:  # noqa: BLE001 - optional knowledge store
+        return []
+    agent_dir = os.environ.get("ULTRON_CODING_AGENT_DIR") or os.path.expanduser("~/.ultron/agent")
+    db = os.path.join(agent_dir, "knowledge", "graph.db")
+    if not os.path.isfile(db):
+        return []
+    remote = git.value("remote", "get-url", "origin") or ""
+    match = re.search(r"([A-Za-z0-9._-]+)[:/]([^/\s:]+)/([^/\s]+?)(?:\.git)?$", remote.strip())
+    if not match:
+        return []
+    repo_key = f"{match.group(1)}/{match.group(2)}/{match.group(3)}".lower()
+    head = git.value("rev-parse", "HEAD") or ""
+    knowledge = Knowledge.open(db, repo_key, head)
+    if knowledge is None or not knowledge.has_notes():
+        if knowledge is not None:
+            knowledge.close()
+        return []
+    out: list[str] = []
+    seen: set[int] = set()
+    try:
+        for item in files:
+            if skip_reason(item):
+                continue
+            for rule in knowledge.rules_for(item.path, limit=3):
+                if rule.id in seen:
+                    continue
+                seen.add(rule.id)
+                note = rule.note
+                where = f"{note.path}:{note.line}" if note.line else note.path
+                out.append(f"Past human rule R{rule.id} (from #{note.pull} on {where}): {_text(note.body, 280)}")
+                if len(out) >= limit:
+                    return out
+    except Exception:  # noqa: BLE001 - knowledge rules are additive
+        return []
+    finally:
+        knowledge.close()
+    return out
+
+
+def _run_sandboxed_tests(git: Git, scope: Scope, not_checked: list[str]) -> list[dict[str, Any]]:
+    """Run changed test files in a read-only sandbox (reusing local .venv/node_modules if present) on a whole local
+    self-review. Returns host-confirmed major findings for any failing test file."""
+    test_paths = [item.path for item in scope.files if not skip_reason(item) and file_kind(item.path) == "test"]
+    if not test_paths:
+        return []
+    try:
+        import autoreview_tests as testing
+    except Exception:  # noqa: BLE001 - optional test runner
+        return []
+    head = git.value("rev-parse", "HEAD")
+    if not head:
+        return []
+    # Only run against the committed tree when clean; uncommitted edits aren't in `git archive HEAD`.
+    code, dirty, _ = git.call("status", "--porcelain", "--untracked-files=no")
+    if code != 0 or dirty.strip():
+        return []
+    session = None
+    try:
+        session = testing.TestSession(scope.root, head, base=scope.base, runs=2, timeout_s=180, checkout=scope.root)
+        if not session.available():
+            return []
+        record = session.run(test_paths[:6])
+        if record.get("status") == "failed":
+            tail = _text((record.get("output") or "")[-400:], 320)
+            return [{
+                "file": test_paths[0],
+                "line": 1,
+                "severity": "major",
+                "category": "tests",
+                "claim": f"Sandboxed test run failed on {', '.join(test_paths[:3])}",
+                "why": tail or "The changed tests failed in the sandbox.",
+                "suggested_fix": "Fix the failing test or code before opening the pull request.",
+                "confidence": 1.0,
+                "reviewers": ["sandbox:tests"],
+                "evidence": tail or "sandboxed test run exited non-zero",
+                "introduced": "this_change",
+            }]
+        if record.get("status") == "passed":
+            not_checked.append(f"Sandboxed tests passed: {', '.join(test_paths[:6])}.")
+        elif record.get("note"):
+            not_checked.append(f"Sandboxed tests skipped: {record['note']}.")
+    except Exception as error:  # noqa: BLE001 - sandboxed test run degrades cleanly
+        not_checked.append(f"Sandboxed tests did not run ({_text(f'{type(error).__name__}: {error}', 160)}).")
+    finally:
+        if session is not None:
+            session.close()
+    return []
+
+
 LESSON_SITUATION = "Before opening a pull request, or reviewing your own diff"
 DUPLICATE_QUESTION = ("Is the candidate at the top the same author mistake as this kept lesson, so that keeping both "
                       "would be a duplicate? Kept lesson: ")
@@ -1950,6 +2044,8 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
     git = Git(scope.root, runner)
     reviewers = options.reviewers
     lessons = [] if options.only is not None or options.plan or not scope.files else await _lessons(rlm)
+    if options.only is None and not options.plan and scope.files:
+        lessons = [*lessons, *_knowledge_rules(git, scope.files)]
     if lessons:
         reviewers = [*reviewers, lessons_reviewer(lessons)]
     accepted = _acceptance_items(git) if scope.whole and options.only is None and not options.plan else []
@@ -2201,6 +2297,10 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
 
     if found_static:
         confirmed = [*found_static, *confirmed]
+    if scope.whole and scope.pr is None and options.only is None and chunks:
+        test_findings = _run_sandboxed_tests(git, scope, not_checked)
+        if test_findings:
+            confirmed = [*test_findings, *confirmed]
     preexisting = [finding for finding in confirmed if finding.get("introduced") == "before"]
     confirmed = [finding for finding in confirmed if finding.get("introduced") != "before"]
     confirmed.sort(key=_rank)
