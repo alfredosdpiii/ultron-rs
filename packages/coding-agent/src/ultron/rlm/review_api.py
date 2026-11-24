@@ -2259,7 +2259,7 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
                          else lambda _path: None)
             static_out = await static_checks.run_static(rlm, scope.files, scope.read_file, read_base)
             not_checked += static_checks.notes(static_out)
-            found_static = list(static_out.get("findings") or [])
+            found_static = list(static_out.get("findings") or []) + static_checks.orphaned_private_helpers(git, scope)
             static_ran = [s["name"] for s in static_out.get("stages") or [] if s.get("status") in ("clean", "findings")]
             filtered: list[dict[str, Any]] = []
             for finding in merged:

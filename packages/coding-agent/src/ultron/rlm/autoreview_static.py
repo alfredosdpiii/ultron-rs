@@ -29,7 +29,7 @@ import tomllib
 from typing import Any, Callable
 
 import autoreview_tests as testing
-from review_api import FileDiff, _text
+from review_api import _DEF, FileDiff, Git, Scope, _text, file_kind
 
 #: Seconds one external tool may take.
 TOOL_TIMEOUT_S = 60.0
@@ -354,3 +354,74 @@ def notes(static: dict[str, Any]) -> list[str]:
     """`notChecked` lines for stages that failed (a skipped stage is reported in `static.stages` only)."""
     return [f"The {stage['name']} check of the deterministic stage failed ({stage['note']})."
             for stage in static["stages"] if stage["status"] == "failed"]
+
+
+_PRIVATE_CALL = re.compile(r"\b(_[A-Za-z][A-Za-z0-9_]{2,})\s*\(")
+MAX_ORPHAN_FINDINGS = 8
+
+
+def orphaned_private_helpers(git: Git | None, scope: Scope) -> list[dict[str, Any]]:
+    """Deterministic deletion-avoidance check: private helpers whose call sites were removed in this diff and now have
+    zero remaining references anywhere in the repository (only their own undecorated definition remains)."""
+    if git is None or scope.grep_rev == "":
+        return []
+    candidates: list[str] = []
+    for item in scope.files:
+        if item.status == "deleted" or item.binary or file_kind(item.path) == "test":
+            continue
+        removed_names: set[str] = set()
+        added_names: set[str] = set()
+        for hunk in item.hunks:
+            for line in hunk.lines:
+                if line.kind == "-":
+                    for m in _PRIVATE_CALL.finditer(line.text):
+                        name = m.group(1)
+                        if not name.startswith("__"):
+                            removed_names.add(name)
+                elif line.kind == "+":
+                    for m in _PRIVATE_CALL.finditer(line.text):
+                        added_names.add(m.group(1))
+        for name in sorted(removed_names - added_names):
+            if name not in candidates:
+                candidates.append(name)
+            if len(candidates) >= 15:
+                break
+        if len(candidates) >= 15:
+            break
+    if not candidates:
+        return []
+    findings: list[dict[str, Any]] = []
+    for name in candidates:
+        args = ["grep", "-n", "-w", "-I", "--max-count=3", "-e", name]
+        args += [scope.grep_rev] if scope.grep_rev else ["--untracked"]
+        code, stdout, _ = git.call(*args, "--", ".", ":(exclude)*.lock", ":(exclude)*.min.js")
+        if code != 0:
+            continue
+        hits: list[tuple[str, int, str]] = []
+        for raw in stdout.splitlines():
+            if scope.grep_rev and raw.startswith(scope.grep_rev + ":"):
+                raw = raw[len(scope.grep_rev) + 1:]
+            path, _, rest = raw.partition(":")
+            num_str, _, text = rest.partition(":")
+            if num_str.isdigit():
+                hits.append((path, int(num_str), text))
+        if len(hits) != 1:
+            continue
+        path, line_num, text = hits[0]
+        if file_kind(path) == "test":
+            continue
+        match = _DEF.match(text)
+        if not match or (match.group(1) or match.group(2)) != name:
+            continue
+        src = scope.read_file(path) or []
+        if line_num >= 2 and src[line_num - 2].lstrip().startswith("@"):
+            continue
+        detail = f"{path}:{line_num}: {text.strip()}"
+        findings.append(_finding(
+            "orphans", path, line_num,
+            f"Private helper `{name}` has no remaining callers after this change; delete it instead of leaving dead code.",
+            detail, level="nit", category="maintainability", tool="orphan-check",
+        ))
+        if len(findings) >= MAX_ORPHAN_FINDINGS:
+            break
+    return findings

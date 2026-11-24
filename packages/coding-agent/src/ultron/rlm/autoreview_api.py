@@ -2417,7 +2417,7 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
 
     verify_started = clock()
     open_earlier = [item for item in earlier if item["status"] in ("still_present", "unknown")]
-    found_static = list((static_out or {}).get("findings") or [])
+    found_static = list((static_out or {}).get("findings") or []) + static_checks.orphaned_private_helpers(git, scope)
     if minimal_started and minimal_started.get("observed"):
         found_static += list(minimal_started["observed"])
     (

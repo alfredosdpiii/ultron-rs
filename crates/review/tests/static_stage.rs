@@ -539,3 +539,57 @@ print(json.dumps({
         "{got}"
     );
 }
+
+#[test]
+fn review_static_orphaned_private_helpers_flags_dead_helper_only() {
+    let dir = tempfile::tempdir().expect("dir");
+    let repo = dir.path();
+    git(repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(
+        repo.join("mod.py"),
+        "def register(fn):\n    return fn\n\n\
+         def _old_helper(x):\n    return x + 1\n\n\
+         def _still_used(x):\n    return x + 2\n\n\
+         @register\n\
+         def _hook_cb(x):\n    return x\n\n\
+         def public_fn(x):\n    return x\n\n\
+         def run(x):\n    return _old_helper(x) + _still_used(x) + _hook_cb(x) + public_fn(x)\n",
+    )
+    .expect("base");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "base"]);
+    let base = git(repo, &["rev-parse", "HEAD"]);
+    std::fs::write(
+        repo.join("mod.py"),
+        "def register(fn):\n    return fn\n\n\
+         def _old_helper(x):\n    return x + 1\n\n\
+         def _still_used(x):\n    return x + 2\n\n\
+         @register\n\
+         def _hook_cb(x):\n    return x\n\n\
+         def public_fn(x):\n    return x\n\n\
+         def run(x):\n    return _still_used(x)\n",
+    )
+    .expect("head");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "head"]);
+    let head = git(repo, &["rev-parse", "HEAD"]);
+
+    let body = r#"
+scope, git, _ = a._scope({'repoDir': repo, 'base': base, 'head': head}, None)
+found = st.orphaned_private_helpers(git, scope)
+print(json.dumps([[f['file'], f['line'], f['level'], f['severity'], f['source'], f['claim']] for f in found]))
+"#;
+    let got = engine(dir.path(), &base, &head, body);
+    assert_eq!(
+        got,
+        json!([[
+            "mod.py",
+            4,
+            "nit",
+            "nit",
+            "static:orphans",
+            "Private helper `_old_helper` has no remaining callers after this change; delete it instead of leaving dead code."
+        ]]),
+        "{got}"
+    );
+}

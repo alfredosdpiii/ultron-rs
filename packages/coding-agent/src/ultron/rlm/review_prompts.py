@@ -66,7 +66,7 @@ REVIEWERS: dict[str, Reviewer] = {
             "Duplication: a new helper repeating one that is visible nearby, or two code paths that now have to be kept in sync by hand.",
             "Hardcoding: paths, hosts, limits or environment assumptions that belong in configuration.",
             "Error model: a new way of reporting failure that differs from the surrounding code (exceptions versus return codes, silent logging).",
-            "Complexity: branches nested so deep that the next edit will likely break them; dead or unreachable code left behind.",
+            "Complexity: branches nested so deep that the next edit will likely break them; dead or unreachable code left behind, or Guard-and-Go patches that wrap obsolete logic in a new conditional/fallback instead of deleting it (name the exact line..end_line span to remove).",
             "Altitude: prefer fixing the root cause in the underlying mechanism over layering fragile special cases onto shared infrastructure.",
             "Efficiency: redundant computation or repeated I/O, independent async/I/O operations run sequentially, blocking work on startup or hot paths, or long-lived objects holding closures that pin large enclosing scopes in memory.",
         ),
@@ -366,7 +366,9 @@ already on the list. Focus on what first passes tend to miss:
 - removed lines whose invariant was not re-established;
 - wrapper/proxy/cache methods that route back through a global/session instead of their wrapped delegate;
 - cross-file sync/async mismatches: a new async hook, callback, or dispatcher invoked from a sync path or asserted on
-  in a test immediately after a request/call without awaiting or draining scheduled background tasks.
+  in a test immediately after a request/call without awaiting or draining scheduled background tasks;
+- Guard-and-Go deletion avoidance: obsolete or superseded logic left behind a new conditional guard or fallback branch
+  instead of being deleted — name the exact file:line..end_line span to remove.
 
 When out-of-diff callers of changed definitions are included, check how they invoke the changed code (sync vs async,
 error handling, return values, invariants). Prioritize concrete production-code defects over test-coverage nits; only
