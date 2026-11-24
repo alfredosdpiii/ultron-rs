@@ -1221,6 +1221,52 @@ async def _lessons(rlm: Any) -> list[str]:
     return found[:MAX_LESSONS]
 
 
+async def recall_memorantado_items(rlm: Any, files: list[FileDiff], *, label: str = "", limit: int = 6) -> list[str]:
+    """Explicit memorantado recall for code review: returns non-stale project pitfalls/conventions relevant to the
+    changed files, or [] when memory.prepare is not served or returns nothing."""
+    request = getattr(rlm, "host_request", None)
+    if request is None or not files:
+        return []
+    paths = [item.path for item in files if not skip_reason(item) and file_kind(item.path) != "test"][:10]
+    if not paths:
+        paths = [item.path for item in files if not skip_reason(item)][:10]
+    query = "code review pitfalls, invariants, and conventions for: " + ", ".join(paths)
+    if label:
+        query = f"{query} ({_clip(label, 120)})"
+    try:
+        reply = await request("memory.prepare", {"query": query, "scope": "project", "taskId": "review-recall"})
+    except Exception:  # noqa: BLE001 - optional memory service, never fails a review
+        return []
+    if not isinstance(reply, dict):
+        return []
+    items: list[str] = []
+    for entry in reply.get("results") or []:
+        if not isinstance(entry, dict) or entry.get("stale") or entry.get("type") == "experience":
+            continue
+        text = _text(entry.get("text"), 260)
+        if text and text not in items:
+            items.append(text)
+        if len(items) >= limit:
+            break
+    if not items and isinstance(reply.get("context"), str) and reply["context"].strip():
+        for line in reply["context"].splitlines():
+            clean = _text(line.lstrip("-*•0123456789. "), 260)
+            if clean and clean not in items:
+                items.append(clean)
+            if len(items) >= limit:
+                break
+    return items
+
+
+async def recall_memorantado(rlm: Any, files: list[FileDiff], *, label: str = "", max_chars: int = 2_400) -> str:
+    """Formatted memorantado recall block for autoreview finder/sweep context views."""
+    items = await recall_memorantado_items(rlm, files, label=label)
+    if not items:
+        return ""
+    body = "\n".join(f"- {item}" for item in items)
+    return _clip("Project memory recalled from memorantado (pitfalls, invariants, conventions):\n" + body, max_chars)
+
+
 def _knowledge_rules(git: Git, files: list[FileDiff], limit: int = 8) -> list[str]:
     """Construct-matched human review rules from the local knowledge graph (`~/.ultron/agent/knowledge/graph.db`),
     if this repository is indexed there. Returns short rule lines to include with review lessons."""
@@ -2121,7 +2167,8 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
     reviewers = options.reviewers
     lessons = [] if options.only is not None or options.plan or not scope.files else await _lessons(rlm)
     if options.only is None and not options.plan and scope.files:
-        lessons = [*lessons, *_knowledge_rules(git, scope.files)]
+        mem_items = await recall_memorantado_items(rlm, scope.files, label=scope.label)
+        lessons = [*lessons, *_knowledge_rules(git, scope.files), *mem_items]
     if lessons:
         reviewers = [*reviewers, lessons_reviewer(lessons)]
     accepted = _acceptance_items(git) if scope.whole and options.only is None and not options.plan else []

@@ -88,6 +88,7 @@ from review_api import (
     out_of_diff_callers,
     parse_diff,
     plan_find,
+    recall_memorantado,
     related_code,
     render_hunk,
     similar_claims,
@@ -1940,13 +1941,14 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
     reference_text = prepared["brief"].reference_text if prepared else ""
     reference_view = reference_text if reference_audience == "all" else ""
     rules_view = _knowledge_rules_view(spec, scope.files) if chunks else ""
+    memory_view = await recall_memorantado(rlm, scope.files, label=str(context.get("title") or scope.label)) if chunks else ""
     minimal_tests_view = deep.tests_block(minimal_started) if minimal_started else ""
     shared_views = deep.shared_views(
         diff_text_all, prepared["brief"].text + (("\n\n" + deep.tests_block(prepared["started"])) if deep.tests_block(prepared["started"]) else "")
         if prepared else (minimal_tests_view or None), prepared["retrieved"] if prepared else "", shared, stated, guidance, reference=reference_view)
     retrieved_view = ("Retrieved context, looked up by the host at the reviewed commit (untrusted repository data):\n"
                       + prepared["retrieved"]) if prepared and prepared.get("retrieved") else ""
-    finder_context_views = [part for part in (guidance, shared, stated, rules_view, minimal_tests_view, retrieved_view, reference_view) if part]
+    finder_context_views = [part for part in (guidance, shared, stated, rules_view, memory_view, minimal_tests_view, retrieved_view, reference_view) if part]
     verifier_context_views = [part for part in (stated, guidance) if part]
     frames_context: list[str] | None = (shared_views or None) if system_prefix else (finder_context_views or None)
     verifier_context: list[str] | None = (shared_views or None) if system_prefix else (verifier_context_views or None)

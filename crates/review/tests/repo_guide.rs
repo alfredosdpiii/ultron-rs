@@ -508,3 +508,59 @@ asyncio.run(main())
     assert_eq!(got["prod_before_test"], true, "{got}");
     assert_eq!(got["has_caller"], true, "{got}");
 }
+
+#[test]
+fn review_recalls_memorantado_project_memory_into_finder_context() {
+    let dir = tempfile::tempdir().expect("dir");
+    let repo = dir.path();
+    git(repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("app.py"), "def run(x):\n    return x\n").expect("base");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "base"]);
+    let base = git(repo, &["rev-parse", "HEAD"]);
+    std::fs::write(repo.join("app.py"), "def run(x):\n    return x + 1\n").expect("head");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "head"]);
+    let head = git(repo, &["rev-parse", "HEAD"]);
+
+    let body = r#"
+class FakeRlm:
+    def __init__(self):
+        self.memory_queries = []
+        self.seen_contexts = []
+    async def host_request(self, kind, payload):
+        if kind == 'memory.prepare':
+            self.memory_queries.append(payload)
+            return {'results': [
+                {'id': 'm1', 'text': 'Always offload sync boto3 calls via asyncio.to_thread'},
+                {'id': 'm2', 'text': 'Stale note should be skipped', 'stale': True},
+            ]}
+        return {}
+    async def map(self, tasks, items, **kwargs):
+        ctx = kwargs.get('context')
+        if isinstance(ctx, list):
+            self.seen_contexts.extend(str(v) for v in ctx)
+        elif isinstance(ctx, str):
+            self.seen_contexts.append(ctx)
+        for item in items:
+            if isinstance(item, list):
+                self.seen_contexts.extend(str(v) for v in item)
+        return [[] for _ in items]
+
+async def main():
+    rlm = FakeRlm()
+    await a.run(rlm, {'repoDir': repo, 'base': base, 'head': head, 'mode': 'minimal', 'model': 'p/m'})
+    joined = '\n'.join(rlm.seen_contexts)
+    print(json.dumps({
+        'queried': len(rlm.memory_queries) == 1 and rlm.memory_queries[0].get('scope') == 'project',
+        'saw_active_memory': 'Always offload sync boto3 calls' in joined,
+        'skipped_stale_memory': 'Stale note should be skipped' not in joined,
+    }))
+
+asyncio.run(main())
+"#;
+    let got = engine(dir.path(), &base, &head, body);
+    assert_eq!(got["queried"], true, "{got}");
+    assert_eq!(got["saw_active_memory"], true, "{got}");
+    assert_eq!(got["skipped_stale_memory"], true, "{got}");
+}

@@ -630,7 +630,13 @@ pub(super) fn open_engine(
             map_tokens: saved.map_tokens,
         },
         kernel_env: Vec::new(),
-        modules: vec![Arc::new(judge_module(env))],
+        modules: {
+            let mut mods: Vec<Arc<dyn kernel_apis::ApiModule>> = vec![Arc::new(judge_module(env))];
+            if let Some(memory) = memory_module(env, dir) {
+                mods.push(memory);
+            }
+            mods
+        },
         base_env: Some(session_core::compose::session_environment(&*env.var)),
         log: Some(log),
     };
@@ -649,6 +655,23 @@ pub(super) fn judge_module(env: &Env) -> judge::JudgeModule {
         }),
         Arc::new(move |_settings| crate::judge_cli::seat(&seat_env, true, None)),
     )
+}
+
+/// Optional `memory.*` host module backed by memorantado when configured and reachable; `None` when disabled or offline.
+fn memory_module(env: &Env, dir: &Path) -> Option<Arc<dyn kernel_apis::ApiModule>> {
+    let settings = config::settings::SettingsManager::create(&env.cwd, &env.agent_dir(), false);
+    let endpoint = memorantado::Endpoint::configured(&*env.var, &settings)?;
+    if !memorantado::resolve::probe(&endpoint.url) {
+        return None;
+    }
+    let cwd = dir.display().to_string();
+    let home = env.home.display().to_string();
+    let backend = endpoint.session_backend("autoreview", &cwd, &home).ok()?;
+    let doc = Arc::new(kernel::store::MemoryDocumentStore::default());
+    let service = kernel_apis::MemoryService::new(doc, Arc::new(backend), kernel_apis::worker_gate())
+        .ok()?
+        .with_root(dir.to_path_buf());
+    Some(Arc::new(kernel_apis::MemoryApi { service: Some(service) }))
 }
 
 pub(super) fn absolute(cwd: &Path, path: &str) -> PathBuf {
