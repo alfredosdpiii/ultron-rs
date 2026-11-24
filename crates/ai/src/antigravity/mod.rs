@@ -36,14 +36,31 @@ const STDERR_TAIL: usize = 4096;
 const FRAME_LIMIT: u64 = 8 << 20;
 
 /// Normalizes per-turn prompt usage at the driver boundary, falling back to mid-turn `usage_update` context size
-/// when `inputTokens` is absent and filling `total_tokens` when `totalTokens` is omitted.
+/// when `inputTokens` is absent, clamping multi-step cumulative turn sums back to `context_used` so compaction
+/// tracks actual context window size, and filling `total_tokens` when `totalTokens` is omitted.
 fn normalize_usage(result: &Value, context_used: u64) -> Usage {
     let count = |key: &str| result["usage"][key].as_u64().unwrap_or(0);
     let raw_input = count("inputTokens");
-    let input = if raw_input > 0 { raw_input } else { context_used };
     let output = count("outputTokens");
     let thought = count("thoughtTokens");
+    let cache_read = count("cachedReadTokens");
+    let cache_write = count("cachedWriteTokens");
     let raw_total = count("totalTokens");
+    if context_used > 0
+        && (cache_read > context_used
+            || raw_total > context_used.saturating_add(output).saturating_mul(2))
+    {
+        return Usage {
+            input: context_used,
+            output,
+            cache_read: 0,
+            cache_write: 0,
+            reasoning: (thought > 0).then_some(thought),
+            total_tokens: context_used.saturating_add(output),
+            ..Usage::default()
+        };
+    }
+    let input = if raw_input > 0 { raw_input } else { context_used };
     let total_tokens = if raw_total > 0 {
         raw_total
     } else {
@@ -52,8 +69,8 @@ fn normalize_usage(result: &Value, context_used: u64) -> Usage {
     Usage {
         input,
         output,
-        cache_read: count("cachedReadTokens"),
-        cache_write: count("cachedWriteTokens"),
+        cache_read,
+        cache_write,
         reasoning: (thought > 0).then_some(thought),
         total_tokens,
         ..Usage::default()
@@ -1202,6 +1219,20 @@ mod tests {
         assert_eq!(
             (fallback.input, fallback.output, fallback.total_tokens),
             (4200, 10, 4210)
+        );
+
+        let cumulative = normalize_usage(
+            &json!({"usage": {
+                "inputTokens": 21_093,
+                "cachedReadTokens": 494_396,
+                "outputTokens": 1_256,
+                "totalTokens": 516_745
+            }}),
+            105_069,
+        );
+        assert_eq!(
+            (cumulative.input, cumulative.cache_read, cumulative.output, cumulative.total_tokens),
+            (105_069, 0, 1_256, 106_325)
         );
     }
 
