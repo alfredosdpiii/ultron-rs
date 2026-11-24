@@ -368,6 +368,10 @@ already on the list. Focus on what first passes tend to miss:
 - cross-file sync/async mismatches: a new async hook, callback, or dispatcher invoked from a sync path or asserted on
   in a test immediately after a request/call without awaiting or draining scheduled background tasks.
 
+When out-of-diff callers of changed definitions are included, check how they invoke the changed code (sync vs async,
+error handling, return values, invariants). Prioritize concrete production-code defects over test-coverage nits; only
+report missing-test nits if no unflagged production bugs remain.
+
 Surface at most 6 additional findings, each naming a concrete defect not already on the list. Use the exact file path
 and new-file line number from the gutter. If nothing new, reply with [] — never pad.
 

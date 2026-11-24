@@ -82,8 +82,10 @@ from review_api import (
     conventions_inventory,
     conventions_reviewer,
     evidence_quotes_source,
+    file_kind,
     hunk_for,
     normalize_findings,
+    out_of_diff_callers,
     parse_diff,
     plan_find,
     related_code,
@@ -2368,10 +2370,18 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
             f"- {f['file']}:{f['line']} ({f.get('level') or f['severity']}, {f['category']}): {f['claim']}"
             for f in merged[:40]
         ) or "(none)"
+        sweep_chunks = sorted(
+            chunks,
+            key=lambda c: all(file_kind(m.path) == "test" for m in members.get(c.id, [c])),
+        )
+        sweep_diff = SLICE_SEPARATOR.join(c.text for c in sweep_chunks)[:SWEEP_DIFF_CHARS]
         sweep_views = [
             f"Already-raised findings (do not repeat or reword these):\n{already_lines}",
-            f"Diff under review:\n{diff_text_all[:SWEEP_DIFF_CHARS]}",
+            f"Diff under review:\n{sweep_diff}",
         ]
+        callers = out_of_diff_callers(git, scope) if git is not None else ""
+        if callers:
+            sweep_views.append(f"Out-of-diff callers of changed/added definitions:\n{callers}")
         try:
             sweep_results = await frames_runner.run(
                 "sweep", [("sweep", AUTOREVIEW_SWEEP_TASK, sweep_views)],

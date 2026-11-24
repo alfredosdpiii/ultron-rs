@@ -442,3 +442,69 @@ asyncio.run(main())
     assert_eq!(got["judge_saw_helper"], true, "{got}");
     assert_eq!(got["judge_saw_related"], true, "{got}");
 }
+
+#[test]
+fn review_gap_sweep_orders_prod_first_and_includes_out_of_diff_callers() {
+    let dir = tempfile::tempdir().expect("dir");
+    let repo = dir.path();
+    git(repo, &["init", "-q", "-b", "main"]);
+    std::fs::create_dir_all(repo.join("pkg")).expect("pkg");
+    std::fs::create_dir_all(repo.join("tests")).expect("tests");
+    std::fs::write(
+        repo.join("pkg/caller.py"),
+        "def dispatch(hook, x):\n    return hook.emit_event(x)\n",
+    )
+    .expect("caller");
+    std::fs::write(
+        repo.join("pkg/hook.py"),
+        "class Hook:\n    def emit_event(self, x):\n        return x\n",
+    )
+    .expect("hook base");
+    std::fs::write(
+        repo.join("tests/test_hook.py"),
+        "def test_hook():\n    assert True\n",
+    )
+    .expect("test base");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "base"]);
+    let base = git(repo, &["rev-parse", "HEAD"]);
+    std::fs::write(
+        repo.join("pkg/hook.py"),
+        "class Hook:\n    async def emit_event(self, x):\n        return x\n",
+    )
+    .expect("hook head");
+    std::fs::write(
+        repo.join("tests/test_hook.py"),
+        "def test_hook():\n    assert 1 == 1\n",
+    )
+    .expect("test head");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "head"]);
+    let head = git(repo, &["rev-parse", "HEAD"]);
+
+    let body = r#"
+class FakeRlm:
+    def __init__(self):
+        self.sweep_views = []
+    async def map(self, tasks, items, **kwargs):
+        task = tasks[0] if isinstance(tasks, list) else tasks
+        if 'final gap sweep' in task:
+            self.sweep_views = items[0]
+        return [[] for _ in items]
+
+async def main():
+    rlm = FakeRlm()
+    await a.run(rlm, {'repoDir': repo, 'base': base, 'head': head, 'mode': 'minimal', 'model': 'p/m'})
+    diff_view = next((v for v in rlm.sweep_views if v.startswith('Diff under review:')), '')
+    callers_view = next((v for v in rlm.sweep_views if v.startswith('Out-of-diff callers')), '')
+    print(json.dumps({
+        'prod_before_test': 0 <= diff_view.find('pkg/hook.py') < diff_view.find('tests/test_hook.py'),
+        'has_caller': 'pkg/caller.py:2' in callers_view and 'hook.emit_event(x)' in callers_view,
+    }))
+
+asyncio.run(main())
+"#;
+    let got = engine(dir.path(), &base, &head, body);
+    assert_eq!(got["prod_before_test"], true, "{got}");
+    assert_eq!(got["has_caller"], true, "{got}");
+}

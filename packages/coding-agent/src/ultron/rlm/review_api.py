@@ -1791,15 +1791,85 @@ def conventions_reviewer(inventory: dict[str, list[str]], *, only_paths: tuple[s
 
 SWEEP_KEY = "sweep"
 SWEEP_DIFF_CHARS = 60_000
+SWEEP_CALLERS_CHARS = 6_000
+
+
+def out_of_diff_callers(git: Git, scope: Scope, max_chars: int = SWEEP_CALLERS_CHARS) -> str:
+    """Bounded snippets of out-of-diff production callers of functions/classes defined or edited on added lines."""
+    if scope.grep_rev == "":
+        return ""
+    changed_paths = {item.path for item in scope.files}
+    names: list[str] = []
+    for item in scope.files:
+        if file_kind(item.path) == "test":
+            continue
+        for hunk in item.hunks:
+            for line in hunk.lines:
+                if line.kind != "+":
+                    continue
+                match = _DEF.match(line.text)
+                if not match:
+                    continue
+                name = match.group(1) or match.group(2)
+                if len(name) < 4 or name.startswith("__") or name in _COMMON or name in names:
+                    continue
+                names.append(name)
+                if len(names) >= 12:
+                    break
+            if len(names) >= 12:
+                break
+        if len(names) >= 12:
+            break
+    if not names:
+        return ""
+    blocks: list[str] = []
+    seen: set[tuple[str, int]] = set()
+    size = 0
+    for name in names:
+        args = ["grep", "-n", "-w", "-I", "--max-count=3", "-e", name]
+        args += [scope.grep_rev] if scope.grep_rev else ["--untracked"]
+        code, stdout, _ = git.call(*args, "--", ".", ":(exclude)*.lock", ":(exclude)*.min.js")
+        if code != 0:
+            continue
+        added_for_name = 0
+        for hit in stdout.splitlines():
+            if scope.grep_rev and hit.startswith(scope.grep_rev + ":"):
+                hit = hit[len(scope.grep_rev) + 1:]
+            path, _, rest = hit.partition(":")
+            number_str, _, _ = rest.partition(":")
+            if not number_str.isdigit() or path in changed_paths or file_kind(path) == "test":
+                continue
+            line_num = int(number_str)
+            bucket = (path, line_num // 6)
+            if bucket in seen:
+                continue
+            src = scope.read_file(path)
+            if not src:
+                continue
+            start = max(1, line_num - 2)
+            end = min(len(src), line_num + 3)
+            snippet = "\n".join(f" {n:>5} | {_clip(src[n - 1], 180)}" for n in range(start, end + 1))
+            block = f"{path}:{line_num} (uses `{name}`):\n{snippet}"
+            if size + len(block) > max_chars:
+                return "\n\n".join(blocks)
+            seen.add(bucket)
+            blocks.append(block)
+            size += len(block)
+            added_for_name += 1
+            if added_for_name >= 2:
+                break
+    return "\n\n".join(blocks)
 
 
 async def _gap_sweep(rlm: Any, scope: Scope, chunks: list[Chunk], merged: list[dict[str, Any]],
-                     model: str | None, budget_tokens: int) -> tuple[list[dict[str, Any]], int, int]:
+                     model: str | None, budget_tokens: int,
+                     git: Git | None = None) -> tuple[list[dict[str, Any]], int, int]:
     """Phase 3 gap sweep: one fresh frame seeing the diff and already-merged findings, hunting only for second-tier
     misses not already listed. Returns (candidates, frames_used, tokens_used)."""
     if not chunks or budget_tokens < 4_000:
         return [], 0, 0
-    diff_text = "\n\n".join(chunk.text for chunk in chunks)[:SWEEP_DIFF_CHARS]
+    ordered = sorted(chunks, key=lambda c: file_kind(c.path) == "test")
+    diff_text = "\n\n".join(chunk.text for chunk in ordered)[:SWEEP_DIFF_CHARS]
     already = "\n".join(
         f"- {f['file']}:{f['line']} ({f['severity']}, {f['category']}): {f['claim']}"
         for f in merged[:40]
@@ -1808,6 +1878,9 @@ async def _gap_sweep(rlm: Any, scope: Scope, chunks: list[Chunk], merged: list[d
         f"Already-raised findings (do not repeat or reword these):\n{already}",
         f"Diff under review:\n{diff_text}",
     ]
+    callers = out_of_diff_callers(git, scope) if git is not None else ""
+    if callers:
+        views.append(f"Out-of-diff callers of changed/added definitions:\n{callers}")
     try:
         raw = await rlm.infer(SWEEP_TASK, views, contract=FINDINGS_CONTRACT,
                               budget=Budget(tokens=min(budget_tokens, 40_000)),
@@ -2160,7 +2233,7 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
     if scope.whole and scope.pr is None and options.only is None and chunks:
         sweep_budget = max(0, find_budget - stats["tokens"])
         swept, sweep_frames, sweep_tokens = await _gap_sweep(
-            rlm, scope, chunks, merged, options.model or options.frame_model, sweep_budget
+            rlm, scope, chunks, merged, options.model or options.frame_model, sweep_budget, git=git
         )
         if sweep_frames:
             stats["find_frames"] += sweep_frames
