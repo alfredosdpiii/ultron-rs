@@ -101,7 +101,8 @@ import autoreview_static as static_checks
 from knowledge_api import Knowledge
 from review_prompts import GUIDANCE_HEADER
 from review_prompts import (ALIASES, AUTOREVIEW_SWEEP_TASK, AUTOREVIEW_VERIFIER_BATCH_TASK, AUTOREVIEW_VERIFIER_TASK,
-                            MINIMAL_FINDER_TASK, RECHECK_TASK, REVIEWERS, Reviewer, autoreview_finder_task)
+                            DOC_SWEEP_TASK, MINIMAL_FINDER_TASK, RECHECK_TASK, REVIEWERS, Reviewer,
+                            autoreview_finder_task)
 
 DEFAULT_CONCURRENCY = 8
 MAX_CONCURRENCY = 16
@@ -1959,8 +1960,17 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
       try:
         if mode == "minimal":
             minimal_reviewer = Reviewer("minimal", "Minimal review", "", ())
-            frames = [(minimal_reviewer, chunk) for chunk in chunks]
+            code_chunks = [c for c in chunks if not all(file_kind(m.path) == "doc" for m in members.get(c.id, [c]))]
+            doc_chunks = [c for c in chunks if all(file_kind(m.path) == "doc" for m in members.get(c.id, [c]))]
+            frames = [(minimal_reviewer, chunk) for chunk in code_chunks]
             tasks_to_run = [("minimal", MINIMAL_FINDER_TASK, chunk.text) for _, chunk in frames]
+            if doc_chunks:
+                doc_reviewer = Reviewer("doc-sweep", "Doc sweep", "", ())
+                doc_text = SLICE_SEPARATOR.join(c.text for c in doc_chunks)[:40_000]
+                doc_bundle = Chunk(-1, doc_chunks[0].path, "doc", "modified", [], doc_text)
+                members[-1] = [m for c in doc_chunks for m in members.get(c.id, [c])]
+                frames.append((doc_reviewer, doc_bundle))
+                tasks_to_run.append(("doc-sweep", DOC_SWEEP_TASK, doc_text))
         else:
             overhead = sum(len(part) for part in (frames_context or [])) // 3
             plan = plan_find(chunks, reviewers, max(0, find_budget - overhead * len(chunks) * len(reviewers)))
@@ -1989,7 +1999,8 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
                 if failure:
                     failures.setdefault(failure, []).append(f"{reviewer.key} on {chunk.path}")
                     continue
-                for item in result[:MAX_FINDINGS_PER_FRAME] if isinstance(result, list) else []:
+                cap_per_frame = 4 if reviewer.key == "doc-sweep" else MAX_FINDINGS_PER_FRAME
+                for item in result[:cap_per_frame] if isinstance(result, list) else []:
                     member = member_for(members[chunk.id], item)
                     if member is None:
                         unattributed += 1
@@ -2370,8 +2381,12 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
             f"- {f['file']}:{f['line']} ({f.get('level') or f['severity']}, {f['category']}): {f['claim']}"
             for f in merged[:40]
         ) or "(none)"
+        sweep_pool = [
+            c for c in chunks
+            if not (mode == "minimal" and all(file_kind(m.path) == "doc" for m in members.get(c.id, [c])))
+        ] or chunks
         sweep_chunks = sorted(
-            chunks,
+            sweep_pool,
             key=lambda c: all(file_kind(m.path) == "test" for m in members.get(c.id, [c])),
         )
         sweep_diff = SLICE_SEPARATOR.join(c.text for c in sweep_chunks)[:SWEEP_DIFF_CHARS]

@@ -21,3 +21,4 @@ Make simplification a continual investment. Leave the design slightly simpler an
 - No speculative validators, parsers, or guards beyond what the spec demands
 - Simplify prompts (remove redundant instructions, excessive templates)
 - When a reference has no novel content, delete it rather than leaving a stub
+- Prefer code locality: keep related changes and small helpers in the existing file rather than splitting logic across new files, unless a real module boundary or repository file-size limit requires a new file
