@@ -11,6 +11,20 @@ SERVICES=(
   "ultron-autoreview.service"
 )
 
+echo "==> Ensuring latest loki-guardrails CLI is installed"
+LATEST_LOKI="$(cargo info loki-guardrails 2>/dev/null | awk '/^version:/ {print $2; exit}' || true)"
+INSTALLED_LOKI="$("$HOME/.local/bin/loki" --version 2>/dev/null | awk '{print $2}' || true)"
+if [[ -n "$LATEST_LOKI" && "$INSTALLED_LOKI" != "$LATEST_LOKI" ]]; then
+  echo "    Installing loki-guardrails $LATEST_LOKI (was: ${INSTALLED_LOKI:-none})"
+  cargo install loki-guardrails --locked --force --root "$HOME/.local"
+else
+  echo "    loki ${INSTALLED_LOKI:-unknown} is up to date (latest: ${LATEST_LOKI:-offline})"
+fi
+PINNED_LOKI="$(awk -F'"' '/loki-guardrails/ {for (i=1;i<=NF;i++) if ($i ~ /^=/) {sub(/^=/,"",$i); print $i; exit}}' "$ROOT/Cargo.toml")"
+if [[ -n "$LATEST_LOKI" && -n "$PINNED_LOKI" && "$PINNED_LOKI" != "$LATEST_LOKI" ]]; then
+  echo "    Note: Cargo.toml pins loki-guardrails =$PINNED_LOKI (crates.io latest is $LATEST_LOKI)"
+fi
+
 echo "==> Building release binary (CPUQuota=600%, nice 19)"
 systemd-run --user --scope --quiet --collect -p CPUQuota=600% -- \
   nice -n 19 cargo build --manifest-path "$ROOT/Cargo.toml" --release --locked -p ultron-agent --bin ultron
