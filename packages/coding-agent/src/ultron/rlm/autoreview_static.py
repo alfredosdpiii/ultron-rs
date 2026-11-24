@@ -37,6 +37,10 @@ TOOL_TIMEOUT_S = 60.0
 MAX_STAGE_FINDINGS = 12
 #: Ruff's error-class rules: undefined and unbound names, misplaced return/yield/break/continue, invalid comparisons.
 RUFF_RULES = "F821,F822,F823,F632,F701,F702,F704,F706"
+#: Ruff's low-noise nit rules on added lines: unused imports/locals, redundant f-strings, duplicate keys, identity checks.
+RUFF_NIT_RULES = "F401,F841,F541,F601,F811,E711,E712,E713,E714,E721"
+#: Loki rules emitted as non-blocking nits rather than medium correctness findings.
+LOKI_NIT_RULES = frozenset({"no-debugger", "no-empty", "no-focused-tests", "no-disabled-tests"})
 STAGES = ("compile", "lint", "typecheck", "loki")
 
 Which = Callable[[str], "str | None"]
@@ -69,7 +73,7 @@ def _finding(stage: str, path: str, line: int, claim: str, detail: str, *, level
              tool: str) -> dict[str, Any]:
     """A finding the host confirmed by running `tool` itself."""
     return {
-        "file": path, "line": line, "level": level, "severity": {"critical": "blocker", "high": "major"}.get(level, "minor"),
+        "file": path, "line": line, "level": level, "severity": {"critical": "blocker", "high": "major", "nit": "nit"}.get(level, "minor"),
         "finder_level": level, "category": category, "claim": claim,
         "why": f"{tool} reports it on a line this change added: {_text(detail, 300)}",
         "scenario": f"{tool} fails on {path}:{line} at the reviewed commit.", "suggested_fix": "",
@@ -192,8 +196,10 @@ def _lint(stage: _Stage, heads: dict[str, str], added: dict[str, set[int]], work
     ruff = which("ruff")
     if ruff is None:
         return stage.skip("ruff is not installed")
-    code, output = executor([ruff, "check", "--isolated", "--no-cache", "--select", RUFF_RULES, "--output-format", "json",
-                             "--", *python], workdir, testing.sandbox_env(), TOOL_TIMEOUT_S)
+    error_codes = set(RUFF_RULES.split(","))
+    nit_codes = set(RUFF_NIT_RULES.split(","))
+    code, output = executor([ruff, "check", "--isolated", "--no-cache", "--select", f"{RUFF_RULES},{RUFF_NIT_RULES}",
+                             "--output-format", "json", "--", *python], workdir, testing.sandbox_env(), TOOL_TIMEOUT_S)
     if code not in (0, 1):
         return stage.fail(f"ruff exited {code}: {_text(output, 160)}")
     try:
@@ -205,12 +211,16 @@ def _lint(stage: _Stage, heads: dict[str, str], added: dict[str, set[int]], work
         path = os.path.relpath(str(item.get("filename") or ""), workdir) if os.path.isabs(str(item.get("filename") or "")) \
             else str(item.get("filename") or "")
         line = int((item.get("location") or {}).get("row") or 0)
-        stage.flagged.add(path)
-        if item.get("code") not in RUFF_RULES.split(",") or line not in added.get(path, set()):
+        rule = str(item.get("code") or "")
+        if rule in error_codes:
+            stage.flagged.add(path)
+        if (rule not in error_codes and rule not in nit_codes) or line not in added.get(path, set()):
             continue
-        message = f"{item.get('code')}: {item.get('message')}"
-        stage.add(_finding("lint", path, line, f"{_text(item.get('message'), 160)} ({item.get('code')}).", message,
-                           level="high", category="correctness", tool="ruff"))
+        is_nit = rule in nit_codes
+        message = f"{rule}: {item.get('message')}"
+        stage.add(_finding("lint", path, line, f"{_text(item.get('message'), 160)} ({rule}).", message,
+                           level="nit" if is_nit else "high",
+                           category="maintainability" if is_nit else "correctness", tool="ruff"))
 
 
 def _typecheck(stage: _Stage, heads: dict[str, str], added: dict[str, set[int]], workdir: str, which: Which,
@@ -257,8 +267,10 @@ async def _loki(stage: _Stage, rlm: Any, heads: dict[str, str], bases: dict[str,
         if line not in added.get(path, set()):
             continue
         security = rule in ("loki/secret", "loki/actions-injection")
+        is_nit = rule in LOKI_NIT_RULES
         stage.add(_finding("loki", path, line, f"{_text(match.group('message'), 200)} ({rule}).", str(violation),
-                           level="high" if security else "medium", category="security" if security else "correctness",
+                           level="high" if security else ("nit" if is_nit else "medium"),
+                           category="security" if security else ("maintainability" if is_nit else "correctness"),
                            tool=f"Loki ({rule})"))
 
 

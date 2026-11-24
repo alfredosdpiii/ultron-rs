@@ -26,8 +26,15 @@ impl LokiScan {
                 _ => return Err("review.loki: each change is [path, old text, new text]".into()),
             }
         }
-        let violations = loki::rules::content_rule_violations(&parsed, false)
+        let mut violations = loki::rules::content_rule_violations(&parsed, false)
             .map_err(|error| format!("loki: {}", error.describe()))?;
+        let fallback = loki::rules::content_rule_violations(&parsed, true)
+            .map_err(|error| format!("loki: {}", error.describe()))?;
+        for item in fallback {
+            if !violations.contains(&item) {
+                violations.push(item);
+            }
+        }
         Ok(json!({ "violations": violations }))
     }
 }

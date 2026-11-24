@@ -363,5 +363,82 @@ asyncio.run(main())
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    assert_eq!(min_reviewers, vec!["minimal"], "{got}");
+    assert_eq!(min_reviewers, vec!["minimal", "sweep", "verifier"], "{got}");
+}
+
+#[test]
+fn review_verifier_needs_code_reaches_sources_and_blind_judge() {
+    let dir = tempfile::tempdir().expect("dir");
+    let repo = dir.path();
+    git(repo, &["init", "-q", "-b", "main"]);
+    std::fs::create_dir_all(repo.join("pkg")).expect("pkg");
+    std::fs::write(
+        repo.join("pkg/helper.py"),
+        "def shared_sink(key):\n    return CACHE_BY_GLOBAL_KEY[key]\n",
+    )
+    .expect("helper");
+    std::fs::write(
+        repo.join("pkg/app.py"),
+        "from pkg.helper import shared_sink\n\ndef emit(req):\n    return req\n",
+    )
+    .expect("app base");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "base"]);
+    let base = git(repo, &["rev-parse", "HEAD"]);
+    std::fs::write(
+        repo.join("pkg/app.py"),
+        "from pkg.helper import shared_sink\n\ndef emit(req):\n    return shared_sink(req)\n",
+    )
+    .expect("app head");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "head"]);
+    let head = git(repo, &["rev-parse", "HEAD"]);
+
+    let body = r#"
+class FakeRlm:
+    def __init__(self):
+        self.verify_hops = 0
+        self.judge_states = []
+    async def host_request(self, kind, payload):
+        self.judge_states.append(payload.get('state', ''))
+        return {'settled': True, 'rung': 'primary', 'answers': {'shown': {'value': True}}, 'receipts': []}
+    async def map(self, tasks, items, **kwargs):
+        task = tasks[0] if isinstance(tasks, list) else tasks
+        if 'You check one finding' in task or 'You check several findings' in task:
+            self.verify_hops += 1
+            if self.verify_hops == 1:
+                return [{'verdict': 'uncertain', 'evidence': 'need helper implementation',
+                         'corrected_line': None, 'severity': 'high', 'scenario_holds': 'unknown',
+                         'introduced': 'this_change', 'needs': ['pkg/helper.py:1-2']} for _ in items]
+            return [{'verdict': 'confirmed',
+                     'evidence': '`return CACHE_BY_GLOBAL_KEY[key]` keys only by key across callers.',
+                     'corrected_line': None, 'severity': 'high', 'scenario_holds': True,
+                     'introduced': 'this_change'} for _ in items]
+        return [[{'file': 'pkg/app.py', 'line': 4, 'severity': 'high', 'category': 'correctness',
+                  'claim': 'emit shares CACHE_BY_GLOBAL_KEY across callers',
+                  'why': 'shared_sink keys only by key',
+                  'scenario': 'two callers pass the same key',
+                  'suggested_fix': 'include caller scope', 'confidence': 0.9}] for _ in items]
+
+async def main():
+    rlm = FakeRlm()
+    out = await a.run(rlm, {'repoDir': repo, 'base': base, 'head': head, 'mode': 'minimal', 'model': 'p/m'})
+    print(json.dumps({
+        'hops': rlm.verify_hops,
+        'findings': [(f['file'], f['line'], f['verification'], f.get('blind')) for f in out['findings']],
+        'judge_saw_helper': any('CACHE_BY_GLOBAL_KEY' in s for s in rlm.judge_states),
+        'judge_saw_related': any('OTHER PLACES DEFINING OR USING THESE NAMES' in s for s in rlm.judge_states),
+    }))
+
+asyncio.run(main())
+"#;
+    let got = engine(dir.path(), &base, &head, body);
+    assert_eq!(got["hops"], 2, "{got}");
+    assert_eq!(
+        got["findings"],
+        json!([["pkg/app.py", 4, "confirmed", "supported"]]),
+        "{got}"
+    );
+    assert_eq!(got["judge_saw_helper"], true, "{got}");
+    assert_eq!(got["judge_saw_related"], true, "{got}");
 }

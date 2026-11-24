@@ -451,3 +451,91 @@ fn review_drops_a_lead_the_deep_pass_refuted_and_keeps_a_different_failure() {
         "{got}"
     );
 }
+
+#[test]
+fn review_static_stage_emits_loki_and_ruff_nits_without_breaking_contradictions() {
+    let dir = tempfile::tempdir().expect("dir");
+    let repo = dir.path();
+    git(repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("mod.py"), "def run(x):\n    return x\n").expect("py base");
+    std::fs::write(repo.join("app.ts"), "export function ok() { return 1; }\n").expect("ts base");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "base"]);
+    let base = git(repo, &["rev-parse", "HEAD"]);
+    std::fs::write(
+        repo.join("mod.py"),
+        "import os\n\ndef run(x):\n    unused = 1\n    return x\n",
+    )
+    .expect("py head");
+    std::fs::write(
+        repo.join("app.ts"),
+        "export function ok() {\n  debugger;\n  try { return 1; } catch {}\n}\n",
+    )
+    .expect("ts head");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "head"]);
+    let head = git(repo, &["rev-parse", "HEAD"]);
+
+    // 1. LokiScan includes JS/TS fallback nit rules (no-debugger, no-empty) net-new.
+    let handler = kernel_apis::KernelApis::new(Arc::new(Refuse)).with(Arc::new(LokiScan));
+    let payload = json!({
+        "changes": [
+            ["app.ts", "export function ok() { return 1; }\n", "export function ok() {\n  debugger;\n  try { return 1; } catch {}\n}\n"]
+        ]
+    });
+    let reply = handler
+        .handle("review.loki", payload.as_object().unwrap().clone(), &Signal::new())
+        .expect("loki fallback");
+    let violations: Vec<String> = reply["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect();
+    assert!(
+        violations.iter().any(|v| v.contains("no-debugger")),
+        "expected no-debugger in {violations:?}"
+    );
+    assert!(
+        violations.iter().any(|v| v.contains("no-empty")),
+        "expected no-empty in {violations:?}"
+    );
+
+    // 2. autoreview_static maps Ruff F401/F841 and Loki no-debugger/no-empty to level=nit
+    //    and keeps mod.py clean for lint contradictions (no error-class rules triggered).
+    let body = r#"
+class Rlm:
+    async def host_request(self, kind, payload):
+        if kind == 'review.loki':
+            return {'violations': ['app.ts:2: no-debugger: debugger statement', 'app.ts:3: no-empty: empty catch block swallows the error']}
+        return {}
+
+def fake_run_nits(argv, cwd, env, timeout):
+    import os
+    return 1, json.dumps([
+        {'code': 'F401', 'message': '`os` imported but unused', 'filename': os.path.join(cwd, 'mod.py'), 'location': {'row': 1, 'column': 8}},
+        {'code': 'F841', 'message': 'Local variable `unused` is assigned to but never used', 'filename': os.path.join(cwd, 'mod.py'), 'location': {'row': 4, 'column': 5}},
+    ])
+
+st.testing.run_process = fake_run_nits
+scope, git, _ = a._scope({'repoDir': repo, 'base': base, 'head': head}, None)
+out = asyncio.run(st.run_static(Rlm(), scope.files, scope.read_file, a._rev_reader(git, base)))
+print(json.dumps({
+    'findings': [[f['file'], f['line'], f['level'], f['severity'], f['category'], f['source']] for f in out['findings']],
+    'lint_clean_for_mod': 'lint' in (out['clean'].get('mod.py') or []),
+}))
+"#;
+    let got = engine(dir.path(), &base, &head, body);
+    assert_eq!(got["lint_clean_for_mod"], true, "{got}");
+    assert_eq!(
+        got["findings"],
+        json!([
+            ["mod.py", 1, "nit", "nit", "maintainability", "static:lint"],
+            ["mod.py", 4, "nit", "nit", "maintainability", "static:lint"],
+            ["app.ts", 2, "nit", "nit", "maintainability", "static:loki"],
+            ["app.ts", 3, "nit", "nit", "maintainability", "static:loki"],
+        ]),
+        "{got}"
+    );
+}

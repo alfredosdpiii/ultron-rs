@@ -2044,6 +2044,7 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
                  f"Source of {finding['file']} around line {finding['line']} (> marks the cited line):\n{window}",
                  f"Diff hunk ({finding['file']}, new-file line numbers):\n{hunk_text}"]
         if related:
+            finding["_related_code"] = related
             views.append(f"Other places that define or use the names involved:\n{related}")
         if CONVENTIONS_KEY in (finding.get("reviewers") or []) and conventions.get(finding["file"]):
             views.append("Repository and directory convention files governing this file:\n"
@@ -2074,7 +2075,11 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
         if finding.get("consequence"):
             public["consequence"] = finding["consequence"]
             views[0] = f"Finding:\n{json.dumps(public, indent=1)}"
-        return views, window + "\n" + hunk_text + ("\n" + cited if cited else ""), len(source) if source else None
+        return (
+            views,
+            window + "\n" + hunk_text + ("\n" + related if related else "") + ("\n" + cited if cited else ""),
+            len(source) if source else None,
+        )
 
     def verify_jobs(entries: list[tuple[int, list[str]]]) -> list[tuple[str, str, list[str], list[int]]]:
         jobs: list[tuple[str, str, list[str], list[int]]] = []
@@ -2147,6 +2152,7 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
                     seen.update(n.strip() for n in fresh)
                     code = needed_code(git, scope, fresh)
                     if code:
+                        verify_pool[index].setdefault("_needed_code", []).append(code)
                         updated = [*item, "Code you asked for:\n" + code]
                         current_items[index] = updated
                         again.append((index, updated))
@@ -2192,6 +2198,9 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
         async def judge() -> None:
             verdicts = await run_verifier(chosen, views_of)
             for finding, verdict, (source_text, count) in zip(chosen, verdicts, meta):
+                extra = "\n\n".join(finding.get("_needed_code") or [])
+                if extra:
+                    source_text = source_text + "\n" + extra
                 finding["_early"] = {"verdict": verdict, "source": source_text, "count": count}
         task = asyncio.ensure_future(judge())
         task._findings = chosen  # type: ignore[attr-defined]
@@ -2353,7 +2362,7 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
     stages["deepMs"] = deep_ms
 
     # Phase 3 gap sweep: one fresh frame seeing the diff + merged findings list, hunting only for second-tier misses.
-    if chunks and mode in ("fast", "deep", "both") and not spec.get("only") and (budget - usage.tokens) >= 4_000:
+    if chunks and mode in ("fast", "deep", "both", "minimal") and not spec.get("only") and (budget - usage.tokens) >= 4_000:
         sweep_started = clock()
         already_lines = "\n".join(
             f"- {f['file']}:{f['line']} ({f.get('level') or f['severity']}, {f['category']}): {f['claim']}"
@@ -2443,6 +2452,10 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
     if to_verify or early_verdicts:
       try:
         verdicts = await run_verifier(to_verify, items) if to_verify else []
+        for idx, finding in enumerate(to_verify):
+            extra = "\n\n".join(finding.get("_needed_code") or [])
+            if extra:
+                sources[idx] = sources[idx] + "\n" + extra
         for finding, early in early_verdicts:
             to_verify.append(finding)
             verdicts.append(early["verdict"])
@@ -2492,6 +2505,12 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
                 cited = deep.cited_windows(blind_repo, finding)
                 if cited:
                     window = f"{window}\n\n{cited}"
+            related = finding.get("_related_code") or ""
+            if related:
+                window = f"{window}\n\nOTHER PLACES DEFINING OR USING THESE NAMES:\n{related}"
+            needed = "\n\n".join(finding.get("_needed_code") or [])
+            if needed:
+                window = f"{window}\n\nADDITIONAL CODE CHECKED BY VERIFIER:\n{needed[:12_000]}"
             return "\n".join(render_hunk(hunk)) if hunk else "(no hunk)", window
         try:
             blind_out = await blind.check(rlm, sorted(confirmed, key=level_rank), blind_material)

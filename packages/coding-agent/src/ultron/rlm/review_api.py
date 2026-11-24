@@ -1851,7 +1851,8 @@ def needed_code(git: Git, scope: Scope, needs: Any) -> str:
         name = need.rsplit(".", 1)[-1]
         places: list[tuple[str, int]] = []
         if need and scope.read_file(need):
-            places.append((need, max(1, int(line) - 10) if line.isdigit() else 1))
+            start_line = line.split("-", 1)[0]
+            places.append((need, max(1, int(start_line) - 10) if start_line.isdigit() else 1))
         elif _NEED_NAME.fullmatch(name) and scope.grep_rev != "":
             args = ["grep", "-n", "-I", "-E", "-e", rf"({_DEFINITION_WORDS})[[:space:]]+{name}([^[:alnum:]_]|$)"]
             args += [scope.grep_rev] if scope.grep_rev else ["--untracked"]
@@ -2241,7 +2242,7 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
             continue
         estimate += cost
         items.append(views)
-        sources.append(window + "\n" + hunk_text + "\n" + read)
+        sources.append(window + "\n" + hunk_text + ("\n" + related if related else "") + ("\n" + read if read else ""))
         counts.append(len(source) if source else None)
         to_verify.append(finding)
     confirmed: list[dict[str, Any]] = []
