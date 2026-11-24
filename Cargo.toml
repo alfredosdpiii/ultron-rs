@@ -9,7 +9,7 @@ repository = "https://github.com/alfredosdpiii/ultron-rs"
 version = "1.0.2"
 
 [workspace.dependencies]
-loki = { package = "loki-guardrails", version = "=0.2.2" }
+loki = { package = "loki-guardrails", version = "=0.2.3" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
