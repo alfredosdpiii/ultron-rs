@@ -1906,11 +1906,21 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
             repo_min = deep.Repo(scope.root, deep_rev, runner)
             brief_min = deep.Brief(text="", lenses=[], tests=[item.path for item in scope.files if not skip_reason(item) and deep.file_kind(item.path) == "test"])
             minimal_started = deep.start_tests(repo_min, scope.files, test_options, brief_min, root=scope.root, rev=deep_rev, clock=clock)
-            test_report = minimal_started["report"]
-            if test_report.get("note"):
+            session = minimal_started.get("session")
+            runs = [{key: value for key, value in record.items() if key != "output"} | {"output": record["output"][-600:]}
+                    for record in session.records] if session is not None else []
+            test_report = {
+                "enabled": True,
+                "mechanism": minimal_started.get("mechanism"),
+                "note": minimal_started.get("note"),
+                "runs": runs,
+                "env": minimal_started.get("env") or "none",
+                "toolchain": list(minimal_started.get("toolchain") or []),
+            }
+            if test_report["note"]:
                 not_checked.append(test_report["note"][0].upper() + test_report["note"][1:] + ".")
-            if minimal_started.get("session") is not None:
-                minimal_started["session"].close()
+            if session is not None:
+                session.close()
         except Exception as error:  # noqa: BLE001 - test runner degrades cleanly
             not_checked.append(f"Sandboxed tests did not run ({_text(f'{type(error).__name__}: {error}', 160)}).")
         stages["testsMs"] = int((clock() - stage_began) * 1000)
@@ -2389,8 +2399,8 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
     verify_started = clock()
     open_earlier = [item for item in earlier if item["status"] in ("still_present", "unknown")]
     found_static = list((static_out or {}).get("findings") or [])
-    if minimal_started and minimal_started.get("findings"):
-        found_static += list(minimal_started["findings"])
+    if minimal_started and minimal_started.get("observed"):
+        found_static += list(minimal_started["observed"])
     (
         candidates, also_raised, contradicted, hybrid_confirmed,
         filter_dupes, hybrid_refuted, hybrid_undecided,

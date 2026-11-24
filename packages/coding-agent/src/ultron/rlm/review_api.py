@@ -1272,46 +1272,48 @@ def _run_sandboxed_tests(git: Git, scope: Scope, not_checked: list[str]) -> list
     if not test_paths:
         return []
     try:
-        import autoreview_tests as testing
+        import autoreview_deep as deep
     except Exception:  # noqa: BLE001 - optional test runner
         return []
     head = git.value("rev-parse", "HEAD")
     if not head:
         return []
-    # Only run against the committed tree when clean; uncommitted edits aren't in `git archive HEAD`.
     code, dirty, _ = git.call("status", "--porcelain", "--untracked-files=no")
     if code != 0 or dirty.strip():
         return []
-    session = None
+    started = None
     try:
-        session = testing.TestSession(scope.root, head, base=scope.base, runs=2, timeout_s=180, checkout=scope.root)
-        if not session.available():
-            return []
-        record = session.run(test_paths[:6])
-        if record.get("status") == "failed":
-            tail = _text((record.get("output") or "")[-400:], 320)
+        repo = deep.Repo(scope.root, head, git._runner)
+        brief = deep.Brief(text="", lenses=[], tests=test_paths[:6])
+        started = deep.start_tests(
+            repo, scope.files,
+            {"base": scope.base, "runs": 2, "timeout_s": 180, "checkout": scope.root},
+            brief, root=scope.root, rev=head, clock=time.monotonic,
+        )
+        observed = list(started.get("observed") or [])
+        if observed:
             return [{
-                "file": test_paths[0],
-                "line": 1,
+                "file": item["file"],
+                "line": item.get("line") or 1,
                 "severity": "major",
                 "category": "tests",
-                "claim": f"Sandboxed test run failed on {', '.join(test_paths[:3])}",
-                "why": tail or "The changed tests failed in the sandbox.",
-                "suggested_fix": "Fix the failing test or code before opening the pull request.",
+                "claim": item["claim"],
+                "why": item.get("why") or "The changed tests failed in the sandbox.",
+                "suggested_fix": item.get("suggested_fix") or "Fix the failing test or code before opening the pull request.",
                 "confidence": 1.0,
                 "reviewers": ["sandbox:tests"],
-                "evidence": tail or "sandboxed test run exited non-zero",
+                "evidence": item.get("evidence") or "sandboxed test run exited non-zero",
                 "introduced": "this_change",
-            }]
-        if record.get("status") == "passed":
+            } for item in observed]
+        if started.get("note"):
+            not_checked.append(started["note"][0].upper() + started["note"][1:] + ".")
+        elif started.get("shown"):
             not_checked.append(f"Sandboxed tests passed: {', '.join(test_paths[:6])}.")
-        elif record.get("note"):
-            not_checked.append(f"Sandboxed tests skipped: {record['note']}.")
     except Exception as error:  # noqa: BLE001 - sandboxed test run degrades cleanly
         not_checked.append(f"Sandboxed tests did not run ({_text(f'{type(error).__name__}: {error}', 160)}).")
     finally:
-        if session is not None:
-            session.close()
+        if started and started.get("session") is not None:
+            started["session"].close()
     return []
 
 
