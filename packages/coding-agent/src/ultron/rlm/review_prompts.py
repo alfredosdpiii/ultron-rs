@@ -364,7 +364,9 @@ already on the list. Focus on what first passes tend to miss:
 - setup/teardown asymmetry in tests;
 - config defaults flipped or silently changed;
 - removed lines whose invariant was not re-established;
-- wrapper/proxy/cache methods that route back through a global/session instead of their wrapped delegate.
+- wrapper/proxy/cache methods that route back through a global/session instead of their wrapped delegate;
+- cross-file sync/async mismatches: a new async hook, callback, or dispatcher invoked from a sync path or asserted on
+  in a test immediately after a request/call without awaiting or draining scheduled background tasks.
 
 Surface at most 6 additional findings, each naming a concrete defect not already on the list. Use the exact file path
 and new-file line number from the gutter. If nothing new, reply with [] — never pad.
