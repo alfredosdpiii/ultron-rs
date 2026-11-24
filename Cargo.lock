@@ -1301,9 +1301,9 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "loki-guardrails"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5afaa653e033dc818c2af072d3af8694da2fb604b837c52a11616ca988ed5c7"
+checksum = "1a9bad78e30ed903cd3e9caf7468def6a8c2d0e9cf7e54a28d93fc5f7ee77856"
 dependencies = [
  "fancy-regex 0.19.2",
  "flate2",
