@@ -1234,7 +1234,10 @@ async def recall_memorantado_items(rlm: Any, files: list[FileDiff], *, label: st
     if label:
         query = f"{query} ({_clip(label, 120)})"
     try:
-        reply = await request("memory.prepare", {"query": query, "scope": "project", "taskId": "review-recall"})
+        reply = await request("memory.prepare", {
+            "query": query, "scope": "project", "taskId": "review-recall",
+            "filePaths": paths, "includeEpisodes": False,
+        })
     except Exception:  # noqa: BLE001 - optional memory service, never fails a review
         return []
     if not isinstance(reply, dict):

@@ -1196,9 +1196,27 @@ impl MemoryService {
             Some(Value::Bool(flag)) => *flag,
             Some(_) => return Err(MemoryError::code(ErrorCode::InvalidInput)),
         };
+        let file_paths: Vec<String> = payload
+            .get("filePaths")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let include_episodes = match payload.get("includeEpisodes") {
+            None => true,
+            Some(Value::Bool(flag)) => *flag,
+            Some(_) => return Err(MemoryError::code(ErrorCode::InvalidInput)),
+        };
         self.load()?;
         let (query, task_id) = (query.as_str().unwrap_or(""), task_id.as_str().unwrap_or(""));
-        let query_hash = hash(query);
+        let query_hash = hash(&format!("{query}|{include_episodes}|{}", file_paths.join(",")));
         let key = jsrt::json::stringify(&json!([task_id, query_hash, scope]));
         let reused = if refresh {
             None
@@ -1235,10 +1253,18 @@ impl MemoryService {
             }
             self.update(&id, vec![("tags", json!(tags)), ("phase", "backend".into())])?;
             check_abort(signal)?;
-            let request = json!({
-                "query": query, "tags": tags, "tags_match": "exact", "types": ["world", "experience", "observation"],
+            let types = if include_episodes {
+                json!(["world", "experience", "observation"])
+            } else {
+                json!(["world", "observation"])
+            };
+            let mut request = json!({
+                "query": query, "tags": tags, "tags_match": "exact", "types": types,
                 "budget": "mid", "max_tokens": 4096, "trace": false,
             });
+            if !file_paths.is_empty() {
+                request["file_paths"] = json!(file_paths);
+            }
             let response = self.backend.recall(&request, signal).map_err(|error| MemoryError::of(&error))?;
             check_abort(signal)?;
             let items = response.get("results").and_then(Value::as_array).ok_or(MemoryError::code(ErrorCode::InvalidResponse))?;

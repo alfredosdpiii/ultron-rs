@@ -358,12 +358,18 @@ impl MemoryBackend for MemorantadoBackend {
         if let Some(budget) = request["max_tokens"].as_u64() {
             body["tokenBudget"] = budget.into();
         }
-        let answer = self.post("/retrieve-context", body, signal)?;
+        if let Some(paths) = request["file_paths"].as_array().filter(|items| !items.is_empty()) {
+            body["filePaths"] = Value::Array(paths.clone());
+        }
         let wanted = |kind: &str| {
             request["types"]
                 .as_array()
                 .is_none_or(|types| types.iter().any(|t| t == kind))
         };
+        if !wanted("experience") {
+            body["includeEpisodes"] = Value::Bool(false);
+        }
+        let answer = self.post("/retrieve-context", body, signal)?;
         let mut results = Vec::new();
         for hit in answer["memories"].as_array().into_iter().flatten() {
             let memory = &hit["memory"];
