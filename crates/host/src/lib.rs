@@ -49,9 +49,6 @@ pub const JOB_MAX_ACTIVE: usize = 32;
 pub const JOB_MAX_RETAINED: usize = 64;
 const JOB_MAX_WAIT_SECONDS: f64 = 3600.0;
 const MAX_TIMEOUT_SECONDS: f64 = 86_400.0;
-/// How often a waiting thread re-checks its cell's abort signal and a running command its stop condition.
-// ponytail: 10 ms polling instead of wiring the kernel Signal into a condvar; fine for a handful of waiters.
-const POLL: Duration = Duration::from_millis(10);
 
 /// The before-write and before-shell guards (Loki). Every method is required so wrappers like [`sandboxed::SandboxGuard`]
 /// cannot silently drop forwarding when a new hook method is added; use [`AllowAll`] for a no-op guard.
@@ -261,17 +258,28 @@ pub(crate) fn command_env(
     process.envs(env.iter().map(|(key, value)| (key, value)));
 }
 
+enum ShellEvent {
+    Chunk(Vec<u8>),
+    Eof,
+    Aborted,
+}
+
+struct ShellExit {
+    code: Option<i32>,
+    timed_out: bool,
+}
+
 /// Runs `command` with `shell` in its own process group, stdout and stderr on one pipe. `on_text` gets each decoded,
-/// cleaned chunk and the raw byte count; `stop` is polled and kills the process group when it turns true.
-/// Returns the exit code (None when killed by a signal).
+/// cleaned chunk and the raw byte count; `signal` and `deadline` wake the wait directly and kill the process group.
 fn run_shell(
     shell: &shell::ShellConfig,
     command: &str,
     CommandEnv { cwd, base, env }: CommandEnv<'_>,
     launcher: Option<&sandbox::Launcher>,
+    deadline: Option<Instant>,
+    signal: &Signal,
     mut on_text: impl FnMut(&str, usize),
-    stop: impl Fn() -> bool,
-) -> Result<Option<i32>, String> {
+) -> Result<ShellExit, String> {
     let argv = shell.argv(command);
     let mut process = match launcher {
         Some(launcher) => launcher.command(&sandboxed_argv(argv, env), cwd)?,
@@ -295,33 +303,65 @@ fn run_shell(
         .map_err(|error| error.to_string())?;
     drop(process);
     let group = i32::try_from(child.id()).unwrap_or(0);
-    let (sender, chunks) = mpsc::channel::<Vec<u8>>();
+    let (sender, events) = mpsc::channel::<ShellEvent>();
+    let abort_tx = sender.clone();
+    let _abort = signal.link(move |_| {
+        let _ = abort_tx.send(ShellEvent::Aborted);
+    });
     let pump = std::thread::spawn(move || {
         let mut reader = reader;
         let mut buffer = vec![0u8; 64 * 1024];
         while let Ok(read) = reader.read(&mut buffer) {
-            if read == 0 || sender.send(buffer[..read].to_vec()).is_err() {
+            if read == 0 || sender.send(ShellEvent::Chunk(buffer[..read].to_vec())).is_err() {
                 break;
             }
         }
+        let _ = sender.send(ShellEvent::Eof);
     });
     let mut decoder = Decoder::default();
     let mut killed = false;
+    let mut timed_out = false;
     loop {
-        match chunks.recv_timeout(POLL) {
-            Ok(data) => on_text(&clean(&decoder.decode(&data, true)), data.len()),
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-        }
-        if !killed && stop() {
-            killed = true;
-            kernel::kill_command_group(group);
+        let next = match (killed, deadline) {
+            (false, Some(deadline)) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    timed_out = true;
+                    killed = true;
+                    kernel::kill_command_group(group);
+                    continue;
+                }
+                match events.recv_timeout(remaining) {
+                    Ok(event) => Some(event),
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        timed_out = true;
+                        killed = true;
+                        kernel::kill_command_group(group);
+                        continue;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => None,
+                }
+            }
+            _ => events.recv().ok(),
+        };
+        match next {
+            Some(ShellEvent::Chunk(data)) => on_text(&clean(&decoder.decode(&data, true)), data.len()),
+            Some(ShellEvent::Aborted) => {
+                if !killed {
+                    killed = true;
+                    kernel::kill_command_group(group);
+                }
+            }
+            Some(ShellEvent::Eof) | None => break,
         }
     }
     let _ = pump.join();
     on_text(&clean(&decoder.decode(&[], false)), 0);
     let status = child.wait().map_err(|error| error.to_string())?;
-    Ok(status.code())
+    Ok(ShellExit {
+        code: status.code(),
+        timed_out,
+    })
 }
 
 impl Host {
@@ -600,7 +640,6 @@ impl Host {
         let command = command_of(payload)?;
         let timeout = timeout_of(payload.get("timeout"))?;
         let deadline = timeout.map(|seconds| Instant::now() + Duration::from_secs_f64(seconds));
-        let timed_out = std::cell::Cell::new(false);
         let mut chunks: std::collections::VecDeque<String> = Default::default();
         let mut kept_units = 0usize;
         let mut total_bytes = 0usize;
@@ -630,6 +669,8 @@ impl Host {
                 env: &self.env,
             },
             self.launcher.as_deref(),
+            deadline,
+            signal,
             |text, raw| {
                 if raw > 0 || !text.is_empty() {
                     on_chunk(text);
@@ -651,12 +692,6 @@ impl Host {
                     }
                 }
             },
-            || {
-                if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                    timed_out.set(true);
-                }
-                timed_out.get() || signal.is_aborted()
-            },
         )?;
         if let Some(error) = failure {
             return Err(error);
@@ -666,12 +701,12 @@ impl Host {
         if truncated.is_some() {
             open_spill(&mut spill, &chunks)?;
         }
-        let stopped = timed_out.get() || signal.is_aborted();
+        let stopped = exit.timed_out || signal.is_aborted();
         Ok(json!({
             "output": truncated.clone().unwrap_or(full),
-            "exit_code": if stopped { None } else { exit },
-            "cancelled": stopped && !timed_out.get(),
-            "timed_out": timed_out.get(),
+            "exit_code": if stopped { None } else { exit.code },
+            "cancelled": stopped && !exit.timed_out,
+            "timed_out": exit.timed_out,
             "truncated": truncated.is_some(),
             "full_output_path": spill.map(|(path, _)| path.to_string_lossy().into_owned()),
         }))

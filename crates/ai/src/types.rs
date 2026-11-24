@@ -439,6 +439,25 @@ pub enum AssistantMessageEvent {
     },
 }
 
+impl AssistantMessageEvent {
+    /// Snapshot of the in-progress message carried by streaming events; `None` on terminal `Done`/`Error`.
+    pub fn partial(&self) -> Option<&AssistantMessage> {
+        match self {
+            AssistantMessageEvent::Start { partial }
+            | AssistantMessageEvent::TextStart { partial, .. }
+            | AssistantMessageEvent::TextDelta { partial, .. }
+            | AssistantMessageEvent::TextEnd { partial, .. }
+            | AssistantMessageEvent::ThinkingStart { partial, .. }
+            | AssistantMessageEvent::ThinkingDelta { partial, .. }
+            | AssistantMessageEvent::ThinkingEnd { partial, .. }
+            | AssistantMessageEvent::ToolCallStart { partial, .. }
+            | AssistantMessageEvent::ToolCallDelta { partial, .. }
+            | AssistantMessageEvent::ToolCallEnd { partial, .. } => Some(partial),
+            AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. } => None,
+        }
+    }
+}
+
 /// A standalone tool call serialized with its `type: "toolCall"` tag, as in `toolcall_end`.
 mod tagged_tool_call {
     use super::{AssistantContent, ToolCall};

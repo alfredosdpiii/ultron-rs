@@ -301,6 +301,36 @@ impl Zone {
     pub fn fields(&self, ms: f64) -> Fields {
         fields(ms, self.offset(ms))
     }
+
+    /// The first UTC epoch timestamp (ms) strictly after `after_ms` whose local wall clock is `hour:minute`.
+    /// Recomputes the zone offset for the target calendar day so DST transitions do not drift by an hour.
+    pub fn next_local_time(&self, after_ms: i64, hour: u32, minute: u32) -> i64 {
+        let local = self.fields(after_ms as f64);
+        let today = days_from_civil(local.year, local.month, local.day);
+        let target_secs = i64::from(hour * 60 + minute) * 60;
+        for delta in 0..=2 {
+            let local_secs = (today + delta) * 86_400 + target_secs;
+            let approx = local_secs - self.offset((local_secs as f64) * 1000.0);
+            let off = self.offset((approx as f64) * 1000.0);
+            let utc = local_secs - off;
+            let verify = self.offset((utc as f64) * 1000.0);
+            let resolved = if verify == off {
+                utc
+            } else {
+                let alt = local_secs - verify;
+                if self.offset((alt as f64) * 1000.0) == verify {
+                    alt
+                } else {
+                    utc.max(alt)
+                }
+            };
+            let ms = resolved * 1000;
+            if ms > after_ms {
+                return ms;
+            }
+        }
+        after_ms + 86_400_000
+    }
 }
 
 #[cfg(test)]
@@ -355,5 +385,21 @@ mod tests {
         assert_eq!(fields(1_791_201_600_000.0, 0), at(2026, 10, 5, 12, 0));
         assert_eq!(fields(0.0, 0), at(1970, 1, 1, 0, 0));
         assert_eq!(fields(951_782_400_000.0, 0), at(2000, 2, 29, 0, 0));
+    }
+
+    #[test]
+    fn jsrt_localtime_next_local_time_tracks_dst_transitions() {
+        let ny = Zone::from_posix("EST5EDT,M3.2.0,M11.1.0").unwrap();
+        let mar7_0330_est = 1_772_872_200_000;
+        assert_eq!(ny.fields(mar7_0330_est as f64), at(2026, 3, 7, 3, 30));
+        let mar8_0330_edt = ny.next_local_time(mar7_0330_est, 3, 30);
+        assert_eq!(ny.fields(mar8_0330_edt as f64), at(2026, 3, 8, 3, 30));
+        assert_eq!(mar8_0330_edt - mar7_0330_est, 23 * 3_600_000);
+
+        let oct31_0330_edt = 1_793_431_800_000;
+        assert_eq!(ny.fields(oct31_0330_edt as f64), at(2026, 10, 31, 3, 30));
+        let nov1_0330_est = ny.next_local_time(oct31_0330_edt, 3, 30);
+        assert_eq!(ny.fields(nov1_0330_est as f64), at(2026, 11, 1, 3, 30));
+        assert_eq!(nov1_0330_est - oct31_0330_edt, 25 * 3_600_000);
     }
 }

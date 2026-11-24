@@ -248,17 +248,10 @@ async fn stream_assistant_response(
                 message: Message::Assistant(partial.clone()),
             });
         }
-        AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. } => {}
-        AssistantMessageEvent::TextStart { partial, .. }
-        | AssistantMessageEvent::TextDelta { partial, .. }
-        | AssistantMessageEvent::TextEnd { partial, .. }
-        | AssistantMessageEvent::ThinkingStart { partial, .. }
-        | AssistantMessageEvent::ThinkingDelta { partial, .. }
-        | AssistantMessageEvent::ThinkingEnd { partial, .. }
-        | AssistantMessageEvent::ToolCallStart { partial, .. }
-        | AssistantMessageEvent::ToolCallDelta { partial, .. }
-        | AssistantMessageEvent::ToolCallEnd { partial, .. } => {
-            if added_partial {
+        _ => {
+            if let Some(partial) = event.partial()
+                && added_partial
+            {
                 let message = Message::Assistant(partial.clone());
                 if let Some(last) = messages.last_mut() {
                     *last = message.clone();

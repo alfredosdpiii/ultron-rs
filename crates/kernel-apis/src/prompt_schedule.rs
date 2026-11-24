@@ -90,6 +90,9 @@ pub struct Schedule {
     pub state: State,
     /// Explicit bounded loop or pinned PR condition; absent for legacy prompt schedules.
     pub operation: Option<Operation>,
+    /// Local wall-clock `(hour, minute)` for daily schedules (e.g. dream): recomputes the next slot in local time
+    /// instead of adding a fixed 24-hour interval so DST transitions do not drift by an hour.
+    pub daily_at: Option<(u32, u32)>,
 }
 
 impl Schedule {
@@ -109,17 +112,29 @@ impl Schedule {
         if let Some(operation) = &self.operation {
             value["operation"] = serde_json::to_value(operation).expect("operation is serializable");
         }
+        if let Some((hour, minute)) = self.daily_at {
+            value["dailyAt"] = format!("{hour:02}:{minute:02}").into();
+        }
         value
     }
 
     /// A session value read back; `None` when it is not a schedule.
     pub fn from_json(value: &Value) -> Option<Schedule> {
         let text = |key: &str| value[key].as_str().map(str::to_string);
+        let daily_at = match value.get("dailyAt").and_then(Value::as_str) {
+            None => None,
+            Some(at) => {
+                let (h, m) = at.split_once(':')?;
+                let (h, m) = (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?);
+                (h < 24 && m < 60).then_some((h, m))?.into()
+            }
+        };
         Some(Schedule {
             operation: match value.get("operation") {
                 None | Some(Value::Null) => None,
                 Some(operation) => Some(serde_json::from_value(operation.clone()).ok()?),
             },
+            daily_at,
             id: text("id")?,
             name: text("name")?,
             session_id: text("sessionId")?,
@@ -191,15 +206,22 @@ impl Schedule {
         format!("{}  {next}  {runs}  {repeat}  {}{operation}", self.name, self.id)
     }
 
-    /// The first due slot after `now` that follows `due` (one fire for every slot missed), or `None` when the
-    /// schedule ends after `runs` runs.
-    fn next_after(&self, due: i64, now: i64) -> Option<i64> {
-        let interval = self.interval_ms.filter(|_| self.kind == Kind::Every)?.max(1);
+    /// The first due slot after `now` that follows `due` (one fire for every slot missed), evaluated in `zone` when
+    /// `daily_at` is set, or `None` when the schedule ends after `runs` runs.
+    pub fn next_after_in(&self, due: i64, now: i64, zone: &jsrt::localtime::Zone) -> Option<i64> {
+        if self.kind != Kind::Every {
+            return None;
+        }
         if self.max_runs.is_some_and(|max| self.runs >= max) {
             return None;
         }
-        let skipped = (now - due).max(0) / interval;
-        let next = due + (skipped + 1) * interval;
+        let next = if let Some((hour, minute)) = self.daily_at {
+            zone.next_local_time(now.max(due), hour, minute)
+        } else {
+            let interval = self.interval_ms?.max(1);
+            let skipped = (now - due).max(0) / interval;
+            due + (skipped + 1) * interval
+        };
         if self.until.is_some_and(|until| next > until) {
             return None;
         }
@@ -375,6 +397,10 @@ impl ScheduleModule {
             writing: Mutex::new(()),
             github: GitHub::default(),
         }
+    }
+
+    fn zone() -> jsrt::localtime::Zone {
+        jsrt::localtime::Zone::from_env(std::env::var("TZ").ok().as_deref())
     }
 
     /// Select the argv runner (a scripted executable in isolated tests).
@@ -564,6 +590,7 @@ impl ScheduleModule {
             last_fired: None,
             state: State::Active,
             operation,
+            daily_at: None,
         };
         self.put(&schedule)?;
         Ok(schedule)
@@ -638,7 +665,7 @@ impl ScheduleModule {
             let (wake, done) = watch.observe(observation.ok_or("missing PR observation")?, now);
             terminal = done;
             if !wake {
-                schedule.next_due = schedule.next_after(due, now);
+                schedule.next_due = schedule.next_after_in(due, now, &Self::zone());
                 if done || schedule.next_due.is_none() {
                     schedule.state = State::Done;
                     schedule.next_due = None;
@@ -649,7 +676,7 @@ impl ScheduleModule {
         }
         schedule.runs += 1;
         schedule.last_fired = Some(now);
-        schedule.next_due = schedule.next_after(due, now);
+        schedule.next_due = schedule.next_after_in(due, now, &Self::zone());
         if terminal || schedule.next_due.is_none() {
             schedule.state = State::Done;
             schedule.next_due = None;
@@ -675,6 +702,11 @@ impl ScheduleModule {
     /// Pass over the due slot `due` of the repeating schedule `id` without running it (no run counted, `last_fired`
     /// kept): its next slot after now. `None` when it is not due at `due`, or does not repeat.
     pub fn skip(&self, id: &str, due: i64) -> Result<Option<Schedule>, String> {
+        self.skip_in(id, due, &Self::zone())
+    }
+
+    /// [`ScheduleModule::skip`] evaluated in `zone` when the schedule has `daily_at`.
+    pub fn skip_in(&self, id: &str, due: i64, zone: &jsrt::localtime::Zone) -> Result<Option<Schedule>, String> {
         let _writing = jsrt::sync::lock(&self.writing);
         let now = self.now();
         let Some(mut schedule) = self.all()?.into_iter().find(|s| s.id == id) else {
@@ -683,7 +715,7 @@ impl ScheduleModule {
         if !schedule.active() || schedule.next_due != Some(due) || due > now || schedule.kind != Kind::Every {
             return Ok(None);
         }
-        schedule.next_due = schedule.next_after(due, now);
+        schedule.next_due = schedule.next_after_in(due, now, zone);
         if schedule.next_due.is_none() {
             schedule.state = State::Done;
         }

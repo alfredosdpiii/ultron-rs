@@ -45,10 +45,7 @@ pub fn dream_at(settings: &Value) -> (u32, u32) {
 
 /// The first `hour:minute` local time after `now`.
 pub fn next_slot(now: i64, (hour, minute): (u32, u32), zone: &Zone) -> i64 {
-    let offset = zone.offset(now as f64) * 1000;
-    let day = (now + offset).div_euclid(DAY_MS) * DAY_MS - offset;
-    let slot = day + i64::from(hour * 60 + minute) * MINUTE_MS;
-    if slot > now { slot } else { slot + DAY_MS }
+    zone.next_local_time(now, hour, minute)
 }
 
 /// The dream session's id when its file names a session of `session_dir`.
@@ -88,10 +85,12 @@ pub fn ensure(
             .all()?
             .into_iter()
             .find(|s| s.active() && s.name == SCHEDULE_NAME);
-        // ponytail: a fixed 1-day interval drifts an hour across a DST change until the next server start re-aims it.
         let fits = |s: &Schedule| {
             let local = s.next_due.map(|due| zone.fields(due as f64));
-            s.prompt == PROMPT && s.interval_ms == Some(DAY_MS) && local.is_some_and(|f| (f.hour, f.minute) == at)
+            s.prompt == PROMPT
+                && s.interval_ms == Some(DAY_MS)
+                && s.daily_at == Some(at)
+                && local.is_some_and(|f| (f.hour, f.minute) == at)
         };
         match current {
             Some(s) if on && fits(&s) => return Ok(Some(s)),
@@ -119,6 +118,7 @@ pub fn ensure(
             last_fired: None,
             state: State::Active,
             operation: None,
+            daily_at: Some(at),
         };
         module.put(&schedule)?;
         Ok(Some(schedule))
@@ -147,6 +147,7 @@ pub struct QuietDreams {
     pub agent_dir: PathBuf,
     pub home: PathBuf,
     pub clock: Arc<dyn TickClock>,
+    pub zone: Zone,
 }
 
 impl Deliver for QuietDreams {
@@ -163,7 +164,7 @@ impl Deliver for QuietDreams {
                 });
         if quiet {
             let skipped = crate::prompt_schedules::in_journal(&meta.path, self.clock.clone(), |module| {
-                module.skip(id, due)?;
+                module.skip_in(id, due, &self.zone)?;
                 module.entries()
             });
             if let Ok(active) = skipped {

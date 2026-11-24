@@ -451,22 +451,6 @@ fn request_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) 
     classify(services, runtime, request, message)
 }
 
-fn partial_of(event: &AssistantMessageEvent) -> Option<&AssistantMessage> {
-    match event {
-        AssistantMessageEvent::Start { partial }
-        | AssistantMessageEvent::TextStart { partial, .. }
-        | AssistantMessageEvent::TextDelta { partial, .. }
-        | AssistantMessageEvent::TextEnd { partial, .. }
-        | AssistantMessageEvent::ThinkingStart { partial, .. }
-        | AssistantMessageEvent::ThinkingDelta { partial, .. }
-        | AssistantMessageEvent::ThinkingEnd { partial, .. }
-        | AssistantMessageEvent::ToolCallStart { partial, .. }
-        | AssistantMessageEvent::ToolCallDelta { partial, .. }
-        | AssistantMessageEvent::ToolCallEnd { partial, .. } => Some(partial),
-        AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. } => None,
-    }
-}
-
 /// Stream one request and return the terminal message. Partials commit as throttled writes with one commit in
 /// flight; the throttle stops and awaits that commit before returning, so no stale partial lands after the outcome.
 fn stream_response(
@@ -497,7 +481,7 @@ fn stream_response(
     });
     let context = ai::TranscriptContext { messages };
     let mut on_event = |event: &AssistantMessageEvent| {
-        if let Some(partial) = partial_of(event)
+        if let Some(partial) = event.partial()
             && !partial.content.is_empty()
         {
             throttle.mark(strict(to_value(partial)));

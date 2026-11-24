@@ -24,6 +24,14 @@ fn daemon_dream_next_slot_is_the_next_local_time() {
     // UTC+9 all year: 03:30 local is 18:30 UTC.
     let tokyo = Zone::from_posix("JST-9").unwrap();
     assert_eq!(next_slot(NOON, (3, 30), &tokyo), NOON + 6 * 3_600_000 + 30 * 60_000);
+    // Across DST spring-forward (23h day) and fall-back (25h day), the local wall clock stays 03:30.
+    let ny = Zone::from_posix("EST5EDT,M3.2.0,M11.1.0").unwrap();
+    let mar7_0330_est = 1_772_872_200_000;
+    let mar8_slot = next_slot(mar7_0330_est, (3, 30), &ny);
+    assert_eq!(mar8_slot - mar7_0330_est, 23 * 3_600_000);
+    let oct31_0330_edt = 1_793_431_800_000;
+    let nov1_slot = next_slot(oct31_0330_edt, (3, 30), &ny);
+    assert_eq!(nov1_slot - oct31_0330_edt, 25 * 3_600_000);
     assert_eq!(dream_at(&json!({})), (3, 30));
     assert_eq!(dream_at(&json!({"learn": {"dreamAt": "23:05"}})), (23, 5));
     assert_eq!(dream_at(&json!({"learn": {"dreamAt": "25:00"}})), (3, 30));
@@ -117,6 +125,7 @@ fn daemon_dream_quiet_night_passes_without_a_run_until_a_session_changes() {
         agent_dir: tmp.path().join("agent"),
         home: home.clone(),
         clock: clock.clone(),
+        zone: Zone::utc(),
     };
     let meta = daemon::catalog::list(&sessions).pop().unwrap();
     use daemon::prompt_schedules::{Deliver, Delivery};
@@ -202,6 +211,7 @@ fn changed_store_ends_a_quiet_night(store: impl Fn(&std::path::Path) -> std::pat
         agent_dir: agent,
         home,
         clock: clock.clone(),
+        zone: Zone::utc(),
     };
     clock.set(due + 1);
     use daemon::prompt_schedules::Deliver;

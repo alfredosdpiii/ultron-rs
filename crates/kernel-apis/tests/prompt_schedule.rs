@@ -375,6 +375,7 @@ fn kernel_apis_prompt_schedule_values_of_another_session_are_not_its_own() {
         last_fired: None,
         state: State::Active,
         operation: None,
+        daily_at: None,
     };
     f.store.set(&copied.id, &copied.to_json()).unwrap();
     assert!(f.module.all().unwrap().is_empty());

@@ -556,17 +556,10 @@ impl TurnModels {
                         message: Message::Assistant(partial.clone()),
                     });
                 }
-                AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. } => {}
-                AssistantMessageEvent::TextStart { partial, .. }
-                | AssistantMessageEvent::TextDelta { partial, .. }
-                | AssistantMessageEvent::TextEnd { partial, .. }
-                | AssistantMessageEvent::ThinkingStart { partial, .. }
-                | AssistantMessageEvent::ThinkingDelta { partial, .. }
-                | AssistantMessageEvent::ThinkingEnd { partial, .. }
-                | AssistantMessageEvent::ToolCallStart { partial, .. }
-                | AssistantMessageEvent::ToolCallDelta { partial, .. }
-                | AssistantMessageEvent::ToolCallEnd { partial, .. } => {
-                    if started {
+                _ => {
+                    if let Some(partial) = event.partial()
+                        && started
+                    {
                         bridge.send(AgentEvent::MessageUpdate {
                             message: Message::Assistant(partial.clone()),
                             assistant_message_event: event.clone(),

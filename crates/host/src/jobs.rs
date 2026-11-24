@@ -6,7 +6,7 @@ use crate::shell;
 use crate::text::{Decoder, clean, tail_bytes};
 use crate::{
     CommandEnv, Host, JOB_MAX_ACTIVE, JOB_MAX_RETAINED, JOB_RETAINED_BYTES, JOB_TEXT_BYTES, JobEnd, JobEnds,
-    PARENT_TOKEN_ENV, POLL, RootOf, Shared, command_env, safe_integer, sandboxed_argv,
+    PARENT_TOKEN_ENV, RootOf, Shared, command_env, safe_integer, sandboxed_argv,
 };
 use jsrt::sync;
 use kernel::Signal;
@@ -558,6 +558,9 @@ impl Digest {
     }
 }
 
+/// Interval for tailing a durable job's `.out` and `.exit` files while it runs.
+const FOLLOW_POLL: Duration = Duration::from_millis(10);
+
 /// Follows a job until it ends: its own child (`child`), or a keeper started by an earlier worker (`None`), whose
 /// end is its exit file or, without one, its process going away (`lost`). Stops the process group on cancel or
 /// timeout. Returns without settling the job when the host released its jobs.
@@ -614,7 +617,7 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
             drop(
                 job.cancel
                     .1
-                    .wait_timeout(cancel, POLL)
+                    .wait_timeout(cancel, FOLLOW_POLL)
                     .unwrap_or_else(PoisonError::into_inner),
             );
         }

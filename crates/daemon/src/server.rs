@@ -451,6 +451,7 @@ fn start_generation(
             agent_dir: config::paths::agent_dir(|key| std::env::var(key).ok(), &home),
             home,
             clock: schedule_clock,
+            zone: jsrt::localtime::Zone::from_env(std::env::var("TZ").ok().as_deref()),
         }),
         Some(Box::new(move |message| {
             record_error(&schedule_log, "[ultron server warning]", message);

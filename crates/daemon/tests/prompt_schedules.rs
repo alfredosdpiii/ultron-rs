@@ -35,6 +35,7 @@ fn schedule(id: &str, session: &str, next_due: Option<i64>, state: State) -> Sch
         last_fired: None,
         state,
         operation: None,
+        daily_at: None,
     }
 }
 

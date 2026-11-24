@@ -46,7 +46,427 @@ pub(super) struct Node {
     pub(super) lane: String,
 }
 
+type ReviseSpec = (String, Option<String>, Value, u64);
+type WhenSpec = (String, Option<String>, Value);
+
+fn parse_condition(value: &Map<String, Value>, name: &str) -> Result<(Option<String>, Value), String> {
+    let equals = value
+        .get("equals")
+        .ok_or_else(|| format!("{name}.equals must be a JSON value"))?;
+    let field = match value.get("field") {
+        None => None,
+        field => Some(nonempty_string(field, &format!("{name}.field"))?),
+    };
+    Ok((field, equals.clone()))
+}
+
+type InputFrom = Option<Result<String, Vec<String>>>;
+
+struct ParsedDeps {
+    depends_on: Vec<String>,
+    input_from: InputFrom,
+    join_any: bool,
+}
+
+fn parse_dependencies(node: &Map<String, Value>) -> Result<ParsedDeps, String> {
+    let depends_on: Vec<String> = match node.get("dependsOn") {
+        None => Vec::new(),
+        Some(Value::Array(list))
+            if list
+                .iter()
+                .all(|d| d.as_str().is_some_and(|d| !string::trim(d).is_empty()))
+                && list.iter().enumerate().all(|(i, d)| !list[..i].contains(d)) =>
+        {
+            list.iter().filter_map(text_of).collect()
+        }
+        Some(_) => return Err("dependsOn must be an array of unique nonempty strings".into()),
+    };
+    let input_from = match node.get("inputFrom") {
+        None => None,
+        Some(Value::Array(list)) => {
+            let sources = list
+                .iter()
+                .map(|s| nonempty_string(Some(s), "inputFrom entry"))
+                .collect::<Result<Vec<_>, _>>()?;
+            if sources.is_empty() || sources.iter().enumerate().any(|(i, s)| sources[..i].contains(s)) {
+                return Err("inputFrom must be a nonempty array of unique dependencies".into());
+            }
+            Some(Err(sources))
+        }
+        value => Some(Ok(nonempty_string(value, "inputFrom")?)),
+    };
+    let join_any = match node.get("join") {
+        None => false,
+        Some(Value::String(join)) if join == "all" => false,
+        Some(Value::String(join)) if join == "any" => true,
+        Some(_) => return Err("join must be \"all\" or \"any\"".into()),
+    };
+    if join_any {
+        if depends_on.len() < 2 {
+            return Err("join \"any\" requires at least two dependencies".into());
+        }
+        if matches!(input_from, Some(Ok(_))) {
+            return Err("join \"any\" requires inputFrom to be an array (fan-in of succeeded dependencies)".into());
+        }
+    }
+    Ok(ParsedDeps {
+        depends_on,
+        input_from,
+        join_any,
+    })
+}
+
+fn parse_when(node: &Map<String, Value>, depends_on: &[String]) -> Result<Option<WhenSpec>, String> {
+    let Some(value) = node.get("when") else {
+        return Ok(None);
+    };
+    let route = object_input(Some(value))?;
+    jsrt::payload::fields(route, &["node", "field", "equals"])?;
+    let target = nonempty_string(route.get("node"), "when.node")?;
+    if !depends_on.contains(&target) {
+        return Err("when.node must name a dependency".into());
+    }
+    let (field, equals) = parse_condition(route, "when")?;
+    Ok(Some((target, field, equals)))
+}
+
+fn parse_revise(node: &Map<String, Value>) -> Result<Option<ReviseSpec>, String> {
+    let Some(value) = node.get("revise") else {
+        return Ok(None);
+    };
+    let lp = object_input(Some(value))?;
+    jsrt::payload::fields(lp, &["from", "until", "max_rounds"])?;
+    let rounds = lp
+        .get("max_rounds")
+        .and_then(Value::as_f64)
+        .filter(|n| n.fract() == 0.0 && *n >= 1.0 && *n <= WORKFLOW_MAX_ROUNDS as f64)
+        .ok_or_else(|| format!("revise.max_rounds must be an integer between 1 and {WORKFLOW_MAX_ROUNDS}"))?;
+    let Some(until) = lp.get("until") else {
+        return Err("revise.until is required".into());
+    };
+    let until = object_input(Some(until))?;
+    jsrt::payload::fields(until, &["field", "equals"])?;
+    let from = nonempty_string(lp.get("from"), "revise.from")?;
+    let (field, equals) = parse_condition(until, "revise.until")?;
+    Ok(Some((from, field, equals, rounds as u64)))
+}
+
+fn parse_foreach(node: &Map<String, Value>, depends_on: &[String]) -> Result<Option<ForEach>, String> {
+    let Some(value) = node.get("foreach") else {
+        return Ok(None);
+    };
+    let fe = object_input(Some(value))?;
+    jsrt::payload::fields(fe, &["from", "field", "as", "maxItems"])?;
+    let from = nonempty_string(fe.get("from"), "foreach.from")?;
+    if !depends_on.contains(&from) {
+        return Err("foreach.from must name a dependency".into());
+    }
+    let field = match fe.get("field") {
+        None | Some(Value::Null) => None,
+        f => Some(nonempty_string(f, "foreach.field")?),
+    };
+    let as_field = match fe.get("as") {
+        None | Some(Value::Null) => None,
+        a => Some(nonempty_string(a, "foreach.as")?),
+    };
+    let max_items = match fe.get("maxItems") {
+        None | Some(Value::Null) => WORKFLOW_FOREACH_DEFAULT_MAX,
+        Some(v) => v
+            .as_u64()
+            .filter(|n| (1..=WORKFLOW_FOREACH_HARD_MAX as u64).contains(n))
+            .ok_or_else(|| format!("foreach.maxItems must be an integer between 1 and {WORKFLOW_FOREACH_HARD_MAX}"))?
+            as usize,
+    };
+    Ok(Some(ForEach {
+        from,
+        field,
+        as_field,
+        max_items,
+    }))
+}
+
+fn parse_bounded_loop(node: &Map<String, Value>) -> Result<Option<BoundedLoop>, String> {
+    let Some(value) = node.get("loop") else {
+        return Ok(None);
+    };
+    let lp = object_input(Some(value))?;
+    jsrt::payload::fields(lp, &["maxRounds", "max_rounds", "until"])?;
+    let raw_rounds = lp.get("maxRounds").or_else(|| lp.get("max_rounds"));
+    let max_rounds = raw_rounds
+        .and_then(Value::as_f64)
+        .filter(|n| n.fract() == 0.0 && *n >= 1.0 && *n <= WORKFLOW_MAX_ROUNDS as f64)
+        .ok_or_else(|| format!("loop.maxRounds must be an integer between 1 and {WORKFLOW_MAX_ROUNDS}"))?
+        as u64;
+    let Some(until) = lp.get("until") else {
+        return Err("loop.until is required".into());
+    };
+    let until = object_input(Some(until))?;
+    jsrt::payload::fields(until, &["field", "equals"])?;
+    let (until_field, until_equals) = parse_condition(until, "loop.until")?;
+    Ok(Some(BoundedLoop {
+        max_rounds,
+        until_field,
+        until_equals,
+    }))
+}
+
+fn validate_workflow_graph(nodes: &[Node]) -> Result<(), String> {
+    for (i, node) in nodes.iter().enumerate() {
+        if nodes[..i].iter().any(|other| other.id == node.id) {
+            return Err("Duplicate workflow node ID".into());
+        }
+    }
+    for node in nodes {
+        if node.depends_on.iter().any(|d| !nodes.iter().any(|n| &n.id == d)) {
+            return Err("Unknown workflow dependency".into());
+        }
+    }
+    let mut pending: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+    while !pending.is_empty() {
+        let ready: Vec<&str> = nodes
+            .iter()
+            .filter(|n| pending.contains(&n.id.as_str()) && n.depends_on.iter().all(|d| !pending.contains(&d.as_str())))
+            .map(|n| n.id.as_str())
+            .collect();
+        if ready.is_empty() {
+            return Err("Workflow contains a cycle".into());
+        }
+        pending.retain(|id| !ready.contains(id));
+    }
+    let ancestors = |id: &str| {
+        let mut seen: Vec<String> = Vec::new();
+        let mut stack = vec![id.to_string()];
+        while let Some(current) = stack.pop() {
+            for dependency in nodes
+                .iter()
+                .find(|n| n.id == current)
+                .map_or(&[][..], |n| &n.depends_on[..])
+            {
+                if !seen.contains(dependency) {
+                    seen.push(dependency.clone());
+                    stack.push(dependency.clone());
+                }
+            }
+        }
+        seen
+    };
+    let mut reviewers: Vec<String> = Vec::new();
+    for node in nodes {
+        let Some((from, ..)) = &node.revise else { continue };
+        let reviewer = nodes
+            .iter()
+            .find(|n| &n.id == from)
+            .ok_or("revise.from must name a workflow node")?;
+        if !reviewer.depends_on.contains(&node.id) {
+            return Err("revise.from must depend on the revised node".into());
+        }
+        if reviewer.revise.is_some() {
+            return Err("A revision reviewer cannot itself be revised".into());
+        }
+        if reviewer.when.is_some() {
+            return Err("A revision reviewer cannot have a when route".into());
+        }
+        if reviewers.contains(&reviewer.id) {
+            return Err("A node can review only one revision loop".into());
+        }
+        reviewers.push(reviewer.id.clone());
+        let before = ancestors(&node.id);
+        if reviewer.depends_on.iter().any(|d| d != &node.id && !before.contains(d)) {
+            return Err("A revision reviewer may depend only on the revised node and its ancestors".into());
+        }
+    }
+    Ok(())
+}
+
 impl Agents {
+    fn parse_spawn_contract(
+        &self,
+        id: &str,
+        definition: &str,
+        node: &Map<String, Value>,
+    ) -> Result<Option<Map<String, Value>>, String> {
+        let spawn_contract: Map<String, Value> = crate::spawn_contract::SPAWN_KEYS
+            .iter()
+            .filter_map(|key| {
+                node.get(*key)
+                    .filter(|v| !v.is_null())
+                    .map(|v| (key.to_string(), v.clone()))
+            })
+            .collect();
+        if spawn_contract.is_empty() {
+            return Ok(None);
+        }
+        if definition != "rlm-child@1" {
+            return Err(format!(
+                "Workflow node {id}: role, contract and hop apply only to rlm-child@1 nodes (subagents)"
+            ));
+        }
+        if node.contains_key("revise") {
+            return Err(format!("Workflow node {id}: a revised node cannot have a contract hop"));
+        }
+        if self.inner.worktree_children.get().is_none() {
+            return Err(format!(
+                "Workflow node {id}: contracts are not available in this host; spawn the subagent with rlm.spawn(contract=...)"
+            ));
+        }
+        crate::spawn_contract::SpawnContract::parse(&spawn_contract)
+            .map_err(|error| format!("Workflow node {id}: {error}"))?;
+        Ok(Some(spawn_contract))
+    }
+
+    fn parse_worktree(&self, id: &str, definition: &str, node: &Map<String, Value>) -> Result<Option<Value>, String> {
+        let worktree = match node.get("worktree") {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => None,
+            Some(mode @ Value::Bool(true)) => Some(mode.clone()),
+            Some(mode @ Value::String(s)) if s == "auto" => Some(mode.clone()),
+            Some(_) => {
+                return Err(format!(
+                    "Workflow node {id} worktree must be True, False or \"auto\" (each worktree child gets its own private worktree)"
+                ));
+            }
+        };
+        if worktree.is_some() && definition != "rlm-child@1" {
+            return Err(format!(
+                "Workflow node {id}: worktree applies only to rlm-child@1 nodes (subagents)"
+            ));
+        }
+        if worktree.is_some() && node.contains_key("revise") {
+            return Err(format!(
+                "Workflow node {id}: a revised node cannot use a worktree (each round would start over from your tree)"
+            ));
+        }
+        if worktree.is_some() && self.inner.worktree_children.get().is_none() {
+            return Err(format!(
+                "Workflow node {id}: worktree nodes are not available in this host; spawn the subagent with rlm.spawn(worktree=True)"
+            ));
+        }
+        Ok(worktree)
+    }
+
+    fn validate_node_input(
+        &self,
+        id: &str,
+        node: &Map<String, Value>,
+        item: &Definition,
+        depends_on: &[String],
+        input_from: &Option<Result<String, Vec<String>>>,
+        foreach: &Option<ForEach>,
+    ) -> Result<(), String> {
+        match input_from {
+            Some(sources) => {
+                let list = match sources {
+                    Ok(one) => vec![one.clone()],
+                    Err(many) => many.clone(),
+                };
+                if list.iter().any(|s| !depends_on.contains(s)) {
+                    return Err("inputFrom must name a dependency".into());
+                }
+                if node.contains_key("input") {
+                    return Err("Specify input or inputFrom, not both".into());
+                }
+            }
+            None if foreach.is_some() => {
+                if let Some(input) = node.get("input")
+                    && !input.is_object()
+                {
+                    return Err(format!(
+                        "Workflow node {id}: foreach static input must be a JSON object"
+                    ));
+                }
+            }
+            None => {
+                let Some(input) = node.get("input") else {
+                    return Err("Agent input is not JSON".into());
+                };
+                let state = self.state();
+                if !state.registry.is_valid_input(item, input) {
+                    return Err(state.registry.validation_error(item, input, "input"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_workflow_node(&self, value: &Value, workflow_key: Option<&str>) -> Result<Node, String> {
+        let node = object_input(Some(value))?;
+        jsrt::payload::fields(
+            node,
+            &[
+                "id",
+                "definition",
+                "input",
+                "model",
+                "key",
+                "timeout_ms",
+                "dependsOn",
+                "inputFrom",
+                "when",
+                "join",
+                "revise",
+                "foreach",
+                "loop",
+                "worktree",
+                "brief",
+                "role",
+                "contract",
+                "hop",
+            ],
+        )?;
+        let id = nonempty_string(node.get("id"), "Workflow node ID")?;
+        let definition = definition_key(node.get("definition"))?;
+        let spawn_contract = self.parse_spawn_contract(&id, &definition, node)?;
+        let worktree = self.parse_worktree(&id, &definition, node)?;
+        let item = self.definition(&definition)?;
+        self.state().registry.can_execute(&item)?;
+        let ParsedDeps {
+            depends_on,
+            input_from,
+            join_any,
+        } = parse_dependencies(node)?;
+        let when = parse_when(node, &depends_on)?;
+        let revise = parse_revise(node)?;
+        let foreach = parse_foreach(node, &depends_on)?;
+        let bounded_loop = parse_bounded_loop(node)?;
+        let control_count =
+            usize::from(revise.is_some()) + usize::from(foreach.is_some()) + usize::from(bounded_loop.is_some());
+        if control_count > 1 {
+            return Err(format!(
+                "Workflow node {id}: specify at most one of revise, foreach, or loop"
+            ));
+        }
+        if foreach.is_some() && input_from.is_some() {
+            return Err(format!("Workflow node {id}: foreach cannot be combined with inputFrom"));
+        }
+        self.validate_node_input(&id, node, &item, &depends_on, &input_from, &foreach)?;
+        let (model, key, timeout_ms) = task_options(node)?;
+        let brief = match node.get("brief") {
+            None | Some(Value::Null) => None,
+            Some(brief) => {
+                Brief::parse(brief, None).map_err(|error| format!("Workflow node {id}: {error}"))?;
+                Some(brief.clone())
+            }
+        };
+        Ok(Node {
+            brief,
+            worktree,
+            spawn_contract,
+            lane: String::new(),
+            key: key.or_else(|| workflow_key.map(|k| format!("{k}:{id}"))),
+            id,
+            definition,
+            input: node.get("input").cloned(),
+            depends_on,
+            input_from,
+            when,
+            join_any,
+            revise,
+            foreach,
+            bounded_loop,
+            model,
+            timeout_ms,
+        })
+    }
+
     /// `workflow(payload)`: the whole graph is validated before any effect.
     pub(super) fn workflow(&self, payload: &Map<String, Value>) -> Result<Vec<Node>, String> {
         jsrt::payload::fields(payload, &["nodes", "key"])?;
@@ -58,372 +478,11 @@ impl Agents {
             None => None,
             value => Some(nonempty_string(value, "Workflow key")?),
         };
-        let condition = |value: &Map<String, Value>, name: &str| -> Result<(Option<String>, Value), String> {
-            let equals = value
-                .get("equals")
-                .ok_or_else(|| format!("{name}.equals must be a JSON value"))?;
-            let field = match value.get("field") {
-                None => None,
-                field => Some(nonempty_string(field, &format!("{name}.field"))?),
-            };
-            Ok((field, equals.clone()))
-        };
-        let mut nodes = Vec::new();
-        for value in items {
-            let node = object_input(Some(value))?;
-            jsrt::payload::fields(
-                node,
-                &[
-                    "id",
-                    "definition",
-                    "input",
-                    "model",
-                    "key",
-                    "timeout_ms",
-                    "dependsOn",
-                    "inputFrom",
-                    "when",
-                    "join",
-                    "revise",
-                    "foreach",
-                    "loop",
-                    "worktree",
-                    "brief",
-                    "role",
-                    "contract",
-                    "hop",
-                ],
-            )?;
-            let id = nonempty_string(node.get("id"), "Workflow node ID")?;
-            let definition = definition_key(node.get("definition"))?;
-            let spawn_contract: Map<String, Value> = crate::spawn_contract::SPAWN_KEYS
-                .iter()
-                .filter_map(|key| {
-                    node.get(*key)
-                        .filter(|v| !v.is_null())
-                        .map(|v| (key.to_string(), v.clone()))
-                })
-                .collect();
-            let spawn_contract = match spawn_contract.is_empty() {
-                true => None,
-                false => {
-                    if definition != "rlm-child@1" {
-                        return Err(format!(
-                            "Workflow node {id}: role, contract and hop apply only to rlm-child@1 nodes (subagents)"
-                        ));
-                    }
-                    if node.contains_key("revise") {
-                        return Err(format!("Workflow node {id}: a revised node cannot have a contract hop"));
-                    }
-                    if self.inner.worktree_children.get().is_none() {
-                        return Err(format!(
-                            "Workflow node {id}: contracts are not available in this host; spawn the subagent with rlm.spawn(contract=...)"
-                        ));
-                    }
-                    crate::spawn_contract::SpawnContract::parse(&spawn_contract)
-                        .map_err(|error| format!("Workflow node {id}: {error}"))?;
-                    Some(spawn_contract)
-                }
-            };
-            let worktree = match node.get("worktree") {
-                None | Some(Value::Null) | Some(Value::Bool(false)) => None,
-                Some(mode @ Value::Bool(true)) => Some(mode.clone()),
-                Some(mode @ Value::String(s)) if s == "auto" => Some(mode.clone()),
-                Some(_) => {
-                    return Err(format!(
-                        "Workflow node {id} worktree must be True, False or \"auto\" (each worktree child gets its own private worktree)"
-                    ));
-                }
-            };
-            if worktree.is_some() && definition != "rlm-child@1" {
-                return Err(format!(
-                    "Workflow node {id}: worktree applies only to rlm-child@1 nodes (subagents)"
-                ));
-            }
-            if worktree.is_some() && node.contains_key("revise") {
-                return Err(format!(
-                    "Workflow node {id}: a revised node cannot use a worktree (each round would start over from your tree)"
-                ));
-            }
-            if worktree.is_some() && self.inner.worktree_children.get().is_none() {
-                return Err(format!(
-                    "Workflow node {id}: worktree nodes are not available in this host; spawn the subagent with rlm.spawn(worktree=True)"
-                ));
-            }
-            let item = self.definition(&definition)?;
-            self.state().registry.can_execute(&item)?;
-            let depends_on: Vec<String> = match node.get("dependsOn") {
-                None => Vec::new(),
-                Some(Value::Array(list))
-                    if list
-                        .iter()
-                        .all(|d| d.as_str().is_some_and(|d| !string::trim(d).is_empty()))
-                        && list.iter().enumerate().all(|(i, d)| !list[..i].contains(d)) =>
-                {
-                    list.iter().filter_map(text_of).collect()
-                }
-                Some(_) => return Err("dependsOn must be an array of unique nonempty strings".into()),
-            };
-            let input_from = match node.get("inputFrom") {
-                None => None,
-                Some(Value::Array(list)) => {
-                    let sources = list
-                        .iter()
-                        .map(|s| nonempty_string(Some(s), "inputFrom entry"))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    if sources.is_empty() || sources.iter().enumerate().any(|(i, s)| sources[..i].contains(s)) {
-                        return Err("inputFrom must be a nonempty array of unique dependencies".into());
-                    }
-                    Some(Err(sources))
-                }
-                value => Some(Ok(nonempty_string(value, "inputFrom")?)),
-            };
-            let join_any = match node.get("join") {
-                None => false,
-                Some(Value::String(join)) if join == "all" => false,
-                Some(Value::String(join)) if join == "any" => true,
-                Some(_) => return Err("join must be \"all\" or \"any\"".into()),
-            };
-            if join_any {
-                if depends_on.len() < 2 {
-                    return Err("join \"any\" requires at least two dependencies".into());
-                }
-                if matches!(input_from, Some(Ok(_))) {
-                    return Err(
-                        "join \"any\" requires inputFrom to be an array (fan-in of succeeded dependencies)".into(),
-                    );
-                }
-            }
-            let when = match node.get("when") {
-                None => None,
-                Some(value) => {
-                    let route = object_input(Some(value))?;
-                    jsrt::payload::fields(route, &["node", "field", "equals"])?;
-                    let target = nonempty_string(route.get("node"), "when.node")?;
-                    if !depends_on.contains(&target) {
-                        return Err("when.node must name a dependency".into());
-                    }
-                    let (field, equals) = condition(route, "when")?;
-                    Some((target, field, equals))
-                }
-            };
-            let revise = match node.get("revise") {
-                None => None,
-                Some(value) => {
-                    let lp = object_input(Some(value))?;
-                    jsrt::payload::fields(lp, &["from", "until", "max_rounds"])?;
-                    let rounds = lp
-                        .get("max_rounds")
-                        .and_then(Value::as_f64)
-                        .filter(|n| n.fract() == 0.0 && *n >= 1.0 && *n <= WORKFLOW_MAX_ROUNDS as f64)
-                        .ok_or_else(|| {
-                            format!("revise.max_rounds must be an integer between 1 and {WORKFLOW_MAX_ROUNDS}")
-                        })?;
-                    let Some(until) = lp.get("until") else {
-                        return Err("revise.until is required".into());
-                    };
-                    let until = object_input(Some(until))?;
-                    jsrt::payload::fields(until, &["field", "equals"])?;
-                    let from = nonempty_string(lp.get("from"), "revise.from")?;
-                    let (field, equals) = condition(until, "revise.until")?;
-                    Some((from, field, equals, rounds as u64))
-                }
-            };
-            let foreach = match node.get("foreach") {
-                None => None,
-                Some(value) => {
-                    let fe = object_input(Some(value))?;
-                    jsrt::payload::fields(fe, &["from", "field", "as", "maxItems"])?;
-                    let from = nonempty_string(fe.get("from"), "foreach.from")?;
-                    if !depends_on.contains(&from) {
-                        return Err("foreach.from must name a dependency".into());
-                    }
-                    let field = match fe.get("field") {
-                        None | Some(Value::Null) => None,
-                        f => Some(nonempty_string(f, "foreach.field")?),
-                    };
-                    let as_field = match fe.get("as") {
-                        None | Some(Value::Null) => None,
-                        a => Some(nonempty_string(a, "foreach.as")?),
-                    };
-                    let max_items = match fe.get("maxItems") {
-                        None | Some(Value::Null) => WORKFLOW_FOREACH_DEFAULT_MAX,
-                        Some(v) => v
-                            .as_u64()
-                            .filter(|n| (1..=WORKFLOW_FOREACH_HARD_MAX as u64).contains(n))
-                            .ok_or_else(|| {
-                                format!("foreach.maxItems must be an integer between 1 and {WORKFLOW_FOREACH_HARD_MAX}")
-                            })? as usize,
-                    };
-                    Some(ForEach {
-                        from,
-                        field,
-                        as_field,
-                        max_items,
-                    })
-                }
-            };
-            let bounded_loop = match node.get("loop") {
-                None => None,
-                Some(value) => {
-                    let lp = object_input(Some(value))?;
-                    jsrt::payload::fields(lp, &["maxRounds", "max_rounds", "until"])?;
-                    let raw_rounds = lp.get("maxRounds").or_else(|| lp.get("max_rounds"));
-                    let max_rounds = raw_rounds
-                        .and_then(Value::as_f64)
-                        .filter(|n| n.fract() == 0.0 && *n >= 1.0 && *n <= WORKFLOW_MAX_ROUNDS as f64)
-                        .ok_or_else(|| {
-                            format!("loop.maxRounds must be an integer between 1 and {WORKFLOW_MAX_ROUNDS}")
-                        })? as u64;
-                    let Some(until) = lp.get("until") else {
-                        return Err("loop.until is required".into());
-                    };
-                    let until = object_input(Some(until))?;
-                    jsrt::payload::fields(until, &["field", "equals"])?;
-                    let (until_field, until_equals) = condition(until, "loop.until")?;
-                    Some(BoundedLoop {
-                        max_rounds,
-                        until_field,
-                        until_equals,
-                    })
-                }
-            };
-            let control_count =
-                usize::from(revise.is_some()) + usize::from(foreach.is_some()) + usize::from(bounded_loop.is_some());
-            if control_count > 1 {
-                return Err(format!(
-                    "Workflow node {id}: specify at most one of revise, foreach, or loop"
-                ));
-            }
-            if foreach.is_some() && input_from.is_some() {
-                return Err(format!("Workflow node {id}: foreach cannot be combined with inputFrom"));
-            }
-            match &input_from {
-                Some(sources) => {
-                    let list = match sources {
-                        Ok(one) => vec![one.clone()],
-                        Err(many) => many.clone(),
-                    };
-                    if list.iter().any(|s| !depends_on.contains(s)) {
-                        return Err("inputFrom must name a dependency".into());
-                    }
-                    if node.contains_key("input") {
-                        return Err("Specify input or inputFrom, not both".into());
-                    }
-                }
-                None if foreach.is_some() => {
-                    if let Some(input) = node.get("input")
-                        && !input.is_object()
-                    {
-                        return Err(format!(
-                            "Workflow node {id}: foreach static input must be a JSON object"
-                        ));
-                    }
-                }
-                None => {
-                    let Some(input) = node.get("input") else {
-                        return Err("Agent input is not JSON".into());
-                    };
-                    let state = self.state();
-                    if !state.registry.is_valid_input(&item, input) {
-                        return Err(state.registry.validation_error(&item, input, "input"));
-                    }
-                }
-            }
-            let (model, key, timeout_ms) = task_options(node)?;
-            let brief = match node.get("brief") {
-                None | Some(Value::Null) => None,
-                Some(brief) => {
-                    Brief::parse(brief, None).map_err(|error| format!("Workflow node {id}: {error}"))?;
-                    Some(brief.clone())
-                }
-            };
-            nodes.push(Node {
-                brief,
-                worktree,
-                spawn_contract,
-                lane: String::new(),
-                key: key.or_else(|| workflow_key.as_ref().map(|k| format!("{k}:{id}"))),
-                id,
-                definition,
-                input: node.get("input").cloned(),
-                depends_on,
-                input_from,
-                when,
-                join_any,
-                revise,
-                foreach,
-                bounded_loop,
-                model,
-                timeout_ms,
-            });
-        }
-        for (i, node) in nodes.iter().enumerate() {
-            if nodes[..i].iter().any(|other| other.id == node.id) {
-                return Err("Duplicate workflow node ID".into());
-            }
-        }
-        for node in &nodes {
-            if node.depends_on.iter().any(|d| !nodes.iter().any(|n| &n.id == d)) {
-                return Err("Unknown workflow dependency".into());
-            }
-        }
-        let mut pending: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
-        while !pending.is_empty() {
-            let ready: Vec<&str> = nodes
-                .iter()
-                .filter(|n| {
-                    pending.contains(&n.id.as_str()) && n.depends_on.iter().all(|d| !pending.contains(&d.as_str()))
-                })
-                .map(|n| n.id.as_str())
-                .collect();
-            if ready.is_empty() {
-                return Err("Workflow contains a cycle".into());
-            }
-            pending.retain(|id| !ready.contains(id));
-        }
-        let ancestors = |id: &str| {
-            let mut seen: Vec<String> = Vec::new();
-            let mut stack = vec![id.to_string()];
-            while let Some(current) = stack.pop() {
-                for dependency in nodes
-                    .iter()
-                    .find(|n| n.id == current)
-                    .map_or(&[][..], |n| &n.depends_on[..])
-                {
-                    if !seen.contains(dependency) {
-                        seen.push(dependency.clone());
-                        stack.push(dependency.clone());
-                    }
-                }
-            }
-            seen
-        };
-        let mut reviewers: Vec<String> = Vec::new();
-        for node in &nodes {
-            let Some((from, ..)) = &node.revise else { continue };
-            let reviewer = nodes
-                .iter()
-                .find(|n| &n.id == from)
-                .ok_or("revise.from must name a workflow node")?;
-            if !reviewer.depends_on.contains(&node.id) {
-                return Err("revise.from must depend on the revised node".into());
-            }
-            if reviewer.revise.is_some() {
-                return Err("A revision reviewer cannot itself be revised".into());
-            }
-            if reviewer.when.is_some() {
-                return Err("A revision reviewer cannot have a when route".into());
-            }
-            if reviewers.contains(&reviewer.id) {
-                return Err("A node can review only one revision loop".into());
-            }
-            reviewers.push(reviewer.id.clone());
-            let before = ancestors(&node.id);
-            if reviewer.depends_on.iter().any(|d| d != &node.id && !before.contains(d)) {
-                return Err("A revision reviewer may depend only on the revised node and its ancestors".into());
-            }
-        }
+        let nodes: Vec<Node> = items
+            .iter()
+            .map(|value| self.parse_workflow_node(value, workflow_key.as_deref()))
+            .collect::<Result<_, _>>()?;
+        validate_workflow_graph(&nodes)?;
         Ok(nodes)
     }
 

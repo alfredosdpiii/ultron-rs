@@ -395,7 +395,7 @@ fn no_raw_settings_get_for_owned_keys() {
 #[test]
 fn no_new_god_files() {
     const MAX_LINES: usize = 1_200;
-    const GRANDFATHERED: [(&str, usize); 37] = [
+    const GRANDFATHERED: [(&str, usize); 30] = [
         ("ai/src/anthropic.rs", 1247),
         ("ai/src/antigravity/mod.rs", 1358),
         ("ai/src/aws_credentials.rs", 1410),
@@ -404,25 +404,18 @@ fn no_new_god_files() {
         ("ai/src/openai_completions.rs", 1481),
         ("ai/src/openai_responses.rs", 1281),
         ("claude-root/src/mcp_server.rs", 1598),
-        ("cli/src/autoreview_cli.rs", 2395),
-        ("cli/src/interactive.rs", 2268),
         ("cli/src/setup_wizard.rs", 1759),
         ("client/src/runtime.rs", 1306),
         ("daemon/src/workers.rs", 1705),
-        ("delegation/src/host.rs", 2281),
         ("delegation/src/usage.rs", 1397),
         ("delegation/src/worktrees.rs", 1739),
         ("durable/src/transaction.rs", 1312),
         ("harness/src/scheduler/mod.rs", 2014),
         ("interactive/src/agent_hub.rs", 1240),
-        ("interactive/src/app.rs", 5464),
         ("interactive/src/components.rs", 1342),
-        ("interactive/src/settings_selector.rs", 2596),
         ("interactive/src/tree_selector.rs", 1344),
         ("kernel-apis/src/memory.rs", 2262),
-        ("kernel/src/lib.rs", 2419),
         ("review/src/github.rs", 1232),
-        ("review/src/reviewer.rs", 2015),
         ("rlm-views/src/graph.rs", 2022),
         ("rlm-views/src/pane.rs", 1665),
         ("rlm-views/src/visualizer.rs", 1226),

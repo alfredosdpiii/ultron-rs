@@ -389,148 +389,21 @@ fn opt(value: Option<String>) -> Option<Value> {
     value.map(Value::String)
 }
 
-/// `applyWorkerSetting`: persist `key` through the settings manager and report how it applies, with the changes the
-/// running session takes now. `current_model` is the session's model (`provider`, `id`).
-pub fn apply(
-    settings: &mut SettingsManager,
-    key: &str,
-    value: &Value,
-    current_model: Option<(&str, &str)>,
-) -> Result<(Applied, Vec<Change>), String> {
-    let mut applied = Applied::Saved;
-    let mut changes = Vec::new();
-    settings.drain_errors();
-    let set = |settings: &mut SettingsManager, field: &str, value: Value| settings.set_global(field, Some(value));
-    let nested = |settings: &mut SettingsManager, field: &str, k: &str, v: Option<Value>| {
-        settings.set_global_nested(field, k, v);
-    };
+fn apply_autoreview(settings: &mut SettingsManager, key: &str, value: &Value) -> Result<Applied, String> {
     match key {
-        "compaction.enabled" => {
-            let enabled = bool_value(key, value)?;
-            nested(settings, "compaction", "enabled", Some(json!(enabled)));
-            changes.push(Change::Compaction(enabled));
-            applied = Applied::Live;
-        }
-        "retry.enabled" => {
-            let enabled = bool_value(key, value)?;
-            nested(settings, "retry", "enabled", Some(json!(enabled)));
-            changes.push(Change::Retry(enabled));
-            applied = Applied::Live;
-        }
-        "steeringMode" | "followUpMode" => {
-            let mode = one_of(key, value, &QUEUE_MODES)?;
-            set(settings, key, json!(mode));
-            changes.push(if key == "steeringMode" {
-                Change::SteeringMode(mode)
-            } else {
-                Change::FollowUpMode(mode)
-            });
-            applied = Applied::Live;
-        }
-        "transport" => {
-            let transport = one_of(key, value, &TRANSPORTS)?;
-            set(settings, key, json!(transport));
-            changes.push(Change::Transport(transport));
-            applied = Applied::Live;
-        }
-        "httpIdleTimeoutMs" => {
-            let timeout = int(key, value, 0.0)? as u64;
-            set(settings, key, json!(timeout));
-            changes.push(Change::HttpIdleTimeout(timeout));
-            if get(settings, &["retry", "provider", "timeoutMs"]).is_none() {
-                changes.push(Change::StreamTimeout(if timeout == 0 {
-                    DISABLED_REQUEST_TIMEOUT_MS
-                } else {
-                    timeout
-                }));
-            }
-            applied = Applied::Live;
-        }
-        "cacheWarming" => set(settings, key, json!(one_of(key, value, &CACHE_WARMING_MODES)?)),
-        "modelThinkingLevel" => {
-            let target = record(key, value)?;
-            let provider = string(key, target.get("provider"))?;
-            let model_id = string(key, target.get("modelId"))?;
-            let level = match target.get("level") {
-                Some(Value::Null) => None,
-                level => Some(thinking(key, level)?),
-            };
-            match &level {
-                None => settings.remove_model_thinking_level(&provider, &model_id),
-                Some(level) => settings.set_model_thinking_level(&provider, &model_id, level),
-            }
-            if current_model == Some((provider.as_str(), model_id.as_str())) {
-                let level = level.unwrap_or_else(|| {
-                    get(settings, &["defaultThinkingLevel"])
-                        .and_then(Value::as_str)
-                        .unwrap_or(DEFAULT_THINKING_LEVEL)
-                        .to_string()
-                });
-                changes.push(Change::Thinking(level));
-                applied = Applied::Live;
-            }
-        }
-        "defaultThinkingLevel" => {
-            set(settings, key, json!(thinking(key, Some(value))?));
-            applied = Applied::Restart;
-        }
-        "theme" => set(settings, key, json!(string(key, Some(value))?)),
-        "hideThinkingBlock"
-        | "enableSkillCommands"
-        | "showCacheMissNotices"
-        | "collapseChangelog"
-        | "enableInstallTelemetry"
-        | "quietStartup"
-        | "rlmPaneAutoOpen"
-        | "showHardwareCursor"
-        | "fullscreenCopyOnSelect" => set(settings, key, json!(bool_value(key, value)?)),
-        "terminal.showImages"
-        | "images.autoResize"
-        | "images.blockImages"
-        | "terminal.clearOnShrink"
-        | "terminal.showTerminalProgress" => {
-            let (field, k) = key.split_once('.').expect("dotted key");
-            nested(settings, field, k, Some(json!(bool_value(key, value)?)));
-        }
-        "terminal.imageWidthCells" => {
-            let width = int(key, value, 1.0)?.max(1.0);
-            nested(settings, "terminal", "imageWidthCells", Some(floor_int(width)));
-        }
-        "markdown.mermaid" => {
-            let mode = one_of(key, value, &MERMAID_MODES)?;
-            nested(settings, "markdown", "mermaid", Some(json!(mode)));
-        }
-        "engineering" => {
-            set(settings, key, json!(bool_value(key, value)?));
-            applied = Applied::Live;
-        }
-        config::keys::PERSONA_KEY => {
-            let persona = match value {
-                Value::Null => None,
-                value => Some(one_of(key, value, &config::keys::PERSONA_VALUES)?),
-            };
-            let defaulted = config::settings::process_defaults().is_some_and(|d| d.contains_key(key));
-            settings.set_global(
-                key,
-                persona
-                    .filter(|p| p != config::keys::PERSONA_OFF || defaulted)
-                    .map(Value::String),
-            );
-            applied = Applied::Live;
-        }
         "autoreview.enabled" | "autoreview.ack" => {
             let flag = bool_value(key, value)?;
             settings.patch_global_object(
                 review::settings::KEY,
                 &[(&key["autoreview.".len()..], Some(json!(flag)))],
             );
-            applied = Applied::Live;
+            Ok(Applied::Live)
         }
         "autoreview.ackArt" => {
             let art = one_of(key, value, &["logo", "none"])?;
             let art = if art == "none" { json!(false) } else { json!("logo") };
             settings.patch_global_object(review::settings::KEY, &[("ackArt", Some(art))]);
-            applied = Applied::Live;
+            Ok(Applied::Live)
         }
         "autoreview" => {
             let patch = record(key, value)?;
@@ -555,98 +428,14 @@ pub fn apply(
                 }
             }
             settings.patch_global_object(review::settings::KEY, &next);
-            applied = Applied::Live;
+            Ok(Applied::Live)
         }
-        "defaultProjectTrust" => {
-            set(settings, key, json!(one_of(key, value, &PROJECT_TRUST_DEFAULTS)?));
-            applied = Applied::Restart;
-        }
-        "doubleEscapeAction" => set(settings, key, json!(one_of(key, value, &DOUBLE_ESCAPE_ACTIONS)?)),
-        "treeFilterMode" => set(settings, key, json!(one_of(key, value, &TREE_FILTER_MODES)?)),
-        "editorPaddingX" => {
-            let padding = int(key, value, 0.0)?.clamp(0.0, 3.0);
-            set(settings, key, floor_int(padding));
-        }
-        "outputPad" => {
-            let pad = i32::from(int(key, value, 0.0)? != 0.0);
-            set(settings, key, json!(pad));
-        }
-        "autocompleteMaxVisible" => {
-            let visible = int(key, value, 1.0)?.clamp(3.0, 20.0);
-            set(settings, key, floor_int(visible));
-        }
-        "tuiMode" => set(settings, key, json!(one_of(key, value, &TUI_MODES)?)),
-        "fullscreenExitOutput" => set(settings, key, json!(one_of(key, value, &FULLSCREEN_EXIT_OUTPUTS)?)),
-        "fullscreenScrollbar" => set(settings, key, json!(one_of(key, value, &FULLSCREEN_SCROLLBARS)?)),
-        "warnings" => {
-            let warnings = record(key, value)?;
-            let next = match warnings.get("anthropicExtraUsage") {
-                None => json!({}),
-                Some(flag) => json!({"anthropicExtraUsage": bool_value(key, flag)?}),
-            };
-            set(settings, key, next);
-        }
-        "rlm.frameModel" | "rlm.childModel" => {
-            let field = &key["rlm.".len()..];
-            nested(settings, "rlm", field, opt(model_value(key, value)?));
-            applied = Applied::Live;
-        }
-        "rlm.frameThinking" => {
-            let level = match value {
-                Value::Null => None,
-                value => Some(one_of(key, value, &THINKING_LEVELS)?),
-            };
-            nested(settings, "rlm", "frameThinking", opt(level));
-            applied = Applied::Live;
-        }
-        "observer.model" => {
-            nested(settings, "observer", "model", opt(model_value(key, value)?));
-            applied = Applied::Live;
-        }
-        "review.model" => {
-            nested(settings, "review", "model", opt(model_value(key, value)?));
-            applied = Applied::Live;
-        }
-        "rlm.raceModels" => {
-            let models = match value {
-                Value::Null => None,
-                Value::Array(items) => Some(
-                    items
-                        .iter()
-                        .map(|item| match model_value(key, item)? {
-                            Some(model) => Ok(Value::String(model)),
-                            None => Err(format!("{key} must be a list of provider/model (or null to clear it)")),
-                        })
-                        .collect::<Result<Vec<_>, String>>()?,
-                ),
-                _ => return Err(format!("{key} must be a list of provider/model (or null to clear it)")),
-            };
-            nested(settings, "rlm", "raceModels", models.map(Value::Array));
-            applied = Applied::Live;
-        }
-        "rlm.resultFooter" => {
-            let on = match value {
-                Value::Null => None,
-                value => Some(json!(bool_value(key, value)?)),
-            };
-            nested(settings, "rlm", "resultFooter", on);
-            applied = Applied::Restart;
-        }
-        "rlm.mapTokens" | "rootBudget.maxTotalTokens" => {
-            let cap = match value {
-                Value::Null => None,
-                value => Some(json!(config::settings::token_cap(Some(value)).ok_or_else(|| {
-                    format!("{key} must be a positive whole number (or null to clear it)")
-                })?)),
-            };
-            let (field, k) = key.split_once('.').expect("dotted key");
-            nested(settings, field, k, cap);
-            applied = if field == "rlm" {
-                Applied::Live
-            } else {
-                Applied::Restart
-            };
-        }
+        _ => Err(format!("Unknown setting: {key}")),
+    }
+}
+
+fn apply_judge(settings: &mut SettingsManager, key: &str, value: &Value) -> Result<Applied, String> {
+    match key {
         "judge.provider" => {
             let order = match value {
                 Value::Null => None,
@@ -662,8 +451,7 @@ pub fn apply(
                 }
                 _ => return Err(format!("{key} must be a list of jev, d1 (or null for both, Jev first)")),
             };
-            nested(settings, "judge", "provider", order);
-            applied = Applied::Live;
+            settings.set_global_nested("judge", "provider", order);
         }
         "judge.d1.url" => {
             let url = match value {
@@ -687,20 +475,17 @@ pub fn apply(
                 Some(url) => d1.insert("url".into(), url),
                 None => d1.shift_remove("url"),
             };
-            nested(settings, "judge", "d1", (!d1.is_empty()).then_some(Value::Object(d1)));
-            applied = Applied::Live;
+            settings.set_global_nested("judge", "d1", (!d1.is_empty()).then_some(Value::Object(d1)));
         }
         "judge.model" => {
             let model = match value {
                 Value::Null => None,
                 value => Some(json!(string(key, Some(value))?.trim())),
             };
-            nested(settings, "judge", "model", model);
-            applied = Applied::Live;
+            settings.set_global_nested("judge", "model", model);
         }
         "judge.escalateModel" | "judge.fallbackModel" => {
-            nested(settings, "judge", &key["judge.".len()..], opt(model_value(key, value)?));
-            applied = Applied::Live;
+            settings.set_global_nested("judge", &key["judge.".len()..], opt(model_value(key, value)?));
         }
         "judge.thresholds" => {
             let unit = |v: &Value| v.as_f64().is_some_and(|n| (0.0..=1.0).contains(&n));
@@ -714,13 +499,7 @@ pub fn apply(
                     "{key} must map backends (and kinds to backends) to numbers from 0 to 1 (or null to clear it)"
                 ));
             }
-            nested(
-                settings,
-                "judge",
-                "thresholds",
-                (!value.is_null()).then(|| value.clone()),
-            );
-            applied = Applied::Live;
+            settings.set_global_nested("judge", "thresholds", (!value.is_null()).then(|| value.clone()));
         }
         "judge.budgetUsd" => {
             let budget = match value {
@@ -729,8 +508,7 @@ pub fn apply(
                     || { format!("{key} must be a positive number of US dollars (or null to clear it)") }
                 )?)),
             };
-            nested(settings, "judge", "budgetUsd", budget);
-            applied = Applied::Live;
+            settings.set_global_nested("judge", "budgetUsd", budget);
         }
         "judge.jev.pricePerMTok" => {
             let price = match value {
@@ -752,13 +530,7 @@ pub fn apply(
                 Some(price) => jev.insert("pricePerMTok".into(), price),
                 None => jev.shift_remove("pricePerMTok"),
             };
-            nested(
-                settings,
-                "judge",
-                "jev",
-                (!jev.is_empty()).then_some(Value::Object(jev)),
-            );
-            applied = Applied::Live;
+            settings.set_global_nested("judge", "jev", (!jev.is_empty()).then_some(Value::Object(jev)));
         }
         "judge.maxCalls" => {
             let cap = match value {
@@ -767,34 +539,271 @@ pub fn apply(
                     format!("{key} must be a positive whole number (or null to clear it)")
                 })?)),
             };
-            nested(settings, "judge", "maxCalls", cap);
-            applied = Applied::Live;
+            settings.set_global_nested("judge", "maxCalls", cap);
+        }
+        _ => return Err(format!("Unknown setting: {key}")),
+    }
+    Ok(Applied::Live)
+}
+
+fn apply_rlm_or_runtime(settings: &mut SettingsManager, key: &str, value: &Value) -> Result<Applied, String> {
+    match key {
+        "rlm.frameModel" | "rlm.childModel" => {
+            settings.set_global_nested("rlm", &key["rlm.".len()..], opt(model_value(key, value)?));
+            Ok(Applied::Live)
+        }
+        "rlm.frameThinking" => {
+            let level = match value {
+                Value::Null => None,
+                value => Some(one_of(key, value, &THINKING_LEVELS)?),
+            };
+            settings.set_global_nested("rlm", "frameThinking", opt(level));
+            Ok(Applied::Live)
+        }
+        "observer.model" => {
+            settings.set_global_nested("observer", "model", opt(model_value(key, value)?));
+            Ok(Applied::Live)
+        }
+        "review.model" => {
+            settings.set_global_nested("review", "model", opt(model_value(key, value)?));
+            Ok(Applied::Live)
+        }
+        "rlm.raceModels" => {
+            let models = match value {
+                Value::Null => None,
+                Value::Array(items) => Some(
+                    items
+                        .iter()
+                        .map(|item| match model_value(key, item)? {
+                            Some(model) => Ok(Value::String(model)),
+                            None => Err(format!("{key} must be a list of provider/model (or null to clear it)")),
+                        })
+                        .collect::<Result<Vec<_>, String>>()?,
+                ),
+                _ => return Err(format!("{key} must be a list of provider/model (or null to clear it)")),
+            };
+            settings.set_global_nested("rlm", "raceModels", models.map(Value::Array));
+            Ok(Applied::Live)
+        }
+        "rlm.resultFooter" => {
+            let on = match value {
+                Value::Null => None,
+                value => Some(json!(bool_value(key, value)?)),
+            };
+            settings.set_global_nested("rlm", "resultFooter", on);
+            Ok(Applied::Restart)
+        }
+        "rlm.mapTokens" | "rootBudget.maxTotalTokens" => {
+            let cap = match value {
+                Value::Null => None,
+                value => Some(json!(config::settings::token_cap(Some(value)).ok_or_else(|| {
+                    format!("{key} must be a positive whole number (or null to clear it)")
+                })?)),
+            };
+            let (field, k) = key.split_once('.').expect("dotted key");
+            settings.set_global_nested(field, k, cap);
+            Ok(if field == "rlm" {
+                Applied::Live
+            } else {
+                Applied::Restart
+            })
         }
         "memory.backend" => {
             let backend = match value {
                 Value::Null => None,
                 value => Some(json!(one_of(key, value, &config::keys::MEMORY_BACKENDS)?)),
             };
-            nested(settings, "memory", "backend", backend);
-            applied = Applied::Restart;
+            settings.set_global_nested("memory", "backend", backend);
+            Ok(Applied::Restart)
         }
-        "claudeCode.frameModel" => nested(settings, "claudeCode", "frameModel", opt(model_value(key, value)?)),
-        "claudeCode.ultronChildModel" => nested(
-            settings,
-            "claudeCode",
-            "ultronChildModel",
-            opt(model_value(key, value)?),
-        ),
-        "claudeCode.childModel" | "claudeCode.model" => nested(
-            settings,
-            "claudeCode",
-            &key["claudeCode.".len()..],
-            opt(claude_alias_value(key, value)?),
-        ),
+        "claudeCode.frameModel" => {
+            settings.set_global_nested("claudeCode", "frameModel", opt(model_value(key, value)?));
+            Ok(Applied::Saved)
+        }
+        "claudeCode.ultronChildModel" => {
+            settings.set_global_nested("claudeCode", "ultronChildModel", opt(model_value(key, value)?));
+            Ok(Applied::Saved)
+        }
+        "claudeCode.childModel" | "claudeCode.model" => {
+            settings.set_global_nested(
+                "claudeCode",
+                &key["claudeCode.".len()..],
+                opt(claude_alias_value(key, value)?),
+            );
+            Ok(Applied::Saved)
+        }
         "durable.model" => {
-            let model = model_value(key, value)?;
-            nested(settings, "durable", "model", opt(model));
-            applied = Applied::Restart;
+            settings.set_global_nested("durable", "model", opt(model_value(key, value)?));
+            Ok(Applied::Restart)
+        }
+        _ => Err(format!("Unknown setting: {key}")),
+    }
+}
+
+fn apply_ui(settings: &mut SettingsManager, key: &str, value: &Value) -> Result<Option<Applied>, String> {
+    match key {
+        "theme" => settings.set_global(key, Some(json!(string(key, Some(value))?))),
+        "hideThinkingBlock"
+        | "enableSkillCommands"
+        | "showCacheMissNotices"
+        | "collapseChangelog"
+        | "enableInstallTelemetry"
+        | "quietStartup"
+        | "rlmPaneAutoOpen"
+        | "showHardwareCursor"
+        | "fullscreenCopyOnSelect" => settings.set_global(key, Some(json!(bool_value(key, value)?))),
+        "terminal.showImages"
+        | "images.autoResize"
+        | "images.blockImages"
+        | "terminal.clearOnShrink"
+        | "terminal.showTerminalProgress" => {
+            let (field, k) = key.split_once('.').expect("dotted key");
+            settings.set_global_nested(field, k, Some(json!(bool_value(key, value)?)));
+        }
+        "terminal.imageWidthCells" => {
+            let width = int(key, value, 1.0)?.max(1.0);
+            settings.set_global_nested("terminal", "imageWidthCells", Some(floor_int(width)));
+        }
+        "markdown.mermaid" => {
+            let mode = one_of(key, value, &MERMAID_MODES)?;
+            settings.set_global_nested("markdown", "mermaid", Some(json!(mode)));
+        }
+        "doubleEscapeAction" => settings.set_global(key, Some(json!(one_of(key, value, &DOUBLE_ESCAPE_ACTIONS)?))),
+        "treeFilterMode" => settings.set_global(key, Some(json!(one_of(key, value, &TREE_FILTER_MODES)?))),
+        "editorPaddingX" => {
+            let padding = int(key, value, 0.0)?.clamp(0.0, 3.0);
+            settings.set_global(key, Some(floor_int(padding)));
+        }
+        "outputPad" => {
+            let pad = i32::from(int(key, value, 0.0)? != 0.0);
+            settings.set_global(key, Some(json!(pad)));
+        }
+        "autocompleteMaxVisible" => {
+            let visible = int(key, value, 1.0)?.clamp(3.0, 20.0);
+            settings.set_global(key, Some(floor_int(visible)));
+        }
+        "tuiMode" => settings.set_global(key, Some(json!(one_of(key, value, &TUI_MODES)?))),
+        "fullscreenExitOutput" => {
+            settings.set_global(key, Some(json!(one_of(key, value, &FULLSCREEN_EXIT_OUTPUTS)?)));
+        }
+        "fullscreenScrollbar" => {
+            settings.set_global(key, Some(json!(one_of(key, value, &FULLSCREEN_SCROLLBARS)?)));
+        }
+        "warnings" => {
+            let warnings = record(key, value)?;
+            let next = match warnings.get("anthropicExtraUsage") {
+                None => json!({}),
+                Some(flag) => json!({"anthropicExtraUsage": bool_value(key, flag)?}),
+            };
+            settings.set_global(key, Some(next));
+        }
+        _ => return Ok(None),
+    }
+    Ok(Some(Applied::Saved))
+}
+
+fn apply_session(
+    settings: &mut SettingsManager,
+    key: &str,
+    value: &Value,
+    current_model: Option<(&str, &str)>,
+    changes: &mut Vec<Change>,
+) -> Result<Applied, String> {
+    match key {
+        "compaction.enabled" => {
+            let enabled = bool_value(key, value)?;
+            settings.set_global_nested("compaction", "enabled", Some(json!(enabled)));
+            changes.push(Change::Compaction(enabled));
+            Ok(Applied::Live)
+        }
+        "retry.enabled" => {
+            let enabled = bool_value(key, value)?;
+            settings.set_global_nested("retry", "enabled", Some(json!(enabled)));
+            changes.push(Change::Retry(enabled));
+            Ok(Applied::Live)
+        }
+        "steeringMode" | "followUpMode" => {
+            let mode = one_of(key, value, &QUEUE_MODES)?;
+            settings.set_global(key, Some(json!(mode)));
+            changes.push(if key == "steeringMode" {
+                Change::SteeringMode(mode)
+            } else {
+                Change::FollowUpMode(mode)
+            });
+            Ok(Applied::Live)
+        }
+        "transport" => {
+            let transport = one_of(key, value, &TRANSPORTS)?;
+            settings.set_global(key, Some(json!(transport)));
+            changes.push(Change::Transport(transport));
+            Ok(Applied::Live)
+        }
+        "httpIdleTimeoutMs" => {
+            let timeout = int(key, value, 0.0)? as u64;
+            settings.set_global(key, Some(json!(timeout)));
+            changes.push(Change::HttpIdleTimeout(timeout));
+            if get(settings, &["retry", "provider", "timeoutMs"]).is_none() {
+                changes.push(Change::StreamTimeout(if timeout == 0 {
+                    DISABLED_REQUEST_TIMEOUT_MS
+                } else {
+                    timeout
+                }));
+            }
+            Ok(Applied::Live)
+        }
+        "cacheWarming" => {
+            settings.set_global(key, Some(json!(one_of(key, value, &CACHE_WARMING_MODES)?)));
+            Ok(Applied::Saved)
+        }
+        "modelThinkingLevel" => {
+            let target = record(key, value)?;
+            let provider = string(key, target.get("provider"))?;
+            let model_id = string(key, target.get("modelId"))?;
+            let level = match target.get("level") {
+                Some(Value::Null) => None,
+                level => Some(thinking(key, level)?),
+            };
+            match &level {
+                None => settings.remove_model_thinking_level(&provider, &model_id),
+                Some(level) => settings.set_model_thinking_level(&provider, &model_id, level),
+            }
+            if current_model == Some((provider.as_str(), model_id.as_str())) {
+                let level = level.unwrap_or_else(|| {
+                    get(settings, &["defaultThinkingLevel"])
+                        .and_then(Value::as_str)
+                        .unwrap_or(DEFAULT_THINKING_LEVEL)
+                        .to_string()
+                });
+                changes.push(Change::Thinking(level));
+                return Ok(Applied::Live);
+            }
+            Ok(Applied::Saved)
+        }
+        "defaultThinkingLevel" => {
+            settings.set_global(key, Some(json!(thinking(key, Some(value))?)));
+            Ok(Applied::Restart)
+        }
+        "engineering" => {
+            settings.set_global(key, Some(json!(bool_value(key, value)?)));
+            Ok(Applied::Live)
+        }
+        config::keys::PERSONA_KEY => {
+            let persona = match value {
+                Value::Null => None,
+                value => Some(one_of(key, value, &config::keys::PERSONA_VALUES)?),
+            };
+            let defaulted = config::settings::process_defaults().is_some_and(|d| d.contains_key(key));
+            settings.set_global(
+                key,
+                persona
+                    .filter(|p| p != config::keys::PERSONA_OFF || defaulted)
+                    .map(Value::String),
+            );
+            Ok(Applied::Live)
+        }
+        "defaultProjectTrust" => {
+            settings.set_global(key, Some(json!(one_of(key, value, &PROJECT_TRUST_DEFAULTS)?)));
+            Ok(Applied::Restart)
         }
         "enabledModels" => {
             let patterns = match value {
@@ -808,9 +817,39 @@ pub fn apply(
                 _ => return Err(format!("{key} must be a list")),
             };
             settings.set_global(key, patterns.map(Value::Array));
+            Ok(Applied::Saved)
         }
-        _ => return Err(format!("Unknown setting: {key}")),
+        _ => Err(format!("Unknown setting: {key}")),
     }
+}
+
+/// `applyWorkerSetting`: persist `key` through the settings manager and report how it applies, with the changes the
+/// running session takes now. `current_model` is the session's model (`provider`, `id`).
+pub fn apply(
+    settings: &mut SettingsManager,
+    key: &str,
+    value: &Value,
+    current_model: Option<(&str, &str)>,
+) -> Result<(Applied, Vec<Change>), String> {
+    let mut changes = Vec::new();
+    settings.drain_errors();
+    let applied = if key == "autoreview" || key.starts_with("autoreview.") {
+        apply_autoreview(settings, key, value)?
+    } else if key.starts_with("judge.") {
+        apply_judge(settings, key, value)?
+    } else if key.starts_with("rlm.")
+        || key.starts_with("claudeCode.")
+        || matches!(
+            key,
+            "observer.model" | "review.model" | "rootBudget.maxTotalTokens" | "memory.backend" | "durable.model"
+        )
+    {
+        apply_rlm_or_runtime(settings, key, value)?
+    } else if let Some(applied) = apply_ui(settings, key, value)? {
+        applied
+    } else {
+        apply_session(settings, key, value, current_model, &mut changes)?
+    };
     let errors = settings.drain_errors();
     if !errors.is_empty() {
         let messages: Vec<String> = errors.into_iter().map(|e| e.message).collect();

@@ -546,37 +546,37 @@ fn acquire_slot(limit: usize, handle: &Handle, timeout: Duration) -> Result<Slot
     }
 }
 
-/// Run one model call against native (blocking). `upstream` is where the admitted request goes.
-pub fn run(
-    config: &Config,
+struct PreparedLaunch {
     env: Env,
+    argv: Vec<String>,
+    warnings: Vec<String>,
+}
+
+struct StreamOutcome {
+    assistants: Vec<Value>,
+    results: Vec<Value>,
+    stopped: bool,
+    emitted: String,
+    native_error: Option<(String, Option<String>)>,
+    signals: super::limit::Signals,
+    deadline: Instant,
+}
+
+struct SpawnedNative {
+    stdin: std::process::ChildStdin,
+    events: Receiver<Event>,
+    stderr: Arc<Mutex<VecDeque<String>>>,
+}
+
+fn prepare_launch(
+    config: &Config,
+    mut env: Env,
     prepared: &Prepared,
-    handle: &Arc<Handle>,
-    on_delta: &mut dyn FnMut(Delta),
-) -> Result<NativeResponse, ClaudeError> {
-    let timeout = config.timeout;
-    if timeout.is_zero() {
-        return Err(ClaudeError::Invalid("timeout must be positive seconds".into()));
-    }
-    let mut env = env;
-    refuse_overrides(&env)?;
-    for key in AUTH_OVERRIDES.iter().chain(BACKEND_OVERRIDES).chain(API_CREDENTIALS) {
-        env.remove(*key);
-    }
-    let resolved =
-        resolve_claude(config.command.as_deref(), &env).ok_or_else(|| ClaudeError::Missing(INSTALL_HINT.into()))?;
-    let model = native_model(&prepared.model).map_err(ClaudeError::Invalid)?;
-    let _slot = acquire_slot(max_concurrent(&env), handle, timeout)?;
-    let temp_root = config.temp_root.clone().unwrap_or_else(std::env::temp_dir);
-    let mut cleanup = Cleanup {
-        handle,
-        dir: None,
-        admission: None,
-        reader: None,
-        err_reader: None,
-    };
-    let root = private_temp(&temp_root, "ultron-claude-").map_err(|e| ClaudeError::Failed(e.to_string()))?;
-    cleanup.dir = Some(root.clone());
+    resolved: Vec<String>,
+    model: &str,
+    root: &Path,
+    cleanup: &mut Cleanup<'_>,
+) -> Result<PreparedLaunch, ClaudeError> {
     let write = |name: &str, text: &str| -> Result<PathBuf, ClaudeError> {
         let path = root.join(name);
         std::fs::write(&path, text).map_err(|e| ClaudeError::Failed(e.to_string()))?;
@@ -630,10 +630,10 @@ pub fn run(
         .and_then(|f| f["message"]["content"].as_array())
         .cloned();
     let admission =
-        Admission::new(&config.upstream, timeout, queried, config.idle, &env).map_err(ClaudeError::Invalid)?;
+        Admission::new(&config.upstream, config.timeout, queried, config.idle, &env).map_err(ClaudeError::Invalid)?;
     env.insert("ANTHROPIC_BASE_URL".into(), admission.url.clone());
     let warnings = admission.warnings.clone();
-    *jsrt::sync::lock(&handle.admission) = Some(admission.abort_handle());
+    *jsrt::sync::lock(&cleanup.handle.admission) = Some(admission.abort_handle());
     cleanup.admission = Some(admission);
     let settings = write(
         "settings.json",
@@ -650,7 +650,7 @@ pub fn run(
         [
             "-p",
             "--model",
-            &model,
+            model,
             "--input-format",
             "stream-json",
             "--output-format",
@@ -682,96 +682,123 @@ pub fn run(
     if let Some(effort) = parsed["output_config"]["effort"].as_str() {
         argv.extend(["--effort".to_string(), effort.to_string()]);
     }
-    let cwd = workdir(&temp_root).map_err(|e| ClaudeError::Failed(e.to_string()))?;
+    Ok(PreparedLaunch { env, argv, warnings })
+}
+
+fn spawn_native(
+    argv: &[String],
+    env: &Env,
+    cwd: &Path,
+    handle: &Arc<Handle>,
+    cleanup: &mut Cleanup<'_>,
+) -> Result<SpawnedNative, ClaudeError> {
+    use std::os::unix::process::CommandExt;
     let (sender, events) = std::sync::mpsc::channel::<Event>();
     let native_stderr: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::with_capacity(40)));
-    let mut stdin = {
-        use std::os::unix::process::CommandExt;
-        let mut child_slot = jsrt::sync::lock(&handle.child);
+    let mut child_slot = jsrt::sync::lock(&handle.child);
+    if handle.cancelled() {
+        return Err(ClaudeError::Cancelled);
+    }
+    let mut child = Command::new(&argv[0])
+        .args(&argv[1..])
+        .env_clear()
+        .envs(env)
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .map_err(|e| ClaudeError::Failed(format!("Could not start Claude Code ({}): {e}", argv[0])))?;
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let stderr = child.stderr.take().expect("stderr is piped");
+    let stdin = child.stdin.take().expect("stdin is piped");
+    *child_slot = Some(signals::child::Watched::new(child));
+    let err_sink = native_stderr.clone();
+    cleanup.err_reader = Some(std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else { break };
+            let mut guard = jsrt::sync::lock(&err_sink);
+            if guard.len() >= 40 {
+                guard.pop_front();
+            }
+            guard.push_back(line);
+        }
+    }));
+    cleanup.reader = Some(std::thread::spawn(move || {
+        let mut preamble: Option<String> = None;
+        let mut started = false;
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if line.trim().is_empty() {
+                continue;
+            }
+            let event = match serde_json::from_str::<Value>(&line) {
+                Ok(value) => {
+                    started = true;
+                    Event::Line(value)
+                }
+                Err(_) if !started => {
+                    preamble.get_or_insert(line);
+                    continue;
+                }
+                Err(_) => Event::Invalid(line.chars().take(300).collect()),
+            };
+            if sender.send(event).is_err() {
+                return;
+            }
+        }
+        if let Some(line) = preamble.filter(|_| !started) {
+            let _ = sender.send(Event::Invalid(line.chars().take(300).collect()));
+        }
+        let _ = sender.send(Event::Eof);
+    }));
+    Ok(SpawnedNative {
+        stdin,
+        events,
+        stderr: native_stderr,
+    })
+}
+
+fn receive_event(
+    events: &Receiver<Event>,
+    handle: &Handle,
+    timeout: Duration,
+    deadline: &mut Instant,
+) -> Result<Option<Value>, ClaudeError> {
+    loop {
         if handle.cancelled() {
             return Err(ClaudeError::Cancelled);
         }
-        let mut child = Command::new(&argv[0])
-            .args(&argv[1..])
-            .env_clear()
-            .envs(&env)
-            .current_dir(&cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0)
-            .spawn()
-            .map_err(|e| ClaudeError::Failed(format!("Could not start Claude Code ({}): {e}", argv[0])))?;
-        let stdout = child.stdout.take().expect("stdout is piped");
-        let stderr = child.stderr.take().expect("stderr is piped");
-        let stdin = child.stdin.take().expect("stdin is piped");
-        *child_slot = Some(signals::child::Watched::new(child));
-        let err_sink = native_stderr.clone();
-        cleanup.err_reader = Some(std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
-                let Ok(line) = line else { break };
-                let mut guard = jsrt::sync::lock(&err_sink);
-                if guard.len() >= 40 {
-                    guard.pop_front();
-                }
-                guard.push_back(line);
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(ClaudeError::Timeout);
+        }
+        match events.recv_timeout(remaining.min(Duration::from_millis(200))) {
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) | Ok(Event::Eof) => return Ok(None),
+            Ok(Event::Invalid(line)) => {
+                return Err(ClaudeError::Failed(format!(
+                    "Invalid native stream-json output: '{line}'"
+                )));
             }
-        }));
-        cleanup.reader = Some(std::thread::spawn(move || {
-            let mut preamble: Option<String> = None;
-            let mut started = false;
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { break };
-                if line.trim().is_empty() {
-                    continue;
-                }
-                let event = match serde_json::from_str::<Value>(&line) {
-                    Ok(value) => {
-                        started = true;
-                        Event::Line(value)
-                    }
-                    Err(_) if !started => {
-                        preamble.get_or_insert(line);
-                        continue;
-                    }
-                    Err(_) => Event::Invalid(line.chars().take(300).collect()),
-                };
-                if sender.send(event).is_err() {
-                    return;
-                }
-            }
-            if let Some(line) = preamble.filter(|_| !started) {
-                let _ = sender.send(Event::Invalid(line.chars().take(300).collect()));
-            }
-            let _ = sender.send(Event::Eof);
-        }));
-        stdin
-    };
-    let mut deadline = Instant::now() + timeout;
-    let mut receive = |events: &Receiver<Event>| -> Result<Option<Value>, ClaudeError> {
-        loop {
-            if handle.cancelled() {
-                return Err(ClaudeError::Cancelled);
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(ClaudeError::Timeout);
-            }
-            match events.recv_timeout(remaining.min(Duration::from_millis(200))) {
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) | Ok(Event::Eof) => return Ok(None),
-                Ok(Event::Invalid(line)) => {
-                    return Err(ClaudeError::Failed(format!(
-                        "Invalid native stream-json output: '{line}'"
-                    )));
-                }
-                Ok(Event::Line(value)) => {
-                    deadline = Instant::now() + timeout;
-                    return Ok(Some(value));
-                }
+            Ok(Event::Line(value)) => {
+                *deadline = Instant::now() + timeout;
+                return Ok(Some(value));
             }
         }
-    };
+    }
+}
+
+fn replay_and_collect(
+    mut stdin: std::process::ChildStdin,
+    events: &Receiver<Event>,
+    prepared: &Prepared,
+    handle: &Handle,
+    timeout: Duration,
+    on_delta: &mut dyn FnMut(Delta),
+) -> Result<StreamOutcome, ClaudeError> {
+    let mut deadline = Instant::now() + timeout;
     let last = prepared.frames.len().saturating_sub(1);
     for (index, frame) in prepared.frames.iter().enumerate() {
         let mut frame = frame.clone();
@@ -785,7 +812,7 @@ pub fn run(
         }
         if parked {
             loop {
-                let Some(ack) = receive(&events)? else {
+                let Some(ack) = receive_event(events, handle, timeout, &mut deadline)? else {
                     return Err(ClaudeError::Failed("Native exited before replay acknowledgment".into()));
                 };
                 if ack["type"] == "result" {
@@ -806,7 +833,7 @@ pub fn run(
     let mut emitted = String::new();
     let mut native_error: Option<(String, Option<String>)> = None;
     let mut signals = super::limit::Signals::default();
-    while let Some(event) = receive(&events)? {
+    while let Some(event) = receive_event(events, handle, timeout, &mut deadline)? {
         match event["type"].as_str() {
             Some("rate_limit_event") => {
                 if let Some(info) = event.get("rate_limit_info").filter(|i| i.is_object()) {
@@ -857,28 +884,61 @@ pub fn run(
             _ => {}
         }
     }
-    let child = handle.watched().expect("native was spawned");
-    let ended = child.wait_timeout(deadline.saturating_duration_since(Instant::now()));
-    if !ended && handle.cancelled() {
-        return Err(ClaudeError::Cancelled);
+    Ok(StreamOutcome {
+        assistants,
+        results,
+        stopped,
+        emitted,
+        native_error,
+        signals,
+        deadline,
+    })
+}
+
+fn extract_calls(assistants: &mut [Value], names: &std::collections::BTreeSet<String>) -> Vec<NativeCall> {
+    let mut calls = Vec::new();
+    for assistant in assistants {
+        for block in assistant["content"].as_array_mut().into_iter().flatten() {
+            if block["type"] != "tool_use" {
+                continue;
+            }
+            let name = block["name"].as_str().unwrap_or_default().to_string();
+            if names.contains(name.as_str()) {
+                block["name"] = json!(format!("{PREFIX}{name}"));
+            } else if let Some(rest) = name.strip_prefix("mcp__")
+                && !name.starts_with(PREFIX)
+                && names.contains(rest)
+            {
+                block["name"] = json!(format!("{PREFIX}{rest}"));
+            }
+            let host = block["name"].as_str().unwrap_or_default();
+            calls.push(NativeCall {
+                id: block["id"].as_str().unwrap_or_default().to_string(),
+                name: host.strip_prefix(PREFIX).unwrap_or(host).to_string(),
+                input: block.get("input").cloned().unwrap_or(json!({})),
+            });
+        }
     }
-    if !ended {
-        return Err(ClaudeError::Timeout);
-    }
-    let code = child.status().and_then(|s| s.code());
-    if let Some(reader) = cleanup.reader.take() {
-        let _ = reader.join();
-    }
-    if let Some(err_reader) = cleanup.err_reader.take() {
-        let _ = err_reader.join();
-    }
-    let err_tail = stderr_tail(&native_stderr);
-    if handle.cancelled() {
-        return Err(ClaudeError::Cancelled);
-    }
-    let admission = cleanup.admission.as_mut().expect("the relay is open");
-    admission.close();
-    let outcome = admission.outcome();
+    calls
+}
+
+fn finalize_response(
+    stream: StreamOutcome,
+    outcome: &super::admission::Outcome,
+    prepared: &Prepared,
+    code: Option<i32>,
+    err_tail: &str,
+    warnings: Vec<String>,
+) -> Result<NativeResponse, ClaudeError> {
+    let StreamOutcome {
+        mut assistants,
+        results,
+        mut stopped,
+        emitted,
+        native_error,
+        mut signals,
+        ..
+    } = stream;
     signals.header_status = outcome.unified_status.clone();
     signals.header_reset = outcome.unified_reset.clone();
     signals.native_code = native_error.as_ref().and_then(|(_, code)| code.clone());
@@ -932,30 +992,7 @@ pub fn run(
         )));
     }
     let last_result = &results[0];
-    let names: std::collections::BTreeSet<&str> = prepared.body.names.iter().map(String::as_str).collect();
-    let mut calls = Vec::new();
-    for assistant in &mut assistants {
-        for block in assistant["content"].as_array_mut().into_iter().flatten() {
-            if block["type"] != "tool_use" {
-                continue;
-            }
-            let name = block["name"].as_str().unwrap_or_default().to_string();
-            if names.contains(name.as_str()) {
-                block["name"] = json!(format!("{PREFIX}{name}"));
-            } else if let Some(rest) = name.strip_prefix("mcp__")
-                && !name.starts_with(PREFIX)
-                && names.contains(rest)
-            {
-                block["name"] = json!(format!("{PREFIX}{rest}"));
-            }
-            let host = block["name"].as_str().unwrap_or_default();
-            calls.push(NativeCall {
-                id: block["id"].as_str().unwrap_or_default().to_string(),
-                name: host.strip_prefix(PREFIX).unwrap_or(host).to_string(),
-                input: block.get("input").cloned().unwrap_or(json!({})),
-            });
-        }
-    }
+    let mut calls = extract_calls(&mut assistants, &prepared.body.names);
     let subtype = last_result.get("subtype");
     let boundary = !calls.is_empty() && subtype == Some(&json!("error_max_turns")) && code == Some(1);
     if !boundary
@@ -1031,8 +1068,10 @@ pub fn run(
     if let Some(unrestored) = &outcome.unrestored {
         admission_report["unrestored"] = json!(unrestored);
     }
-    let cost = json!({"total_cost_usd": last_result.get("total_cost_usd").cloned().unwrap_or(Value::Null), "modelUsage": last_result.get("modelUsage").cloned().unwrap_or(Value::Null)});
-    drop(outcome);
+    let cost = json!({
+        "total_cost_usd": last_result.get("total_cost_usd").cloned().unwrap_or(Value::Null),
+        "modelUsage": last_result.get("modelUsage").cloned().unwrap_or(Value::Null),
+    });
     Ok(NativeResponse {
         assistants,
         blocks,
@@ -1045,4 +1084,64 @@ pub fn run(
         tail,
         warnings,
     })
+}
+
+/// Run one model call against native (blocking). `upstream` is where the admitted request goes.
+pub fn run(
+    config: &Config,
+    env: Env,
+    prepared: &Prepared,
+    handle: &Arc<Handle>,
+    on_delta: &mut dyn FnMut(Delta),
+) -> Result<NativeResponse, ClaudeError> {
+    let timeout = config.timeout;
+    if timeout.is_zero() {
+        return Err(ClaudeError::Invalid("timeout must be positive seconds".into()));
+    }
+    let mut env = env;
+    refuse_overrides(&env)?;
+    for key in AUTH_OVERRIDES.iter().chain(BACKEND_OVERRIDES).chain(API_CREDENTIALS) {
+        env.remove(*key);
+    }
+    let resolved =
+        resolve_claude(config.command.as_deref(), &env).ok_or_else(|| ClaudeError::Missing(INSTALL_HINT.into()))?;
+    let model = native_model(&prepared.model).map_err(ClaudeError::Invalid)?;
+    let _slot = acquire_slot(max_concurrent(&env), handle, timeout)?;
+    let temp_root = config.temp_root.clone().unwrap_or_else(std::env::temp_dir);
+    let mut cleanup = Cleanup {
+        handle,
+        dir: None,
+        admission: None,
+        reader: None,
+        err_reader: None,
+    };
+    let root = private_temp(&temp_root, "ultron-claude-").map_err(|e| ClaudeError::Failed(e.to_string()))?;
+    cleanup.dir = Some(root.clone());
+    let launch = prepare_launch(config, env, prepared, resolved, &model, &root, &mut cleanup)?;
+    let cwd = workdir(&temp_root).map_err(|e| ClaudeError::Failed(e.to_string()))?;
+    let spawned = spawn_native(&launch.argv, &launch.env, &cwd, handle, &mut cleanup)?;
+    let stream = replay_and_collect(spawned.stdin, &spawned.events, prepared, handle, timeout, on_delta)?;
+    let child = handle.watched().expect("native was spawned");
+    let ended = child.wait_timeout(stream.deadline.saturating_duration_since(Instant::now()));
+    if !ended && handle.cancelled() {
+        return Err(ClaudeError::Cancelled);
+    }
+    if !ended {
+        return Err(ClaudeError::Timeout);
+    }
+    let code = child.status().and_then(|s| s.code());
+    if let Some(reader) = cleanup.reader.take() {
+        let _ = reader.join();
+    }
+    if let Some(err_reader) = cleanup.err_reader.take() {
+        let _ = err_reader.join();
+    }
+    let err_tail = stderr_tail(&spawned.stderr);
+    if handle.cancelled() {
+        return Err(ClaudeError::Cancelled);
+    }
+    let admission = cleanup.admission.as_mut().expect("the relay is open");
+    admission.close();
+    let outcome = admission.outcome();
+    finalize_response(stream, &outcome, prepared, code, &err_tail, launch.warnings)
 }
