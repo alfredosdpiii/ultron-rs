@@ -176,7 +176,8 @@ RECHECK_WINDOW = 20
 #: Replies in a finding's thread shown to its re-check, and the characters kept of each.
 MAX_REPLIES = 6
 REPLY_CHARS = 1_200
-RECHECK_DIFF_CHARS = 4_000
+RECHECK_DIFF_CHARS = 8_000
+RECHECK_LINE_CHARS = 1_200
 RECHECK_SHARE = 0.15
 MAX_REPLACEMENT_CHARS = 2_000
 MAX_REPLACEMENT_SPAN = 30
@@ -571,7 +572,8 @@ def diff_line_ranges(files: list[FileDiff]) -> dict[str, list[list[int]]]:
     return out
 
 
-def _hunks_text(item: FileDiff | None, limit: int = RECHECK_DIFF_CHARS) -> str:
+def _hunks_text(item: FileDiff | None, limit: int = RECHECK_DIFF_CHARS,
+                line_limit: int = RECHECK_LINE_CHARS) -> str:
     if item is None or not item.hunks:
         return "(this file did not change since the earlier review)"
     lines: list[str] = []
@@ -579,7 +581,7 @@ def _hunks_text(item: FileDiff | None, limit: int = RECHECK_DIFF_CHARS) -> str:
         lines.append(f"@@ {hunk.header}".rstrip() if hunk.header else "@@")
         for entry in hunk.lines:
             number = "" if entry.new is None else str(entry.new)
-            lines.append(f"{number:>5} {entry.kind} {_clip(entry.text)}")
+            lines.append(f"{number:>5} {entry.kind} {_clip(entry.text, line_limit)}")
     text = "\n".join(lines)
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
@@ -1091,6 +1093,37 @@ def _scope(spec: dict[str, Any], runner: Runner | None) -> tuple[Scope, Git | No
     return Scope(label, files, lambda _path: None, tempfile.gettempdir(), ""), None, incomplete
 
 
+def _recheck_change_views(
+    path: str,
+    since: list[FileDiff] | None,
+    change: FileDiff | None,
+) -> tuple[list[str], str]:
+    if since is None:
+        changes = "(the branch was rewritten; no diff since the earlier review)"
+        header = f"Changes to {path} since the earlier review (new-file line numbers):"
+        return [f"{header}\n{changes}"], changes
+
+    if change is None:
+        changes = _elsewhere_text(since, path)
+        header = (
+            f"{path} did not change since the earlier review. "
+            "Changes elsewhere since then (new-file line numbers):"
+        )
+        return [f"{header}\n{changes}"], changes
+
+    file_changes = _hunks_text(change)
+    header = f"Changes to {path} since the earlier review (new-file line numbers):"
+    views = [f"{header}\n{file_changes}"]
+    has_other = any(item.path != path and item.hunks for item in since)
+    if not has_other:
+        return views, file_changes
+
+    elsewhere = _elsewhere_text(since, path)
+    other_header = "Changes elsewhere since the earlier review (new-file line numbers):"
+    views.append(f"{other_header}\n{elsewhere}")
+    return views, f"{file_changes}\n{elsewhere}"
+
+
 async def recheck_earlier(rlm: Any, earlier: list[dict[str, Any]], since: list[FileDiff] | None, scope: Scope,
                           *, frames: Frames, budget_tokens: int, model: str | None, thinking: str | None,
                           cutoff: float | None) -> list[dict[str, Any]]:
@@ -1137,22 +1170,21 @@ async def recheck_earlier(rlm: Any, earlier: list[dict[str, Any]], since: list[F
         line = min(max(1, mapped or old_line), max(1, len(source)))
         entry["file"] = path
         entry["line"] = line
-        window = source_window(source, line, RECHECK_WINDOW)
-        public = {"file": raw["file"], "line": old_line, "severity": raw.get("severity"), "claim": entry["claim"]}
-        views = [f"Earlier finding:\n{json.dumps(public, indent=1)}",
-                 f"Current source of {path} around line {line} (> marks the mapped line):\n{window}"]
-        if since is None:
-            changes = "(the branch was rewritten; no diff since the earlier review)"
-            views.append(f"Changes to {path} since the earlier review (new-file line numbers):\n{changes}")
-        elif change is None:
-            # fisher-ki-saas#2917: the cap was pinned in the spec and the settings documented in the runbook, while
-            # "the file did not change" kept both findings still present and blocking for three reviews.
-            changes = _elsewhere_text(since, path)
-            views.append(f"{path} did not change since the earlier review. Changes elsewhere since then "
-                         f"(new-file line numbers):\n{changes}")
-        else:
-            changes = _hunks_text(change)
-            views.append(f"Changes to {path} since the earlier review (new-file line numbers):\n{changes}")
+        window = source_window(
+            source, line, RECHECK_WINDOW, line_limit=RECHECK_LINE_CHARS
+        )
+        public = {
+            "file": raw["file"],
+            "line": old_line,
+            "severity": raw.get("severity"),
+            "claim": entry["claim"],
+        }
+        views = [
+            f"Earlier finding:\n{json.dumps(public, indent=1)}",
+            f"Current source of {path} around line {line} (> marks the mapped line):\n{window}",
+        ]
+        change_views, changes = _recheck_change_views(path, since, change)
+        views.extend(change_views)
         if replies:
             thread = "\n\n".join(f"{_text(item.get('author'), 60)}: {_text(item.get('body'), REPLY_CHARS)}"
                                  for item in replies)

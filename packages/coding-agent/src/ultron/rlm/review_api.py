@@ -788,12 +788,23 @@ def symbols_for(source: list[str] | None, line: int, limit: int = 3) -> list[str
     return names[:limit]
 
 
-def source_window(source: list[str] | None, line: int, radius: int = VERIFY_WINDOW) -> str:
+def source_window(
+    source: list[str] | None,
+    line: int,
+    radius: int = VERIFY_WINDOW,
+    line_limit: int = MAX_LINE_CHARS,
+) -> str:
     if not source:
         return "(source unavailable)"
-    start, end = max(1, line - radius), min(len(source), line + radius)
-    return "\n".join(f"{'>' if number == line else ' '}{number:>5} | {_clip(source[number - 1])}"
-                     for number in range(start, end + 1))
+
+    start = max(1, line - radius)
+    end = min(len(source), line + radius)
+    rendered = []
+    for number in range(start, end + 1):
+        marker = ">" if number == line else " "
+        text = _clip(source[number - 1], line_limit)
+        rendered.append(f"{marker}{number:>5} | {text}")
+    return "\n".join(rendered)
 
 
 def hunk_for(item: FileDiff | None, line: int) -> Hunk | None:
