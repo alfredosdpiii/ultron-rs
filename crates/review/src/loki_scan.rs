@@ -35,7 +35,36 @@ impl LokiScan {
                 violations.push(item);
             }
         }
+        Self::append_hygiene(&parsed, &mut violations);
         Ok(json!({ "violations": violations }))
+    }
+
+    fn append_hygiene(parsed: &[(String, String, String)], violations: &mut Vec<String>) {
+        let code_files: Vec<&(String, String, String)> = parsed
+            .iter()
+            .filter(|(path, _, new_text)| !new_text.is_empty() && loki::rules::language(path).is_some())
+            .collect();
+        if code_files.is_empty() {
+            return;
+        }
+        let texts: Vec<&str> = code_files.iter().map(|(_, _, new_text)| new_text.as_str()).collect();
+        let Ok(scored) = loki::hygiene::score(&texts, loki::proc::Deadline::after(5.0)) else {
+            return;
+        };
+        for ((path, old_text, new_text), squiggles) in code_files.iter().zip(scored) {
+            let notes = loki::hygiene::notes(
+                path,
+                old_text,
+                new_text,
+                &squiggles,
+                loki::hygiene::Level::On,
+            );
+            let fresh: Vec<String> = notes
+                .into_iter()
+                .filter(|note| !violations.contains(note))
+                .collect();
+            violations.extend(fresh);
+        }
     }
 }
 

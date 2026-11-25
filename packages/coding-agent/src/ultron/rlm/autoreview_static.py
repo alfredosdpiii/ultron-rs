@@ -39,8 +39,19 @@ MAX_STAGE_FINDINGS = 12
 RUFF_RULES = "F821,F822,F823,F632,F701,F702,F704,F706"
 #: Ruff's low-noise nit rules on added lines: unused imports/locals, redundant f-strings, duplicate keys, identity checks.
 RUFF_NIT_RULES = "F401,F841,F541,F601,F811,E711,E712,E713,E714,E721"
-#: Loki rules emitted as non-blocking nits rather than medium correctness findings.
-LOKI_NIT_RULES = frozenset({"no-debugger", "no-empty", "no-focused-tests", "no-disabled-tests"})
+#: Loki security rules emitted as high-severity security findings.
+LOKI_SECURITY_RULES = frozenset({
+    "secret", "actions-injection", "sql-injection", "command-injection",
+    "tls-verification", "zip-slip", "open-redirect", "ssrf",
+    "request-authorization", "unsafe-elixir-eval",
+})
+#: Loki style/hygiene rules emitted as non-blocking nits rather than medium blockers.
+LOKI_NIT_RULES = frozenset({
+    "no-debugger", "no-empty", "no-focused-tests", "no-disabled-tests",
+    "unexplained-allow", "unexplained-credo-disable", "unsafe-without-safety-comment",
+    "placeholder", "elixir-list-slop",
+    "python-fixed-sleep", "rust-fixed-sleep", "elixir-fixed-sleep",
+})
 STAGES = ("compile", "lint", "typecheck", "loki")
 
 Which = Callable[[str], "str | None"]
@@ -372,8 +383,9 @@ async def _loki(
         stage.flagged.add(path)
         if line not in added.get(path, set()):
             continue
-        security = rule in ("loki/secret", "loki/actions-injection")
-        is_nit = rule in LOKI_NIT_RULES
+        short_rule = rule.removeprefix("loki/")
+        security = short_rule in LOKI_SECURITY_RULES
+        is_nit = short_rule in LOKI_NIT_RULES or short_rule.startswith(("hygiene-", "nits-"))
         level = "high" if security else ("nit" if is_nit else "medium")
         category = "security" if security else ("maintainability" if is_nit else "correctness")
         claim = f"{_text(match.group('message'), 200)} ({rule})."
