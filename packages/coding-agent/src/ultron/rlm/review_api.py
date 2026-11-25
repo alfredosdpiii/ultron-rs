@@ -2274,10 +2274,34 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
         except Exception as error:
             not_checked.append(f"No sub-agent read past the diff ({_text(str(error) or type(error).__name__, 160)}).")
     if frames:
-        results = await rlm.map([finder_task(reviewer) for reviewer, _ in frames], [chunk.text for _, chunk in frames],
-                                contract=FINDINGS_CONTRACT, budget=Budget(tokens=find_budget),
-                                model=options.model or options.frame_model,
-                                timeout_ms=FRAME_TIMEOUT_MS)
+        find_tasks: list[str] = []
+        find_items: list[str | list[str]] = []
+        for reviewer, chunk in frames:
+            if reviewer.key == CONVENTIONS_KEY and reviewer.checklist:
+                slim = Reviewer(
+                    reviewer.key,
+                    reviewer.title,
+                    reviewer.focus,
+                    (),
+                    only_paths=reviewer.only_paths,
+                )
+                conv_view = (
+                    "Repository and directory convention files:\n"
+                    + "\n\n".join(reviewer.checklist)
+                )
+                find_tasks.append(finder_task(slim))
+                find_items.append([conv_view, chunk.text])
+            else:
+                find_tasks.append(finder_task(reviewer))
+                find_items.append(chunk.text)
+        results = await rlm.map(
+            find_tasks,
+            find_items,
+            contract=FINDINGS_CONTRACT,
+            budget=Budget(tokens=find_budget),
+            model=options.model or options.frame_model,
+            timeout_ms=FRAME_TIMEOUT_MS,
+        )
         calls, tokens = _spent(results)
         stats.update(find_frames=len(frames), frames=calls, tokens=tokens)
         for (reviewer, chunk), result in zip(frames, results):
@@ -2361,7 +2385,7 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
     estimate = 0
     for finding in merged:
         source = scope.read_file(finding["file"])
-        window = source_window(source, finding["line"])
+        window = source_window(source, finding["line"], line_limit=1_200)
         hunk = hunk_for(by_path.get(finding["file"]), finding["line"])
         hunk_text = "\n".join(render_hunk(hunk)) if hunk else "(no hunk)"
         related = related_code(git, scope, finding, source)
@@ -2377,9 +2401,10 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
         if CONTRACT_KEY in finding["reviewers"] and contracts.get(finding["file"]):
             views.append("What the endpoints this file talks to answer, and their other callers (found by a search "
                          "of the repository):\n" + "\n".join(contracts[finding["file"]]))
+        conv_text = ""
         if CONVENTIONS_KEY in finding["reviewers"] and conventions.get(finding["file"]):
-            views.append("Repository and directory convention files governing this file:\n"
-                         + "\n\n".join(conventions[finding["file"]]))
+            conv_text = "\n\n".join(conventions[finding["file"]])
+            views.append(f"Repository and directory convention files governing this file:\n{conv_text}")
         read = needed_code(git, scope, finding.get("read"))
         if read:
             views.append(f"Code outside the diff that the reviewer who raised this read:\n{read}")
@@ -2389,7 +2414,8 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
             continue
         estimate += cost
         items.append(views)
-        sources.append(window + "\n" + hunk_text + ("\n" + related if related else "") + ("\n" + read if read else ""))
+        source_parts = [part for part in (window, hunk_text, related, conv_text, read) if part]
+        sources.append("\n".join(source_parts))
         counts.append(len(source) if source else None)
         to_verify.append(finding)
     confirmed: list[dict[str, Any]] = []

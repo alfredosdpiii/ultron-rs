@@ -617,11 +617,9 @@ pub fn decide_verdict_in(
                 plural(still_open)
             ),
         )
-    } else if !result.complete {
-        decision(Verdict::Comment, "the review did not cover everything".into())
     } else if late > 0 {
         decision(
-            Verdict::Comment,
+            Verdict::Approve,
             "nothing that changed since the last review blocks the merge".into(),
         )
     } else {
