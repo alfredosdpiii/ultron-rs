@@ -1233,31 +1233,37 @@ async def recall_memorantado_items(rlm: Any, files: list[FileDiff], *, label: st
     query = "code review pitfalls, invariants, and conventions for: " + ", ".join(paths)
     if label:
         query = f"{query} ({_clip(label, 120)})"
-    try:
-        reply = await request("memory.prepare", {
-            "query": query, "scope": "project", "taskId": "review-recall",
-            "filePaths": paths, "includeEpisodes": False,
-        })
-    except Exception:  # noqa: BLE001 - optional memory service, never fails a review
-        return []
-    if not isinstance(reply, dict):
-        return []
-    items: list[str] = []
-    for entry in reply.get("results") or []:
-        if not isinstance(entry, dict) or entry.get("stale") or entry.get("type") == "experience":
-            continue
-        text = _text(entry.get("text"), 260)
-        if text and text not in items:
-            items.append(text)
-        if len(items) >= limit:
-            break
-    if not items and isinstance(reply.get("context"), str) and reply["context"].strip():
-        for line in reply["context"].splitlines():
-            clean = _text(line.lstrip("-*•0123456789. "), 260)
-            if clean and clean not in items:
-                items.append(clean)
-            if len(items) >= limit:
+    async def _query_scope(scope_name: str, max_items: int) -> list[str]:
+        try:
+            reply = await request("memory.prepare", {
+                "query": query, "scope": scope_name, "taskId": f"review-recall-{scope_name}",
+                "filePaths": paths, "includeEpisodes": False,
+            })
+        except Exception:  # noqa: BLE001 - optional memory service, never fails a review
+            return []
+        if not isinstance(reply, dict):
+            return []
+        found: list[str] = []
+        for entry in reply.get("results") or []:
+            if not isinstance(entry, dict) or entry.get("stale") or entry.get("type") == "experience":
+                continue
+            text = _text(entry.get("text"), 260)
+            if text and text not in found:
+                found.append(text)
+            if len(found) >= max_items:
                 break
+        if not found and isinstance(reply.get("context"), str) and reply["context"].strip():
+            for line in reply["context"].splitlines():
+                clean = _text(line.lstrip("-*•0123456789. "), 260)
+                if clean and clean not in found:
+                    found.append(clean)
+                if len(found) >= max_items:
+                    break
+        return found
+
+    items = await _query_scope("project", limit)
+    if not items:
+        items = await _query_scope("global", min(limit, 4))
     return items
 
 

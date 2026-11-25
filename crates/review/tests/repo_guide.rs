@@ -564,3 +564,54 @@ asyncio.run(main())
     assert_eq!(got["saw_active_memory"], true, "{got}");
     assert_eq!(got["skipped_stale_memory"], true, "{got}");
 }
+
+#[test]
+fn review_minimal_mode_injects_base_conventions_only_when_present_and_falls_back_to_global_memory() {
+    let dir = tempfile::tempdir().expect("dir");
+    let repo = dir.path();
+    git(repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("CLAUDE.md"), "Rule: never disable TLS verification.\n").expect("claude");
+    std::fs::write(repo.join("app.py"), "def run(x):\n    return x\n").expect("base");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "base"]);
+    let base = git(repo, &["rev-parse", "HEAD"]);
+    std::fs::write(repo.join("app.py"), "def run(x):\n    return x + 1\n").expect("head");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "head"]);
+    let head = git(repo, &["rev-parse", "HEAD"]);
+
+    let body = r#"
+class FakeRlm:
+    def __init__(self):
+        self.scopes = []
+        self.seen_contexts = []
+    async def host_request(self, kind, payload):
+        if kind == 'memory.prepare':
+            self.scopes.append(payload.get('scope'))
+            if payload.get('scope') == 'global':
+                return {'results': [{'id': 'g1', 'text': 'Global pitfall: always close HTTP clients'}]}
+            return {'results': []}
+        return {}
+    async def map(self, tasks, items, **kwargs):
+        ctx = kwargs.get('context')
+        if isinstance(ctx, list):
+            self.seen_contexts.extend(str(v) for v in ctx)
+        return [[] for _ in items]
+
+async def main():
+    rlm = FakeRlm()
+    await a.run(rlm, {'repoDir': repo, 'base': base, 'head': head, 'mode': 'minimal', 'model': 'p/m'})
+    joined = '\n'.join(rlm.seen_contexts)
+    print(json.dumps({
+        'scopes': rlm.scopes,
+        'saw_conventions': 'never disable TLS verification' in joined,
+        'saw_global_fallback': 'Global pitfall: always close HTTP clients' in joined,
+    }))
+
+asyncio.run(main())
+"#;
+    let got = engine(dir.path(), &base, &head, body);
+    assert_eq!(got["scopes"], json!(["project", "global"]), "{got}");
+    assert_eq!(got["saw_conventions"], true, "{got}");
+    assert_eq!(got["saw_global_fallback"], true, "{got}");
+}

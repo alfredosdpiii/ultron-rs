@@ -50,6 +50,8 @@ _LOKI_LINE = re.compile(r"^(?P<path>.+?):(?P<line>\d+): (?P<rule>[\w./-]+): (?P<
 _MYPY_LINE = re.compile(r"^(?P<path>[^:\n]+):(?P<line>\d+):(?:\d+:)? error: (?P<message>.*?)(?:\s+\[(?P<code>[\w-]+)\])?$",
                         re.M)
 _NODE_LINE = re.compile(r":(\d+)\s*$", re.M)
+_GOFMT_LINE = re.compile(r":(\d+):\d+:\s*(.+)")
+_SHELL_LINE = re.compile(r"line (\d+):\s*(.+)")
 
 #: Claims a stage that ran clean on the file contradicts: (stage, pattern).
 CONTRADICTED_BY = (
@@ -132,12 +134,35 @@ def _broken(path: str, text: str) -> tuple[int, str] | None:
         except tomllib.TOMLDecodeError as error:
             found = re.search(r"line (\d+)", str(error))
             return int(found.group(1)) if found else 1, f"invalid TOML: {error}"
+    elif path.endswith((".yml", ".yaml")):
+        try:
+            import yaml  # type: ignore[import-not-found]
+        except ImportError:
+            return None
+        try:
+            list(yaml.safe_load_all(text))
+        except yaml.YAMLError as error:
+            mark = getattr(error, "problem_mark", None)
+            line = (mark.line + 1) if mark is not None else 1
+            return max(1, line), f"invalid YAML: {getattr(error, 'problem', error)}"
     return None
+
+
+def _broken_external_base(path: str, base: str, argv: list[str], workdir: str, executor: Executor) -> bool:
+    """Whether the base commit's version of a file also fails an external syntax check command."""
+    scratch = os.path.join(workdir, ".base", path)
+    os.makedirs(os.path.dirname(scratch), exist_ok=True)
+    with open(scratch, "w", encoding="utf-8") as handle:
+        handle.write(base)
+    code, _ = executor([*argv, scratch], workdir, testing.sandbox_env(), TOOL_TIMEOUT_S)
+    return code != 0
 
 
 def _compile(stage: _Stage, heads: dict[str, str], bases: dict[str, str | None], workdir: str, which: Which,
              executor: Executor) -> None:
     node = which("node")
+    gofmt = which("gofmt")
+    shell = which("bash") or which("sh")
     for path, text in heads.items():
         if path.endswith((".js", ".mjs", ".cjs")):
             if node is None:
@@ -154,7 +179,37 @@ def _compile(stage: _Stage, heads: dict[str, str], bases: dict[str, str | None],
                     stage.add(_finding("compile", path, line, f"{path} no longer parses: {_text(message, 160)}",
                                        message, level="high", category="correctness", tool="node --check"))
             continue
-        if not path.endswith((".py", ".json", ".toml")):
+        if path.endswith(".go"):
+            if gofmt is None:
+                continue
+            code, output = executor([gofmt, "-e", os.path.join(workdir, path)], workdir, testing.sandbox_env(), TOOL_TIMEOUT_S)
+            stage.files.append(path)
+            if code != 0:
+                stage.flagged.add(path)
+                match = _GOFMT_LINE.search(output)
+                line = int(match.group(1)) if match else 1
+                message = match.group(2).strip() if match else output.strip()[:200]
+                base = bases.get(path)
+                if base is None or _broken_external_base(path, base, [gofmt, "-e"], workdir, executor) is False:
+                    stage.add(_finding("compile", path, line, f"{path} no longer parses: {_text(message, 160)}",
+                                       message, level="high", category="correctness", tool="gofmt"))
+            continue
+        if path.endswith((".sh", ".bash")):
+            if shell is None:
+                continue
+            code, output = executor([shell, "-n", os.path.join(workdir, path)], workdir, testing.sandbox_env(), TOOL_TIMEOUT_S)
+            stage.files.append(path)
+            if code != 0:
+                stage.flagged.add(path)
+                match = _SHELL_LINE.search(output)
+                line = int(match.group(1)) if match else 1
+                message = match.group(2).strip() if match else output.strip()[:200]
+                base = bases.get(path)
+                if base is None or _broken_external_base(path, base, [shell, "-n"], workdir, executor) is False:
+                    stage.add(_finding("compile", path, line, f"{path} has a shell syntax error: {_text(message, 160)}",
+                                       message, level="high", category="correctness", tool=os.path.basename(shell)))
+            continue
+        if not path.endswith((".py", ".json", ".toml", ".yml", ".yaml")):
             continue
         stage.files.append(path)
         error = _broken(path, text)

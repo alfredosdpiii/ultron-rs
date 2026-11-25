@@ -593,3 +593,51 @@ print(json.dumps([[f['file'], f['line'], f['level'], f['severity'], f['source'],
         "{got}"
     );
 }
+
+#[test]
+fn review_static_stage_checks_shell_and_go_syntax_net_new() {
+    let dir = tempfile::tempdir().expect("dir");
+    let repo = dir.path();
+    git(repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("run.sh"), "#!/usr/bin/env bash\necho ok\n").expect("sh base");
+    std::fs::write(repo.join("main.go"), "package main\nfunc main() {}\n").expect("go base");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "base"]);
+    let base = git(repo, &["rev-parse", "HEAD"]);
+    std::fs::write(repo.join("run.sh"), "#!/usr/bin/env bash\nif true; then\n  echo oops\n").expect("sh head");
+    std::fs::write(repo.join("main.go"), "package main\nfunc main() { if }\n").expect("go head");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "head"]);
+    let head = git(repo, &["rev-parse", "HEAD"]);
+
+    let body = r#"
+def fake_which_multi(name):
+    return {'bash': '/fake/bash', 'gofmt': '/fake/gofmt'}.get(name)
+
+def fake_run_multi(argv, cwd, env, timeout):
+    if argv[0] == '/fake/bash':
+        if '.base' in argv[-1]:
+            return 0, ''
+        return 2, f"{argv[-1]}: line 3: syntax error: unexpected end of file\n"
+    if argv[0] == '/fake/gofmt':
+        if '.base' in argv[-1]:
+            return 0, ''
+        return 2, f"{argv[-1]}:2:18: expected operand, found '}}'\n"
+    return 0, ''
+
+st.shutil.which = fake_which_multi
+st.testing.run_process = fake_run_multi
+scope, git, _ = a._scope({'repoDir': repo, 'base': base, 'head': head}, None)
+out = asyncio.run(st.run_static(object(), scope.files, scope.read_file, a._rev_reader(git, base)))
+print(json.dumps([[f['file'], f['line'], f['level'], f['source']] for f in out['findings']]))
+"#;
+    let got = engine(dir.path(), &base, &head, body);
+    assert_eq!(
+        got,
+        json!([
+            ["main.go", 2, "high", "static:compile"],
+            ["run.sh", 3, "high", "static:compile"],
+        ]),
+        "{got}"
+    );
+}

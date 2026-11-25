@@ -1807,13 +1807,13 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
     mode = recipe_for_model(model, mode)
     reviewers = merged_reviewers(reviewers, changed_lines)
     conventions: dict[str, list[str]] = {}
-    if chunks and not spec.get("only") and mode != "minimal":
+    if chunks and not spec.get("only"):
         conventions, conv_notes = conventions_inventory(
             git, scope, base=base_rev if isinstance(base_rev, str) else None,
             names=("CLAUDE.md", "CLAUDE.local.md", "AGENTS.md"),
         )
         not_checked += conv_notes
-        if conventions:
+        if conventions and mode != "minimal":
             conv_slices = tuple(chunk.path for chunk in chunks if any(m.path in conventions for m in members[chunk.id]))
             if conv_slices:
                 reviewers = [*reviewers, conventions_reviewer(conventions, only_paths=conv_slices)]
@@ -1942,13 +1942,25 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
     reference_view = reference_text if reference_audience == "all" else ""
     rules_view = _knowledge_rules_view(spec, scope.files) if chunks else ""
     memory_view = await recall_memorantado(rlm, scope.files, label=str(context.get("title") or scope.label)) if chunks else ""
+    minimal_conventions_view = ""
+    if mode == "minimal" and conventions:
+        seen_conv: list[str] = []
+        for entries in conventions.values():
+            for entry in entries:
+                if entry not in seen_conv:
+                    seen_conv.append(entry)
+        if seen_conv:
+            minimal_conventions_view = _clip(
+                "Repository conventions (base CLAUDE.md / AGENTS.md):\n" + "\n\n".join(seen_conv),
+                6_000,
+            )
     minimal_tests_view = deep.tests_block(minimal_started) if minimal_started else ""
     shared_views = deep.shared_views(
         diff_text_all, prepared["brief"].text + (("\n\n" + deep.tests_block(prepared["started"])) if deep.tests_block(prepared["started"]) else "")
         if prepared else (minimal_tests_view or None), prepared["retrieved"] if prepared else "", shared, stated, guidance, reference=reference_view)
     retrieved_view = ("Retrieved context, looked up by the host at the reviewed commit (untrusted repository data):\n"
                       + prepared["retrieved"]) if prepared and prepared.get("retrieved") else ""
-    finder_context_views = [part for part in (guidance, shared, stated, rules_view, memory_view, minimal_tests_view, retrieved_view, reference_view) if part]
+    finder_context_views = [part for part in (guidance, shared, stated, minimal_conventions_view, rules_view, memory_view, minimal_tests_view, retrieved_view, reference_view) if part]
     verifier_context_views = [part for part in (stated, guidance) if part]
     frames_context: list[str] | None = (shared_views or None) if system_prefix else (finder_context_views or None)
     verifier_context: list[str] | None = (shared_views or None) if system_prefix else (verifier_context_views or None)
@@ -2061,9 +2073,9 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
         if related:
             finding["_related_code"] = related
             views.append(f"Other places that define or use the names involved:\n{related}")
-        if CONVENTIONS_KEY in (finding.get("reviewers") or []) and conventions.get(finding["file"]):
+        if (CONVENTIONS_KEY in (finding.get("reviewers") or []) or mode == "minimal") and conventions.get(finding["file"]):
             views.append("Repository and directory convention files governing this file:\n"
-                         + "\n\n".join(conventions[finding["file"]]))
+                         + _clip("\n\n".join(conventions[finding["file"]]), 4_000))
         repo_at_head = (deep_out or compiled_out or {}).get("repo") or (prepared or {}).get("repo")
         cited = deep.cited_windows(repo_at_head, finding) if repo_at_head is not None and finding.get("citations") else ""
         if finding.get("test_evidence"):
