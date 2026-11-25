@@ -18,12 +18,21 @@ pub const DEFAULT_BLOCK_AT: &str = "medium";
 pub const DEFAULT_MAX_COMMENTS: i64 = crate::settings::DEFAULT_MAX_COMMENTS as i64;
 pub const RELOCATE_WITHIN: i64 = 3;
 /// An inline comment's sentences (before any code block) aim to stay under this.
-const MAX_BLOCKING_LISTED: usize = 4;
-const MAX_OUTSIDE_LISTED: usize = 3;
+const MAX_BLOCKING_LISTED: usize = 8;
+const MAX_FINDINGS_LISTED: usize = 12;
 const MAX_NOT_CHECKED: usize = 3;
-const MAX_BODY_LINES: usize = 60;
-/// `notChecked` lines that account for the deep pass's own steps: kept in the record, not posted.
-const PIPELINE_ACCOUNTING: [&str; 2] = ["Not traced by the deep pass", "Checks the deep pass"];
+const MAX_BODY_LINES: usize = 80;
+/// `notChecked` lines that account for internal pass skipping/bookkeeping: kept in the record, not posted.
+const PIPELINE_ACCOUNTING: [&str; 8] = [
+    "Not traced by the deep pass",
+    "Checks the deep pass",
+    "AI and LLM integration reviewer skipped",
+    "Correctness reviewer skipped",
+    "Architecture and maintainability reviewer skipped",
+    "Tests and QA reviewer skipped",
+    "Conventions: exceeded",
+    "Conventions: CLAUDE.md changed",
+];
 const MAX_SOURCES_LISTED: usize = 6;
 const MAX_MISSING_LISTED: usize = 6;
 const STRENGTHS: [&str; 3] = ["test", "outside", "diff"];
@@ -756,6 +765,141 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
         .count();
     let since = options.since_sha.as_deref().map(|sha| jsrt::utf16::head(sha, 7));
 
+    let scope = format!(
+        "{} file{}, +{} / -{}",
+        result.files,
+        if result.files == 1 { "" } else { "s" },
+        result.added,
+        result.removed
+    );
+    let rev_span = match since {
+        None => format!("`{short_sha}`"),
+        Some(sha) => format!("`{sha}`..`{short_sha}`"),
+    };
+    let promotion = options.promotion.as_ref().filter(|note| !note.sources.is_empty());
+
+    let mut sections: Vec<String> = Vec::new();
+    let mut header_lines = vec![format!("**{}** — {rev_span} ({scope})", verdict.title())];
+    if let Some(note) = promotion {
+        header_lines.push(promotion_lead(note));
+    }
+    if blockers.is_empty() {
+        header_lines.push(format!("{}.", capitalized(&reason)));
+    } else if verdict == Verdict::RequestChanges {
+        header_lines.push(format!(
+            "{} blocking finding{} to resolve before merge.",
+            blockers.len(),
+            if blockers.len() == 1 { "" } else { "s" }
+        ));
+    } else {
+        header_lines.push(format!("{}.", capitalized(&reason)));
+    }
+    sections.push(header_lines.join("\n"));
+
+    let mut listed_findings: Vec<String> = Vec::new();
+    let mut seen_indices: Vec<usize> = Vec::new();
+    for &index in &blockers {
+        if listed_findings.len() >= MAX_FINDINGS_LISTED {
+            break;
+        }
+        let finding = &result.findings[index];
+        let tag = if inline.contains(&index) { " (inline)" } else { "" };
+        listed_findings.push(format!(
+            "{}. **[{}]** {}{} — {}",
+            listed_findings.len() + 1,
+            capitalized(finding.level()),
+            where_(finding),
+            tag,
+            sentence(&finding.claim)
+        ));
+        seen_indices.push(index);
+    }
+    for comment in &comments {
+        if seen_indices.contains(&comment.finding) || listed_findings.len() >= MAX_FINDINGS_LISTED {
+            continue;
+        }
+        let finding = &result.findings[comment.finding];
+        listed_findings.push(format!(
+            "{}. **[{}]** {} (inline) — {}",
+            listed_findings.len() + 1,
+            capitalized(finding.level()),
+            where_(finding),
+            sentence(&finding.claim)
+        ));
+        seen_indices.push(comment.finding);
+    }
+    for &index in &in_summary {
+        if seen_indices.contains(&index) || listed_findings.len() >= MAX_FINDINGS_LISTED {
+            continue;
+        }
+        let finding = &result.findings[index];
+        listed_findings.push(format!(
+            "{}. **[{}]** {} (outside diff) — {}",
+            listed_findings.len() + 1,
+            capitalized(finding.level()),
+            where_(finding),
+            sentence(&finding.claim)
+        ));
+        seen_indices.push(index);
+    }
+    for finding in &result.preexisting {
+        if listed_findings.len() >= MAX_FINDINGS_LISTED {
+            break;
+        }
+        listed_findings.push(format!(
+            "{}. **[{}]** {} (pre-existing) — {}",
+            listed_findings.len() + 1,
+            capitalized(finding.level()),
+            where_(finding),
+            sentence(&finding.claim)
+        ));
+    }
+    let total_listed_pool = blockers.len()
+        + comments.iter().filter(|c| !blockers.contains(&c.finding)).count()
+        + in_summary.iter().filter(|i| !blockers.contains(i)).count()
+        + result.preexisting.len();
+    if !listed_findings.is_empty() {
+        let mut block = vec!["## Findings".to_string()];
+        block.extend(listed_findings);
+        if total_listed_pool > MAX_FINDINGS_LISTED {
+            block.push(format!(
+                "- *…and {} more finding(s).*",
+                total_listed_pool - MAX_FINDINGS_LISTED
+            ));
+        }
+        sections.push(block.join("\n"));
+    }
+
+    if !result.earlier.is_empty() {
+        let mut prev = vec!["## Previous findings".to_string()];
+        for item in result.earlier.iter().take(MAX_BLOCKING_LISTED) {
+            let status_label = match item.status.as_str() {
+                "fixed" => "fixed",
+                "still_present" => "still present",
+                "not_applicable" => "not applicable",
+                _ => "not re-checked",
+            };
+            let detail = if item.status == "still_present" && !item.evidence.is_empty() {
+                format!(" — {} ({})", sentence(&item.claim), sentence(&item.evidence))
+            } else if !item.claim.is_empty() {
+                format!(" — {}", sentence(&item.claim))
+            } else {
+                String::new()
+            };
+            prev.push(format!(
+                "- {} **[{status_label}]**{detail}",
+                place(&item.file, item.line)
+            ));
+        }
+        if result.earlier.len() > MAX_BLOCKING_LISTED {
+            prev.push(format!(
+                "- *…and {} more from earlier reviews.*",
+                result.earlier.len() - MAX_BLOCKING_LISTED
+            ));
+        }
+        sections.push(prev.join("\n"));
+    }
+
     let assurance: Vec<String> = result
         .assurance
         .iter()
@@ -763,207 +907,33 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
         .take(4)
         .map(|item| jsrt::string::flatten(item))
         .collect();
-    let scope = format!(
-        "{} file{}, +{} -{}",
-        result.files,
-        if result.files == 1 { "" } else { "s" },
-        result.added,
-        result.removed
-    );
-    let first = if !assurance.is_empty() {
-        let lead = since.map_or_default(|sha| format!("Re-review of the changes since `{sha}`. "));
-        format!("{lead}{}", assurance.join(" "))
-    } else {
-        let what = match since {
-            None => format!("the diff of `{short_sha}`"),
-            Some(sha) => format!("the changes from `{sha}` to `{short_sha}`"),
-        };
-        let rejected = if result.dropped.rejected != 0 {
-            format!(", which rejected {}", result.dropped.rejected)
-        } else {
-            String::new()
-        };
-        format!(
-            "Read {what} ({scope}) with the code around it; every finding below was checked against the source by a second pass{rejected}."
-        )
-    };
-
-    let promotion = options.promotion.as_ref().filter(|note| !note.sources.is_empty());
-    let first = match promotion {
-        Some(note) => format!("{} {first}", promotion_lead(note)),
-        None => first,
-    };
-
-    let mut second = vec![format!("**{}.**", verdict.title())];
-    if !blockers.is_empty() {
-        let named: Vec<String> = blockers
-            .iter()
-            .take(MAX_BLOCKING_LISTED)
-            .enumerate()
-            .map(|(position, index)| {
-                let finding = &result.findings[*index];
-                let at = if inline.contains(index) {
-                    format!("{} (inline)", where_(finding))
-                } else {
-                    where_(finding)
-                };
-                let number = if blockers.len() > 1 {
-                    format!("({}) ", position + 1)
-                } else {
-                    String::new()
-                };
-                format!("{number}{at} {}", sentence(&finding.claim))
-            })
-            .collect();
-        let lead = if verdict == Verdict::RequestChanges {
-            "To resolve before merge:"
-        } else {
-            "Worth resolving:"
-        };
-        second.push(format!("{lead} {}", named.join(" ")));
-        if blockers.len() > MAX_BLOCKING_LISTED {
-            second.push(format!(
-                "And {} more at {block_at} or above.",
-                blockers.len() - MAX_BLOCKING_LISTED
-            ));
+    if !assurance.is_empty() {
+        let mut checked = vec!["## Checked".to_string()];
+        for item in &assurance {
+            checked.push(format!("- {item}"));
         }
-        if verdict != Verdict::RequestChanges {
-            second.push(format!("{}.", capitalized(&reason)));
-        }
-    } else {
-        second.push(format!("{}.", capitalized(&reason)));
-    }
-    let earlier_blockers: Vec<&EarlierStatus> = result
-        .earlier
-        .iter()
-        .filter(|item| {
-            item.status == "still_present"
-                && at_or_above(level_of(item.level.as_deref(), item.severity.as_deref()), block_at)
-        })
-        .collect();
-    if verdict == Verdict::RequestChanges && !earlier_blockers.is_empty() {
-        let named: Vec<String> = earlier_blockers
-            .iter()
-            .take(MAX_BLOCKING_LISTED)
-            .enumerate()
-            .map(|(position, item)| {
-                let number = if earlier_blockers.len() > 1 {
-                    format!("({}) ", position + 1)
-                } else {
-                    String::new()
-                };
-                let seen = if item.evidence.is_empty() {
-                    String::new()
-                } else {
-                    format!(" Re-check: {}", sentence(&item.evidence))
-                };
-                format!(
-                    "{number}{} {}{seen}",
-                    place(&item.file, item.line),
-                    sentence(&item.claim)
-                )
-            })
-            .collect();
-        second.push(format!("Still present from an earlier review: {}", named.join(" ")));
-        if earlier_blockers.len() > MAX_BLOCKING_LISTED {
-            second.push(format!(
-                "And {} more from earlier reviews.",
-                earlier_blockers.len() - MAX_BLOCKING_LISTED
-            ));
-        }
-    }
-    let with_status =
-        |status: &str| -> Vec<&EarlierStatus> { result.earlier.iter().filter(|item| item.status == status).collect() };
-    let (still_open, fixed) = (with_status("still_present"), with_status("fixed"));
-    if !result.earlier.is_empty() {
-        let list = |items: &[&EarlierStatus]| {
-            items
-                .iter()
-                .take(4)
-                .map(|item| place(&item.file, item.line))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        let mut parts = Vec::new();
-        if !fixed.is_empty() {
-            parts.push(format!("{} fixed ({})", fixed.len(), list(&fixed)));
-        }
-        if !still_open.is_empty() {
-            parts.push(format!("{} still present ({})", still_open.len(), list(&still_open)));
-        }
-        let other = result.earlier.len() - fixed.len() - still_open.len();
-        if other > 0 {
-            parts.push(format!("{other} no longer applicable or not re-checked"));
-        }
-        second.push(format!("Earlier findings: {}.", parts.join("; ")));
+        sections.push(checked.join("\n"));
     }
 
     let mut notes = Vec::new();
     if late > 0 {
-        notes.push(format!(
-            "{late} finding{} at {block_at} or above {} on lines that did not change since the last review, so {} \
-             not block.",
-            if late == 1 { "" } else { "s" },
-            if late == 1 { "is" } else { "are" },
-            if late == 1 { "it does" } else { "they do" }
-        ));
-    }
-    let inline_notes = comments
-        .iter()
-        .filter(|comment| !blocks(&result.findings[comment.finding], block_at, fresh))
-        .count();
-    if inline_notes > 0 {
-        notes.push(format!(
-            "{inline_notes} non-blocking note{} inline.",
-            if inline_notes == 1 { "" } else { "s" }
-        ));
-    }
-    let outside: Vec<usize> = in_summary
-        .iter()
-        .copied()
-        .filter(|index| !blocks(&result.findings[*index], block_at, fresh))
-        .collect();
-    if !outside.is_empty() {
-        let named: Vec<String> = outside
-            .iter()
-            .take(MAX_OUTSIDE_LISTED)
-            .map(|index| {
-                let finding = &result.findings[*index];
-                format!("{} [{}] {}", where_(finding), finding.level(), sentence(&finding.claim))
-            })
-            .collect();
-        let more = if outside.len() > MAX_OUTSIDE_LISTED {
-            format!(" And {} more.", outside.len() - MAX_OUTSIDE_LISTED)
+        let (plural, verb, pronoun) = if late == 1 {
+            ("", "is", "it does")
         } else {
-            String::new()
+            ("s", "are", "they do")
         };
-        notes.push(format!("Outside the diff: {}{more}", named.join(" ")));
-    }
-    if !result.preexisting.is_empty() {
-        let named: Vec<String> = result
-            .preexisting
-            .iter()
-            .map(|finding| format!("{} [{}] {}", where_(finding), finding.level(), sentence(&finding.claim)))
-            .collect();
         notes.push(format!(
-            "Pre-existing, not introduced by this change and not blocking it: {}",
-            named.join(" ")
+            "{late} finding{plural} at {block_at} or above {verb} on unchanged lines, \
+             so {pronoun} not block."
         ));
     }
-    let mut rest = Vec::new();
     if !over_cap.is_empty() {
-        rest.push(format!(
-            "{} lower-ranked finding{} ({})",
+        notes.push(format!(
+            "Not posted: {} lower-ranked finding{} ({}).",
             over_cap.len(),
             if over_cap.len() == 1 { "" } else { "s" },
             counted(&over_cap, result)
         ));
-    }
-    if uncertain > 0 {
-        rest.push(format!("{uncertain} unconfirmed"));
-    }
-    if !rest.is_empty() {
-        notes.push(format!("Not posted: {}.", rest.join(" and ")));
     }
     let lowered = result
         .findings
@@ -992,17 +962,20 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
             if raised == 1 { "is" } else { "are" }
         ));
     }
-
-    let mut gaps: Vec<&String> = result.incomplete.iter().collect();
-    gaps.extend(result.not_checked.iter().filter(|item| {
-        !result.incomplete.contains(item) && !PIPELINE_ACCOUNTING.iter().any(|lead| item.starts_with(lead))
-    }));
-    let mut paragraphs = vec![second.join(" "), first];
+    let _ = uncertain;
     if !notes.is_empty() {
-        paragraphs.push(notes.join(" "));
+        sections.push(notes.join(" "));
     }
     if let Some(missing) = promotion.and_then(promotion_missing) {
-        paragraphs.push(missing);
+        sections.push(missing);
+    }
+
+    let mut gaps: Vec<&String> = result.incomplete.iter().collect();
+    for item in &result.not_checked {
+        let is_accounting = PIPELINE_ACCOUNTING.iter().any(|lead| item.starts_with(lead));
+        if !result.incomplete.contains(item) && !is_accounting {
+            gaps.push(item);
+        }
     }
     if !gaps.is_empty() {
         let listed: Vec<String> = gaps
@@ -1018,14 +991,15 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
         } else {
             String::new()
         };
-        paragraphs.push(format!("Not checked: {}{more}.", listed.join("; ")));
+        sections.push(format!("Not checked: {}{more}.", listed.join("; ")));
     }
+
     let mut lines: Vec<String> = Vec::new();
-    for (index, paragraph) in paragraphs.into_iter().enumerate() {
+    for (index, section) in sections.into_iter().enumerate() {
         if index > 0 {
             lines.push(String::new());
         }
-        lines.push(paragraph);
+        lines.extend(section.lines().map(str::to_string));
     }
     let tail: Vec<String> = if options.signature {
         vec![String::new(), SIGNATURE.into()]

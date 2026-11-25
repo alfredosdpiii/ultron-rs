@@ -1889,11 +1889,15 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
     scope_ms = int((clock() - started) * 1000)
     stages: dict[str, int] = {}
 
-    verify_started = clock()
-    earlier = await _run_recheck_stage(
-        rlm, spec, scope, git, frames_runner, budget, verify_model, verify_thinking, find_cutoff, incomplete
+    recheck_started = clock()
+    recheck_task = asyncio.create_task(
+        _run_recheck_stage(
+            rlm, spec, scope, git, frames_runner, budget,
+            verify_model, verify_thinking, find_cutoff, incomplete,
+        )
     )
-    recheck_ms = int((clock() - verify_started) * 1000)
+    earlier: list[dict[str, Any]] = []
+    recheck_ms = 0
 
     find_started = clock()
     remaining = max(0, budget - usage.tokens)
@@ -2059,7 +2063,27 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
                 incomplete.append(f"{len(plan['dropped'])} reviewer passes did not fit the token budget: "
                                   + ", ".join(paths[:10]) + (" ..." if len(paths) > 10 else ""))
             frames = plan["frames"]
-            tasks_to_run = [(reviewer.key, autoreview_finder_task(reviewer), chunk.text) for reviewer, chunk in frames]
+            tasks_to_run = []
+            for reviewer, chunk in frames:
+                if reviewer.key == CONVENTIONS_KEY and reviewer.checklist:
+                    slim = Reviewer(
+                        reviewer.key,
+                        reviewer.title,
+                        reviewer.focus,
+                        (),
+                        only_paths=reviewer.only_paths,
+                    )
+                    conv_view = (
+                        "Repository and directory convention files:\n"
+                        + "\n\n".join(reviewer.checklist)
+                    )
+                    tasks_to_run.append(
+                        (reviewer.key, autoreview_finder_task(slim), [conv_view, chunk.text])
+                    )
+                else:
+                    tasks_to_run.append(
+                        (reviewer.key, autoreview_finder_task(reviewer), chunk.text)
+                    )
         if frames:
             results = await frames_runner.run(
                 "find", tasks_to_run,
@@ -2138,7 +2162,7 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
         conv_text = ""
         has_conv = CONVENTIONS_KEY in (finding.get("reviewers") or []) or mode == "minimal"
         if has_conv and conventions.get(finding["file"]):
-            conv_text = _clip("\n\n".join(conventions[finding["file"]]), 12_000)
+            conv_text = "\n\n".join(conventions[finding["file"]])
             views.append(f"Repository and directory convention files governing this file:\n{conv_text}")
         repo_at_head = (deep_out or compiled_out or {}).get("repo") or (prepared or {}).get("repo")
         cited = deep.cited_windows(repo_at_head, finding) if repo_at_head is not None and finding.get("citations") else ""
@@ -2318,6 +2342,8 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
         dropped_generic += compiled_generic
     verification: dict[str, Any] | None = None
     verify_batches: list[dict[str, Any]] = []
+    if recheck_task.done():
+        earlier = await recheck_task
     open_earlier = [item for item in earlier if item["status"] in ("still_present", "unknown")]
 
     def skip_candidate(finding: dict[str, Any]) -> bool:
@@ -2482,6 +2508,8 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
         callers = out_of_diff_callers(git, scope) if git is not None else ""
         if callers:
             sweep_views.append(f"Out-of-diff callers of changed/added definitions:\n{callers}")
+        if merged and not hybrid:
+            await early_verify("pre-sweep", merged)
         try:
             sweep_results = await frames_runner.run(
                 "sweep", [("sweep", AUTOREVIEW_SWEEP_TASK, sweep_views)],
@@ -2515,6 +2543,9 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
             not_checked.append(f"The gap-sweep pass failed ({_text(f'{type(error).__name__}: {error}', 160)}).")
         stages["sweepMs"] = int((clock() - sweep_started) * 1000)
 
+    earlier = await recheck_task
+    recheck_ms = int((clock() - recheck_started) * 1000)
+    stages["recheckMs"] = recheck_ms
     verify_started = clock()
     open_earlier = [item for item in earlier if item["status"] in ("still_present", "unknown")]
     found_static = list((static_out or {}).get("findings") or []) + static_checks.orphaned_private_helpers(git, scope)

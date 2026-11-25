@@ -1743,7 +1743,7 @@ def contract_reviewer(inventory: dict[str, list[str]]) -> Reviewer:
 
 CONVENTIONS_KEY = "conventions"
 CONVENTIONS_FILES = ("CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", "REVIEW.md", ".github/REVIEW.md")
-CONVENTIONS_CHARS = 96_000
+CONVENTIONS_CHARS: int | None = None
 
 
 def _ancestor_dirs(path: str) -> list[str]:
@@ -1774,9 +1774,14 @@ def _read_convention_file(git: Git | None, scope: Scope, rel_path: str, *, chang
     return text, f"Conventions: {rel_path} changed in this diff; checked against the base version."
 
 
-def conventions_inventory(git: Git | None, scope: Scope, *, base: str | None = None,
-                          names: tuple[str, ...] = CONVENTIONS_FILES,
-                          limit: int = CONVENTIONS_CHARS) -> tuple[dict[str, list[str]], list[str]]:
+def conventions_inventory(
+    git: Git | None,
+    scope: Scope,
+    *,
+    base: str | None = None,
+    names: tuple[str, ...] = CONVENTIONS_FILES,
+    limit: int | None = CONVENTIONS_CHARS,
+) -> tuple[dict[str, list[str]], list[str]]:
     """Walk repo root and ancestor directories of changed files for convention files (`CLAUDE.md`, `AGENTS.md`,
     `REVIEW.md`, ...). Returns (mapping from changed file path -> list of rendered convention blocks, notes).
 
@@ -1818,17 +1823,19 @@ def conventions_inventory(git: Git | None, scope: Scope, *, base: str | None = N
     for rel in sorted(doc_priority, key=lambda p: (doc_priority[p], p)):
         text = cache[rel] or ""
         header = f"=== Conventions ({rel}) ===\n"
-        room = limit - used - len(header)
-        if room < 200:
-            truncated.append(rel)
-            continue
-        if len(text) > room:
-            text = text[: room - 1] + "…"
-            truncated.append(f"{rel} (truncated)")
+        if limit is not None:
+            room = limit - used - len(header)
+            if room < 200:
+                truncated.append(rel)
+                continue
+            if len(text) > room:
+                text = text[: room - 1] + "…"
+                truncated.append(f"{rel} (truncated)")
         rendered[rel] = header + text
         used += len(rendered[rel]) + 2
-    if truncated:
-        notes.append(f"Conventions: exceeded {limit:,} chars; omitted or truncated: {', '.join(truncated[:6])}.")
+    if truncated and limit is not None:
+        summary = ", ".join(truncated[:6])
+        notes.append(f"Conventions: exceeded {limit:,} chars; omitted or truncated: {summary}.")
     inventory: dict[str, list[str]] = {}
     for path, docs in file_to_docs.items():
         blocks = [rendered[rel] for rel in docs if rel in rendered]

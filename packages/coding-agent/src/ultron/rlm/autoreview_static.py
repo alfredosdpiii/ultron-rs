@@ -302,18 +302,69 @@ def _typecheck(stage: _Stage, heads: dict[str, str], added: dict[str, set[int]],
                            level="medium", category="correctness", tool="mypy"))
 
 
-async def _loki(stage: _Stage, rlm: Any, heads: dict[str, str], bases: dict[str, str | None],
-                added: dict[str, set[int]]) -> None:
+LOKI_BATCH_BYTES = 512 * 1024
+
+
+def _loki_batches(
+    heads: dict[str, str],
+    bases: dict[str, str | None],
+    max_bytes: int = LOKI_BATCH_BYTES,
+) -> tuple[list[list[list[str]]], list[str], list[str]]:
+    """Split changed files into JSON batches safely under the 1 MiB kernel frame cap."""
+    batches: list[list[list[str]]] = []
+    current: list[list[str]] = []
+    current_bytes = 32
+    scanned: list[str] = []
+    oversized: list[str] = []
+
+    for path, text in heads.items():
+        triple = [path, bases.get(path) or "", text]
+        entry_bytes = len(json.dumps(triple).encode("utf-8")) + 2
+        if entry_bytes > max_bytes:
+            oversized.append(path)
+            continue
+        if current and current_bytes + entry_bytes > max_bytes:
+            batches.append(current)
+            current = []
+            current_bytes = 32
+        current.append(triple)
+        current_bytes += entry_bytes
+        scanned.append(path)
+
+    if current:
+        batches.append(current)
+    return batches, scanned, oversized
+
+
+async def _loki(
+    stage: _Stage,
+    rlm: Any,
+    heads: dict[str, str],
+    bases: dict[str, str | None],
+    added: dict[str, set[int]],
+) -> None:
     request = getattr(rlm, "host_request", None)
     if request is None:
         return stage.skip("the host serves no Loki scan")
-    changes = [[path, bases.get(path) or "", text] for path, text in heads.items()]
-    try:
-        reply = await request("review.loki", {"changes": changes})
-    except Exception as error:  # the host may not serve it (an older engine): the review goes on without it
-        return stage.skip(f"the Loki scan is not available ({_text(str(error), 120)})")
-    stage.files = list(heads)
-    for violation in (reply or {}).get("violations") or []:
+
+    batches, scanned, oversized = _loki_batches(heads, bases)
+    if not batches:
+        return stage.skip("every changed file exceeded the Loki frame size cap")
+
+    violations: list[Any] = []
+    for batch in batches:
+        try:
+            reply = await request("review.loki", {"changes": batch})
+        except (RuntimeError, OSError, ValueError) as error:
+            return stage.skip(f"the Loki scan is not available ({_text(str(error), 120)})")
+        if isinstance(reply, dict) and isinstance(reply.get("violations"), list):
+            violations.extend(reply["violations"])
+
+    stage.files = scanned
+    if oversized:
+        stage.note = f"skipped {len(oversized)} oversized file(s) over 512 KiB"
+
+    for violation in violations:
         match = _LOKI_LINE.match(str(violation))
         if match is None:
             continue
@@ -323,10 +374,14 @@ async def _loki(stage: _Stage, rlm: Any, heads: dict[str, str], bases: dict[str,
             continue
         security = rule in ("loki/secret", "loki/actions-injection")
         is_nit = rule in LOKI_NIT_RULES
-        stage.add(_finding("loki", path, line, f"{_text(match.group('message'), 200)} ({rule}).", str(violation),
-                           level="high" if security else ("nit" if is_nit else "medium"),
-                           category="security" if security else ("maintainability" if is_nit else "correctness"),
-                           tool=f"Loki ({rule})"))
+        level = "high" if security else ("nit" if is_nit else "medium")
+        category = "security" if security else ("maintainability" if is_nit else "correctness")
+        claim = f"{_text(match.group('message'), 200)} ({rule})."
+        finding = _finding(
+            "loki", path, line, claim, str(violation),
+            level=level, category=category, tool=f"Loki ({rule})",
+        )
+        stage.add(finding)
 
 
 async def run_static(rlm: Any, files: list[FileDiff], read_head: Callable[[str], list[str] | None],
