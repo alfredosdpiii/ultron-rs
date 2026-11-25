@@ -1743,7 +1743,7 @@ def contract_reviewer(inventory: dict[str, list[str]]) -> Reviewer:
 
 CONVENTIONS_KEY = "conventions"
 CONVENTIONS_FILES = ("CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", "REVIEW.md", ".github/REVIEW.md")
-CONVENTIONS_CHARS = 48_000
+CONVENTIONS_CHARS = 96_000
 
 
 def _ancestor_dirs(path: str) -> list[str]:

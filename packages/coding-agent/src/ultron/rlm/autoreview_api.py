@@ -660,19 +660,35 @@ def finding_kind(finding: dict[str, Any]) -> str:
     return source
 
 
+LESSON_DEMOTE_BELOW = 0.30
+
+
 def apply_lessons(findings: list[dict[str, Any]], lessons: list[dict[str, Any]]) -> int:
     """What this repository taught: a confirmed finding of a category and kind it rarely accepted is posted at
-    `low`, with the count beside it. After the verifier, outside every prompt; nothing is dropped."""
-    lowered = {(str(item.get("category")), str(item.get("kind"))): item for item in lessons
-               if isinstance(item, dict) and item.get("lowered")}
+    `low`, with the count beside it. After the verifier and blind check; never flattens high/critical or
+    blind-supported findings."""
+    lowered = {
+        (str(item.get("category")), str(item.get("kind"))): item
+        for item in lessons
+        if isinstance(item, dict) and item.get("lowered")
+    }
     changed = 0
+    low_rank = LEVELS.index("low")
     for finding in findings:
+        if finding.get("blind") == "supported":
+            continue
+        level = finding.get("level") or to_level(finding["severity"])
+        if level in ("critical", "high"):
+            continue
         rule = lowered.get((finding["category"], finding_kind(finding)))
         if rule is None:
             continue
-        total = int(rule.get("accepted") or 0) + int(rule.get("rejected") or 0)
-        finding["lesson"] = f"accepted {int(rule.get('accepted') or 0)} of {total} such findings in the last 180 days"
-        if LEVELS.index(finding.get("level") or to_level(finding["severity"])) < LEVELS.index("low"):
+        accepted = int(rule.get("accepted") or 0)
+        total = accepted + int(rule.get("rejected") or 0)
+        if total == 0 or (accepted / total) >= LESSON_DEMOTE_BELOW:
+            continue
+        finding["lesson"] = f"accepted {accepted} of {total} such findings in the last 180 days"
+        if LEVELS.index(level) < low_rank:
             set_level(finding, "low")
             changed += 1
     return changed
@@ -1124,9 +1140,19 @@ def _recheck_change_views(
     return views, f"{file_changes}\n{elsewhere}"
 
 
-async def recheck_earlier(rlm: Any, earlier: list[dict[str, Any]], since: list[FileDiff] | None, scope: Scope,
-                          *, frames: Frames, budget_tokens: int, model: str | None, thinking: str | None,
-                          cutoff: float | None) -> list[dict[str, Any]]:
+async def recheck_earlier(
+    rlm: Any,
+    earlier: list[dict[str, Any]],
+    since: list[FileDiff] | None,
+    scope: Scope,
+    *,
+    frames: Frames,
+    budget_tokens: int,
+    model: str | None,
+    thinking: str | None,
+    cutoff: float | None,
+    git: Git | None = None,
+) -> list[dict[str, Any]]:
     """What became of each finding posted by an earlier review. `since` is the diff from the earlier reviewed
     commit to this one (None when it is unknown, as after a force-push: lines are then looked up unchanged)."""
     by_path: dict[str, FileDiff] = {}
@@ -1185,6 +1211,10 @@ async def recheck_earlier(rlm: Any, earlier: list[dict[str, Any]], since: list[F
         ]
         change_views, changes = _recheck_change_views(path, since, change)
         views.extend(change_views)
+        related = related_code(git, scope, entry, source) if git is not None else ""
+        if related:
+            views.append(f"Other places that define or use the names involved:\n{related}")
+            changes = f"{changes}\n{related}"
         if replies:
             thread = "\n\n".join(f"{_text(item.get('author'), 60)}: {_text(item.get('body'), REPLY_CHARS)}"
                                  for item in replies)
@@ -1533,7 +1563,7 @@ async def _run_recheck_stage(
         earlier = await recheck_earlier(
             rlm, earlier_spec, since, scope, frames=frames_runner,
             budget_tokens=int(budget * RECHECK_SHARE), model=verify_model,
-            thinking=verify_thinking, cutoff=find_cutoff,
+            thinking=verify_thinking, cutoff=find_cutoff, git=git,
         )
     except Exception as error:
         earlier = [
@@ -2092,7 +2122,7 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
 
     def verify_views(finding: dict[str, Any]) -> tuple[list[str], str, int | None] | None:
         source = scope.read_file(finding["file"])
-        window = source_window(source, finding["line"])
+        window = source_window(source, finding["line"], line_limit=RECHECK_LINE_CHARS)
         hunk = hunk_for(by_path.get(finding["file"]), finding["line"])
         hunk_text = "\n".join(render_hunk(hunk)) if hunk else "(no hunk)"
         related = related_code(git, scope, finding, source) if git is not None else ""
@@ -2105,9 +2135,11 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
         if related:
             finding["_related_code"] = related
             views.append(f"Other places that define or use the names involved:\n{related}")
-        if (CONVENTIONS_KEY in (finding.get("reviewers") or []) or mode == "minimal") and conventions.get(finding["file"]):
-            views.append("Repository and directory convention files governing this file:\n"
-                         + _clip("\n\n".join(conventions[finding["file"]]), 4_000))
+        conv_text = ""
+        has_conv = CONVENTIONS_KEY in (finding.get("reviewers") or []) or mode == "minimal"
+        if has_conv and conventions.get(finding["file"]):
+            conv_text = _clip("\n\n".join(conventions[finding["file"]]), 12_000)
+            views.append(f"Repository and directory convention files governing this file:\n{conv_text}")
         repo_at_head = (deep_out or compiled_out or {}).get("repo") or (prepared or {}).get("repo")
         cited = deep.cited_windows(repo_at_head, finding) if repo_at_head is not None and finding.get("citations") else ""
         if finding.get("test_evidence"):
@@ -2122,23 +2154,30 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
             views.append("Evidence the investigator cites, as the host reads it at the reviewed commit (the quoted "
                          f"lines were checked to be there):\n{cited}")
         closest = (finding.get("unpinned") or {}).get("closest_test")
+        test_window = ""
         if finding["category"] == "tests":
             test_source = scope.read_file(closest["path"]) if closest else None
-            views.append(
-                f"The existing test nearest to it ({closest['path']}, around line {closest['line']}); check whether "
-                f"it, or a test beside it, already catches the named change:\n"
-                + source_window(test_source, min(closest["line"], len(test_source)), 25)
-                if test_source else "The finding names no existing test near it (or the file it names does not exist).")
+            if test_source:
+                test_line = min(closest["line"], len(test_source))
+                test_window = source_window(
+                    test_source, test_line, 25, line_limit=RECHECK_LINE_CHARS
+                )
+                test_header = (
+                    f"The existing test nearest to it ({closest['path']}, around line {closest['line']}); "
+                    "check whether it, or a test beside it, already catches the named change:"
+                )
+                views.append(f"{test_header}\n{test_window}")
+            else:
+                views.append("The finding names no existing test near it (or the file it names does not exist).")
             public["unpinned"] = {key: (finding.get("unpinned") or {}).get(key) for key in ("behaviour", "change")}
             views[0] = f"Finding:\n{json.dumps(public, indent=1)}"
         if finding.get("consequence"):
             public["consequence"] = finding["consequence"]
             views[0] = f"Finding:\n{json.dumps(public, indent=1)}"
-        return (
-            views,
-            window + "\n" + hunk_text + ("\n" + related if related else "") + ("\n" + cited if cited else ""),
-            len(source) if source else None,
-        )
+        source_parts = [
+            part for part in (window, hunk_text, related, cited, conv_text, test_window) if part
+        ]
+        return (views, "\n".join(source_parts), len(source) if source else None)
 
     def verify_jobs(entries: list[tuple[int, list[str]]]) -> list[tuple[str, str, list[str], list[int]]]:
         jobs: list[tuple[str, str, list[str], list[int]]] = []
@@ -2547,7 +2586,6 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
             verdict = by_id.get(finding["id"])
             if isinstance(verdict, dict) and verdict.get("introduced") == "before":
                 finding["preexisting"] = True
-        apply_lessons(confirmed, [item for item in spec.get("lessons") or [] if isinstance(item, dict)])
         for finding in confirmed + uncertain:
             if finding["line"] != before.get(finding["id"]):
                 finding.pop("end_line", None)
@@ -2570,7 +2608,7 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
             if not source:
                 return None
             hunk = hunk_for(by_path.get(finding["file"]), finding["line"])
-            window = source_window(source, finding["line"])
+            window = source_window(source, finding["line"], line_limit=RECHECK_LINE_CHARS)
             blind_repo = (deep_out or compiled_out or {}).get("repo") or (prepared or {}).get("repo")
             if blind_repo is not None and finding.get("citations"):
                 cited = deep.cited_windows(blind_repo, finding)
@@ -2592,6 +2630,8 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
                       for finding in confirmed if finding.get("blind") == "refuted"]
         confirmed = [finding for finding in confirmed if finding.get("blind") != "refuted"]
         usage.cost += float(blind_out.get("costUsd") or 0)
+    lesson_items = [item for item in spec.get("lessons") or [] if isinstance(item, dict)]
+    apply_lessons(confirmed, lesson_items)
     confirmed += observed
     uncertain += unverified
     if hybrid:
