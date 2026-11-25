@@ -154,7 +154,7 @@ def _pick_auto_mode(chunks: list[Any]) -> str:
         any(tok in str(getattr(c, "path", "") or "").lower() for tok in _AUTO_RISKY_TOKENS)
         for c in chunks
     )
-    return "fast" if (prod_lines <= 80 and len(prod_files) <= 3 and not risky_path) else "deep"
+    return "fast" if (prod_lines <= 80 and len(prod_files) <= 3 and not risky_path) else "both"
 DEFAULT_MODE = "both"
 DEFAULT_DEEP_THINKING = "high"
 DEFAULT_PLAN_THINKING = "high"
