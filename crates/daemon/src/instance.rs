@@ -8,8 +8,20 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 use config::paths::{ENV_SERVER_DIR, LEGACY_ENV_SERVER_DIR};
-/// `sockaddr_un.sun_path` holds 108 bytes including the terminator.
-const MAX_SOCKET_PATH: usize = 107;
+/// The longest path `bind` accepts: `sockaddr_un.sun_path` holds 108 bytes on Linux, 104 on macOS and the BSDs,
+/// terminator included.
+const MAX_SOCKET_PATH: usize = if cfg!(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+)) {
+    103
+} else {
+    107
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
