@@ -82,18 +82,55 @@ def _text_of(lines: list[str] | None) -> str | None:
     return None if lines is None else "\n".join(lines) + ("\n" if lines else "")
 
 
-def _finding(stage: str, path: str, line: int, claim: str, detail: str, *, level: str, category: str,
-             tool: str) -> dict[str, Any]:
-    """A finding the host confirmed by running `tool` itself."""
-    return {
-        "file": path, "line": line, "level": level, "severity": {"critical": "blocker", "high": "major", "nit": "nit"}.get(level, "minor"),
-        "finder_level": level, "category": category, "claim": claim,
-        "why": f"{tool} reports it on a line this change added: {_text(detail, 300)}",
-        "scenario": f"{tool} fails on {path}:{line} at the reviewed commit.", "suggested_fix": "",
-        "confidence": 1.0, "reviewers": [f"static:{stage}"], "source": f"static:{stage}", "citations": [],
-        "host_confirmed": True, "verified_by": f"static:{stage}", "evidence": _text(detail, 400),
-        "how_verified": f"{tool} run by the host on the reviewed commit's {path}",
+def _finding(
+    stage: str,
+    path: str,
+    line: int,
+    claim: str,
+    detail: str,
+    *,
+    level: str,
+    category: str,
+    tool: str,
+    host_confirmed: bool = True,
+) -> dict[str, Any]:
+    """Build a static finding; pattern scanners leave `host_confirmed=False` for second-pass review."""
+    if host_confirmed:
+        why = f"{tool} reports it on a line this change added: {_text(detail, 300)}"
+        scenario = f"{tool} fails on {path}:{line} at the reviewed commit."
+    else:
+        why = (
+            f"{tool} matched a pattern on an added line; confirm in context that this is a real issue "
+            f"(not a test constant, ORM expression, already-validated input, or intentional fail-open): "
+            f"{_text(detail, 300)}"
+        )
+        scenario = (
+            f"{tool} flagged {path}:{line}; verify whether the pattern is genuinely buggy or exploitable."
+        )
+
+    severity = {"critical": "blocker", "high": "major", "nit": "nit"}.get(level, "minor")
+    entry: dict[str, Any] = {
+        "file": path,
+        "line": line,
+        "level": level,
+        "severity": severity,
+        "finder_level": level,
+        "category": category,
+        "claim": claim,
+        "why": why,
+        "scenario": scenario,
+        "suggested_fix": "",
+        "confidence": 1.0 if host_confirmed else 0.75,
+        "reviewers": [f"static:{stage}"],
+        "source": f"static:{stage}",
+        "citations": [],
+        "host_confirmed": host_confirmed,
     }
+    if host_confirmed:
+        entry["verified_by"] = f"static:{stage}"
+        entry["evidence"] = _text(detail, 400)
+        entry["how_verified"] = f"{tool} run by the host on the reviewed commit's {path}"
+    return entry
 
 
 class _Stage:
@@ -392,6 +429,7 @@ async def _loki(
         finding = _finding(
             "loki", path, line, claim, str(violation),
             level=level, category=category, tool=f"Loki ({rule})",
+            host_confirmed=False,
         )
         stage.add(finding)
 

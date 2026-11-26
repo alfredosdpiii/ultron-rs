@@ -339,6 +339,40 @@ fn changes_paths(diff: &str) -> HashSet<String> {
         .collect()
 }
 
+/// Keep only unified-diff file sections whose path appears in `allowed`, so an incremental
+/// `last..head` diff after merging the base branch never drags unrelated base-branch files into a PR review.
+fn filter_diff_by_paths(diff: &str, allowed: &HashSet<String>) -> String {
+    if diff.is_empty() || allowed.is_empty() {
+        return String::new();
+    }
+    let mut kept = String::new();
+    let mut section = String::new();
+    let mut section_matches = false;
+    let flush = |out: &mut String, buf: &mut String, matched: bool| {
+        if matched && !buf.is_empty() {
+            out.push_str(buf);
+        }
+        buf.clear();
+    };
+    for line in diff.split_inclusive('\n') {
+        if line.starts_with("diff --git ") {
+            flush(&mut kept, &mut section, section_matches);
+            section_matches = false;
+        }
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if let Some(path) = trimmed
+            .strip_prefix("+++ b/")
+            .or_else(|| trimmed.strip_prefix("--- a/"))
+            && allowed.contains(path)
+        {
+            section_matches = true;
+        }
+        section.push_str(line);
+    }
+    flush(&mut kept, &mut section, section_matches);
+    kept
+}
+
 /// A file of the head as lines, for what a cherry-pick left out; `None` outside the worktree or when absent.
 fn head_lines(work_dir: &str, path: &str) -> Option<Vec<String>> {
     let relative = std::path::Path::new(path);
@@ -389,7 +423,9 @@ fn prepare_diffs(
             && checkout.is_ancestor(last, head)
         {
             since_sha = Some(last.to_string());
-            review_diff = checkout.diff(last, head)?;
+            let incremental = checkout.diff(last, head)?;
+            let pr_paths = changes_paths(&full_diff);
+            review_diff = filter_diff_by_paths(&incremental, &pr_paths);
             earlier_diff = Some(review_diff.clone());
         } else if last_sha.as_deref() == Some(head.as_str()) {
             earlier_diff = Some(String::new());

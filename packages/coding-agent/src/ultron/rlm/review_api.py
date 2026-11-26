@@ -928,6 +928,15 @@ def default_branch(git: Git) -> str | None:
     return None
 
 
+def _split_lines(text: str) -> list[str]:
+    """Split text on newline boundaries only so U+2028/U+2029/VT/FF inside literals stay intact."""
+    if not text:
+        return []
+    if text.endswith("\n"):
+        text = text[:-1]
+    return [line[:-1] if line.endswith("\r") else line for line in text.split("\n")]
+
+
 def _local_reader(cwd: str) -> Callable[[str], list[str] | None]:
     cache: dict[str, list[str] | None] = {}
     root = Path(cwd).resolve()
@@ -937,7 +946,7 @@ def _local_reader(cwd: str) -> Callable[[str], list[str] | None]:
             target = (root / path).resolve()
             try:
                 target.relative_to(root)
-                cache[path] = target.read_text(encoding="utf-8", errors="replace").splitlines()
+                cache[path] = _split_lines(target.read_text(encoding="utf-8", errors="replace"))
             except (OSError, ValueError):
                 cache[path] = None
         return cache[path]
@@ -951,7 +960,7 @@ def _rev_reader(git: Git, rev: str) -> Callable[[str], list[str] | None]:
     def read(path: str) -> list[str] | None:
         if path not in cache:
             code, stdout, _ = git.call("show", f"{rev}:{path}")
-            cache[path] = stdout.splitlines() if code == 0 else None
+            cache[path] = _split_lines(stdout) if code == 0 else None
         return cache[path]
 
     return read
@@ -2357,7 +2366,9 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
                          else lambda _path: None)
             static_out = await static_checks.run_static(rlm, scope.files, scope.read_file, read_base)
             not_checked += static_checks.notes(static_out)
-            found_static = list(static_out.get("findings") or []) + static_checks.orphaned_private_helpers(git, scope)
+            all_static = list(static_out.get("findings") or []) + static_checks.orphaned_private_helpers(git, scope)
+            found_static = [item for item in all_static if item.get("host_confirmed")]
+            unconfirmed_static = [item for item in all_static if not item.get("host_confirmed")]
             static_ran = [s["name"] for s in static_out.get("stages") or [] if s.get("status") in ("clean", "findings")]
             filtered: list[dict[str, Any]] = []
             for finding in merged:
@@ -2367,10 +2378,10 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
                     item["line"] == finding["line"]
                     or (abs(item["line"] - finding["line"]) <= DEDUPE_WINDOW
                         and similar_claims(item["claim"], finding["claim"]))
-                ) for item in found_static):
+                ) for item in all_static):
                     continue
                 filtered.append(finding)
-            merged = filtered
+            merged = [*filtered, *unconfirmed_static]
         except Exception as error:  # noqa: BLE001 - static stage degrades cleanly
             not_checked.append(f"Static checks did not run ({_text(f'{type(error).__name__}: {error}', 160)}).")
 

@@ -1445,13 +1445,20 @@ def _parse_run_config(spec: dict[str, Any], started: float) -> dict[str, Any]:
     if cap is not None:
         cap = max(cap, MIN_BUDGET_TOKENS)
     model = spec.get("model") if isinstance(spec.get("model"), str) else None
+    verify_model = spec.get("verifyModel") if isinstance(spec.get("verifyModel"), str) else model
+    loki_verify_model = (
+        spec.get("lokiVerifyModel")
+        if isinstance(spec.get("lokiVerifyModel"), str) and spec.get("lokiVerifyModel")
+        else ("claude-code/haiku" if verify_model is not None else None)
+    )
     plan_style = spec.get("planStyle") if spec.get("planStyle") in compiled.PLAN_STYLES else compiled.DEFAULT_PLAN_STYLE
     deadline_s = _number(spec.get("deadlineSeconds"), DEFAULT_DEADLINE_S, 0, 24 * 3600)
     return {
         "cap": cap,
         "budget": UNLIMITED if cap is None else cap,
         "model": model,
-        "verify_model": spec.get("verifyModel") if isinstance(spec.get("verifyModel"), str) else model,
+        "verify_model": verify_model,
+        "loki_verify_model": loki_verify_model,
         "finder_models": [name for name in spec.get("finderModels") or [] if isinstance(name, str)]
         if isinstance(spec.get("finderModels"), list) else [],
         "thinking": _thinking(spec.get("thinking"), DEFAULT_THINKING),
@@ -1819,6 +1826,7 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
     budget = cfg["budget"]
     model = cfg["model"]
     verify_model = cfg["verify_model"]
+    loki_verify_model = cfg["loki_verify_model"]
     finder_models = cfg["finder_models"]
     thinking = cfg["thinking"]
     verify_thinking = cfg["verify_thinking"]
@@ -2241,13 +2249,19 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
 
     verify_pool: list[dict[str, Any]] = []
 
-    async def run_verifier(findings: list[dict[str, Any]], views: list[list[str]]) -> list[Any]:
+    async def run_verifier(
+        findings: list[dict[str, Any]],
+        views: list[list[str]],
+        *,
+        model_override: str | None = None,
+    ) -> list[Any]:
+        active_model = verify_model if model_override is None else model_override
         base = len(verify_pool)
         verify_pool.extend(findings)
         entries = [(base + offset, item) for offset, item in enumerate(views)]
         jobs = verify_jobs(entries)
         results = await frames_runner.run("verify", [(label, task, item) for label, task, item, _ids in jobs],
-                                          contract=None, model=verify_model, thinking=verify_thinking, cutoff=verify_cutoff,
+                                          contract=None, model=active_model, thinking=verify_thinking, cutoff=verify_cutoff,
                                           context=verifier_context, contracts=[
                                               AUTOREVIEW_VERDICT_CONTRACT if len(ids) == 1 else AUTOREVIEW_VERDICT_BATCH_CONTRACT
                                               for _l, _t, _i, ids in jobs])
@@ -2281,7 +2295,7 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
             if not again:
                 break
             answers = await frames_runner.run("verify", [("verifier", AUTOREVIEW_VERIFIER_TASK, item) for _i, item in again],
-                                              contract=None, model=verify_model, thinking=verify_thinking,
+                                              contract=None, model=active_model, thinking=verify_thinking,
                                               cutoff=verify_cutoff, context=verifier_context,
                                               contracts=[AUTOREVIEW_VERDICT_CONTRACT] * len(again))
             for (index, _item), answer in zip(again, answers):
@@ -2592,7 +2606,38 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
     verdicts: list[Any] = []
     if to_verify or early_verdicts:
       try:
-        verdicts = await run_verifier(to_verify, items) if to_verify else []
+        if to_verify:
+            loki_indices = [
+                idx for idx, finding in enumerate(to_verify)
+                if finding.get("source") == "static:loki"
+            ]
+            other_indices = [
+                idx for idx, finding in enumerate(to_verify)
+                if finding.get("source") != "static:loki"
+            ]
+            if loki_indices and loki_verify_model != verify_model:
+                loki_task = run_verifier(
+                    [to_verify[idx] for idx in loki_indices],
+                    [items[idx] for idx in loki_indices],
+                    model_override=loki_verify_model,
+                )
+                if other_indices:
+                    other_task = run_verifier(
+                        [to_verify[idx] for idx in other_indices],
+                        [items[idx] for idx in other_indices],
+                    )
+                    loki_verdicts, other_verdicts = await asyncio.gather(loki_task, other_task)
+                else:
+                    loki_verdicts, other_verdicts = await loki_task, []
+                verdicts = [None] * len(to_verify)
+                for idx, verdict in zip(loki_indices, loki_verdicts):
+                    verdicts[idx] = verdict
+                for idx, verdict in zip(other_indices, other_verdicts):
+                    verdicts[idx] = verdict
+            else:
+                verdicts = await run_verifier(to_verify, items)
+        else:
+            verdicts = []
         for idx, finding in enumerate(to_verify):
             extra = "\n\n".join(finding.get("_needed_code") or [])
             if extra:

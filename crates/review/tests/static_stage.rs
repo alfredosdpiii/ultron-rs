@@ -154,8 +154,16 @@ const RLM: &str = "class Rlm:\n\
 \x20       raise RuntimeError(kind + ' is not available to the review engine')\n\
 \x20   async def map(self, tasks, items, **options):\n\
 \x20       if 'You check one finding' in tasks[0]:\n\
-\x20           return [{'verdict': 'confirmed', 'evidence': '`return total(items) / count`', 'corrected_line': None,\n\
-\x20                    'severity': 'high', 'scenario_holds': True}]\n\
+\x20           out = []\n\
+\x20           for views in items:\n\
+\x20               joined = '\\n'.join(views) if isinstance(views, list) else str(views)\n\
+\x20               if 'loki/secret' in joined:\n\
+\x20                   out.append({'verdict': 'confirmed', 'evidence': '`def ok(x):`', 'corrected_line': None,\n\
+\x20                               'severity': 'high', 'scenario_holds': True})\n\
+\x20               else:\n\
+\x20                   out.append({'verdict': 'confirmed', 'evidence': '`return total(items) / count`', 'corrected_line': None,\n\
+\x20                               'severity': 'high', 'scenario_holds': True})\n\
+\x20           return out\n\
 \x20       if 'Your specialty: Correctness' in tasks[0]:\n\
 \x20           return [[{'file': 'lib.py', 'line': 1, 'end_line': 1, 'severity': 'high', 'category': 'correctness',\n\
 \x20                     'claim': 'ok() has a syntax error: the definition does not parse.', 'why': 'w',\n\
@@ -197,8 +205,12 @@ fn review_static_stage_drops_contradicted_findings_and_the_blind_check_refutes_a
     };
     assert_eq!(place("calc.py", 2, "static:compile")[3], "confirmed");
     assert_eq!(place("lib.py", 2, "static:lint")[3], "confirmed");
-    // Loki's line 1 is an added line of the new file.
-    assert_eq!(place("lib.py", 1, "static:loki")[3], "confirmed");
+    // Loki findings now require a second-pass verifier (not host_confirmed), so the blind judge checks them too.
+    let loki_refuted = place("lib.py", 1, "static:loki");
+    assert_eq!(
+        (loki_refuted[3].clone(), loki_refuted[4].clone()),
+        (json!("uncertain"), json!("refuted"))
+    );
     // The verifier confirmed the model finding; the blind check (escalated) refuted it: uncertain.
     let refuted = place("calc.py", 5, "fast");
     assert_eq!(
@@ -206,12 +218,16 @@ fn review_static_stage_drops_contradicted_findings_and_the_blind_check_refutes_a
         (json!("uncertain"), json!("refuted"))
     );
     assert!(refuted[5].as_str().unwrap().starts_with("the blind check refuted it"));
-    // Asked once (host findings are not asked), blind: the claim and the code, never the finder's reasoning.
+    // Asked twice (calc.py fast finding + lib.py Loki finding), blind: never the finder's reasoning.
     let asked = got["asked"].as_array().unwrap();
-    assert_eq!(asked.len(), 1);
-    assert_eq!(asked[0]["expect"], json!({"shown": true}));
-    assert_eq!(asked[0]["kind"], "review.finding");
-    let state = asked[0]["state"].as_str().unwrap();
+    assert_eq!(asked.len(), 2);
+    let calc_asked = asked
+        .iter()
+        .find(|item| item["state"].as_str().unwrap_or("").contains("calc.py line 5"))
+        .expect("calc.py asked");
+    assert_eq!(calc_asked["expect"], json!({"shown": true}));
+    assert_eq!(calc_asked["kind"], "review.finding");
+    let state = calc_asked["state"].as_str().unwrap();
     assert!(
         state.contains("CLAIM about calc.py line 5: mean() divides by count"),
         "{state}"
@@ -220,13 +236,13 @@ fn review_static_stage_drops_contradicted_findings_and_the_blind_check_refutes_a
     assert!(!state.contains("SECRET-REASONING"), "{state}");
     assert_eq!(
         got["blind"],
-        json!({"asked": 1, "supported": 0, "refuted": 1, "review": 0, "calls": 2, "costUsd": 0.002,
-            "unpricedCalls": 1, "unavailable": null})
+        json!({"asked": 2, "supported": 0, "refuted": 2, "review": 0, "calls": 4, "costUsd": 0.004,
+            "unpricedCalls": 2, "unavailable": null})
     );
     // Its spend is the review's: in costUsd, with the unpriced call named.
     assert_eq!(
         got["usage"],
-        json!([0.002, {"calls": 2, "costUsd": 0.002, "unpricedCalls": 1}])
+        json!([0.004, {"calls": 4, "costUsd": 0.004, "unpricedCalls": 2}])
     );
 }
 
@@ -640,4 +656,65 @@ print(json.dumps([[f['file'], f['line'], f['level'], f['source']] for f in out['
         ]),
         "{got}"
     );
+}
+
+#[test]
+fn review_static_compile_preserves_unicode_line_separators() {
+    let dir = tempfile::tempdir().expect("dir");
+    let repo = dir.path();
+    git(repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("oracle.py"), "TOKENS = []\n").expect("base");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "base"]);
+    let base = git(repo, &["rev-parse", "HEAD"]);
+    std::fs::write(
+        repo.join("oracle.py"),
+        "TOKENS = [\"\u{2028}\", \"\u{2029}\", \"\u{0085}\", \"\\x0b\", \"\\x0c\"]\n",
+    )
+    .expect("head");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "head"]);
+    let head = git(repo, &["rev-parse", "HEAD"]);
+
+    let body = r"
+scope, git, _ = a._scope({'repoDir': repo, 'base': base, 'head': head}, None)
+out = asyncio.run(st.run_static(object(), scope.files, scope.read_file, a._rev_reader(git, base), which=lambda _: None))
+compile_stage = next(s for s in out['stages'] if s['name'] == 'compile')
+print(json.dumps({'status': compile_stage['status'], 'findings': out['findings'], 'clean': out['clean']}))
+";
+    let got = engine(dir.path(), &base, &head, body);
+    assert_eq!(got["status"], json!("clean"), "{got}");
+    assert_eq!(got["findings"], json!([]), "{got}");
+    assert_eq!(got["clean"], json!({"oracle.py": ["compile"]}), "{got}");
+}
+
+#[test]
+fn review_static_loki_uses_haiku_second_pass_verifier() {
+    let (dir, base, head) = repository();
+    let body = r"
+class HaikuCheckRlm:
+    def __init__(self):
+        self.verify_models = []
+    async def host_request(self, kind, payload):
+        if kind == 'review.loki':
+            return {'violations': ['lib.py:1: loki/open-redirect: unvalidated redirect']}
+        raise RuntimeError(kind)
+    async def map(self, tasks, items, **options):
+        if 'You check one finding' in tasks[0]:
+            self.verify_models.append(options.get('model'))
+            return [{'verdict': 'rejected', 'evidence': '`def ok():` is not a redirect',
+                     'corrected_line': None, 'severity': 'high', 'scenario_holds': False} for _ in items]
+        return [[] for _ in items]
+
+rlm = HaikuCheckRlm()
+res = asyncio.run(a.run(rlm, {
+    'repoDir': repo, 'base': base, 'head': head, 'mode': 'fast',
+    'model': 'claude-code/sonnet', 'verifyModel': 'claude-code/sonnet',
+}))
+loki_findings = [f for f in res['findings'] if f.get('source') == 'static:loki']
+print(json.dumps({'verify_models': rlm.verify_models, 'loki_kept': len(loki_findings)}))
+";
+    let got = engine(dir.path(), &base, &head, body);
+    assert_eq!(got["verify_models"], json!(["claude-code/haiku"]), "{got}");
+    assert_eq!(got["loki_kept"], json!(0), "{got}");
 }

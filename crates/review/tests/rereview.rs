@@ -354,3 +354,34 @@ fn review_rereview_the_engine_weighs_a_reply_against_the_source() {
         json!([[true, "not_applicable", true], [true, "still_present", true]])
     );
 }
+
+#[test]
+fn review_rereview_incremental_diff_excludes_files_from_base_branch_merge() {
+    let context = reviewed_at(
+        old(),
+        vec![
+            engine_result(json!({ "findings": [major()] })),
+            engine_result(json!({ "earlier": [earlier("ccccccc-1", "fixed")] })),
+        ],
+    );
+    let unrelated = "diff --git a/mcp_from_main.py b/mcp_from_main.py\n\
+                     --- a/mcp_from_main.py\n\
+                     +++ b/mcp_from_main.py\n\
+                     @@ -1,1 +1,2 @@\n\
+                      x = 1\n\
+                     +y = 2\n";
+    let merged_increment = format!("{}{unrelated}", DIFF.replace("- 1)", "- 2)"));
+    context.hub.with_pull(|pull| {
+        pull.head_sha = new();
+        pull.ancestors = vec![old()];
+        pull.diffs.insert(format!("{}..{}", old(), new()), merged_increment);
+    });
+    context.hub.set_now("2026-10-04T11:00:00Z");
+
+    let outcome = posted(run(&context, &["updated"]));
+    let spec = &context.engine.specs()[1];
+    let diff = spec["diff"].as_str().expect("diff string");
+    assert!(diff.contains("calc.py"), "{diff}");
+    assert!(!diff.contains("mcp_from_main.py"), "{diff}");
+    assert_eq!(outcome.plan.event, "APPROVE");
+}
