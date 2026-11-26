@@ -46,3 +46,52 @@ fn daemon_server_options_for_an_instance_are_built_once() {
     let without = daemon::server::ServerOptions::for_instance(&instance, sessions, &|_| None, Default::default());
     assert_eq!(without.unwrap().server_id, None);
 }
+
+/// What the socket test below made outside its own temp directory: fallback socket directories, and their parent
+/// when the test created it (a live server may already keep sockets in it).
+#[derive(Default)]
+struct Fallbacks {
+    dirs: Vec<std::path::PathBuf>,
+    created_parents: Vec<std::path::PathBuf>,
+}
+
+impl Drop for Fallbacks {
+    fn drop(&mut self) {
+        for dir in &self.dirs {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        for parent in &self.created_parents {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
+}
+
+/// A server directory whose longest socket path is just over the platform's `sun_path` limit used to keep its
+/// sockets, because 107 bytes was assumed everywhere (macOS and the BSDs take 103), and `bind` then failed with
+/// `path must be shorter than SUN_LEN`. At every length across both limits the directory `socket_dir` returns must
+/// take the longest socket name.
+#[test]
+fn daemon_instance_socket_dir_takes_the_longest_socket_name_at_every_length() {
+    let base = tempfile::Builder::new().prefix("us").tempdir_in("/tmp").unwrap();
+    let name = protocol::sockets::generation_name("0b9e4f3c-0d7a-4c55-9a43-2d8f1b6f2a10", "0123456789ab");
+    assert_eq!(name.len(), protocol::sockets::LONGEST_NAME);
+    let mut fallbacks = Fallbacks::default();
+    for length in 35..=50 {
+        let padding = length - base.path().as_os_str().len() - 1;
+        let server_dir = base.path().join("d".repeat(padding));
+        assert_eq!(server_dir.as_os_str().len(), length);
+        let sockets = daemon::instance::socket_dir(&server_dir);
+        if sockets != server_dir {
+            let parent = sockets.parent().unwrap().to_path_buf();
+            if !parent.exists() {
+                fallbacks.created_parents.push(parent);
+            }
+            fallbacks.dirs.push(sockets.clone());
+        }
+        std::fs::create_dir_all(&sockets).unwrap();
+        let path = sockets.join(&name);
+        if let Err(error) = std::os::unix::net::UnixListener::bind(&path) {
+            panic!("server directory of {length} bytes: bind {}: {error}", path.display());
+        }
+    }
+}
