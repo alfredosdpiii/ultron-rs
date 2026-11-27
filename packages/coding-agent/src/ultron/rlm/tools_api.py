@@ -352,6 +352,19 @@ class _McpServer:
         return f"<MCP server mcp.{self._attr}: await mcp.{self._attr}.tools(), mcp.{self._attr}.<tool>(**args)>"
 
 
+def _parse_mcp_batch_call(item: Any) -> tuple[str, dict[str, Any] | str | None, str | None]:
+    if isinstance(item, tuple) and len(item) in (2, 3):
+        tool, args = item[0], item[1]
+        server = item[2] if len(item) == 3 else None
+    elif isinstance(item, dict) and "tool" in item:
+        tool, args, server = item["tool"], item.get("args"), item.get("server")
+    else:
+        raise TypeError("each mcp batch call must be (tool, args[, server]) or {'tool': ..., 'args': ...}")
+    if not isinstance(tool, str) or not tool:
+        raise ValueError("mcp tool name must be a non-empty string")
+    return tool, args, server
+
+
 class Mcp:
     """MCP servers through Ultron's ``mcp`` gateway tool (see the module docstring)."""
 
@@ -452,6 +465,37 @@ class Mcp:
         if server is not None:
             params["server"] = server
         return await self._tools._invoke(self._gateway_name, params, yield_after)
+
+    async def batch(
+        self,
+        calls: Any,
+        *,
+        limit: int = 8,
+        return_exceptions: bool = True,
+        yield_after: Any = waits.DEFAULT,
+    ) -> list[Any]:
+        """Run multiple MCP tool calls concurrently with bounded concurrency (default limit=8).
+
+        Each item is ``(tool, args[, server])`` or ``{"tool": ..., "args": {...}, "server": ...}``.
+        Preserves order; returns Exception instances for failed calls unless ``return_exceptions=False``.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("limit must be a positive integer")
+        specs = [_parse_mcp_batch_call(item) for item in calls]
+        if not specs:
+            return []
+        sem = asyncio.Semaphore(limit)
+
+        async def _run(tool: str, args: Any, server: str | None) -> Any:
+            async with sem:
+                return await self.call(tool, args, server=server, yield_after=yield_after)
+
+        return list(
+            await asyncio.gather(
+                *(_run(t, a, s) for t, a, s in specs),
+                return_exceptions=return_exceptions,
+            )
+        )
 
     async def _server_named(self, attr: str) -> str:
         if attr in self._server_names:

@@ -667,6 +667,48 @@ class Inference:
         reply = await self._bridge.request("rlm.map", payload)
         return _finalize_map_results(reply)
 
+    async def map_reduce(
+        self,
+        map_task: str,
+        reduce_task: str,
+        items: Any,
+        *,
+        context: Any = None,
+        map_contract: Any = None,
+        reduce_contract: Any = None,
+        budget: Any = None,
+        model: str | None = None,
+        concurrency: int = 8,
+        shared_prefix: bool = False,
+        thinking: str | None = None,
+    ) -> Any:
+        """Map ``map_task`` over ``items`` under one shared budget, then reduce the results with ``reduce_task``."""
+        mapped = await self.map(
+            map_task,
+            items,
+            context=context,
+            contract=map_contract,
+            budget=budget,
+            model=model,
+            concurrency=concurrency,
+            shared_prefix=shared_prefix,
+            thinking=thinking,
+        )
+        lines = []
+        for idx, value in enumerate(mapped):
+            if isinstance(value, (Incomplete, FrameError)):
+                lines.append(f"[{idx}] <{type(value).__name__}: {value}>")
+            else:
+                lines.append(f"[{idx}] {value}")
+        return await self.infer(
+            reduce_task,
+            context="\n\n".join(lines),
+            contract=reduce_contract,
+            budget=budget,
+            model=model,
+            thinking=thinking,
+        )
+
     async def frames(self, trace_id: str | None = None, limit: int = 20) -> Any:
         """Recent frame summaries, or one frame's full trace by id."""
         payload: dict[str, Any] = {"limit": limit}
@@ -684,7 +726,7 @@ def install(namespace: dict[str, Any], bridge: Any) -> None:
     """Attach load/open/infer/map/frames to the kernel's `rlm` object and export the result types."""
     inference = Inference(bridge)
     rlm = namespace["rlm"]
-    for name in ("load", "open", "infer", "map", "frames", "_models"):
+    for name in ("load", "open", "infer", "map", "map_reduce", "frames", "_models"):
         setattr(rlm, name, getattr(inference, name))
     namespace["Budget"] = Budget
     namespace["ContextHandle"] = ContextHandle

@@ -68,6 +68,12 @@ pub const OPS: &[Op] = &[
     ),
     op("ctx.note", "kernel_apis::context_control", &["text"], &[]),
     op("ctx.pin", "kernel_apis::context_control", &["id"], &[]),
+    op(
+        "ctx.prune",
+        "kernel_apis::context_control",
+        &["dry_run", "kinds", "target_bytes"],
+        &[],
+    ),
     op("ctx.summarize", "kernel_apis::context_control", &["ids", "text"], &[]),
     op("ctx.unpin", "kernel_apis::context_control", &["id"], &[]),
     op(

@@ -345,7 +345,7 @@ pub fn runtime_guide(audience: Audience, options: &GuideOptions, hints: bool) ->
                 &["rlm"],
                 &RuntimeGuideOptions {
                     hints,
-                    ..RuntimeGuideOptions::default()
+                    ..options.apis.cloned().unwrap_or_default()
                 },
             )
             .unwrap_or_default();

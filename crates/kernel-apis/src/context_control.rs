@@ -550,6 +550,87 @@ fn compute_cache_impact(view: &BranchView) -> HashMap<String, usize> {
     impact
 }
 
+struct PruneCandidate {
+    id: String,
+    kind: &'static str,
+    bytes: usize,
+    cache_impact_bytes: usize,
+    order: usize,
+}
+
+fn parse_prune_args(payload: &Map<String, Value>) -> Result<(Option<usize>, HashSet<&str>, bool), String> {
+    let target_bytes = match payload.get("target_bytes") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            jsrt::number::safe_integer(value)
+                .filter(|v| *v >= 1)
+                .and_then(|v| usize::try_from(v).ok())
+                .ok_or_else(|| "target_bytes must be a positive integer".to_string())?,
+        ),
+    };
+    let kinds = parse_kinds_filter(payload)?.unwrap_or_else(|| HashSet::from(["tool"]));
+    let dry_run = match payload.get("dry_run") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(flag)) => *flag,
+        Some(_) => return Err("dry_run must be a boolean".into()),
+    };
+    Ok((target_bytes, kinds, dry_run))
+}
+
+fn select_prune_candidates(
+    view: &BranchView,
+    kinds: &HashSet<&str>,
+    target_bytes: Option<usize>,
+) -> Vec<PruneCandidate> {
+    let impact = compute_cache_impact(view);
+    let mut candidates = Vec::new();
+    for (order, entry) in view.window().iter().enumerate() {
+        let Some(kind) = kind_of(entry) else { continue };
+        if matches!(kind, "compaction" | "summary") || !kinds.contains(kind) {
+            continue;
+        }
+        let id = entry["id"].as_str().unwrap_or_default();
+        if id.is_empty() || view.protected.contains(id) || view.pinned(id) {
+            continue;
+        }
+        let Some(applied) = view.applied(id).filter(|a| !is_omitted(&a.entry)) else {
+            continue;
+        };
+        let bytes = entry_bytes(&applied.entry);
+        if bytes == 0 {
+            continue;
+        }
+        let cache_impact_bytes = impact.get(id).copied().unwrap_or(0);
+        candidates.push(PruneCandidate {
+            id: id.to_string(),
+            kind,
+            bytes,
+            cache_impact_bytes,
+            order,
+        });
+    }
+    candidates.sort_by(|a, b| {
+        let lhs = (b.bytes as u128).saturating_mul(a.cache_impact_bytes as u128 + 1);
+        let rhs = (a.bytes as u128).saturating_mul(b.cache_impact_bytes as u128 + 1);
+        lhs.cmp(&rhs)
+            .then_with(|| b.bytes.cmp(&a.bytes))
+            .then_with(|| a.order.cmp(&b.order))
+    });
+    let Some(goal) = target_bytes else {
+        return candidates;
+    };
+    let mut chosen = Vec::new();
+    let mut freed: usize = 0;
+    for candidate in candidates {
+        freed = freed.saturating_add(candidate.bytes);
+        chosen.push(candidate);
+        if freed >= goal {
+            break;
+        }
+    }
+    chosen
+}
+
 impl ContextControl {
     fn view(&self, lane: &str) -> Result<BranchView, String> {
         let committed = self.branches.entries(lane)?;
@@ -893,6 +974,54 @@ impl ContextControl {
         Ok(json!({"id": self.append(lane, CONTEXT_NOTE_CUSTOM_TYPE, json!({"text": text}))?}))
     }
 
+    fn handle_prune(&self, view: &BranchView, payload: &Map<String, Value>, lane: &str) -> Result<Value, String> {
+        kernel::ops::fields("ctx.prune", payload)?;
+        let (target_bytes, kinds, dry_run) = parse_prune_args(payload)?;
+        let chosen = select_prune_candidates(view, &kinds, target_bytes);
+        let ids: Vec<String> = chosen.iter().map(|c| c.id.clone()).collect();
+        let estimated: usize = chosen.iter().map(|c| c.bytes).sum();
+        let max_impact = chosen.iter().map(|c| c.cache_impact_bytes).max().unwrap_or(0);
+        if dry_run || ids.is_empty() {
+            let plan: Vec<Value> = chosen
+                .iter()
+                .map(|c| {
+                    json!({
+                        "id": c.id,
+                        "kind": c.kind,
+                        "bytes": c.bytes,
+                        "cache_impact_bytes": c.cache_impact_bytes,
+                    })
+                })
+                .collect();
+            return Ok(json!({
+                "pruned": if dry_run { Vec::<String>::new() } else { ids },
+                "dry_run": dry_run,
+                "edit_id": null,
+                "freed_bytes": if dry_run { estimated } else { 0 },
+                "max_cache_impact_bytes": max_impact,
+                "candidates": plan,
+            }));
+        }
+        let before = Self::visible_bytes(view);
+        let edits: Vec<Value> = ids
+            .iter()
+            .map(|id| json!({"targetId": id, "replacement": null}))
+            .collect();
+        let edit_id = self.append(
+            lane,
+            CONTEXT_EDIT_CUSTOM_TYPE,
+            json!({"edits": edits, "source": "ctx.prune", "reason": "cache-aware prune"}),
+        )?;
+        let after = Self::visible_bytes(&self.view(lane)?);
+        Ok(json!({
+            "pruned": ids,
+            "dry_run": false,
+            "edit_id": edit_id,
+            "freed_bytes": before.saturating_sub(after),
+            "max_cache_impact_bytes": max_impact,
+        }))
+    }
+
     pub fn handle_request(&self, kind: &str, payload: &Map<String, Value>, lane: &str) -> Result<Value, String> {
         if kind == "ctx.state" {
             jsrt::payload::fields(payload, &[])?;
@@ -907,6 +1036,7 @@ impl ContextControl {
             "ctx.forget" => self.handle_forget(&view, payload, lane),
             "ctx.summarize" => self.handle_summarize(&view, payload, lane),
             "ctx.pin" | "ctx.unpin" => self.handle_pin(&view, kind, payload, lane),
+            "ctx.prune" => self.handle_prune(&view, payload, lane),
             "ctx.note" => self.handle_note(payload, lane),
             _ => Err(kernel::ops::not_wired(kind)),
         }

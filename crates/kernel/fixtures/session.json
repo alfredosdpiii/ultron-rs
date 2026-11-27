@@ -74,12 +74,12 @@
 {"code":"len('\u0001\u001f \b\t')","ok":{"status":"ok","stdout":"","stderr":"","result":"6"}},
 {"reset":true,"ok":{"status":"ok","stdout":"","stderr":""}},
 {"code":"'answer' in globals(), 'state' in globals()","ok":{"status":"ok","stdout":"","stderr":"","result":"(False, True)"}},
-{"code":"import os\nos._exit(3)","error":"RLM kernel exited (3): <rlm>/runtime.py:121: SyntaxWarning: \"\\.\" is an invalid escape sequence. Such sequences will not work in the future. Did you mean \"\\\\.\"? A raw string is also an option.\n  topic = re.compile(r\"certific|\\bTLS\\b|\\bSSL\\b|x\\.?509\", re.I)\nraw err\n"},
+{"code":"import os\nos._exit(3)","error":"RLM kernel exited (3): raw err\n"},
 {"code":"'answer' in globals()","ok":{"status":"ok","stdout":"","stderr":"","result":"False"}},
 {"code":"import os\nos._exit(86)","error":"RLM kernel exceeded its memory limit (4096 MiB per process, ULTRON_RLM_MAX_MEMORY_MB) and was stopped; the next cell starts a fresh kernel without earlier Python state"},
 {"code":"import os\nos._exit(87)","error":"RLM kernel exceeded its CPU limit (1800 CPU-seconds per cell, ULTRON_RLM_MAX_CPU_SECONDS) and was stopped; the next cell starts a fresh kernel without earlier Python state"},
 {"code":"1 + 1","ok":{"status":"ok","stdout":"","stderr":"","result":"2"}},
-{"code":"import os, signal\nos.kill(os.getpid(), signal.SIGKILL)","error":"RLM kernel exited (SIGKILL); the system out-of-memory killer may have stopped it: <rlm>/runtime.py:121: SyntaxWarning: \"\\.\" is an invalid escape sequence. Such sequences will not work in the future. Did you mean \"\\\\.\"? A raw string is also an option.\n  topic = re.compile(r\"certific|\\bTLS\\b|\\bSSL\\b|x\\.?509\", re.I)\n"},
+{"code":"import os, signal\nos.kill(os.getpid(), signal.SIGKILL)","error":"RLM kernel exited (SIGKILL); the system out-of-memory killer may have stopped it"},
 {"comment":1048576,"error":"RLM kernel outbound frame exceeds 1 MiB (1048576 bytes)"},
 {"code":"6 * 7","ok":{"status":"ok","stdout":"","stderr":"","result":"42"}}
 ],

@@ -74,3 +74,17 @@ class Context:
     async def note(self, text):
         """Append a durable note to your context; it stays visible after compaction."""
         return await self._bridge.request('ctx.note', {'text': text})
+
+    async def prune(self, target_bytes=None, *, kinds=None, dry_run=False):
+        """Cache-aware prune: forget editable items ranked by bytes / (cache_impact_bytes + 1).
+
+        Defaults to pruning ``["tool"]`` outputs; pass ``dry_run=True`` to inspect candidates first.
+        """
+        payload = {}
+        if target_bytes is not None:
+            payload['target_bytes'] = target_bytes
+        if kinds is not None:
+            payload['kinds'] = [kinds] if isinstance(kinds, str) else list(kinds)
+        if dry_run:
+            payload['dry_run'] = True
+        return await self._bridge.request('ctx.prune', payload)

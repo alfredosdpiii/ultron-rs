@@ -437,4 +437,21 @@ fn kernel_apis_context_cache_impact_export_and_injection_safety() {
     let mut ok_note = Map::new();
     ok_note.insert("text".into(), "checked cache impact on main branch".into());
     assert!(control.handle_request("ctx.note", &ok_note, "main").is_ok());
+
+    let mut dry = Map::new();
+    dry.insert("target_bytes".into(), json!(100));
+    dry.insert("dry_run".into(), Value::Bool(true));
+    let plan = control.handle_request("ctx.prune", &dry, "main").unwrap();
+    assert_eq!(plan["dry_run"], Value::Bool(true));
+    assert!(plan["edit_id"].is_null());
+    assert!(plan["freed_bytes"].as_u64().unwrap() >= 100);
+    assert!(!plan["candidates"].as_array().unwrap().is_empty());
+
+    let mut live = Map::new();
+    live.insert("target_bytes".into(), json!(100));
+    let pruned = control.handle_request("ctx.prune", &live, "main").unwrap();
+    assert_eq!(pruned["dry_run"], Value::Bool(false));
+    assert!(pruned["edit_id"].is_string());
+    assert!(pruned["freed_bytes"].as_u64().unwrap() >= 100);
+    assert!(!pruned["pruned"].as_array().unwrap().is_empty());
 }

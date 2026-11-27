@@ -42,6 +42,7 @@ fn usage_message(message: &str) -> bool {
 struct GuideArgs {
     audience: Audience,
     cwd: Option<String>,
+    durable: bool,
     flags: ResourceFlags,
 }
 
@@ -58,6 +59,7 @@ fn parse_guide_args(args: &[String]) -> Result<Option<GuideArgs>, UsageError> {
     let mut parsed = GuideArgs {
         audience: Audience::Ultron,
         cwd: None,
+        durable: false,
         flags: ResourceFlags::default(),
     };
     let mut index = 0;
@@ -76,6 +78,7 @@ fn parse_guide_args(args: &[String]) -> Result<Option<GuideArgs>, UsageError> {
                     .ok_or_else(|| UsageError("--cwd needs a directory".into()))?;
                 parsed.cwd = Some(dir);
             }
+            "--durable" => parsed.durable = true,
             "--no-context-files" | "-nc" => parsed.flags.no_context_files = true,
             "--no-skills" | "-ns" => parsed.flags.no_skills = true,
             other => return Err(UsageError(format!("unknown option for ultron guide: {other}"))),
@@ -96,7 +99,19 @@ fn guide(args: &[String], ctx: &Ctx, out: &mut dyn Write) -> Result<i32, Failure
     let resources;
     let apis;
     let options = if parsed.audience == Audience::Ultron {
-        GuideOptions::default()
+        if parsed.durable {
+            let env = RunEnv {
+                cwd: PathBuf::from(&dir),
+                ..ctx.env.clone()
+            };
+            apis = crate::guide::runtime_apis(&env);
+            GuideOptions {
+                apis: Some(&apis),
+                ..GuideOptions::default()
+            }
+        } else {
+            GuideOptions::default()
+        }
     } else {
         let env = RunEnv {
             cwd: PathBuf::from(&dir),
