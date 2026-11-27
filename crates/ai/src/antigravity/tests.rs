@@ -1,7 +1,7 @@
 //! Unit tests for the Antigravity provider.
 
 #[cfg(test)]
-use super::client::{Agy, Step, WorkspaceDir, normalize_usage, permitted};
+use super::client::{Agy, Step, WorkspaceDir, normalize_usage, permitted, quota_banner_error};
 use super::prompt::{delta_prompt, prompt, prompt_blocks};
 use super::{sessions, stream_simple};
 use crate::env::ProviderEnv;
@@ -462,10 +462,10 @@ fn normalize_usage_fills_missing_totals_and_falls_back_to_context_used() {
         &json!({"usage": {
             "inputTokens": 21_093,
             "cachedReadTokens": 494_396,
-            "outputTokens": 1_256,
-            "totalTokens": 516_745
+            "outputTokens": 29_442,
+            "totalTokens": 544_931
         }}),
-        105_069,
+        161_267,
     );
     assert_eq!(
         (
@@ -474,8 +474,62 @@ fn normalize_usage_fills_missing_totals_and_falls_back_to_context_used() {
             cumulative.output,
             cumulative.total_tokens
         ),
-        (105_069, 0, 1_256, 106_325)
+        (161_267, 0, 29_442, 161_267)
     );
+}
+
+#[tokio::test]
+async fn session_resume_preferred() {
+    let model = crate::models::antigravity_model("offline-test").unwrap();
+    let mut options = fake_agy_options();
+    options
+        .base
+        .env
+        .as_mut()
+        .unwrap()
+        .insert("FAKE_AGY_RESUME".into(), "1".into());
+    let messages = vec![
+        system(rlm_tool()),
+        message(json!({"role":"user","content":"follow up","timestamp":0})),
+    ];
+    let mut agy = Agy::resume(
+        &model,
+        &messages,
+        options.base.env.as_ref(),
+        "offline".into(),
+        WorkspaceDir::Temp(tempfile::tempdir().unwrap()),
+    )
+    .await
+    .unwrap();
+    let prompt = delta_prompt(&messages[1..]).unwrap();
+    let (content, _) = agy.advance(Step::Prompt(prompt), None).await.unwrap();
+    let [AssistantContent::Text(text)] = &content[..] else {
+        panic!("{content:?}");
+    };
+    let report: Value = serde_json::from_str(&text.text).unwrap();
+    assert_eq!(report["resumed"], true);
+    assert_eq!(report["loaded"], false);
+}
+
+#[tokio::test]
+async fn quota_banner_returns_error() {
+    let model = crate::models::antigravity_model("offline-quota").unwrap();
+    let context = TranscriptContext {
+        messages: vec![tool_result("one")],
+    };
+    let message = stream_simple(&model, &context, &fake_agy_options(), &mut |_| {})
+        .await
+        .unwrap();
+    assert_eq!(message.stop_reason, StopReason::Error);
+    let error = message.error_message.unwrap_or_default();
+    assert!(error.contains("Individual quota reached"), "{error}");
+
+    let nonzero = crate::types::Usage {
+        input: 100,
+        total_tokens: 100,
+        ..crate::types::Usage::default()
+    };
+    assert!(quota_banner_error("⚠ Individual quota reached.", &nonzero).is_none());
 }
 
 #[test]

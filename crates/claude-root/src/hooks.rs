@@ -64,6 +64,16 @@ impl HookEvent {
         }
     }
 
+    /// The Antigravity CLI (`agy`) hook event name (`docs/hooks.md`), when `agy` has an equivalent.
+    pub const fn agy_event(self) -> Option<&'static str> {
+        match self {
+            HookEvent::SessionStart => Some("SessionStart"),
+            HookEvent::UserPrompt => Some("PreInvocation"),
+            HookEvent::Stop => Some("Stop"),
+            HookEvent::Notification | HookEvent::SessionEnd | HookEvent::WaitEvents => None,
+        }
+    }
+
     /// Claude Code's timeout for the command, in seconds.
     pub fn timeout_secs(self) -> u64 {
         match self {

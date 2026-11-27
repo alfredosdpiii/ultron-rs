@@ -84,11 +84,17 @@ for line in sys.stdin:
     params = message.get("params", {})
     method = message.get("method")
     if method == "initialize":
-        answer(message, {"protocolVersion": 1, "agentCapabilities": {"_meta": {"antigravity": {"systemPrompt": {"append": True}}}}})
+        caps = {"_meta": {"antigravity": {"systemPrompt": {"append": True}}}}
+        if os.environ.get("FAKE_AGY_RESUME") == "1":
+            caps["sessionCapabilities"] = {"resume": {}, "load": {}}
+        answer(message, {"protocolVersion": 1, "agentCapabilities": caps})
     elif method == "session/new":
         state["server"] = (params["mcpServers"] or [None])[0]
         state["append"] = params.get("_meta", {}).get("antigravity", {}).get("systemPrompt", {}).get("append")
         answer(message, {"sessionId": "offline"})
+    elif method == "session/resume":
+        state["resumed"] = True
+        answer(message, {})
     elif method == "session/load":
         state["loaded"] = True
         # Replay a historical chunk during session/load; Ultron must ignore chunks before a prompt turn.
@@ -99,13 +105,17 @@ for line in sys.stdin:
             print("Error: not signed in. Run `agy login` first.", file=sys.stderr, flush=True)
             time.sleep(0.2)
             sys.exit(1)
-        assert params["modelId"] == "offline-test"
+        state["model"] = params["modelId"]
+        assert params["modelId"] in ("offline-test", "offline-quota")
         answer(message, {})
     elif method == "session/prompt":
         state["prompts"] += 1
+        if state.get("model") == "offline-quota":
+            finish(message, "\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 11m4s.\n", {})
+            continue
         text = params["prompt"][0]["text"]
         assert state["append"] is None or "\nSystem: " not in text, "system prompt sent twice"
-        report = {"pid": os.getpid(), "append": state["append"], "prompts": state["prompts"], "system": "SYSTEM RULES" in text, "loaded": state["loaded"]}
+        report = {"pid": os.getpid(), "append": state["append"], "prompts": state["prompts"], "system": "SYSTEM RULES" in text, "loaded": state["loaded"], "resumed": state.get("resumed", False)}
         if "\nMessages: " in text:
             report["delta"] = len(json.loads(text.split("\nMessages: ", 1)[1]))
             finish(message, json.dumps(report), USAGE)
