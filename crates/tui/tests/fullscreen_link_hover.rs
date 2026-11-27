@@ -3,11 +3,12 @@
 //! asks for no paint, and `LinkHover` picks the mouse tracking that hover needs.
 
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tui::{
-    ENABLE_BUTTON_MOTION_MOUSE, FullscreenViewport, KeyContext, KeybindingsManager, LinkHover, Rect, ScrollView,
-    Scrollbar, ViewportInput, tui_keybindings, visible_width,
+    ENABLE_BUTTON_MOTION_MOUSE, FullscreenViewport, KeyContext, KeybindingsManager, LinkHover, MouseDispatch,
+    MouseEvent, MouseResult, MouseTarget, MouseTargets, Rect, ScrollView, Scrollbar, ViewportInput, tui_keybindings,
+    visible_width,
 };
 
 const COLS: usize = 48;
@@ -209,4 +210,72 @@ fn tui_link_hover_picks_the_mouse_tracking() {
     assert_eq!(LinkHover::On.mouse_tracking(&plain), (ALL_MOTION, true));
     assert_eq!(LinkHover::Off.mouse_tracking(&plain), (ALL_MOTION, false));
     assert_eq!(LinkHover::Auto.mouse_tracking(&plain).0, tui::mouse_tracking(&plain));
+}
+
+/// Transcript items that take every mouse event, as the app's message and cell items do.
+#[derive(Default)]
+struct ItemsTakingTheMouse {
+    events: usize,
+}
+
+impl MouseTargets for ItemsTakingTheMouse {
+    fn dispatch_at(&mut self, _: &MouseEvent) -> Option<MouseDispatch> {
+        self.events += 1;
+        Some(MouseDispatch {
+            result: MouseResult {
+                handled: Some(true),
+                ..MouseResult::default()
+            },
+            target: MouseTarget {
+                id: 1,
+                origin_x: 0,
+                origin_y: 0,
+                width: COLS,
+                height: TRANSCRIPT,
+            },
+        })
+    }
+
+    fn dispatch_to(&mut self, target: &MouseTarget, _: &MouseEvent) -> Option<MouseDispatch> {
+        self.events += 1;
+        Some(MouseDispatch {
+            result: MouseResult::default(),
+            target: *target,
+        })
+    }
+}
+
+/// Items under the pointer that take the mouse neither hide the hover underline nor keep an Option-click from opening
+/// the link; a plain click on a plain-text URL stays the item's.
+#[test]
+fn tui_fullscreen_links_inside_items_that_take_the_mouse() {
+    let keys = keys();
+    let mut view = hovering();
+    let opened: Arc<Mutex<Vec<String>>> = Arc::default();
+    let sink = Arc::clone(&opened);
+    view.open_url = Some(Arc::new(move |url: &str| sink.lock().unwrap().push(url.to_string())));
+    let row = "PR: https://github.com/a/b/pull/1 is open";
+    let lines = [row, "second row"];
+    paint(&mut view, &lines);
+    let mut items = ItemsTakingTheMouse::default();
+    let now = Instant::now();
+    assert_eq!(
+        view.handle_input_with(&motion(10, 0), &keys, now, &mut items),
+        ViewportInput::Consumed
+    );
+    assert_eq!(
+        paint(&mut view, &lines)[0],
+        "PR: \x1b[4mhttps://github.com/a/b/pull/1\x1b[24m is open"
+    );
+    for data in ["\x1b[<8;11;1M", "\x1b[<8;11;1m"] {
+        view.handle_input_with(data, &keys, now, &mut items);
+    }
+    assert_eq!(*opened.lock().unwrap(), ["https://github.com/a/b/pull/1"]);
+    let before = items.events;
+    let later = now + Duration::from_secs(2);
+    for data in ["\x1b[<0;11;1M", "\x1b[<0;11;1m"] {
+        view.handle_input_with(data, &keys, later, &mut items);
+    }
+    assert!(items.events > before);
+    assert_eq!(opened.lock().unwrap().len(), 1);
 }

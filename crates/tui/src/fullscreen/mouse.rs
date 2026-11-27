@@ -186,8 +186,10 @@ impl FullscreenViewport {
     }
 
     /// `handleMouseEvent`: the component gesture in progress, the jump-to-end indicator, the scrollbar, the
-    /// component under the pointer, right-click paste, then text selection. The pointer is over a link only for an
-    /// event none of the others took; a motion that moved neither hover is [`ViewportInput::Unchanged`].
+    /// component under the pointer, right-click paste, then text selection. Hover is only a look, and the transcript
+    /// items under the pointer take motion too, so a motion notes the pointer before they see it; a motion that moved
+    /// neither hover is [`ViewportInput::Unchanged`]. A primary click on a link it would open skips those items:
+    /// links take precedence over enclosing click regions.
     pub(super) fn handle_mouse(&mut self, ev: Sgr, now: Instant, targets: &mut dyn MouseTargets) -> ViewportInput {
         let kind = classify_sgr_kind(ev);
         let event = self.mouse_event(kind, ev.button, ev.x, ev.y, None);
@@ -199,7 +201,12 @@ impl FullscreenViewport {
         if self.indicator_click(ev) || self.handle_scrollbar_phase(ev) {
             return ViewportInput::Consumed;
         }
-        if let Some(d) = targets.dispatch_at(&event) {
+        if kind == MouseEventType::Move {
+            self.point_at(ev.x, ev.y);
+        }
+        if !self.primary_click_on_link(ev)
+            && let Some(d) = targets.dispatch_at(&event)
+        {
             self.dispatch_target_press(d, kind, ev);
             return ViewportInput::Consumed;
         }
@@ -253,6 +260,21 @@ impl FullscreenViewport {
     fn point_at(&mut self, x: i64, y: i64) {
         let inside = self.rect.is_some_and(|r| r.contains(x, y));
         self.pointer = (self.link_hover && inside).then_some((y as usize, x as usize));
+    }
+
+    /// A primary press or release over a link the click would open: an OSC 8 link, or with Option/Alt (SGR modifier
+    /// bit 8) a plain-text URL.
+    fn primary_click_on_link(&self, ev: Sgr) -> bool {
+        let primary = ev.button & 64 == 0 && ev.button & 32 == 0 && (ev.button & 3 == 0 || ev.release);
+        if !primary {
+            return false;
+        }
+        let row = ev.y.clamp(0, (self.rows as i64 - 1).max(0)) as usize;
+        let col = ev.x.clamp(0, (self.cols as i64 - 1).max(0)) as usize;
+        self.screen
+            .get(row)
+            .and_then(|line| links::link_at(line, col, ev.button & 8 != 0))
+            .is_some()
     }
 
     /// The link under the pointer in the last frame: its row and columns.
