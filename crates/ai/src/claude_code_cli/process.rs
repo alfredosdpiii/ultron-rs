@@ -176,6 +176,9 @@ impl CliProcess {
     }
 }
 
+const MAX_PROVEN_KEYS: usize = 256;
+const SPARE_REAP_INTERVAL: Duration = Duration::from_secs(5);
+
 struct Spare {
     key: String,
     process: CliProcess,
@@ -183,7 +186,44 @@ struct Spare {
 }
 
 static SPARES: LazyLock<Mutex<Vec<Spare>>> = LazyLock::new(Mutex::default);
+static SPARE_REAPER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 pub(super) static PROVEN_KEYS: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
+
+pub(super) fn record_proven_key(key: &str) {
+    let mut keys = jsrt::sync::lock(&PROVEN_KEYS);
+    if keys.len() >= MAX_PROVEN_KEYS && !keys.contains(key) {
+        keys.clear();
+    }
+    keys.insert(key.to_string());
+}
+
+fn reap_expired_spares(spares: &mut Vec<Spare>, now: Instant) {
+    spares.retain(|spare| {
+        let keep = spare.expires > now && spare.process.alive();
+        if !keep {
+            spare.process.kill();
+        }
+        keep
+    });
+}
+
+fn spare_reaper_loop() {
+    loop {
+        std::thread::sleep(SPARE_REAP_INTERVAL);
+        let mut spares = jsrt::sync::lock(&SPARES);
+        if !spares.is_empty() {
+            reap_expired_spares(&mut spares, Instant::now());
+        }
+    }
+}
+
+fn ensure_spare_reaper() {
+    SPARE_REAPER.get_or_init(|| {
+        let _ = std::thread::Builder::new()
+            .name("claude-cli-spare-reaper".into())
+            .spawn(spare_reaper_loop);
+    });
+}
 
 pub(super) fn take_spare(key: &str) -> Option<CliProcess> {
     let mut spares = jsrt::sync::lock(&SPARES);
@@ -206,15 +246,10 @@ pub(super) fn start_spare(key: &str, bin: &str, args: &[String], env: &Env, cwd:
     if config.warm_spares == 0 {
         return;
     }
+    ensure_spare_reaper();
     let mut spares = jsrt::sync::lock(&SPARES);
     let now = Instant::now();
-    spares.retain(|spare| {
-        let keep = spare.expires > now && spare.process.alive();
-        if !keep {
-            spare.process.kill();
-        }
-        keep
-    });
+    reap_expired_spares(&mut spares, now);
     if spares.iter().any(|s| s.key == key) {
         return;
     }

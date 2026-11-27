@@ -267,9 +267,17 @@ fn parse_template(config: &str) -> Vec<TemplatePart> {
 
 /// How long a `!command` value may run (`execSync`'s `timeout: 10000`).
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+const COMMAND_CACHE_TTL: Duration = Duration::from_secs(300);
+const COMMAND_FAILURE_TTL: Duration = Duration::from_secs(30);
+const MAX_COMMAND_CACHE: usize = 256;
 
-/// `commandResultCache`: every `!command` runs once per process; failures are cached too.
-static COMMAND_CACHE: std::sync::Mutex<Option<std::collections::HashMap<String, Option<String>>>> =
+struct CachedCommand {
+    value: Option<String>,
+    expires: std::time::Instant,
+}
+
+/// `commandResultCache`: caches `!command` results with a bounded TTL so rotating credentials refresh in long-lived daemons.
+static COMMAND_CACHE: std::sync::Mutex<Option<std::collections::HashMap<String, CachedCommand>>> =
     std::sync::Mutex::new(None);
 
 /// `executeWithDefaultShell`: `/bin/sh -c <command>` with `envs` added to the environment, stdin and stderr ignored,
@@ -299,19 +307,36 @@ fn command_output(command: &str, envs: &[(String, String)]) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// `executeCommand`: a `!command` value (the command without its `!`), cached for the process's lifetime.
+/// `executeCommand`: a `!command` value (the command without its `!`), cached until its TTL expires.
 pub fn command_value(command: &str) -> Option<String> {
     let key = format!("!{command}");
+    let now = std::time::Instant::now();
     if let Some(cached) = jsrt::sync::lock(&COMMAND_CACHE)
         .as_ref()
         .and_then(|cache| cache.get(&key))
+        .filter(|entry| entry.expires > now)
     {
-        return cached.clone();
+        return cached.value.clone();
     }
     let value = command_output(command, &[]);
-    jsrt::sync::lock(&COMMAND_CACHE)
-        .get_or_insert_with(Default::default)
-        .insert(key, value.clone());
+    let ttl = if value.is_some() {
+        COMMAND_CACHE_TTL
+    } else {
+        COMMAND_FAILURE_TTL
+    };
+    let mut guard = jsrt::sync::lock(&COMMAND_CACHE);
+    let cache = guard.get_or_insert_with(Default::default);
+    cache.retain(|_, entry| entry.expires > now);
+    if cache.len() >= MAX_COMMAND_CACHE {
+        cache.clear();
+    }
+    cache.insert(
+        key,
+        CachedCommand {
+            value: value.clone(),
+            expires: now + ttl,
+        },
+    );
     value
 }
 

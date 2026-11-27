@@ -1,7 +1,7 @@
 //! Stream-json event loop, usage/error classification, and `stream` / `stream_simple` entry points for `claude -p`.
 
 use super::probe::{ClaudeCliCapabilities, empty_work_dir, ensure_claude_cli, resolve_claude_cli, tail};
-use super::process::{ChildEvent, CliProcess, PROVEN_KEYS, acquire, start_spare, take_spare};
+use super::process::{ChildEvent, CliProcess, PROVEN_KEYS, acquire, record_proven_key, start_spare, take_spare};
 use super::request::{PlannedRequest, payload, plan_request};
 use super::{
     ClaudeCodeOptions, Env, RuntimeConfig, TOOLS_UNSUPPORTED, USAGE_LIMIT_DIAGNOSTIC, child_env, runtime_config,
@@ -707,7 +707,7 @@ fn remember_proven_key(
     if crate::http::is_aborted(signal) {
         return;
     }
-    jsrt::sync::lock(&PROVEN_KEYS).insert(key.to_string());
+    record_proven_key(key);
     if plan._system_prompt_file.is_none() && session_id.is_none() {
         start_spare(key, &setup.bin, &plan.args, &plan.env, &setup.cwd, setup.config);
     }

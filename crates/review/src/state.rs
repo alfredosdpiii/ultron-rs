@@ -360,14 +360,15 @@ pub fn to_json_1<T: Serialize>(value: &T) -> String {
 }
 
 fn process_lock(path: &str) -> Arc<Mutex<()>> {
-    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
-    LOCKS
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .entry(path.into())
-        .or_default()
-        .clone()
+    static LOCKS: OnceLock<Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>> = OnceLock::new();
+    let mut locks = jsrt::sync::lock(LOCKS.get_or_init(Default::default));
+    locks.retain(|_, weak| weak.strong_count() > 0);
+    if let Some(existing) = locks.get(path).and_then(std::sync::Weak::upgrade) {
+        return existing;
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(path.into(), Arc::downgrade(&lock));
+    lock
 }
 
 /// A `proper-lockfile` lock on `lock_dir`, tried `tries` times 20 ms apart, refreshed every `update`.

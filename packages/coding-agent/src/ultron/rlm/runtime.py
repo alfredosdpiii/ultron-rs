@@ -1437,6 +1437,16 @@ def _definitions(tree: ast.Module) -> list[tuple[str, str]]:
     return found
 
 
+def _prune_stale_definitions() -> None:
+    stale = [
+        name
+        for name, (_, bound) in _DEFINITIONS.items()
+        if _STATE.namespace.get(name) is not bound
+    ]
+    for name in stale:
+        _DEFINITIONS.pop(name, None)
+
+
 def _record_definitions(definitions: list[tuple[str, str]], before: dict[str, Any]) -> None:
     """Keep the statements of a cell that bound a new object; one the cell never reached leaves its name as it was."""
     for name, source in definitions:
@@ -1444,6 +1454,7 @@ def _record_definitions(definitions: list[tuple[str, str]], before: dict[str, An
         if value is not None and value is not before.get(name):
             _DEFINITIONS.pop(name, None)
             _DEFINITIONS[name] = (source, value)
+    _prune_stale_definitions()
 
 
 def _persistable_namespace() -> tuple[dict[str, str], dict[str, str], list[tuple[str, str]]]:

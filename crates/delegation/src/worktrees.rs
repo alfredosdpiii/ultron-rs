@@ -267,9 +267,22 @@ pub(crate) fn quiet<'a>(args: &[&'a str]) -> Vec<&'a str> {
     out
 }
 
+const MAX_CACHED_IDENTITIES: usize = 256;
+
 type Identity = Vec<(&'static str, String)>;
 
 static IDENTITIES: LazyLock<Mutex<HashMap<PathBuf, Identity>>> = LazyLock::new(Mutex::default);
+
+fn cache_identity(cwd: &Path, env: Identity) {
+    let mut cache = jsrt::sync::lock(&IDENTITIES);
+    if cache.len() >= MAX_CACHED_IDENTITIES {
+        cache.retain(|path, _| path.exists());
+    }
+    if cache.len() >= MAX_CACHED_IDENTITIES {
+        cache.clear();
+    }
+    cache.insert(cwd.to_path_buf(), env);
+}
 
 /// Author/committer for Ultron's commits: the repository's configured identity, else "Ultron".
 pub(crate) fn identity_env(cwd: &Path) -> Result<Identity> {
@@ -287,7 +300,7 @@ pub(crate) fn identity_env(cwd: &Path) -> Result<Identity> {
         env.push(("GIT_AUTHOR_EMAIL", "ultron@localhost".to_string()));
         env.push(("GIT_COMMITTER_EMAIL", "ultron@localhost".to_string()));
     }
-    jsrt::sync::lock(&IDENTITIES).insert(cwd.to_path_buf(), env.clone());
+    cache_identity(cwd, env.clone());
     Ok(env)
 }
 
