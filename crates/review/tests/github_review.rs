@@ -77,7 +77,7 @@ fn review_github_a_requested_review_acknowledges_then_posts_one_atomic_review() 
     assert_eq!(review["event"], json!("REQUEST_CHANGES"));
     assert_eq!(
         review["body"].as_str().expect("body").split("\n\n").next(),
-        Some("**Request changes.** To resolve before merge: `calc.py:4` (inline) total() skips the last item.")
+        Some("**Request changes** — `aaaaaaa` (1 file, +1 / -1)\n1 blocking finding to resolve before merge.")
     );
     let comments = review["comments"].as_array().expect("comments");
     assert_eq!(comments.len(), 1);
@@ -286,9 +286,14 @@ fn review_github_own_and_closed_pull_requests_get_a_comment() {
     assert_eq!(own.plan.event, "COMMENT");
     assert_eq!(
         own.plan.body.split("\n\n").next(),
-        Some(
-            "**Comment.** Worth resolving: `calc.py:4` (inline) total() skips the last item. This account opened the pull request."
-        )
+        Some("**Comment** — `aaaaaaa` (1 file, +1 / -1)\nThis account opened the pull request.")
+    );
+    assert!(
+        own.plan
+            .body
+            .contains("1. **[High]** `calc.py:4` (inline) — total() skips the last item."),
+        "{}",
+        own.plan.body
     );
 
     let second = setup(json!({}), None);
@@ -333,7 +338,7 @@ fn review_github_incomplete_coverage_comments_and_a_failed_clone_reviews_the_dif
     context.hub.add_pull(FakePull::new("o", "r", 1).requested(&[BOT]));
     context.hub.lock().clone_fails = true;
     let outcome = posted(requested(&context));
-    assert_eq!(outcome.plan.event, "COMMENT");
+    assert_eq!(outcome.plan.event, "APPROVE");
     let spec = &context.engine.specs()[0];
     assert!(spec.get("workDir").is_none());
     assert_eq!(spec["diff"], json!(DIFF));
@@ -1022,12 +1027,35 @@ fn review_github_new_commits_rereview_the_increment_and_resolve_fixed_threads() 
         outcome
             .plan
             .body
-            .contains("Read the changes from `ccccccc` to `ddddddd` (1 file, +1 -1)")
+            .contains("**Request changes** — `ccccccc`..`ddddddd` (1 file, +1 / -1)"),
+        "{}",
+        outcome.plan.body
     );
     // The earlier finding that blocks is named (fisher-ki-saas#2917).
-    assert!(outcome.plan.body.contains(
-        "**Request changes.** 1 finding from an earlier review still present. Still present from an earlier review: `calc.py:7` price may be missing. Earlier findings: 1 fixed (`calc.py:4`); 1 still present (`calc.py:7`)."
-    ), "{}", outcome.plan.body);
+    assert!(
+        outcome
+            .plan
+            .body
+            .contains("1 finding from an earlier review still present."),
+        "{}",
+        outcome.plan.body
+    );
+    assert!(
+        outcome
+            .plan
+            .body
+            .contains("- `calc.py:4` **[fixed]** — total() skips the last item."),
+        "{}",
+        outcome.plan.body
+    );
+    assert!(
+        outcome
+            .plan
+            .body
+            .contains("- `calc.py:7` **[still present]** — price may be missing."),
+        "{}",
+        outcome.plan.body
+    );
     // Only the fixed finding's own thread is resolved.
     assert_eq!(context.hub.pull().resolved, [format!("PRRT_{}", fixed.id)]);
     let resolves: Vec<Value> = context
@@ -1342,8 +1370,12 @@ fn review_github_a_force_push_reviews_the_whole_diff_again() {
     // Earlier findings are still re-checked, without a diff to map their lines.
     assert_eq!(spec["earlier"].as_array().expect("earlier").len(), 1);
     assert!(spec.get("earlierDiffPath").is_none());
-    assert!(outcome.plan.body.contains("Read the diff of `ddddddd` (1 file, +1 -1)"));
-    assert!(!outcome.plan.body.contains("the changes from"));
+    assert!(
+        outcome.plan.body.contains("**Approve** — `ddddddd` (1 file, +1 / -1)"),
+        "{}",
+        outcome.plan.body
+    );
+    assert!(!outcome.plan.body.contains("..`ddddddd`"));
 }
 
 const SOURCE: &str = "diff --git a/purge.py b/purge.py\nnew file mode 100644\nindex 0000000..3333333\n--- /dev/null\n\
@@ -1359,8 +1391,8 @@ fn review_body(context: &Context) -> String {
     review["body"].as_str().expect("body").to_string()
 }
 
-fn checked_paragraph(body: &str) -> &str {
-    body.split("\n\n").nth(1).expect("the paragraph after the verdict")
+fn promotion_line(body: &str) -> &str {
+    body.lines().nth(1).expect("the line after the header")
 }
 
 #[test]
@@ -1387,9 +1419,9 @@ fn review_github_a_cherry_pick_reads_only_what_differs_from_the_pull_requests_it
     assert!(spec.get("carried").is_none());
     let body = review_body(&context);
     assert!(
-        checked_paragraph(&body).starts_with(
+        promotion_line(&body).starts_with(
             "Cherry-pick of #2931: 3 changed lines match it line for line and were reviewed there (1 file entirely); \
-             this review reads the rest. Read the diff of "
+             this review reads the rest."
         ),
         "{body}"
     );
@@ -1467,7 +1499,7 @@ fn review_github_a_cherry_pick_that_is_all_carried_is_approved_when_what_it_carr
     assert_eq!(outcome.plan.event, "APPROVE");
     let body = review_body(&context);
     assert!(
-        checked_paragraph(&body).starts_with(
+        promotion_line(&body).starts_with(
             "Cherry-pick of #2931: all 3 changed lines match it line for line and were reviewed there; nothing else \
              changed."
         ),
@@ -1520,7 +1552,7 @@ fn review_github_a_promotion_named_in_the_description_reads_what_differs_and_lis
     assert_eq!(context.engine.specs()[0]["diff"], json!(DIFF));
     let body = review_body(&context);
     assert!(
-        checked_paragraph(&body).starts_with("Cherry-pick of #2926: 3 changed lines match it"),
+        promotion_line(&body).starts_with("Cherry-pick of #2926: 3 changed lines match it"),
         "{body}"
     );
     assert!(
@@ -1574,7 +1606,7 @@ fn review_github_a_cherry_pick_reads_in_full_a_file_whose_code_differs_on_its_br
     assert_eq!(context.engine.specs()[0]["diff"], json!(DIFF));
     let body = review_body(&context);
     assert!(
-        checked_paragraph(&body).starts_with(
+        promotion_line(&body).starts_with(
             "Cherry-pick of #2931: 3 changed lines match it line for line and were reviewed there (1 file entirely); \
              this review reads the rest, and in full 1 file where this branch's code differs from what it was \
              reviewed against."

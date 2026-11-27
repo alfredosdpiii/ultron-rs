@@ -307,7 +307,11 @@ impl FileWriteGuard for LokiGuard {
             loki::hygiene::written(&self.root, &checked, self.hygiene)
                 .into_iter()
                 .partition(|line| line.starts_with(loki::run::NOT_CHECKED));
-        let advisory: Vec<String> = report.advisory().cloned().collect();
+        let advisory: Vec<String> = report
+            .advisory()
+            .filter(|line| !line.contains("loki/hygiene-"))
+            .cloned()
+            .collect();
         let not_checked: Vec<String> = report.not_checked().cloned().chain(hygiene_gaps).collect();
         let blocking = self.unseen("blocking", &report.blocking, &checked);
         let advisory = self.unseen("advisory", &advisory, &checked);

@@ -58,7 +58,20 @@ pub struct LauncherOptions {
     pub claude_args: Vec<String>,
 }
 
-pub(crate) fn next_arg_value(args: &[String], index: &mut usize, flag: &str) -> Result<String, UsageError> {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CommonLauncherOptions {
+    pub print_config: bool,
+    pub watch: bool,
+    pub hooks: bool,
+    pub no_context_files: bool,
+    pub no_skills: bool,
+    pub frame_model: Option<String>,
+    pub children: Option<crate::settings::ChildrenMode>,
+    pub child_model: Option<String>,
+    pub passthrough_args: Vec<String>,
+}
+
+fn next_arg_value(args: &[String], index: &mut usize, flag: &str) -> Result<String, UsageError> {
     let next = args
         .get(*index + 1)
         .ok_or_else(|| UsageError(format!("{flag} needs a value")))?;
@@ -66,10 +79,7 @@ pub(crate) fn next_arg_value(args: &[String], index: &mut usize, flag: &str) -> 
     Ok(next.clone())
 }
 
-pub(crate) fn parse_children_mode(
-    args: &[String],
-    index: &mut usize,
-) -> Result<crate::settings::ChildrenMode, UsageError> {
+fn parse_children_mode(args: &[String], index: &mut usize) -> Result<crate::settings::ChildrenMode, UsageError> {
     let raw = next_arg_value(args, index, "--children")?;
     crate::settings::ChildrenMode::parse(&raw).ok_or_else(|| UsageError("--children must be claude or ultron".into()))
 }
@@ -88,11 +98,9 @@ pub(crate) fn env_json_map(env: &[(String, String)]) -> Map<String, Value> {
     env.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect()
 }
 
-fn apply_launcher_bool_flag(arg: &str, options: &mut LauncherOptions) -> bool {
+fn apply_common_bool_flag(arg: &str, options: &mut CommonLauncherOptions) -> bool {
     match arg {
         "--print-config" => options.print_config = true,
-        "--keep-mcp" => options.keep_mcp = true,
-        "--keep-settings" => options.keep_settings = true,
         "--watch" => options.watch = true,
         "--no-hooks" => options.hooks = false,
         "--no-context-files" | "-nc" => options.no_context_files = true,
@@ -102,11 +110,11 @@ fn apply_launcher_bool_flag(arg: &str, options: &mut LauncherOptions) -> bool {
     true
 }
 
-fn apply_launcher_value_flag(
+fn apply_common_value_flag(
     arg: &str,
     args: &[String],
     index: &mut usize,
-    options: &mut LauncherOptions,
+    options: &mut CommonLauncherOptions,
 ) -> Result<bool, UsageError> {
     match arg {
         "--frame-model" => options.frame_model = Some(next_arg_value(args, index, arg)?),
@@ -117,30 +125,67 @@ fn apply_launcher_value_flag(
     Ok(true)
 }
 
-/// Split `ultron claude` arguments into Ultron's options and claude's; `None` for `--help`.
-pub fn parse_launcher_args(args: &[String]) -> Result<Option<LauncherOptions>, UsageError> {
-    let mut options = LauncherOptions {
+pub(crate) fn parse_common_args(
+    args: &[String],
+    mut handle_extra: impl FnMut(&str) -> bool,
+) -> Result<Option<CommonLauncherOptions>, UsageError> {
+    let mut options = CommonLauncherOptions {
         hooks: true,
-        ..LauncherOptions::default()
+        ..CommonLauncherOptions::default()
     };
     let mut index = 0;
     while index < args.len() {
         let arg = args[index].as_str();
         if arg == "--" {
-            options.claude_args.extend(args[index + 1..].iter().cloned());
+            options.passthrough_args.extend(args[index + 1..].iter().cloned());
             break;
         }
         if matches!(arg, "--help" | "-h") {
             return Ok(None);
         }
-        if !apply_launcher_bool_flag(arg, &mut options)
-            && !apply_launcher_value_flag(arg, args, &mut index, &mut options)?
-        {
-            options.claude_args.push(arg.to_string());
+        let handled = apply_common_bool_flag(arg, &mut options)
+            || handle_extra(arg)
+            || apply_common_value_flag(arg, args, &mut index, &mut options)?;
+        if !handled {
+            options.passthrough_args.push(arg.to_string());
         }
         index += 1;
     }
     Ok(Some(options))
+}
+
+/// Split `ultron claude` arguments into Ultron's options and claude's; `None` for `--help`.
+pub fn parse_launcher_args(args: &[String]) -> Result<Option<LauncherOptions>, UsageError> {
+    let mut keep_mcp = false;
+    let mut keep_settings = false;
+    let Some(common) = parse_common_args(args, |arg| match arg {
+        "--keep-mcp" => {
+            keep_mcp = true;
+            true
+        }
+        "--keep-settings" => {
+            keep_settings = true;
+            true
+        }
+        _ => false,
+    })?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(LauncherOptions {
+        print_config: common.print_config,
+        keep_mcp,
+        keep_settings,
+        watch: common.watch,
+        hooks: common.hooks,
+        no_context_files: common.no_context_files,
+        no_skills: common.no_skills,
+        frame_model: common.frame_model,
+        children: common.children,
+        child_model: common.child_model,
+        root_model: None,
+        claude_args: common.passthrough_args,
+    }))
 }
 
 /// Everything `claude` is started with.
@@ -463,9 +508,7 @@ fn write_files_and_exec(
     out: &mut dyn std::io::Write,
     err: &mut dyn std::io::Write,
 ) -> Result<i32, String> {
-    for (path, content) in &launch.files {
-        config::paths::write_private(path, content).map_err(|e| format!("{}: {e}", path.display()))?;
-    }
+    write_launch_files(&launch.files)?;
     let interactive = !parsed.claude_args.iter().any(|a| a == "-p" || a == "--print");
     open_watch_pane(
         parsed.watch,
@@ -478,7 +521,17 @@ fn write_files_and_exec(
     )?;
     let _ = err.flush();
     let _ = out.flush();
-    Ok(exec_claude(launch, dir, err))
+    Ok(exec_with_cleanup(
+        &ExecSpec {
+            label: "ultron claude",
+            cleanup_name: "ultron-claude-cleanup",
+            program: &launch.claude,
+            args: &launch.args,
+            env: &launch.env,
+        },
+        dir,
+        err,
+    ))
 }
 
 fn require_authenticated_claude(
@@ -590,17 +643,31 @@ pub(crate) fn open_watch_pane(
     Ok(())
 }
 
-/// Replace this process with Claude Code (so Ctrl-C and the exit status are Claude Code's own, as TypeScript gets by
-/// ignoring SIGINT while it waits), after starting a detached helper that removes the session's temp directory
-/// once this process id is gone. Returns only when Claude Code could not be started.
-fn exec_claude(launch: &ClaudeLaunch, dir: &Path, err: &mut dyn std::io::Write) -> i32 {
+pub(crate) struct ExecSpec<'a> {
+    pub label: &'a str,
+    pub cleanup_name: &'a str,
+    pub program: &'a str,
+    pub args: &'a [String],
+    pub env: &'a [(String, String)],
+}
+
+pub(crate) fn write_launch_files(files: &[(PathBuf, String)]) -> Result<(), String> {
+    for (path, content) in files {
+        config::paths::write_private(path, content).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Replace this process with the target CLI (so Ctrl-C and the exit status are its own), after starting a detached
+/// helper that removes the session's temp directory once this process id is gone. Returns only when exec fails.
+pub(crate) fn exec_with_cleanup(spec: &ExecSpec<'_>, dir: &Path, err: &mut dyn std::io::Write) -> i32 {
     use std::os::unix::process::CommandExt;
     let pid = std::process::id().to_string();
     let _ = std::process::Command::new("/bin/sh")
         .args([
             "-c",
             "while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; rm -rf -- \"$2\"",
-            "ultron-claude-cleanup",
+            spec.cleanup_name,
             &pid,
             &dir.display().to_string(),
         ])
@@ -609,11 +676,11 @@ fn exec_claude(launch: &ClaudeLaunch, dir: &Path, err: &mut dyn std::io::Write) 
         .stderr(std::process::Stdio::null())
         .process_group(0)
         .spawn();
-    let error = std::process::Command::new(&launch.claude)
-        .args(&launch.args)
-        .envs(launch.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+    let error = std::process::Command::new(spec.program)
+        .args(spec.args)
+        .envs(spec.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .exec();
     let _ = std::fs::remove_dir_all(dir);
-    let _ = writeln!(err, "ultron claude: {error}");
+    let _ = writeln!(err, "{}: {error}", spec.label);
     1
 }

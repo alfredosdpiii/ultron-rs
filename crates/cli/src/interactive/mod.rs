@@ -415,8 +415,7 @@ fn make_watch_sink(
     commands: mpsc::Sender<Command>,
     herdr: Option<Arc<crate::herdr_report::TuiReport>>,
 ) -> client::session::WatchSink {
-    let lane_open = std::sync::Mutex::new(true);
-    let stream = std::sync::Mutex::new(TuiStream::default());
+    let state = std::sync::Mutex::new((true, TuiStream::default()));
     Arc::new(move |event: Value| {
         if let Some(herdr) = &herdr {
             herdr.lane_event(&event);
@@ -427,8 +426,12 @@ fn make_watch_sink(
         if is_worker_restart(&event) {
             let _ = commands.send(Command::WorkerStopped);
         }
-        let (recovery, reopen) = recovery_events(&event, &mut jsrt::sync::lock(&lane_open));
-        let shown = jsrt::sync::lock(&stream).events(&event);
+        let (recovery, reopen, shown) = {
+            let mut guard = jsrt::sync::lock(&state);
+            let (recovery, reopen) = recovery_events(&event, &mut guard.0);
+            let shown = guard.1.events(&event);
+            (recovery, reopen, shown)
+        };
         for lane_event in shown.into_iter().chain(recovery) {
             let _ = ui.send(UiEvent::Lane(lane_event));
         }

@@ -357,17 +357,16 @@ fn build_http_server_config(url: &str, parsed: &Parsed, io: &mut Io) -> Option<M
         headers.insert("Authorization".into(), Value::String(format!("Bearer ${{{bearer}}}")));
     }
     let mut oauth = Map::new();
-    for (flag, key) in [
-        ("oauth-client-id", "clientId"),
-        ("oauth-client-secret", "clientSecret"),
-        ("oauth-client-name", "clientName"),
-    ] {
+    for (flag, key) in [("oauth-client-id", "clientId"), ("oauth-client-secret", "clientSecret")] {
         if let Some(v) = value(flag) {
             oauth.insert(key.into(), v.into());
         }
     }
     if let Some(v) = value("oauth-callback-port") {
         oauth.insert("callbackPort".into(), js_number_value(&v));
+    }
+    if let Some(v) = value("oauth-client-name") {
+        oauth.insert("clientName".into(), v.into());
     }
     let mut config = Map::new();
     config.insert("url".into(), Value::String(url.to_string()));

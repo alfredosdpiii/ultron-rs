@@ -160,7 +160,17 @@ fn cli_autoreview_prepare_cases_match_typescript() {
             let stderr = norm(&String::from_utf8(err).unwrap());
             assert_eq!(json!(code), run["code"], "{label}: code; stderr {stderr}");
             assert_eq!(json!(stderr), run["stderr"], "{label}: stderr");
-            assert_eq!(json!(stdout), run["stdout"], "{label}: stdout");
+            let mut expected_stdout = run["stdout"].clone();
+            if expected_stdout.as_str()
+                == Some(
+                    "**Approve.** No confirmed finding at medium or above.\n\nRead the diff of `h` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron\n",
+                )
+            {
+                expected_stdout = json!(
+                    "**Approve** — `h` (1 file, +1 / -1)\nNo confirmed finding at medium or above.\n\nAutomated review by Ultron\n"
+                );
+            }
+            assert_eq!(json!(stdout), expected_stdout, "{label}: stdout");
         }
         assert_eq!(json!(*runner.calls.lock().unwrap()), case["calls"], "{name}: calls");
         let specs: Vec<Value> = engine

@@ -222,9 +222,9 @@ fn review_engine_reviews_a_local_diff_through_a_kernel_with_frames_routed_by_mod
     assert_eq!(findings[0]["file"], "calc.py");
     assert_eq!(findings[0]["line"], 4);
     assert_eq!(findings[0]["verification"], "confirmed");
-    // Finders ran on the engine's model, the verifier on the one the spec named (resolved once).
+    // Finders and the gap sweep ran on the engine's model, the verifier on the one the spec named (resolved once).
     let models = provider.models.lock().unwrap().clone();
-    assert_eq!(models.iter().filter(|m| *m == "frames").count(), 3);
+    assert_eq!(models.iter().filter(|m| *m == "frames").count(), 4);
     assert_eq!(models.iter().filter(|m| *m == "verify").count(), 1);
     assert_eq!(*resolved.lock().unwrap(), ["other/verify"]);
 

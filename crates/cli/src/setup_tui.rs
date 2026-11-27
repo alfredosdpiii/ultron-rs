@@ -38,16 +38,12 @@ enum LoginMsg {
     Done(Result<(), String>),
 }
 
-static INPUT_SINK: std::sync::Mutex<Option<Sender<Ev>>> = std::sync::Mutex::new(None);
-static INPUT_PUMP: std::sync::Once = std::sync::Once::new();
-static INPUT_PAUSED: std::sync::LazyLock<Arc<std::sync::atomic::AtomicBool>> =
-    std::sync::LazyLock::new(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
-
 /// The setup screen: the main screen, the input it reads, and how it draws.
 struct Screen {
     main: tui::MainScreen,
     events: Receiver<Ev>,
     sender: Sender<Ev>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
     theme: Rc<Theme>,
     keys: KeybindingsManager,
 }
@@ -55,35 +51,32 @@ struct Screen {
 impl Screen {
     fn start(env: &Env) -> std::io::Result<Screen> {
         let (sender, events) = mpsc::channel();
-        *INPUT_SINK.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sender.clone());
-        INPUT_PAUSED.store(false, std::sync::atomic::Ordering::SeqCst);
-        INPUT_PUMP.call_once(|| {
-            let (tx, rx) = mpsc::channel();
-            interactive::run::spawn_gated_input(tx, Arc::clone(&INPUT_PAUSED));
-            std::thread::spawn(move || {
-                let send = |ev: Ev| {
-                    if let Some(sink) = INPUT_SINK
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .as_ref()
-                    {
-                        let _ = sink.send(ev);
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        interactive::run::spawn_stoppable_input(tx, Arc::clone(&stop));
+        let forward = sender.clone();
+        std::thread::spawn(move || {
+            for event in rx {
+                match event {
+                    interactive::run::UiEvent::Input(data) => {
+                        if forward.send(Ev::Input(data)).is_err() {
+                            return;
+                        }
                     }
-                };
-                for event in rx {
-                    match event {
-                        interactive::run::UiEvent::Input(data) => send(Ev::Input(data)),
-                        interactive::run::UiEvent::InputClosed => send(Ev::Closed),
-                        interactive::run::UiEvent::Lane(_) | interactive::run::UiEvent::Wake => {}
+                    interactive::run::UiEvent::InputClosed => {
+                        let _ = forward.send(Ev::Closed);
+                        return;
                     }
+                    interactive::run::UiEvent::Lane(_) | interactive::run::UiEvent::Wake => {}
                 }
-            });
+            }
         });
         let settings = config::settings::SettingsManager::create(&env.cwd, &env.agent_dir(), false);
         Ok(Screen {
             main: tui::MainScreen::start()?,
             events,
             sender,
+            stop,
             theme: Rc::new(crate::themes::screen_theme(env, &settings)),
             keys: crate::terminal_settings::screen_keys(env),
         })
@@ -101,10 +94,16 @@ impl Screen {
         }
     }
 
-    /// Hand the terminal back (the input reader pauses until a setup screen starts again).
+    /// Hand the terminal back and stop the input reader thread.
     fn stop(&mut self) {
-        INPUT_PAUSED.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
         self.main.stop();
+    }
+}
+
+impl Drop for Screen {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 

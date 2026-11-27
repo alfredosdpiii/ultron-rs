@@ -1239,3 +1239,52 @@ fn review_daemon_a_cycle_that_finds_nothing_new_leaves_the_state_file_alone() {
     );
     assert_eq!(inode(), before, "the state file was rewritten");
 }
+
+#[test]
+fn review_daemon_merged_and_closed_pulls_are_not_refetched_on_subsequent_polls() {
+    let context = setup(json!({}), Some(FakeEngine::new(Vec::new())));
+    for (number, merged) in [(1, true), (2, false)] {
+        add_numbered(&context, number, true);
+        context.hub.with_pull_n(number, |pull| {
+            pull.state = "closed".into();
+            pull.merged = merged;
+        });
+    }
+    let notify = || {
+        let mut state = context.hub.lock();
+        state.notifications = vec![
+            Notification::new("review_requested", 1),
+            Notification::new("review_requested", 2),
+        ];
+    };
+    notify();
+    let (instance, outcomes) = daemon(&context);
+    instance.once();
+    assert_eq!(outcomes_of(&outcomes), vec![pair(1, "skipped"), pair(2, "skipped")]);
+    let fetches_after_first = context.hub.api(r"^GET repos/o/r/pulls/[12]$").len();
+    assert_eq!(fetches_after_first, 2);
+    let logs_after_first = context.logs();
+    assert!(logs_after_first.contains("skipped (the pull request is merged)"));
+    assert!(logs_after_first.contains("skipped (the pull request is closed)"));
+
+    notify();
+    instance.once();
+    assert_eq!(
+        outcomes_of(&outcomes).len(),
+        2,
+        "merged and closed pulls should not be re-decided on subsequent polls"
+    );
+    assert_eq!(
+        context.hub.api(r"^GET repos/o/r/pulls/[12]$").len(),
+        fetches_after_first,
+        "merged and closed pulls should not be re-fetched on subsequent polls"
+    );
+    assert_eq!(
+        context.logs().matches("skipped (the pull request is merged)").count(),
+        1
+    );
+    assert_eq!(
+        context.logs().matches("skipped (the pull request is closed)").count(),
+        1
+    );
+}

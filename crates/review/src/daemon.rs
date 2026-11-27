@@ -52,6 +52,11 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 /// leave one slot to the rest: on 2026-10-16 three large pull requests (fisher-ki-saas#2945, #2951, #2926) held all
 /// three slots for hours while a 40-second review waited 71 minutes.
 const LARGE_PULL_LINES: u64 = 10_000;
+const MAX_TERMINAL_PULLS: usize = 2048;
+
+fn is_terminal_skip(reason: &str) -> bool {
+    reason.starts_with("the pull request is merged") || reason.starts_with("the pull request is closed")
+}
 
 fn is_large(pull: &crate::github::PullRequest) -> bool {
     pull.additions + pull.deletions >= LARGE_PULL_LINES
@@ -321,6 +326,8 @@ struct Inner {
     authors: HashMap<String, String>,
     /// The banned pull requests already logged, by task key: logged once, not every poll.
     banned_noted: HashSet<String>,
+    /// Merged or closed pull requests already skipped, by pull key: not re-fetched on subsequent polls.
+    terminal_pulls: IndexSet<String>,
     /// Bumped by every finished task, ended sleep and stop: what the loop waits on.
     events: u64,
     stopped: bool,
@@ -329,6 +336,16 @@ struct Inner {
 impl Inner {
     fn paused(&self, account: &Account, now: f64) -> bool {
         self.paused.get(&account_key(account)).copied().unwrap_or(0.0) > now
+    }
+
+    fn mark_terminal_pull(&mut self, key: String) {
+        if self.terminal_pulls.contains(&key) {
+            return;
+        }
+        if self.terminal_pulls.len() >= MAX_TERMINAL_PULLS {
+            self.terminal_pulls.shift_remove_index(0);
+        }
+        self.terminal_pulls.insert(key);
     }
 
     fn enqueue(&mut self, candidate: Candidate, not_before: f64) {
@@ -511,14 +528,17 @@ impl Shared {
     fn decide(&self, key: &str, candidate: Candidate) {
         match prepare_pull(&self.deps.reviewer, &candidate, ReviewOptions::default()) {
             Ok(Preparation::Done(outcome)) => {
-                if !self.banned_outcome(&candidate, &outcome)
-                    && let Outcome::Skipped(reason) = &outcome
-                {
-                    self.log(&format!(
-                        "{} as {}: skipped ({reason})",
-                        pull_key(&candidate.pull),
-                        candidate.account.login
-                    ));
+                if let Outcome::Skipped(reason) = &outcome {
+                    if is_terminal_skip(reason) {
+                        self.lock().mark_terminal_pull(pull_key(&candidate.pull));
+                    }
+                    if !self.banned_outcome(&candidate, &outcome) {
+                        self.log(&format!(
+                            "{} as {}: skipped ({reason})",
+                            pull_key(&candidate.pull),
+                            candidate.account.login
+                        ));
+                    }
                 }
                 self.report(&candidate, Reported::Outcome(outcome));
             }
@@ -596,6 +616,7 @@ impl Daemon {
                     pruned_at: None,
                     authors: HashMap::new(),
                     banned_noted: HashSet::new(),
+                    terminal_pulls: IndexSet::new(),
                     events: 0,
                     stopped: false,
                 }),
@@ -665,6 +686,9 @@ impl Daemon {
         }
         for pull in pulls {
             let pull_name = pull_key(&pull.pull);
+            if inner.terminal_pulls.contains(&pull_name) {
+                continue;
+            }
             if let Some(author) = &pull.author {
                 inner.authors.insert(pull_name.clone(), author.clone());
             }
@@ -804,7 +828,11 @@ impl Daemon {
             let Some(waiting) = inner.candidates.shift_remove(&key) else {
                 continue;
             };
-            if let Some(author) = inner.authors.get(&pull_key(&waiting.candidate.pull)).cloned()
+            let pull_name = pull_key(&waiting.candidate.pull);
+            if inner.terminal_pulls.contains(&pull_name) {
+                continue;
+            }
+            if let Some(author) = inner.authors.get(&pull_name).cloned()
                 && bans.banned(&waiting.candidate.account, &author).is_some()
             {
                 self.shared
