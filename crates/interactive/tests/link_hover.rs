@@ -1,7 +1,8 @@
 //! Claude-Code-style links in the product: markdown links keep only their color (no underline), the fullscreen link
 //! under the pointer is underlined, pointer motion that changes nothing is not painted again, and
-//! `terminal.linkHover` / `PI_LINK_HOVER` pick where hover is on. With `ULTRON_TUI_PARITY=1` links are as in
-//! TypeScript: underlined, no hover.
+//! `terminal.linkHover` / `PI_LINK_HOVER` pick where hover is on. Markdown links carry their URL for the viewport on
+//! every row they wrap onto, and the terminal never sees those targets. With `ULTRON_TUI_PARITY=1` links are as in
+//! TypeScript: underlined, no hover, no targets.
 
 use crate::support;
 
@@ -9,10 +10,13 @@ use interactive::app::{App, AppOptions};
 use interactive::lane::{LaneEvent, SessionOpened};
 use interactive::qol::{LINK_HOVER_ENV, PARITY_ENV, QolSettings};
 use interactive::render_settings::{self, RenderSettings};
+use interactive::run::{UiEvent, paint_loop};
 use interactive::{AssistantBlock, AssistantMessage, AssistantView};
 use serde_json::{Value, json};
+use std::cell::{Cell, RefCell};
+use std::sync::{Arc, Mutex};
 use theme::Fg;
-use tui::{Component, LinkHover, strip_terminal_sequences};
+use tui::{Component, LinkHover, strip_link_targets, strip_terminal_sequences};
 
 const URL: &str = "https://example.com/docs?q=1";
 const W: usize = 60;
@@ -171,5 +175,179 @@ fn interactive_fullscreen_hover_is_off_until_the_product_turns_it_on() {
     let (row, col) = find(&mut app, URL);
     app.handle_input(&motion(col + 1, row));
     assert!(!underlined(&mut app, row));
+    render_settings::set(RenderSettings::default());
+}
+
+/// A URL too long for one row of a `W`-column transcript.
+const LONG: &str = "https://example.com/a/very/long/path/that/does/not/fit/on/one/row/of/the/screen?q=1";
+
+/// The settings the product paints with when the terminal gets OSC 8 links or not, with or without link targets.
+fn product(hyperlinks: bool, link_targets: bool) -> RenderSettings {
+    RenderSettings {
+        hyperlinks,
+        plain_links: true,
+        link_targets,
+        ..RenderSettings::default()
+    }
+}
+
+/// A session whose links wrap: in a user message, as a bare URL, under a label, in a list, a quote and tool output.
+fn link_transcript() -> Vec<Value> {
+    vec![
+        json!({"role": "user", "content": format!("see {LONG} and [the docs](https://example.com/docs)"), "timestamp": 1}),
+        json!({"role": "assistant", "stopReason": "toolUse", "content": [
+            {"type": "text", "text": format!("Open {LONG} now.\n\nOr read [the long manual with a label]({LONG}).")},
+            {"type": "toolCall", "id": "call_1", "name": "rlm", "arguments": {"code": "print('https://example.com/tool')"}}
+        ]}),
+        json!({"role": "toolResult", "toolCallId": "call_1", "toolName": "rlm", "isError": false,
+            "content": [{"type": "text", "text": format!("fetched {LONG}")}]}),
+        json!({"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": format!(
+            "- item [docs](https://example.com/docs), then (see {LONG}).\n- <{LONG}>\n\n> quoted [q](https://example.com/q)"
+        )}]}),
+    ]
+}
+
+/// Every write of the paint loop for [`link_transcript`] under `settings`: a drag selects over the links, then one
+/// frame is narrower.
+fn paint_links(qol: QolSettings, settings: RenderSettings) -> Vec<String> {
+    render_settings::set(settings);
+    let mut app = crate::qol_parity::parity_app(qol);
+    let batches = vec![
+        vec![UiEvent::Lane(LaneEvent::Opened(SessionOpened {
+            session_id: "sess-1".into(),
+            session_file: Some("/s/sess-1.jsonl".into()),
+            name: None,
+            messages: link_transcript(),
+        }))],
+        vec![
+            UiEvent::Input("\x1b[<0;4;7M".into()),
+            UiEvent::Input("\x1b[<32;31;12M".into()),
+        ],
+        vec![UiEvent::Input("x".into())],
+        vec![UiEvent::Input("y".into())],
+        vec![UiEvent::InputClosed],
+    ];
+    let (tx, rx) = std::sync::mpsc::channel();
+    let pending = RefCell::new(batches.into_iter());
+    let calls = Cell::new(0usize);
+    let size = || {
+        if let Some(batch) = pending.borrow_mut().next() {
+            for event in batch {
+                tx.send(event).unwrap();
+            }
+        }
+        calls.set(calls.get() + 1);
+        if calls.get() == 4 { (44, 40) } else { (60, 40) }
+    };
+    let mut writes = Vec::new();
+    paint_loop(
+        &mut app,
+        &rx,
+        &mut |data| {
+            writes.push(data.to_string());
+            Ok(())
+        },
+        &size,
+        None,
+    )
+    .unwrap();
+    render_settings::set(RenderSettings::default());
+    writes
+}
+
+/// An OSC 8 sequence that opens a link (a URL after its params), as against the empty-URL resets rows end with.
+fn opens_a_link(write: &str) -> bool {
+    write.match_indices("\x1b]8;").any(|(at, _)| {
+        let body = &write[at + 4..];
+        body.split_once(';')
+            .is_some_and(|(_, url)| !url.starts_with(['\x07', '\x1b']))
+    })
+}
+
+/// The targets the transcript carries for the viewport change no byte the terminal gets: with them on, the paint
+/// loop writes exactly what it writes with them off, in the fullscreen and the split layout, with or without OSC 8.
+/// Without OSC 8 no link reaches the terminal at all.
+#[test]
+fn interactive_link_targets_never_reach_the_terminal() {
+    render_settings::set(product(false, true));
+    let rows = assistant(&format!("Open {LONG} now."));
+    render_settings::set(RenderSettings::default());
+    assert!(
+        rows.iter().any(|row| strip_link_targets(row) != row.as_str()),
+        "{rows:?}"
+    );
+
+    let fullscreen = QolSettings {
+        render_gate: false,
+        ..QolSettings::default()
+    };
+    let split = QolSettings {
+        viewport_split: true,
+        ..fullscreen.clone()
+    };
+    for qol in [fullscreen, split] {
+        for hyperlinks in [false, true] {
+            let with = paint_links(qol.clone(), product(hyperlinks, true));
+            let without = paint_links(qol.clone(), product(hyperlinks, false));
+            assert!(with.concat().contains("example.com/a/very"), "{with:?}");
+            assert_eq!(with.len(), without.len());
+            for (i, (got, want)) in with.iter().zip(&without).enumerate() {
+                assert_eq!(
+                    got, want,
+                    "write {i}, hyperlinks {hyperlinks}, split {}",
+                    qol.viewport_split
+                );
+            }
+            assert_eq!(with.iter().any(|w| opens_a_link(w)), hyperlinks);
+        }
+    }
+}
+
+/// The app, with the product's settings and no OSC 8, on a turn whose answer has `text`; links hover and open.
+fn targets_app(text: &str) -> (App, Arc<Mutex<Vec<String>>>) {
+    render_settings::set(product(false, true));
+    let mut app = app(text);
+    app.set_link_hover(true);
+    let opened = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&opened);
+    app.set_url_opener(Arc::new(move |url: &str| record.lock().unwrap().push(url.to_string())));
+    (app, opened)
+}
+
+fn click(app: &mut App, button: u8, col: usize, row: usize) {
+    for end in ['M', 'm'] {
+        app.handle_input(&format!("\x1b[<{button};{};{}{end}", col + 1, row + 1));
+    }
+}
+
+/// A markdown link too long for its row wraps, and a click or an Option-click on any row it covers opens the whole
+/// URL, a bare one or one under a label; hover underlines the link on the hovered row only.
+#[test]
+fn interactive_a_wrapped_markdown_link_opens_whole_from_any_row() {
+    let (mut app, opened) = targets_app(&format!("Open {LONG} now.\n\nOr read [the manual]({LONG})."));
+    let (first, start) = find(&mut app, "https://example.com/a/very");
+    let (second, _) = find(&mut app, "one/row/of/the/screen?q=1 now.");
+    assert_eq!(second, first + 1);
+    let (label, _) = find(&mut app, "the manual");
+    let (label_end, _) = find(&mut app, "screen?q=1).");
+    assert!(label_end > label);
+    click(&mut app, 0, 3, second);
+    click(&mut app, 0, start + 2, first);
+    click(&mut app, 8, 3, second);
+    click(&mut app, 8, 5, label_end);
+    assert_eq!(*opened.lock().unwrap(), [LONG; 4]);
+
+    app.handle_input(&motion(3, second));
+    let frame = app.render(W, H);
+    assert!(frame[second].contains("\x1b[4m"), "{:?}", frame[second]);
+    assert!(!frame[first].contains("\x1b[4m"), "{:?}", frame[first]);
+    let underlined = frame[second]
+        .split("\x1b[4m")
+        .nth(1)
+        .unwrap()
+        .split("\x1b[24m")
+        .next()
+        .unwrap();
+    assert_eq!(strip_terminal_sequences(underlined), "one/row/of/the/screen?q=1");
     render_settings::set(RenderSettings::default());
 }

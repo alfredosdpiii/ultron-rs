@@ -204,6 +204,66 @@ fn tui_fullscreen_plain_url_under_a_column() {
     assert_eq!(plain_url_at_column("go https:// now", 5), None);
 }
 
+/// The URL under every column of `url`'s span in `line` (the first occurrence), and nothing just outside it.
+fn assert_url_spans(line: &str, url: &str) {
+    let start = line.find(url).unwrap();
+    for column in start..start + url.len() {
+        assert_eq!(
+            plain_url_at_column(line, column).as_deref(),
+            Some(url),
+            "{line:?} column {column}"
+        );
+    }
+    assert_eq!(
+        plain_url_at_column(line, start + url.len()),
+        None,
+        "{line:?} after the URL"
+    );
+    if start > 0 {
+        assert_eq!(plain_url_at_column(line, start - 1), None, "{line:?} before the URL");
+    }
+}
+
+/// An apostrophe belongs to a URL (`it's`), and a click on its last letter still finds it; a quote opened right
+/// before the scheme closes before the end, and a trailing one is punctuation.
+#[test]
+fn tui_fullscreen_plain_url_keeps_apostrophes_and_leaves_quotes_out() {
+    assert_url_spans("https://x.dev/it's", "https://x.dev/it's");
+    assert_url_spans("see https://x.dev/it's here", "https://x.dev/it's");
+    assert_url_spans("'https://x.dev/a'", "https://x.dev/a");
+    assert_url_spans("curl 'https://x.dev/a?b=c', then", "https://x.dev/a?b=c");
+    assert_url_spans("['https://x.dev/a','https://y.dev/b']", "https://x.dev/a");
+    assert_eq!(
+        plain_url_at_column("['https://x.dev/a','https://y.dev/b']", 22).as_deref(),
+        Some("https://y.dev/b")
+    );
+    assert_url_spans("the dogs' https://x.dev/dogs'.", "https://x.dev/dogs");
+}
+
+/// A URL in another URL's query opens the outer one from any column of either.
+#[test]
+fn tui_fullscreen_plain_url_inside_another_opens_the_outer_one() {
+    let line = "go https://x.dev/?next=https://y.dev/a now";
+    assert_url_spans(line, "https://x.dev/?next=https://y.dev/a");
+    // An outer URL that ends before the click leaves the next one to cover it.
+    assert_eq!(
+        plain_url_at_column("https://a.dev/x)https://b.dev/y", 20).as_deref(),
+        Some("https://b.dev/y")
+    );
+}
+
+/// A closing bracket without its opener in the URL ends it even with more text after it; balanced brackets stay.
+#[test]
+fn tui_fullscreen_plain_url_ends_at_an_unmatched_closing_bracket() {
+    assert_url_spans("(https://x.dev/a),next", "https://x.dev/a");
+    assert_url_spans("[https://x.dev/a];", "https://x.dev/a");
+    assert_url_spans("{https://x.dev/a}x", "https://x.dev/a");
+    assert_url_spans("https://x.dev/a_(b)", "https://x.dev/a_(b)");
+    assert_url_spans("(see https://x.dev/a_(b)).", "https://x.dev/a_(b)");
+    assert_url_spans("[https://x.dev/a[1]](x)", "https://x.dev/a[1]");
+    assert_url_spans("(https://x.dev/w_(a)_b)!", "https://x.dev/w_(a)_b");
+}
+
 /// An Option/Alt click (SGR modifier bit 8) opens a URL shown as plain text; the same click without the modifier only
 /// clicks.
 #[test]

@@ -31,6 +31,7 @@ fn theme() -> MarkdownTheme {
         highlight_code: None,
         code_block_indent: None,
         underline_links: true,
+        link_targets: false,
     }
 }
 

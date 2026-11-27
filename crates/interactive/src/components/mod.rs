@@ -96,6 +96,7 @@ pub fn markdown_theme_with(theme: &Rc<Theme>, code_highlight: Option<&crate::qol
         highlight_code: Some(highlight_code),
         code_block_indent: crate::render_settings::code_block_indent(),
         underline_links: !crate::render_settings::plain_links(),
+        link_targets: crate::render_settings::link_targets(),
     }
 }
 

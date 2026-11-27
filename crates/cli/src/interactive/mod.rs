@@ -572,6 +572,7 @@ fn run_tui(
         hyperlinks: caps.hyperlinks,
         code_block_indent: Some(config::keys::code_block_indent(settings.settings())),
         plain_links: qol.plain_links,
+        link_targets: qol.plain_links,
     });
 
     let (ui_tx, ui_rx) = mpsc::channel::<UiEvent>();

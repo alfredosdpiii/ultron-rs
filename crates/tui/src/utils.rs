@@ -6,7 +6,8 @@ mod wrap;
 
 pub(crate) use ansi::AnsiCodeTracker;
 pub use ansi::{
-    ansi_len, extract_ansi_code, get_active_background_ansi, normalize_terminal_output, strip_terminal_sequences,
+    ansi_len, extract_ansi_code, get_active_background_ansi, link_target, normalize_terminal_output,
+    strip_link_targets, strip_terminal_sequences,
 };
 pub(crate) use width::grapheme_width;
 pub use width::{is_cjk_break, is_cjk_punctuation, visible_width};

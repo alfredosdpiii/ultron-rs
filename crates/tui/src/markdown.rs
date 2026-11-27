@@ -6,7 +6,7 @@ use crate::components::Component;
 use crate::frame::is_image_line;
 use crate::image::hyperlink;
 use crate::select::StyleFn;
-use crate::utils::{apply_background_to_line, visible_width, wrap_text_with_ansi};
+use crate::utils::{apply_background_to_line, link_target, visible_width, wrap_text_with_ansi};
 
 /// One marked token (block or inline).
 #[derive(Clone, Debug, PartialEq)]
@@ -113,6 +113,10 @@ pub struct MarkdownTheme {
     /// Links get `underline` inside `link`, as in TypeScript. Off, a link keeps only its colors (the Rust TUI
     /// underlines the one under the pointer instead).
     pub underline_links: bool,
+    /// Without [`MarkdownOptions::hyperlinks`], each link still carries its URL as a [`crate::link_target`] (the text
+    /// shown is the same), so the fullscreen viewport opens and underlines the whole link from any row it wraps onto.
+    /// The application strips the targets from what it writes ([`crate::strip_link_targets`]). Off, as in TypeScript.
+    pub link_targets: bool,
 }
 
 #[derive(Default)]
@@ -383,11 +387,17 @@ impl Markdown {
             (self.theme.link)(&label)
         };
         if self.options.hyperlinks {
-            format!("{}{p}", hyperlink(&styled, href))
-        } else if text == href || Some(text) == href.strip_prefix("mailto:") {
-            format!("{styled}{p}")
+            return format!("{}{p}", hyperlink(&styled, href));
+        }
+        let shown = if text == href || Some(text) == href.strip_prefix("mailto:") {
+            styled
         } else {
-            format!("{styled}{}{p}", (self.theme.link_url)(&format!(" ({href})")))
+            format!("{styled}{}", (self.theme.link_url)(&format!(" ({href})")))
+        };
+        if self.theme.link_targets {
+            format!("{}{p}", link_target(&shown, href))
+        } else {
+            format!("{shown}{p}")
         }
     }
 

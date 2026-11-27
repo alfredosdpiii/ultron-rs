@@ -57,7 +57,7 @@ Forward keys your editor does not own to the base implementation, and restore th
 
 Fullscreen mode routes normalized mouse events to components. A handler can mark an event handled, capture a drag sequence, request focus, or request a render.
 
-Unhandled wheel events scroll the nearest `ScrollView`. Unhandled primary-button drags remain available for transcript selection. OSC 8 links take precedence over enclosing click regions. An Option-click (Alt-click on Linux and Windows) also opens a URL shown as plain text, for terminals and multiplexers without OSC 8.
+Unhandled wheel events scroll the nearest `ScrollView`. Unhandled primary-button drags remain available for transcript selection. OSC 8 links take precedence over enclosing click regions. An Option-click (Alt-click on Linux and Windows) also opens a URL shown as plain text, for terminals and multiplexers without OSC 8. Ultron's native TUI gives every markdown link its URL as an OSC 8 target the viewport reads even when the terminal gets no OSC 8 (the targets are removed from what is written to the terminal), so a click opens the whole link from any row it wraps onto.
 
 Ultron's native TUI does not underline links. Where the terminal reports pointer movement, it underlines the transcript link under the pointer, an OSC 8 hyperlink or a plain-text URL, until the pointer leaves it, a key is pressed, or the terminal loses focus. A movement that keeps the same link under the pointer does not repaint the screen. See `terminal.linkHover` in [Settings](settings.md).
 

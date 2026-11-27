@@ -272,7 +272,10 @@ impl PaintState {
 
 /// [`paint_loop`] reading the keyboard protocol replies of `keyboard` (queried at terminal start) out of the input:
 /// they set the app's Kitty state or the modifyOtherKeys fallback and never reach the components; leaving the
-/// terminal for an external editor or a suspend pops the protocol and queries it again on return.
+/// terminal for an external editor or a suspend pops the protocol and queries it again on return. The link targets
+/// the transcript carries for the fullscreen viewport ([`crate::render_settings::RenderSettings::link_targets`]) are
+/// removed from every write here, the one place all bytes leave for the terminal, so it gets what it got without
+/// them.
 pub fn paint_loop_with(
     app: &mut App,
     events: &Receiver<UiEvent>,
@@ -283,10 +286,11 @@ pub fn paint_loop_with(
 ) -> std::io::Result<()> {
     let debug = app.render_debug();
     let mut logged = |data: &str| {
+        let data = tui::strip_link_targets(data);
         if let Some(debug) = &debug {
-            debug.wrote(data);
+            debug.wrote(&data);
         }
-        out(data)
+        out(&data)
     };
     let out: &mut dyn FnMut(&str) -> std::io::Result<()> = &mut logged;
     let mut state = PaintState::new(app);

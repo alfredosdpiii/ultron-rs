@@ -101,7 +101,8 @@ pub struct QolSettings {
     pub autocomplete_github: bool,
     /// The omp-inspired overlays and keys (retry, display reset, agent hub, copy picker, rewind, model hub).
     pub overlays: bool,
-    /// Markdown links keep only their colors (no underline); see [`crate::render_settings`].
+    /// Markdown links keep only their colors (no underline) and carry their URL for the fullscreen viewport on
+    /// every row they wrap onto; see [`crate::render_settings`].
     pub plain_links: bool,
     /// Underline the fullscreen link under the pointer, and the mouse tracking that takes.
     pub link_hover: tui::LinkHover,

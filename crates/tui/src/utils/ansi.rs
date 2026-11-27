@@ -127,8 +127,54 @@ fn parse_osc8(code: &str) -> Osc8 {
     })
 }
 
-fn osc8_close(bel: bool) -> &'static str {
-    if bel { "\x1b]8;;\x07" } else { "\x1b]8;;\x1b\\" }
+/// The OSC 8 params that mark a link target the terminal never sees ([`link_target`]).
+macro_rules! target_params {
+    () => {
+        "viewport-only=1"
+    };
+}
+const TARGET_PARAMS: &str = target_params!();
+const TARGET_OPEN: &str = concat!("\x1b]8;", target_params!(), ";");
+const TARGET_CLOSE: &str = concat!("\x1b]8;", target_params!(), ";\x1b\\");
+
+/// `text` linked to `url` for the fullscreen viewport only: an OSC 8 link it reads under every column of `text`
+/// (wrapping carries it onto each row), which [`strip_link_targets`] removes before the bytes reach the terminal.
+/// A markdown link carries its whole URL this way where the terminal gets no OSC 8, so a click on any row of a link
+/// that wraps opens all of it.
+pub fn link_target(text: &str, url: &str) -> String {
+    format!("{TARGET_OPEN}{url}\x1b\\{text}{TARGET_CLOSE}")
+}
+
+/// `s` without its [`link_target`] sequences: the bytes it would be had those links never been there. Their closes
+/// carry the mark too (see `osc8_close`), so no other OSC 8 sequence is touched, such as the link reset every
+/// painted row ends with.
+pub fn strip_link_targets(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.contains(TARGET_OPEN) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(at) = rest.find(TARGET_OPEN) {
+        let Some(len) = ansi_len(rest, at) else {
+            break;
+        };
+        out.push_str(&rest[..at]);
+        rest = &rest[at + len..];
+    }
+    out.push_str(rest);
+    std::borrow::Cow::Owned(out)
+}
+
+/// The close of `link`, written where a row or a truncation ends inside it. A [`link_target`]'s close keeps its
+/// mark so [`strip_link_targets`] needs no state; any other link closes with empty params, as in TypeScript.
+fn osc8_close(link: &Hyperlink) -> &'static str {
+    if link.params == TARGET_PARAMS {
+        TARGET_CLOSE
+    } else if link.bel {
+        "\x1b]8;;\x07"
+    } else {
+        "\x1b]8;;\x1b\\"
+    }
 }
 
 pub(super) fn active_osc8_close(prefix: &str) -> &'static str {
@@ -149,7 +195,7 @@ pub(super) fn active_osc8_close(prefix: &str) -> &'static str {
             i += 1;
         }
     }
-    active.map_or("", |h| osc8_close(h.bel))
+    active.map_or("", |h| osc8_close(&h))
 }
 
 fn parse_extended_sgr(parts: &[&str], i: usize) -> Option<(String, usize)> {
@@ -333,7 +379,7 @@ impl AnsiCodeTracker {
             out.push_str("\x1b[24m");
         }
         if let Some(h) = &self.link {
-            out.push_str(osc8_close(h.bel));
+            out.push_str(osc8_close(h));
         }
         out
     }

@@ -114,8 +114,8 @@ pub use terminal_colors::{
 };
 pub use tty_writer::{MAX_PENDING_OUTPUT_BYTES, MAX_TTY_WRITE_CHUNK_BYTES, TtyHandle, TtyWriter, write_all_chunked};
 pub use utils::{
-    ansi_len, normalize_terminal_output, slice_with_width, strip_terminal_sequences, truncate_to_width, visible_width,
-    wrap_text_with_ansi,
+    ansi_len, link_target, normalize_terminal_output, slice_with_width, strip_link_targets, strip_terminal_sequences,
+    truncate_to_width, visible_width, wrap_text_with_ansi,
 };
 pub use viewport::{FramePlan, GateDecision, HistoryBatch, HistoryKind, RenderGate, ViewportRenderer};
 pub use vim::{Pos, VimBuffer, VimCommand, VimMode, VimState, last_grapheme_start};

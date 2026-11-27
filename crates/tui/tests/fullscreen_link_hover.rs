@@ -7,8 +7,9 @@ use std::time::{Duration, Instant};
 
 use tui::{
     ENABLE_BUTTON_MOTION_MOUSE, FullscreenViewport, KeyContext, KeybindingsManager, LinkHover, MouseDispatch,
-    MouseEvent, MouseResult, MouseTarget, MouseTargets, Rect, ScrollView, Scrollbar, ViewportInput, tui_keybindings,
-    visible_width,
+    MouseEvent, MouseResult, MouseTarget, MouseTargets, Rect, ScrollView, Scrollbar, ViewportInput, hyperlink,
+    link_target, osc8_link_at_column, strip_link_targets, truncate_to_width, tui_keybindings, visible_width,
+    wrap_text_with_ansi,
 };
 
 const COLS: usize = 48;
@@ -278,4 +279,56 @@ fn tui_fullscreen_links_inside_items_that_take_the_mouse() {
     }
     assert!(items.events > before);
     assert_eq!(opened.lock().unwrap().len(), 1);
+}
+
+/// A link wrapped onto several rows keeps its OSC 8 target on each of them: the wrapper closes it at every row end
+/// and opens it again at the next row's start, so the viewport finds the whole URL on any row.
+#[test]
+fn tui_wrap_carries_an_osc8_link_onto_every_row() {
+    let url = "https://example.com/a/very/long/path/that/wraps/around";
+    let rows = wrap_text_with_ansi(&format!("see {}", hyperlink(url, url)), 20);
+    assert_eq!(rows.len(), 4, "{rows:?}");
+    assert_eq!(osc8_link_at_column(&rows[0], 0), None);
+    for row in &rows[1..] {
+        for column in 0..visible_width(row) {
+            assert_eq!(
+                osc8_link_at_column(row, column).as_deref(),
+                Some(url),
+                "{row:?} {column}"
+            );
+        }
+        assert!(row.ends_with("\x1b]8;;\x1b\\"), "{row:?}");
+    }
+}
+
+/// A link target wraps like any OSC 8 link, so the viewport finds the whole URL on each row, and stripping the targets
+/// from the wrapped or truncated rows gives exactly the rows of the text without them: every close the wrapper writes
+/// for a target is a target's, and the resets other code writes stay.
+#[test]
+fn tui_wrapped_link_targets_strip_to_the_rows_without_them() {
+    let url = "https://example.com/a/very/long/path/that/wraps/around";
+    let styled = format!("\x1b[4m\x1b[36m{url}\x1b[39m\x1b[24m");
+    let text = format!("see {styled} and more");
+    let rows = wrap_text_with_ansi(&format!("see {} and more", link_target(&styled, url)), 20);
+    let plain = wrap_text_with_ansi(&text, 20);
+    assert_eq!(rows.len(), plain.len());
+    for (row, want) in rows.iter().zip(&plain) {
+        assert_eq!(strip_link_targets(row), want.as_str());
+        if strip_link_targets(row) != row.as_str() {
+            assert_eq!(osc8_link_at_column(row, 0).as_deref(), Some(url), "{row:?}");
+        }
+    }
+    assert!(
+        rows.iter().filter(|r| osc8_link_at_column(r, 0).is_some()).count() >= 3,
+        "{rows:?}"
+    );
+
+    let reset = "\x1b[0m\x1b]8;;\x07";
+    let row = format!(
+        "{}{reset}",
+        truncate_to_width(&format!("see {}", link_target(&styled, url)), 12, "", false)
+    );
+    let want = format!("{}{reset}", truncate_to_width(&text, 12, "", false));
+    assert_eq!(strip_link_targets(&row), want);
+    assert!(strip_link_targets(&row).ends_with(reset));
 }

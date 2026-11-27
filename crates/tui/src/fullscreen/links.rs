@@ -102,11 +102,51 @@ fn osc8_link(cells: &[Cell], column: usize) -> Option<RowLink> {
     })
 }
 
-/// The `http://` or `https://` URL shown as plain text under `column`. Trailing punctuation and unbalanced closing
-/// brackets end it, so `(see https://x.dev/a).` gives `https://x.dev/a`.
+/// A character of a URL shown as plain text: printable ASCII but the quotes and brackets prose puts around one (`"`,
+/// `<`, `>`, a backtick). `'` is one, as in `https://x.dev/it's`.
+fn is_url_char(text: &str) -> bool {
+    text.len() == 1 && text.as_bytes()[0].is_ascii_graphic() && !"<>\"`".contains(text)
+}
+
+/// The length of the URL at the start of `s` (from its scheme on): up to the first `)`, `]` or `}` with no opener
+/// after the scheme, or with `quoted` (a `'` right before the scheme) up to the `'` that closes the quote, then
+/// without trailing `.,;:!?'`.
+fn url_len(s: &str, quoted: bool) -> usize {
+    let mut open = [0usize; 3];
+    let mut end = s.len();
+    for (i, c) in s.char_indices() {
+        let (kind, opens) = match c {
+            '(' => (0, true),
+            ')' => (0, false),
+            '[' => (1, true),
+            ']' => (1, false),
+            '{' => (2, true),
+            '}' => (2, false),
+            '\'' if quoted => {
+                end = i;
+                break;
+            }
+            _ => continue,
+        };
+        if opens {
+            open[kind] += 1;
+        } else if open[kind] == 0 {
+            end = i;
+            break;
+        } else {
+            open[kind] -= 1;
+        }
+    }
+    s[..end].trim_end_matches(['.', ',', ';', ':', '!', '?', '\'']).len()
+}
+
+/// The `http://` or `https://` URL shown as plain text under `column`: of the URLs starting in the run of URL
+/// characters at or before the click, the first that reaches it, so a URL inside another's query
+/// (`https://x.dev/?next=https://y.dev/a`) opens the outer one ([`url_len`] ends each). Only the row is read: a URL
+/// that wraps onto the next row is cut at the row's end. Markdown links carry their whole URL as an OSC 8 target
+/// instead ([`crate::link_target`]); URLs in other text, such as tool output, stay per row.
 fn plain_url(cells: &[Cell], column: usize) -> Option<RowLink> {
     let at = cell_at(cells, column)?;
-    let is_url_char = |g: &str| g.len() == 1 && g.as_bytes()[0].is_ascii_graphic() && !"<>\"'`".contains(g);
     if !is_url_char(cells[at].text) {
         return None;
     }
@@ -120,34 +160,16 @@ fn plain_url(cells: &[Cell], column: usize) -> Option<RowLink> {
         .map_or(cells.len(), |p| at + p);
     let token: String = cells[first..last].iter().map(|c| c.text).collect();
     let clicked = at - first;
-    let start = (0..=clicked).rev().find(|&p| {
-        let rest = token[p..].to_ascii_lowercase();
-        rest.starts_with("https://") || rest.starts_with("http://")
-    })?;
-    let mut url = &token[start..];
-    while let Some(tail) = url.chars().last() {
-        let unbalanced = |open: char| url.matches(tail).count() > url.matches(open).count();
-        let trim = match tail {
-            '.' | ',' | ';' | ':' | '!' | '?' => true,
-            ')' => unbalanced('('),
-            ']' => unbalanced('['),
-            '}' => unbalanced('{'),
-            _ => false,
-        };
-        if !trim {
-            break;
-        }
-        url = &url[..url.len() - 1];
-    }
-    let scheme_len = if url.to_ascii_lowercase().starts_with("https://") {
-        8
-    } else {
-        7
-    };
-    (url.len() > scheme_len && clicked < start + url.len()).then(|| RowLink {
-        url: url.to_string(),
-        start: cells[first + start].col,
-        end: cells[first + start].col + url.len(),
+    (0..=clicked).find_map(|start| {
+        let rest = &token[start..];
+        let starts_with = |scheme: &str| rest.get(..scheme.len()).is_some_and(|s| s.eq_ignore_ascii_case(scheme));
+        let scheme_len = ["https://", "http://"].into_iter().find(|s| starts_with(s))?.len();
+        let len = url_len(rest, token[..start].ends_with('\''));
+        (len > scheme_len && clicked < start + len).then(|| RowLink {
+            url: rest[..len].to_string(),
+            start: cells[first + start].col,
+            end: cells[first + start].col + len,
+        })
     })
 }
 
@@ -165,8 +187,9 @@ pub fn osc8_link_at_column(line: &str, column: usize) -> Option<String> {
 
 /// The `http://` or `https://` URL shown as plain text that covers visible column `column` of `line` (tabs are 3
 /// columns). An Option/Alt click opens it where links reach the screen without OSC 8: tmux without its hyperlinks
-/// feature, Terminal.app, a markdown link printed as `label (url)`, a URL in tool output. Trailing punctuation and
-/// unbalanced closing brackets end the URL, so `(see https://x.dev/a).` gives `https://x.dev/a`.
+/// feature, Terminal.app, a URL in tool output. Trailing punctuation, a closing bracket without its opener and the
+/// close of a quote around it end the URL, so `(see https://x.dev/a_(b)).` gives `https://x.dev/a_(b)` and
+/// `'https://x.dev/a'` gives `https://x.dev/a`.
 pub fn plain_url_at_column(line: &str, column: usize) -> Option<String> {
     plain_url(&cells(line), column).map(|link| link.url)
 }

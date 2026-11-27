@@ -135,6 +135,7 @@ fn theme(c: &Value) -> MarkdownTheme {
         }),
         code_block_indent: c["indent"].as_str().map(str::to_string),
         underline_links: true,
+        link_targets: false,
     }
 }
 
