@@ -323,8 +323,9 @@ fn click(app: &mut App, button: u8, col: usize, row: usize) {
     }
 }
 
-/// A markdown link too long for its row wraps, and a click or an Option-click on any row it covers opens the whole
-/// URL, a bare one or one under a label; hover underlines the link on the hovered row only.
+/// A markdown link too long for its row wraps, and an Option-click on any row it covers opens the whole URL, a bare
+/// one or one under a label, while a plain click selects (the terminal shows it as text); hover underlines the link on
+/// the hovered row only.
 #[test]
 fn interactive_a_wrapped_markdown_link_opens_whole_from_any_row() {
     let (mut app, opened) = targets_app(&format!("Open {LONG} now.\n\nOr read [the manual]({LONG})."));
@@ -336,9 +337,11 @@ fn interactive_a_wrapped_markdown_link_opens_whole_from_any_row() {
     assert!(label_end > label);
     click(&mut app, 0, 3, second);
     click(&mut app, 0, start + 2, first);
+    assert!(opened.lock().unwrap().is_empty(), "a plain click selects");
     click(&mut app, 8, 3, second);
+    click(&mut app, 8, start + 2, first);
     click(&mut app, 8, 5, label_end);
-    assert_eq!(*opened.lock().unwrap(), [LONG; 4]);
+    assert_eq!(*opened.lock().unwrap(), [LONG; 3]);
 
     app.handle_input(&motion(3, second));
     let frame = app.render(W, H);

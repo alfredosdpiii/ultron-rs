@@ -4,7 +4,7 @@ mod ansi;
 mod width;
 mod wrap;
 
-pub(crate) use ansi::{AnsiCodeTracker, clean_link_url};
+pub(crate) use ansi::{AnsiCodeTracker, TARGET_PARAMS, clean_link_url};
 pub use ansi::{
     ansi_len, extract_ansi_code, get_active_background_ansi, link_target, normalize_terminal_output,
     strip_link_targets, strip_terminal_sequences,

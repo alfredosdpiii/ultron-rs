@@ -133,7 +133,7 @@ macro_rules! target_params {
         "viewport-only=1"
     };
 }
-const TARGET_PARAMS: &str = target_params!();
+pub(crate) const TARGET_PARAMS: &str = target_params!();
 const TARGET_OPEN: &str = concat!("\x1b]8;", target_params!(), ";");
 const TARGET_CLOSE: &str = concat!("\x1b]8;", target_params!(), ";\x1b\\");
 

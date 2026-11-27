@@ -125,7 +125,8 @@ fn interactive_copy_picker_without_an_opener_opens_nothing() {
 }
 
 /// Only http, https and mailto links reach the opener: a markdown link to a file or an app scheme is an ordinary
-/// click, plain or with Option, whether it reaches the screen as OSC 8 or carries a viewport target.
+/// click, plain or with Option, whether it reaches the screen as OSC 8 or carries a viewport target. A viewport
+/// target opens on Option-click only; an OSC 8 link the terminal shows opens on a plain click too.
 #[test]
 fn interactive_markdown_links_open_only_web_and_mail_urls() {
     let text = "[passwdlink](file:///etc/passwd) and [vscodelink](vscode://open) and [datalink](data:text/html,x)\n\n\
@@ -159,7 +160,8 @@ fn interactive_markdown_links_open_only_web_and_mail_urls() {
             }
         }
         let web = ["HTTPS://x.dev/s", "http://x.dev/p", "mailto:a@x.dev"];
-        assert_eq!(*opened.lock().unwrap(), [web, web].concat(), "hyperlinks {hyperlinks}");
+        let expected = if hyperlinks { [web, web].concat() } else { web.to_vec() };
+        assert_eq!(*opened.lock().unwrap(), expected, "hyperlinks {hyperlinks}");
     }
     render_settings::set(RenderSettings::default());
 }

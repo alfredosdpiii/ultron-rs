@@ -3,7 +3,7 @@
 
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::utils::{ansi_len, clean_link_url, grapheme_width};
+use crate::utils::{TARGET_PARAMS, ansi_len, clean_link_url, grapheme_width};
 
 /// A piece of a row: an escape sequence, or a visible grapheme at a column with its width (tabs are 3 columns).
 enum Piece<'a> {
@@ -35,22 +35,26 @@ fn pieces(line: &str) -> Vec<Piece<'_>> {
     out
 }
 
-/// A visible grapheme of a row and the OSC 8 hyperlink open at it.
+/// A visible grapheme of a row and the OSC 8 hyperlink open at it; `target` when that link is a viewport-only link
+/// target ([`crate::link_target`]) the terminal never sees.
 struct Cell<'a> {
     text: &'a str,
     col: usize,
     width: usize,
     link: Option<&'a str>,
+    target: bool,
 }
 
 fn cells(line: &str) -> Vec<Cell<'_>> {
     let mut active = None;
+    let mut target = false;
     let mut out = Vec::new();
     for piece in pieces(line) {
         match piece {
             Piece::Code(code) => {
-                if let Some(url) = osc8_url(code) {
+                if let Some((params, url)) = osc8_parts(code) {
                     active = (!url.is_empty() && clean_link_url(url)).then_some(url);
+                    target = params == TARGET_PARAMS;
                 }
             }
             Piece::Cell { text, col, width } => out.push(Cell {
@@ -58,18 +62,20 @@ fn cells(line: &str) -> Vec<Cell<'_>> {
                 col,
                 width,
                 link: active,
+                target: active.is_some() && target,
             }),
         }
     }
     out
 }
 
-/// `/^\x1b\]8;[^;]*;([^\x07\x1b]*)(?:\x07|\x1b\\)$/`: the URL of an OSC 8 sequence (empty closes the link).
-fn osc8_url(code: &str) -> Option<&str> {
+/// `/^\x1b\]8;([^;]*);([^\x07\x1b]*)(?:\x07|\x1b\\)$/`: the params and URL of an OSC 8 sequence (an empty URL closes
+/// the link).
+fn osc8_parts(code: &str) -> Option<(&str, &str)> {
     let body = code.strip_prefix("\x1b]8;")?;
     let body = body.strip_suffix('\x07').or_else(|| body.strip_suffix("\x1b\\"))?;
     let (params, url) = body.split_once(';')?;
-    (!params.contains(';') && !url.contains(['\x07', '\x1b'])).then_some(url)
+    (!params.contains(';') && !url.contains(['\x07', '\x1b'])).then_some((params, url))
 }
 
 /// A link shown on a row: what it opens and the visible columns `[start, end)` it covers.
@@ -78,6 +84,8 @@ pub(super) struct RowLink {
     pub(super) url: String,
     pub(super) start: usize,
     pub(super) end: usize,
+    /// A viewport-only link target: Option/Alt opens it, like a plain-text URL, while a plain click selects.
+    pub(super) target: bool,
 }
 
 fn cell_at(cells: &[Cell], column: usize) -> Option<usize> {
@@ -99,6 +107,7 @@ fn osc8_link(cells: &[Cell], column: usize) -> Option<RowLink> {
         url: url.to_string(),
         start: cells[first].col,
         end: cells[last - 1].col + cells[last - 1].width,
+        target: cells[at].target,
     })
 }
 
@@ -169,6 +178,7 @@ fn plain_url(cells: &[Cell], column: usize) -> Option<RowLink> {
             url: rest[..len].to_string(),
             start: cells[first + start].col,
             end: cells[first + start].col + len,
+            target: false,
         })
     })
 }
@@ -176,11 +186,12 @@ fn plain_url(cells: &[Cell], column: usize) -> Option<RowLink> {
 /// The link under visible column `column` of `line` that a click opens: its OSC 8 hyperlink, else with `plain` the
 /// http(s) URL shown there as plain text (each of the URL's cells is one ASCII byte one column wide, so its byte
 /// offsets are columns). A link [`openable_url`] refuses is none: a click there is an ordinary click, and hover
-/// does not underline it.
+/// does not underline it. A viewport-only link target counts only with `plain` too: the terminal never shows it as
+/// a link, so like a plain-text URL it opens on Option/Alt-click while a plain click selects.
 pub(super) fn link_at(line: &str, column: usize, plain: bool) -> Option<RowLink> {
     let cells = cells(line);
     osc8_link(&cells, column)
-        .filter(|link| openable_url(&link.url))
+        .filter(|link| openable_url(&link.url) && (plain || !link.target))
         .or_else(|| plain.then(|| plain_url(&cells, column)).flatten())
 }
 
