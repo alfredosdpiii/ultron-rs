@@ -567,7 +567,7 @@ impl Hub {
     /// `importPi`: the client sends the Pi file's text (it may live on another machine); it is imported into this
     /// server's session store. A session imported before is answered as `alreadyImported`, nothing written.
     fn import_pi(&self, content: &str) -> ServiceResult {
-        let directory = config::paths::private_temp_dir(&std::env::temp_dir(), "ultron-pi-import-")
+        let directory = config::paths::private_temp_dir(&jsrt::fs::temp_dir(), "ultron-pi-import-")
             .map_err(|e| ServiceError::internal(format!("Pi import directory: {e}")))?;
         let source = directory.join("session.jsonl");
         let written = {

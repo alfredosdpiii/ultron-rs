@@ -170,7 +170,7 @@ fn session_workspace(env: Option<&ProviderEnv>) -> io::Result<WorkspaceDir> {
         std::fs::create_dir_all(&path)?;
         return Ok(WorkspaceDir::Persistent(path));
     }
-    Ok(WorkspaceDir::Temp(tempfile::tempdir()?))
+    Ok(WorkspaceDir::Temp(tempfile::tempdir_in(jsrt::fs::temp_dir())?))
 }
 
 impl Pool {

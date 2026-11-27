@@ -41,7 +41,7 @@ impl Drop for Scratch {
 /// `scratch_parent` holds the scratch project and outside directories (the system temp dir when None).
 pub fn self_check(policy: &Policy, mechanism: Option<Mechanism>, scratch_parent: Option<&Path>) -> Value {
     let name = format!(".ultron-sandbox-probe-{}", jsrt::random::random_hex(6));
-    let parent = scratch_parent.map_or_else(std::env::temp_dir, Path::to_path_buf);
+    let parent = scratch_parent.map_or_else(jsrt::fs::temp_dir, Path::to_path_buf);
     let scratch = Scratch(parent.join(format!("ultron-sandbox-doctor-{}", jsrt::random::random_hex(6))));
     let (project, outside) = match create_probe_dirs(&scratch.0) {
         Ok(dirs) => dirs,

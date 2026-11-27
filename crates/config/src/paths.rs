@@ -8,6 +8,8 @@ pub const CONFIG_DIR_NAME: &str = ".pi";
 pub const AGENT_CONFIG_DIR_NAME: &str = ".ultron";
 /// `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR` for the `ultron` app name.
 pub const ENV_AGENT_DIR: &str = "ULTRON_CODING_AGENT_DIR";
+/// Override for Ultron's disk-backed scratch/temp directory (`<agent dir>/tmp` by default).
+pub const ENV_TMP_DIR: &str = "ULTRON_TMPDIR";
 /// `${APP_NAME.toUpperCase()}_CODING_AGENT_SESSION_DIR`.
 pub const ENV_SESSION_DIR: &str = "ULTRON_CODING_AGENT_SESSION_DIR";
 /// An instance directory (`daemon::instance`); `PI_SERVER_DIR` is its older name.
@@ -154,6 +156,10 @@ impl AgentPaths {
     pub fn experimental_sessions_dir(&self) -> PathBuf {
         self.join("experimental/sessions")
     }
+    /// Disk-backed temporary directory (`<agent dir>/tmp`) so Ultron does not fill `/tmp`.
+    pub fn tmp_dir(&self) -> PathBuf {
+        self.join("tmp")
+    }
     /// Where `ultron claude` remembers the Ultron session of a Claude Code session, by Claude Code's session id.
     pub fn claude_session_map(&self, claude_session_id: &str) -> PathBuf {
         let safe: String = safe_file_name(claude_session_id).collect();
@@ -177,19 +183,16 @@ pub fn running_image(exe: PathBuf, image: PathBuf, exists: &dyn Fn(&Path) -> boo
     if !exists(&exe) && exists(&image) { image } else { exe }
 }
 
-/// `os.tmpdir()` of an environment: `TMPDIR` without its trailing slash, else `/tmp`.
+/// Ultron's disk-backed temporary directory: `ULTRON_TMPDIR`, else non-`/tmp` `TMPDIR`, else `<agent dir>/tmp`.
 pub fn tmpdir(var: &dyn Fn(&str) -> Option<String>) -> PathBuf {
-    match var("TMPDIR").filter(|v| !v.is_empty()) {
-        Some(dir) if dir.len() > 1 => PathBuf::from(dir.trim_end_matches('/')),
-        Some(dir) => PathBuf::from(dir),
-        None => PathBuf::from("/tmp"),
-    }
+    jsrt::fs::resolve_temp_dir(var)
 }
 
 /// `mkdtempSync(join(base, prefix))`: a new directory only this user can enter (0700), `prefix` plus six random hex
 /// digits.
 pub fn private_temp_dir(base: &Path, prefix: &str) -> std::io::Result<PathBuf> {
     use std::os::unix::fs::DirBuilderExt;
+    let _ = jsrt::fs::ensure_temp_dir(base);
     loop {
         let path = base.join(format!("{prefix}{}", jsrt::random::random_hex(3)));
         match std::fs::DirBuilder::new().mode(0o700).create(&path) {

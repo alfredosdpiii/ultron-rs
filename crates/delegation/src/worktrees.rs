@@ -349,7 +349,7 @@ pub fn repo_info(cwd: &Path) -> Result<RepoInfo> {
 }
 
 pub(crate) fn temporary_index(kind: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
+    jsrt::fs::temp_dir().join(format!(
         "ultron-{kind}-{}-{}",
         std::process::id(),
         jsrt::random::random_hex(6)

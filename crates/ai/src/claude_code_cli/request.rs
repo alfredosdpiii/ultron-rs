@@ -155,7 +155,7 @@ impl Drop for TempPromptFile {
 fn write_temp_system_prompt(system: &str) -> std::io::Result<TempPromptFile> {
     static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!("ultron-claude-sys-{}-{id}.txt", std::process::id()));
+    let path = jsrt::fs::temp_dir().join(format!("ultron-claude-sys-{}-{id}.txt", std::process::id()));
     std::fs::write(&path, system)?;
     Ok(TempPromptFile(path))
 }

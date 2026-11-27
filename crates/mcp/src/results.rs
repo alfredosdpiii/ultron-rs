@@ -15,7 +15,7 @@ pub fn save_to_temp_file(data: &[u8], extension: &str) -> Result<String, String>
     let mut random = [0u8; 8];
     getrandom::fill(&mut random).map_err(|e| e.to_string())?;
     let hex: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    let path: PathBuf = std::env::temp_dir().join(format!("ultron-mcp-{hex}{extension}"));
+    let path: PathBuf = jsrt::fs::temp_dir().join(format!("ultron-mcp-{hex}{extension}"));
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)

@@ -275,7 +275,7 @@ pub fn empty_work_dir() -> Result<PathBuf, String> {
     }
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     let user = std::fs::metadata("/proc/self").map_or_else(|_| "user".into(), |m| m.uid().to_string());
-    let dir = std::env::temp_dir().join(format!("ultron-claude-code-{user}"));
+    let dir = jsrt::fs::temp_dir().join(format!("ultron-claude-code-{user}"));
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)

@@ -125,7 +125,7 @@ impl Scratch {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
-        let dir = std::env::temp_dir().join(name);
+        let dir = jsrt::fs::temp_dir().join(name);
         std::fs::create_dir(&dir).ok()?;
         Some(Scratch(dir))
     }

@@ -89,7 +89,7 @@ pub fn spawn_gated_input(tx: Sender<UiEvent>, paused: Arc<AtomicBool>) {
 /// Run `command` on a temporary `prompt.md` holding `content` with the terminal handed over (`editInExternalEditor`):
 /// the edited text without a trailing newline, or `None` when the editor failed.
 pub fn edit_externally(command: &str, content: &str) -> Option<String> {
-    let dir = std::env::temp_dir().join(format!(
+    let dir = jsrt::fs::temp_dir().join(format!(
         "pi-editor-{}-{}",
         std::process::id(),
         Instant::now().elapsed().as_nanos()

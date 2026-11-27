@@ -735,7 +735,7 @@ impl App {
             mouse_tracking: None,
             render_debug: None,
             termux: false,
-            temp_dir: std::env::temp_dir(),
+            temp_dir: jsrt::fs::temp_dir(),
             rlm_pane: rlm_views::pane::RlmPane::new(),
             rlm_pane_open: false,
             rlm_pane_focused: false,

@@ -310,7 +310,7 @@ pub(super) fn share_session(
     if let Err(error) = check_gh_auth() {
         return status(error);
     }
-    let dir = std::env::temp_dir().join(format!("ultron-share-{}", jsrt::random::uuid_v4()));
+    let dir = jsrt::fs::temp_dir().join(format!("ultron-share-{}", jsrt::random::uuid_v4()));
     if let Err(error) = std::fs::create_dir_all(&dir) {
         return status(format!("Error: Failed to export session: {error}"));
     }

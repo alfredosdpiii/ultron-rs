@@ -400,7 +400,7 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new() -> Result<Self, String> {
-        let base = std::env::temp_dir();
+        let base = jsrt::fs::temp_dir();
         for attempt in 0..100u32 {
             let nanos = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)

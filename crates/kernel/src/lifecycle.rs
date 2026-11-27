@@ -426,9 +426,12 @@ impl Shared {
             "--protocol-fds".into(),
         ];
         let budget = rlm_output_budget(options.var(crate::env::RLM_OUTPUT_BYTES_ENV).as_deref());
+        let tmpdir = jsrt::fs::resolve_temp_dir(&|key| options.var(key));
+        let _ = jsrt::fs::ensure_temp_dir(&tmpdir);
         let fixed_env: Vec<(String, String)> = vec![
             ("NO_COLOR".into(), "1".into()),
             ("PYTHONDONTWRITEBYTECODE".into(), "1".into()),
+            ("TMPDIR".into(), tmpdir.to_string_lossy().into_owned()),
             (crate::env::IN_KERNEL_ENV.into(), "1".into()),
             (
                 crate::env::RLM_MAX_MEMORY_MB_ENV.into(),

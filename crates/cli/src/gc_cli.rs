@@ -99,33 +99,71 @@ fn collect(agent_dir: &Path, max_age: Duration, orphan_grace: Duration, dry_run:
     let snapshots_root = agent_dir.join("rlm-snapshots");
     sweep_orphans(&snapshots_root, orphan_cutoff, dry_run, &mut summary);
 
-    for bucket in ["rlm-snapshots", "rlm-output", "rlm-tmp"] {
-        let root = agent_dir.join(bucket);
-        let Ok(entries) = std::fs::read_dir(&root) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            if !entry.file_type().is_ok_and(|ft| ft.is_dir()) {
-                continue;
-            }
-            let path = entry.path();
-            let (newest, bytes) = dir_stats(&path);
-            let is_stale = match (stale_cutoff, newest) {
-                (Some(cutoff), Some(mtime)) => mtime <= cutoff,
-                (Some(_), None) => true,
-                _ => false,
-            };
-            if is_stale && (dry_run || std::fs::remove_dir_all(&path).is_ok()) {
-                summary.stale_dirs += 1;
-                summary.stale_dir_bytes = summary.stale_dir_bytes.saturating_add(bytes);
-            }
-        }
+    for bucket in ["rlm-snapshots", "rlm-output", "rlm-tmp", "tmp"] {
+        sweep_bucket(
+            &agent_dir.join(bucket),
+            bucket == "tmp",
+            stale_cutoff,
+            dry_run,
+            &mut summary,
+        );
     }
 
     let sessions_root = agent_dir.join("sessions");
     sweep_stale_sessions(&sessions_root, stale_cutoff, dry_run, &mut summary);
 
     summary
+}
+
+fn sweep_bucket(
+    root: &Path,
+    include_files: bool,
+    stale_cutoff: Option<SystemTime>,
+    dry_run: bool,
+    summary: &mut GcSummary,
+) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        if ft.is_dir() {
+            sweep_stale_dir(&path, stale_cutoff, dry_run, summary);
+        } else if include_files && ft.is_file() {
+            sweep_stale_tmp_file(&path, stale_cutoff, dry_run, summary);
+        }
+    }
+}
+
+fn sweep_stale_dir(path: &Path, stale_cutoff: Option<SystemTime>, dry_run: bool, summary: &mut GcSummary) {
+    let (newest, bytes) = dir_stats(path);
+    let is_stale = match (stale_cutoff, newest) {
+        (Some(cutoff), Some(mtime)) => mtime <= cutoff,
+        (Some(_), None) => true,
+        _ => false,
+    };
+    if is_stale && (dry_run || std::fs::remove_dir_all(path).is_ok()) {
+        summary.stale_dirs += 1;
+        summary.stale_dir_bytes = summary.stale_dir_bytes.saturating_add(bytes);
+    }
+}
+
+fn sweep_stale_tmp_file(path: &Path, stale_cutoff: Option<SystemTime>, dry_run: bool, summary: &mut GcSummary) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if let (Some(cutoff), Ok(modified)) = (stale_cutoff, meta.modified())
+        && modified > cutoff
+    {
+        return;
+    }
+    if dry_run || std::fs::remove_file(path).is_ok() {
+        summary.orphan_files += 1;
+        summary.orphan_bytes = summary.orphan_bytes.saturating_add(meta.len());
+    }
 }
 
 fn orphan_scan_dirs(root: &Path) -> Vec<std::path::PathBuf> {

@@ -181,7 +181,7 @@ pub fn run_review(deps: &ReviewerDeps, prepared: &Prepared) -> Result<Outcome, E
         head: &head,
     };
     let scratch = jsrt::path::join(&[
-        &std::env::temp_dir().to_string_lossy(),
+        &jsrt::fs::temp_dir().to_string_lossy(),
         &format!("ultron-autoreview-diff-{}", random_hex(6)),
     ]);
     make_private_dir(&scratch).map_err(|e| Error::Other(format!("{scratch}: {e}")))?;

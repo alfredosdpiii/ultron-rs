@@ -72,6 +72,60 @@ pub fn atomic_write_mode(path: &Path, content: impl AsRef<[u8]>, mode: u32) -> i
     result
 }
 
+fn trim_trailing_slash(raw: String) -> PathBuf {
+    if raw.len() > 1 {
+        PathBuf::from(raw.trim_end_matches('/'))
+    } else {
+        PathBuf::from(raw)
+    }
+}
+
+/// Disk-backed temporary directory for Ultron scratch files so `/tmp` (`tmpfs`) does not fill up:
+/// 1. `ULTRON_TMPDIR` when set and non-empty.
+/// 2. `TMPDIR` when set, non-empty, and not `/tmp`.
+/// 3. `<ULTRON_CODING_AGENT_DIR>/tmp` or `<HOME>/.ultron/agent/tmp` when `HOME` is set.
+/// 4. Falls back to `std::env::temp_dir()`.
+pub fn resolve_temp_dir(var: &dyn Fn(&str) -> Option<String>) -> PathBuf {
+    if let Some(dir) = var("ULTRON_TMPDIR").filter(|v| !v.is_empty()) {
+        return trim_trailing_slash(dir);
+    }
+    if let Some(dir) = var("TMPDIR").filter(|v| !v.is_empty()) {
+        let path = trim_trailing_slash(dir);
+        if path != Path::new("/tmp") {
+            return path;
+        }
+    }
+    if let Some(home) = var("HOME").filter(|v| !v.is_empty()) {
+        let agent_dir = match var("ULTRON_CODING_AGENT_DIR").filter(|v| !v.is_empty()) {
+            Some(dir) => PathBuf::from(crate::path::normalize_path(&dir, &home)),
+            None => PathBuf::from(&home).join(".ultron").join("agent"),
+        };
+        return agent_dir.join("tmp");
+    }
+    std::env::temp_dir()
+}
+
+/// Ensure `dir` exists (0700 on Unix).
+pub fn ensure_temp_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(dir)
+    }
+}
+
+/// Process-default disk-backed temporary directory (`~/.ultron/agent/tmp` unless overridden by `ULTRON_TMPDIR`
+/// or a non-`/tmp` `TMPDIR`), created on demand.
+pub fn temp_dir() -> PathBuf {
+    let dir = resolve_temp_dir(&|key| std::env::var(key).ok());
+    let _ = ensure_temp_dir(&dir);
+    dir
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +171,36 @@ mod tests {
         atomic_write_mode(&target, b"secret", 0o600).unwrap();
         let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn resolve_temp_dir_prefers_ultron_tmpdir_then_non_system_tmpdir_then_agent_tmp() {
+        let map = |pairs: &[(&str, &str)]| {
+            let owned: Vec<(String, String)> = pairs.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect();
+            move |key: &str| owned.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+        };
+        assert_eq!(
+            resolve_temp_dir(&map(&[
+                ("ULTRON_TMPDIR", "/var/ultron-tmp/"),
+                ("TMPDIR", "/custom"),
+                ("HOME", "/home/u")
+            ])),
+            PathBuf::from("/var/ultron-tmp")
+        );
+        assert_eq!(
+            resolve_temp_dir(&map(&[("TMPDIR", "/custom/tmp/"), ("HOME", "/home/u")])),
+            PathBuf::from("/custom/tmp")
+        );
+        assert_eq!(
+            resolve_temp_dir(&map(&[("TMPDIR", "/tmp/"), ("HOME", "/home/u")])),
+            PathBuf::from("/home/u/.ultron/agent/tmp")
+        );
+        assert_eq!(
+            resolve_temp_dir(&map(&[
+                ("HOME", "/home/u"),
+                ("ULTRON_CODING_AGENT_DIR", "~/custom-agent")
+            ])),
+            PathBuf::from("/home/u/custom-agent/tmp")
+        );
     }
 }

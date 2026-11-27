@@ -82,7 +82,7 @@ pub(crate) fn wsl_temp_file(extension: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or_default(|d| d.as_nanos());
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    std::env::temp_dir().join(format!("pi-wsl-clip-{}-{nanos}-{n}.{extension}", std::process::id()))
+    jsrt::fs::temp_dir().join(format!("pi-wsl-clip-{}-{nanos}-{n}.{extension}", std::process::id()))
 }
 
 impl Clipboard for SystemClipboard {

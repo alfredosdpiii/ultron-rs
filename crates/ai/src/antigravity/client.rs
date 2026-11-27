@@ -21,6 +21,20 @@ const MANIFEST_BUDGET: usize = 48_000;
 const STDERR_TAIL: usize = 4096;
 const FRAME_LIMIT: u64 = 8 << 20;
 
+/// Detects `agy` quota/limit warning banners emitted as `end_turn` text with zero token usage so they surface as
+/// errors instead of being committed to the transcript as assistant replies.
+pub(super) fn quota_banner_error(text: &str, usage: &Usage) -> Option<String> {
+    if usage.total_tokens > 0 || usage.input > 0 || usage.output > 0 {
+        return None;
+    }
+    let trimmed = text.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let is_quota =
+        trimmed.starts_with('⚠') && (lower.contains("quota") || lower.contains("limit") || lower.contains("rate"));
+    let is_wallet = lower.contains("prepaid wallet") || lower.contains("exhausted your quota");
+    (is_quota || is_wallet).then(|| trimmed.to_string())
+}
+
 /// Normalizes per-turn prompt usage at the driver boundary, falling back to mid-turn `usage_update` context size
 /// when `inputTokens` is absent, clamping multi-step cumulative turn sums back to `context_used` so compaction
 /// tracks actual context window size, and filling `total_tokens` when `totalTokens` is omitted.
@@ -32,16 +46,15 @@ pub(super) fn normalize_usage(result: &Value, context_used: u64) -> Usage {
     let cache_read = count("cachedReadTokens");
     let cache_write = count("cachedWriteTokens");
     let raw_total = count("totalTokens");
-    if context_used > 0
-        && (cache_read > context_used || raw_total > context_used.saturating_add(output).saturating_mul(2))
-    {
+    let doubled_context = context_used.saturating_add(output).saturating_mul(2);
+    if context_used > 0 && (cache_read > context_used || raw_total > doubled_context) {
         return Usage {
             input: context_used,
             output,
             cache_read: 0,
             cache_write: 0,
             reasoning: (thought > 0).then_some(thought),
-            total_tokens: context_used.saturating_add(output),
+            total_tokens: context_used,
             ..Usage::default()
         };
     }
@@ -324,11 +337,19 @@ impl Agy {
         env: Option<&ProviderEnv>,
         sessions: bool,
     ) -> io::Result<(Agy, Step)> {
-        Self::start_in(model, messages, env, sessions, WorkspaceDir::Temp(tempfile::tempdir()?)).await
+        Self::start_in(
+            model,
+            messages,
+            env,
+            sessions,
+            WorkspaceDir::Temp(tempfile::tempdir_in(jsrt::fs::temp_dir())?),
+        )
+        .await
     }
 
-    /// Reattaches a fresh `agy acp` process to a previously saved `session_id` via ACP `session/load`, avoiding a
-    /// full transcript replay after an idle eviction or Ultron restart.
+    /// Reattaches a fresh `agy acp` process to a previously saved `session_id` via ACP `session/resume` (when
+    /// advertised, avoiding history replay over stdout) or `session/load`, avoiding a full transcript replay after an
+    /// idle eviction or Ultron restart.
     pub(super) async fn resume(
         model: &Model,
         messages: &[Message],
@@ -338,14 +359,17 @@ impl Agy {
     ) -> io::Result<Agy> {
         let mut agy = Self::spawn_in(messages, env, workspace).await?;
         let loaded = async {
-            agy.request("initialize", json!({"protocolVersion":1,"clientCapabilities":{}}))
+            let init = agy
+                .request("initialize", json!({"protocolVersion":1,"clientCapabilities":{}}))
                 .await?;
+            let method = if init["agentCapabilities"]["sessionCapabilities"]["resume"].is_object() {
+                "session/resume"
+            } else {
+                "session/load"
+            };
             let cwd = agy.workspace.as_ref().expect("workspace").path().to_path_buf();
-            agy.request(
-                "session/load",
-                json!({"sessionId": session_id, "cwd": cwd, "mcpServers": []}),
-            )
-            .await?;
+            agy.request(method, json!({"sessionId": session_id, "cwd": cwd, "mcpServers": []}))
+                .await?;
             agy.session = session_id;
             agy.request(
                 "session/set_model",
@@ -553,13 +577,17 @@ impl Agy {
                 "agy ended its turn without text or an Ultron tool call",
             ));
         }
+        let usage = normalize_usage(&result, self.context_used);
+        if let Some(banner) = quota_banner_error(&self.text, &usage) {
+            return Err(io::Error::other(format!("agy: {banner}")));
+        }
         let mut content = Vec::new();
         self.push_buffered_thought(&mut content);
         content.push(AssistantContent::Text(TextContent {
             text: std::mem::take(&mut self.text),
             text_signature: None,
         }));
-        Ok((content, normalize_usage(&result, self.context_used)))
+        Ok((content, usage))
     }
 
     /// Runs agy to its next captured tool call or the end of its turn.
