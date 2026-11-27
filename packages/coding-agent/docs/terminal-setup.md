@@ -66,6 +66,8 @@ This sends a raw linefeed, which Pi cannot distinguish from `Ctrl+J`. Remove the
 
 Links remain clickable in fullscreen mode, but Ghostty does not show its normal hover underline or URL preview while Pi captures mouse input. Hold `Shift+Command` on macOS or `Shift+Ctrl` on Linux to use Ghostty's native link handling.
 
+Where links reach the screen as plain text (tmux without its `hyperlinks` terminal feature, Terminal.app), hold `Option` on macOS or `Alt` on Linux and click a URL to open it in the default browser. Terminal.app passes the modifier on when its profile uses Option as Meta key. A plain click still selects.
+
 ## WezTerm
 
 WezTerm normally reports `Shift+Enter` through xterm extended keys. To enable the Kitty keyboard protocol explicitly, create `~/.wezterm.lua`:

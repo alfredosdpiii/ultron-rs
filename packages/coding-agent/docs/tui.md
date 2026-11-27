@@ -57,7 +57,7 @@ Forward keys your editor does not own to the base implementation, and restore th
 
 Fullscreen mode routes normalized mouse events to components. A handler can mark an event handled, capture a drag sequence, request focus, or request a render.
 
-Unhandled wheel events scroll the nearest `ScrollView`. Unhandled primary-button drags remain available for transcript selection. OSC 8 links take precedence over enclosing click regions.
+Unhandled wheel events scroll the nearest `ScrollView`. Unhandled primary-button drags remain available for transcript selection. OSC 8 links take precedence over enclosing click regions. An Option-click (Alt-click on Linux and Windows) also opens a URL shown as plain text, for terminals and multiplexers without OSC 8.
 
 Regular mode leaves mouse input to the terminal because the terminal owns scrollback. Design every interaction with a keyboard path even when fullscreen mouse input is available.
 

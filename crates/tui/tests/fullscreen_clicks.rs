@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tui::KeyContext;
-use tui::{FullscreenViewport, ViewportInput, osc8_link_at_column, word_selection};
+use tui::{FullscreenViewport, ViewportInput, osc8_link_at_column, plain_url_at_column, word_selection};
 use tui::{KeybindingsManager, tui_keybindings};
 use tui::{Rect, ScrollView, Scrollbar, slice_by_column};
 use tui::{normalize_terminal_output, visible_width};
@@ -174,4 +174,57 @@ fn tui_fullscreen_double_click_copies_a_japanese_word() {
         view.finish_frame(screen.clone(), 20, 2);
     }
     assert_eq!(copied, ["テキスト"]);
+}
+
+/// A URL shown as plain text (no OSC 8: tmux without its hyperlinks feature, Terminal.app, a markdown link printed as
+/// `label (url)`) is found under every column it covers, without trailing punctuation or an unbalanced bracket.
+#[test]
+fn tui_fullscreen_plain_url_under_a_column() {
+    let styled = "see \x1b[4mhttps://x.dev/a_(b)\x1b[0m.";
+    for column in 4..23 {
+        assert_eq!(
+            plain_url_at_column(styled, column).as_deref(),
+            Some("https://x.dev/a_(b)"),
+            "column {column}"
+        );
+    }
+    assert_eq!(plain_url_at_column(styled, 3), None);
+    assert_eq!(plain_url_at_column(styled, 23), None);
+    let markdown = "Docs (https://docs.slack.dev/ai/), then more";
+    assert_eq!(
+        plain_url_at_column(markdown, 10).as_deref(),
+        Some("https://docs.slack.dev/ai/")
+    );
+    assert_eq!(plain_url_at_column(markdown, 5), None);
+    assert_eq!(
+        plain_url_at_column("\tHTTP://A.B/c", 4).as_deref(),
+        Some("HTTP://A.B/c")
+    );
+    assert_eq!(plain_url_at_column("example.com/path", 3), None);
+    assert_eq!(plain_url_at_column("go https:// now", 5), None);
+}
+
+/// An Option/Alt click (SGR modifier bit 8) opens a URL shown as plain text; the same click without the modifier only
+/// clicks.
+#[test]
+fn tui_fullscreen_option_click_opens_a_plain_url() {
+    let keys = KeybindingsManager::new(tui_keybindings(), Default::default(), KeyContext::default());
+    let opened: Arc<Mutex<Vec<String>>> = Arc::default();
+    let mut view = FullscreenViewport::default();
+    let sink = Arc::clone(&opened);
+    view.open_url = Some(Arc::new(move |url: &str| sink.lock().unwrap().push(url.to_string())));
+    let mut lines = vec!["PR: https://github.com/a/b/pull/1 is open".to_string()];
+    lines.resize(4, String::new());
+    view.set_size(48, 4);
+    view.finish_frame(lines, 48, 4);
+    let now = Instant::now();
+    for data in ["\x1b[<0;11;1M", "\x1b[<0;11;1m"] {
+        assert_eq!(view.handle_input(data, &keys, now), ViewportInput::Consumed);
+    }
+    assert!(opened.lock().unwrap().is_empty());
+    let later = now + Duration::from_secs(2);
+    for data in ["\x1b[<8;11;1M", "\x1b[<8;11;1m"] {
+        assert_eq!(view.handle_input(data, &keys, later), ViewportInput::Consumed);
+    }
+    assert_eq!(*opened.lock().unwrap(), ["https://github.com/a/b/pull/1"]);
 }

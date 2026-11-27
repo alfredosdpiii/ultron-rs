@@ -125,6 +125,75 @@ fn osc8_url(code: &str) -> Option<&str> {
     (!params.contains(';') && !url.contains(['\x07', '\x1b'])).then_some(url)
 }
 
+/// The `http://` or `https://` URL shown as plain text that covers visible column `column` of `line` (tabs are 3
+/// columns). An Option/Alt click opens it where links reach the screen without OSC 8: tmux without its hyperlinks
+/// feature, Terminal.app, a markdown link printed as `label (url)`, a URL in tool output. Trailing punctuation and
+/// unbalanced closing brackets end the URL, so `(see https://x.dev/a).` gives `https://x.dev/a`.
+pub fn plain_url_at_column(line: &str, column: usize) -> Option<String> {
+    let mut cells: Vec<(&str, usize, usize)> = Vec::new();
+    let mut col = 0;
+    let mut i = 0;
+    while i < line.len() {
+        if let Some(len) = ansi_len(line, i) {
+            i += len;
+            continue;
+        }
+        let mut end = i;
+        while end < line.len() && ansi_len(line, end).is_none() {
+            end += line[end..].chars().next().map_or(1, char::len_utf8);
+        }
+        for g in line[i..end].graphemes(true) {
+            let width = if g == "\t" { 3 } else { grapheme_width(g) };
+            cells.push((g, col, width));
+            col += width;
+        }
+        i = end;
+    }
+    let at = cells
+        .iter()
+        .position(|&(_, start, width)| column >= start && column < start + width)?;
+    let is_url_char = |g: &str| g.len() == 1 && g.as_bytes()[0].is_ascii_graphic() && !"<>\"'`".contains(g);
+    if !is_url_char(cells[at].0) {
+        return None;
+    }
+    let first = cells[..at]
+        .iter()
+        .rposition(|&(g, ..)| !is_url_char(g))
+        .map_or(0, |p| p + 1);
+    let last = cells[at..]
+        .iter()
+        .position(|&(g, ..)| !is_url_char(g))
+        .map_or(cells.len(), |p| at + p);
+    let token: String = cells[first..last].iter().map(|&(g, ..)| g).collect();
+    // Every cell of the token is one ASCII byte, so byte offsets are cell offsets.
+    let clicked = at - first;
+    let start = (0..=clicked).rev().find(|&p| {
+        let rest = token[p..].to_ascii_lowercase();
+        rest.starts_with("https://") || rest.starts_with("http://")
+    })?;
+    let mut url = &token[start..];
+    while let Some(tail) = url.chars().last() {
+        let unbalanced = |open: char| url.matches(tail).count() > url.matches(open).count();
+        let trim = match tail {
+            '.' | ',' | ';' | ':' | '!' | '?' => true,
+            ')' => unbalanced('('),
+            ']' => unbalanced('['),
+            '}' => unbalanced('{'),
+            _ => false,
+        };
+        if !trim {
+            break;
+        }
+        url = &url[..url.len() - 1];
+    }
+    let scheme_len = if url.to_ascii_lowercase().starts_with("https://") {
+        8
+    } else {
+        7
+    };
+    (url.len() > scheme_len && clicked < start + url.len()).then(|| url.to_string())
+}
+
 #[derive(Clone, Copy)]
 enum ViewportKeyAction {
     ScrollPage(i64),
