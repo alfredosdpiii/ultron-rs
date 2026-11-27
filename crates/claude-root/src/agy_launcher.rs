@@ -47,56 +47,32 @@ pub struct AgyLauncherOptions {
     pub agy_args: Vec<String>,
 }
 
-fn apply_agy_bool_flag(arg: &str, options: &mut AgyLauncherOptions) -> bool {
-    match arg {
-        "--print-config" => options.print_config = true,
-        "--keep-native-tools" => options.keep_native_tools = true,
-        "--no-hooks" => options.hooks = false,
-        "--watch" => options.watch = true,
-        "--no-context-files" | "-nc" => options.no_context_files = true,
-        "--no-skills" | "-ns" => options.no_skills = true,
-        _ => return false,
-    }
-    true
-}
-
-fn apply_agy_value_flag(
-    arg: &str,
-    args: &[String],
-    index: &mut usize,
-    options: &mut AgyLauncherOptions,
-) -> Result<bool, UsageError> {
-    match arg {
-        "--frame-model" => options.frame_model = Some(crate::launcher::next_arg_value(args, index, arg)?),
-        "--child-model" => options.child_model = Some(crate::launcher::next_arg_value(args, index, arg)?),
-        "--children" => options.children = Some(crate::launcher::parse_children_mode(args, index)?),
-        _ => return Ok(false),
-    }
-    Ok(true)
-}
-
 /// Split `ultron agy` arguments into Ultron's options and `agy`'s; `None` for `--help`.
 pub fn parse_agy_args(args: &[String]) -> Result<Option<AgyLauncherOptions>, UsageError> {
-    let mut options = AgyLauncherOptions {
-        hooks: true,
-        ..AgyLauncherOptions::default()
+    let mut keep_native_tools = false;
+    let Some(common) = crate::launcher::parse_common_args(args, |arg| {
+        if arg == "--keep-native-tools" {
+            keep_native_tools = true;
+            true
+        } else {
+            false
+        }
+    })?
+    else {
+        return Ok(None);
     };
-    let mut index = 0;
-    while index < args.len() {
-        let arg = args[index].as_str();
-        if arg == "--" {
-            options.agy_args.extend(args[index + 1..].iter().cloned());
-            break;
-        }
-        if matches!(arg, "--help" | "-h") {
-            return Ok(None);
-        }
-        if !apply_agy_bool_flag(arg, &mut options) && !apply_agy_value_flag(arg, args, &mut index, &mut options)? {
-            options.agy_args.push(arg.to_string());
-        }
-        index += 1;
-    }
-    Ok(Some(options))
+    Ok(Some(AgyLauncherOptions {
+        print_config: common.print_config,
+        keep_native_tools,
+        hooks: common.hooks,
+        watch: common.watch,
+        no_context_files: common.no_context_files,
+        no_skills: common.no_skills,
+        frame_model: common.frame_model,
+        children: common.children,
+        child_model: common.child_model,
+        agy_args: common.passthrough_args,
+    }))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -194,20 +170,24 @@ fn read_json_or_empty_object(file: &Path) -> std::io::Result<Value> {
 fn build_agy_ultron_hooks() -> Value {
     let mut ultron_hooks = Map::new();
     for event in crate::hooks::SESSION_HOOKS {
+        let Some(agy_event) = event.agy_event() else {
+            continue;
+        };
         let cmd = format!(
-            "sh -c 'test -n \"${AGY_HOOK_SOCKET_ENV}\" && exec \"${AGY_HOOK_BIN_ENV}\" hook {} --socket \"${AGY_HOOK_SOCKET_ENV}\" || exit 0'",
+            "sh -c 'test -n \"${AGY_HOOK_SOCKET_ENV}\" \
+             && exec \"${AGY_HOOK_BIN_ENV}\" hook {} --socket \"${AGY_HOOK_SOCKET_ENV}\" || exit 0'",
             event.command()
         );
         ultron_hooks.insert(
-            event.claude_event().into(),
-            json!([{"hooks": [{"type": "command", "command": cmd, "timeout": event.timeout_secs()}]}]),
+            agy_event.into(),
+            json!([{"type": "command", "command": cmd, "timeout": event.timeout_secs()}]),
         );
     }
     Value::Object(ultron_hooks)
 }
 
 /// Installs an env-guarded `ultron` entry in `<home>/.gemini/config/hooks.json` so `ultron agy` gets Ultron's
-/// `SessionStart`, `UserPromptSubmit`, and `Stop` hooks while plain `agy` runs remain unaffected.
+/// `SessionStart`, `PreInvocation`, and `Stop` hooks while plain `agy` runs remain unaffected.
 pub fn ensure_agy_hooks(home: &Path) -> std::io::Result<()> {
     let config_dir = home.join(".gemini/config");
     std::fs::create_dir_all(&config_dir)?;
@@ -303,9 +283,7 @@ pub fn run(
     let Some(dir) = dir else {
         return print_agy_config(out, &agy, &launch, &socket);
     };
-    for (path, content) in &launch.files {
-        config::paths::write_private(path, content).map_err(|e| format!("{}: {e}", path.display()))?;
-    }
+    crate::launcher::write_launch_files(&launch.files)?;
     let interactive = !parsed
         .agy_args
         .iter()
@@ -321,32 +299,17 @@ pub fn run(
     )?;
     let _ = err.flush();
     let _ = out.flush();
-    Ok(exec_agy(&launch, &dir, err))
-}
-
-fn exec_agy(launch: &AgyLaunch, dir: &Path, err: &mut dyn std::io::Write) -> i32 {
-    use std::os::unix::process::CommandExt;
-    let pid = std::process::id().to_string();
-    let _ = std::process::Command::new("/bin/sh")
-        .args([
-            "-c",
-            "while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; rm -rf -- \"$2\"",
-            "ultron-agy-cleanup",
-            &pid,
-            &dir.display().to_string(),
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .process_group(0)
-        .spawn();
-    let error = std::process::Command::new(&launch.agy)
-        .args(&launch.args)
-        .envs(launch.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-        .exec();
-    let _ = std::fs::remove_dir_all(dir);
-    let _ = writeln!(err, "ultron agy: {error}");
-    1
+    Ok(crate::launcher::exec_with_cleanup(
+        &crate::launcher::ExecSpec {
+            label: "ultron agy",
+            cleanup_name: "ultron-agy-cleanup",
+            program: &launch.agy,
+            args: &launch.args,
+            env: &launch.env,
+        },
+        &dir,
+        err,
+    ))
 }
 
 #[cfg(test)]
@@ -423,5 +386,21 @@ mod tests {
             launch.settings,
             json!({ "permissions": { "allow": ["mcp(ultron/*)"] } })
         );
+    }
+
+    #[test]
+    fn agy_hooks_use_pre_invocation() {
+        let hooks = build_agy_ultron_hooks();
+        let obj = hooks.as_object().expect("hooks object");
+        assert!(obj.contains_key("SessionStart"));
+        assert!(obj.contains_key("PreInvocation"));
+        assert!(obj.contains_key("Stop"));
+        assert!(!obj.contains_key("UserPromptSubmit"));
+        for event in ["SessionStart", "PreInvocation", "Stop"] {
+            let handlers = obj[event].as_array().expect("flat handler array");
+            assert_eq!(handlers.len(), 1);
+            assert_eq!(handlers[0]["type"], "command");
+            assert!(handlers[0].get("hooks").is_none());
+        }
     }
 }

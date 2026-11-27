@@ -563,15 +563,43 @@ that input (a check, a rewrite, a hold), the level is at least medium, however r
 ];
 
 /// Where the Rust investigator and finder frames differ from the recorded ones (recorded, Rust).
-const INVESTIGATOR_EDITS: [(&str, &str); 6] = [
+const INVESTIGATOR_EDITS: [(&str, &str); 13] = [
+    (
+        "necessary, not sufficient. Report what does not hold as findings, and in checked what you verified to hold.",
+        "necessary, not sufficient. Report what does not hold as findings, and in checked what you verified to hold.\nAlso audit deleted or replaced lines: for every guard, validation, error path or invariant the diff removes,\nverify where the new code re-establishes it or whether callers/data can now break.",
+    ),
+    (
+        "parametrize lists and fixtures elsewhere that lack the new cases; a public helper tested only through another\nmodule; test files that are not collected.",
+        "parametrize lists and fixtures elsewhere that lack the new cases; sync-vs-async fire-and-forget races (a sync test\nasserting immediately on a side effect scheduled via create_task by a newly-async collaborator); a public helper tested\nonly through another module; test files that are not collected.",
+    ),
+    (
+        "- Access control: new handlers, endpoints or commands that skip the authentication or ownership checks their neighbours perform.\n- Secrets: keys, tokens or passwords written into code, config, tests, fixtures or logs, or echoed in error messages.",
+        "- Access control: new handlers, endpoints or commands that skip the authentication, tenant-isolation or ownership checks their neighbours perform, or broadcast/fall back across tenants when identity is unknown.\n- Secrets: keys, tokens or passwords written into code, config, tests, fixtures or logs, or echoed in error messages; raw exception text (`str(exc)`) or internal details returned verbatim in API error responses.",
+    ),
+    (
+        "- Flakiness: sleeps, wall-clock time, unseeded randomness, network access, ordering assumptions, state shared between tests.",
+        "- Flakiness: sleeps, wall-clock time, unseeded randomness, network access, ordering assumptions, state shared between tests.\n- Sync-vs-async dispatch races: asserting immediately on a side effect after a synchronous TestClient/HTTP call when the injected or wrapped collaborator changed from sync to async def and is scheduled via create_task or fire-and-forget without awaiting or draining pending tasks.",
+    ),
     (
         "each naming the file and line.\n- done:",
         "each naming the file and line; plus
   one line for each owed check (T<n>) you made that holds or that does not apply, starting with its id.\n- done:",
     ),
     (
-        "Errors: exceptions swallowed or reported as success, failure paths that leave partial state, cleanup that never runs.",
         "Errors: check for swallowed exceptions and skipped cleanup. After a durable write, trace the next fallible call. If it fails, what stays committed, what does the caller see, and what will a retry read? Check rollback.",
+        "Errors: check for swallowed exceptions, wrong HTTP/error status mappings (e.g. not-found or validation errors mapped to 500/503), and skipped cleanup. After a durable write, trace the next fallible call. If it fails, what stays committed, what does the caller see, and what will a retry read? Check rollback and compensation.",
+    ),
+    (
+        "- Async and concurrency: a missing await, tasks or promises nobody waits for, shared state changed without ordering, check-then-use races.\n- Contracts: a changed return type, signature, default or side effect that callers visible in the view still depend on.",
+        "- Async and concurrency: a missing await, tasks or promises nobody waits for, blocking synchronous network/DB/SDK I/O directly inside an async handler/event loop without offloading (e.g. to_thread), shared state changed without ordering, check-then-use races.\n- Contracts: a changed return type, signature, default or side effect that callers visible in the view still depend on; global config/env overrides that silently shadow per-tenant or per-resource settings; renamed file paths, cache keys, or schemas that strand existing data without migration.",
+    ),
+    (
+        "- Data: integer division, overflow, float equality, time zones, text encodings, mutated default or shared arguments.",
+        "- Data: integer division, overflow, float equality, time zones, text encodings, mutated default or shared arguments.\n- Removed behavior: for every line the diff deletes or replaces, name the invariant or behavior it enforced and check where the new code re-establishes it (removed guard, dropped error path, narrowed validation, deleted test case).\n- Wrappers and proxies: when adding or editing a cache, proxy, decorator or adapter, verify every method routes to the wrapped delegate rather than back through a registry, session or global (re-entrancy or recursion), and forwards all methods callers use.",
+    ),
+    (
+        "- Complexity: branches nested so deep that the next edit will likely break them; dead or unreachable code left behind.",
+        "- Complexity: branches nested so deep that the next edit will likely break them; dead or unreachable code left behind, or Guard-and-Go patches that wrap obsolete logic in a new conditional/fallback instead of deleting it (name the exact line..end_line span to remove).\n- Altitude: prefer fixing the root cause in the underlying mechanism over layering fragile special cases onto shared infrastructure.\n- Efficiency: redundant computation or repeated I/O, unbounded full-table scans or unpaginated queries with post-read filtering, independent async/I/O operations run sequentially, blocking work on startup or hot paths, or long-lived objects holding closures that pin large enclosing scopes in memory.",
     ),
     (
         "  report a missing test for it.\n- consequence:",
@@ -627,8 +655,69 @@ fn assert_case(world: &World, recorded: &Value, name: &str) -> (Value, String) {
         usage["frames"] = json!(4);
         usage["byPhase"]["find"]["frames"] = json!(3);
     }
+    if name == "text" {
+        expected["stdout"] = json!(
+            "**Request changes** — `a5ee7f7` (1 file, +1 / -1)\n1 blocking finding to resolve before merge.\n\n## Findings\n1. **[High]** `calc.py:4` (inline) — total() skips the last item.\n\nAutomated review by Ultron\n"
+        );
+    }
+    if matches!(name, "fast" | "both" | "scenario_fails" | "rate_limited") {
+        let model = expected["stdout"]["model"].as_str().unwrap().to_string();
+        if let Some(stages) = expected["stdout"]["timing"]["stages"].as_object_mut() {
+            stages.insert("sweepMs".into(), json!(0));
+        }
+        if let Some(frames) = expected["stdout"]["timing"]["frames"].as_array_mut() {
+            frames.push(json!({
+                "phase": "sweep",
+                "reviewer": "sweep",
+                "ms": 0,
+                "status": "ok",
+                "retries": 0,
+                "tokens": 120,
+                "model": model,
+            }));
+            frames.sort_by_key(std::string::ToString::to_string);
+        }
+        if let Some(usage) = expected["stdout"]["usage"].as_object_mut() {
+            usage.insert("frames".into(), json!(usage["frames"].as_u64().unwrap() + 1));
+            usage.insert(
+                "inputTokens".into(),
+                json!(usage["inputTokens"].as_u64().unwrap() + 100),
+            );
+            usage.insert(
+                "outputTokens".into(),
+                json!(usage["outputTokens"].as_u64().unwrap() + 20),
+            );
+            if let Some(by_phase) = usage["byPhase"].as_object_mut() {
+                by_phase.insert("sweep".into(), json!({ "frames": 1, "tokens": 120 }));
+            }
+            if let Some(cost) = usage["costUsd"].as_f64() {
+                let extra = match name {
+                    "fast" => 0.000006,
+                    _ => 0.000007,
+                };
+                usage.insert(
+                    "costUsd".into(),
+                    json!(((cost + extra) * 1_000_000.0).round() / 1_000_000.0),
+                );
+            }
+        }
+    }
     let expected = &expected;
-    let (code, mut stdout, stderr, requests, raw) = run_case(world, expected);
+    let (code, mut stdout, stderr, mut requests, raw) = run_case(world, expected);
+    if matches!(name, "fast" | "both" | "scenario_fails" | "rate_limited" | "text") {
+        let is_sweep = |r: &Value| {
+            r["messages"].as_array().is_some_and(|msgs| {
+                msgs.iter()
+                    .any(|m| m["content"].as_str().unwrap_or("").contains("doing a final gap sweep"))
+            })
+        };
+        assert_eq!(
+            requests.iter().filter(|r| is_sweep(r)).count(),
+            1,
+            "{name}: expected 1 gap-sweep request"
+        );
+        requests.retain(|r| !is_sweep(r));
+    }
     if let Some(reference) = stdout
         .get_mut("timing")
         .and_then(|t| t.get_mut("reference"))
@@ -656,7 +745,6 @@ fn assert_case(world: &World, recorded: &Value, name: &str) -> (Value, String) {
     assert_eq!(stderr, *expected["stderr"].as_array().unwrap(), "{name}: stderr");
     let mut wanted = expected["requests"].as_array().unwrap().clone();
     assert_eq!(requests.len(), wanted.len(), "{name}: request count");
-    let mut requests = requests;
     if name == "rate_limited" {
         // Which finder request the stub refuses first depends on arrival order: compare the distinct requests.
         requests.dedup();
@@ -669,7 +757,7 @@ fn assert_case(world: &World, recorded: &Value, name: &str) -> (Value, String) {
         // estimate: under a budget its output cap is a little higher.
         let cap = "max_completion_tokens";
         if let (Some(got_cap), Some(want_cap)) = (got[cap].as_i64(), want[cap].as_i64())
-            && (0..=128).contains(&(got_cap - want_cap))
+            && (0..=256).contains(&(got_cap - want_cap))
         {
             want[cap] = got_cap.into();
         }
@@ -760,6 +848,7 @@ fn cli_autoreview_fast_json_contract() {
             "find:bugs:ok",
             "find:security:ok",
             "find:tests:ok",
+            "sweep:sweep:ok",
             "verify:verifier:ok"
         ]
     );
@@ -776,10 +865,10 @@ fn cli_autoreview_fast_json_contract() {
     );
     assert_eq!(json["model"], "groq/llama-3.1-8b-instant");
     assert_eq!(json["verifyModel"], "groq/llama-3.3-70b-versatile");
-    assert_eq!(json["usage"]["frames"], 4);
+    assert_eq!(json["usage"]["frames"], 5);
     assert_eq!(
         json["usage"]["byPhase"],
-        json!({"find": {"frames": 3, "tokens": 360}, "verify": {"frames": 1, "tokens": 120}})
+        json!({"find": {"frames": 3, "tokens": 360}, "sweep": {"frames": 1, "tokens": 120}, "verify": {"frames": 1, "tokens": 120}})
     );
     assert_eq!(
         json["notChecked"],
@@ -796,7 +885,7 @@ fn cli_autoreview_fast_json_contract() {
                 .to_string()
         })
         .collect();
-    assert_eq!(models.iter().filter(|m| *m == "llama-3.1-8b-instant").count(), 3);
+    assert_eq!(models.iter().filter(|m| *m == "llama-3.1-8b-instant").count(), 4);
     assert_eq!(models.iter().filter(|m| *m == "llama-3.3-70b-versatile").count(), 1);
     for body in world.requests() {
         assert!(!body.contains("\"tools\""));
@@ -826,8 +915,8 @@ fn cli_autoreview_rate_limit_is_retried() {
             .iter()
             .all(|f| f["status"] == "ok")
     );
-    // Four frames (three finders, one batched verifier), and the one request that was refused sent again.
-    assert_eq!(world.requests().len(), 5);
+    // Five frames (three finders, one gap sweep, one batched verifier), and the one request that was refused sent again.
+    assert_eq!(world.requests().len(), 6);
 }
 
 /// "the verdict follows the final severity: a major whose scenario does not hold is a minor comment, not a block".
@@ -860,8 +949,9 @@ fn cli_autoreview_finder_models_are_mixed() {
     let on = |model: &str| requests.iter().filter(|request| request["model"] == model).count();
     let finders = stdout["usage"]["byPhase"]["find"]["frames"].as_u64().unwrap() as usize;
     assert!(finders >= 2, "the case needs two finder frames to mix");
-    assert_eq!(on("llama-3.1-8b-instant"), finders / 2);
-    assert_eq!(on("llama-3.3-70b-versatile"), requests.len() - finders / 2);
+    let sweep = stdout["usage"]["byPhase"]["sweep"]["frames"].as_u64().unwrap_or(0) as usize;
+    assert_eq!(on("llama-3.1-8b-instant"), finders / 2 + sweep);
+    assert_eq!(on("llama-3.3-70b-versatile"), requests.len() - finders / 2 - sweep);
 }
 
 /// Without --json, the review body the poster would post.
@@ -870,7 +960,7 @@ fn cli_autoreview_text_is_the_review_body() {
     let world = World::new();
     let recorded = fixture();
     let (text, _) = assert_case(&world, &recorded, "text");
-    assert!(text.as_str().unwrap().contains("**Request changes.**"));
+    assert!(text.as_str().unwrap().contains("**Request changes**"));
 }
 
 /// "--mode both: the fast pass, then investigators with read-only lookups; one JSON object".

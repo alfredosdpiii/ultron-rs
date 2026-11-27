@@ -90,6 +90,44 @@ fn record(value: Option<&Value>) -> Map<String, Value> {
     }
 }
 
+fn insert_named_meta(item: &mut Map<String, Value>, name: &str, title: Option<&str>, description: &str) {
+    item.insert("name".into(), name.into());
+    if let Some(title) = title {
+        item.insert("title".into(), title.into());
+    }
+    item.insert("description".into(), description.into());
+}
+
+fn encode_list<T>(key: &str, items: Option<Vec<T>>, encode: impl Fn(&T) -> Map<String, Value>) -> Value {
+    let entries: Vec<Value> = items
+        .unwrap_or_default()
+        .iter()
+        .map(|entry| Value::Object(encode(entry)))
+        .collect();
+    let mut out = Map::new();
+    out.insert(key.into(), Value::Array(entries));
+    Value::Object(out)
+}
+
+fn find_by_param<'a, T>(
+    items: &'a [T],
+    params: &Map<String, Value>,
+    param_key: &str,
+    kind: &str,
+    item_key: impl Fn(&T) -> &str,
+) -> Result<&'a T, (i64, String)> {
+    let requested = params.get(param_key);
+    items
+        .iter()
+        .find(|item| requested.and_then(Value::as_str) == Some(item_key(item)))
+        .ok_or_else(|| {
+            (
+                INVALID_PARAMS,
+                format!("Unknown {kind}: {}", jsrt::value::string(requested)),
+            )
+        })
+}
+
 struct Server<H: McpHandlers + 'static> {
     handlers: Arc<H>,
     out: Out,
@@ -134,36 +172,17 @@ impl<H: McpHandlers + 'static> Server<H> {
     }
 
     fn handle_prompts_list(&self) -> Value {
-        let items: Vec<Value> = self
-            .handlers
-            .prompts()
-            .unwrap_or_default()
-            .iter()
-            .map(|p| {
-                let mut item = Map::new();
-                item.insert("name".into(), p.name.clone().into());
-                if let Some(title) = &p.title {
-                    item.insert("title".into(), title.clone().into());
-                }
-                item.insert("description".into(), p.description.clone().into());
-                item.insert("arguments".into(), json!([]));
-                Value::Object(item)
-            })
-            .collect();
-        json!({"prompts": items})
+        encode_list("prompts", self.handlers.prompts(), |p| {
+            let mut item = Map::new();
+            insert_named_meta(&mut item, &p.name, p.title.as_deref(), &p.description);
+            item.insert("arguments".into(), json!([]));
+            item
+        })
     }
 
     fn handle_prompts_get(&self, params: &Map<String, Value>) -> Result<Value, (i64, String)> {
         let prompts = self.handlers.prompts().unwrap_or_default();
-        let prompt = prompts
-            .iter()
-            .find(|p| params.get("name") == Some(&Value::String(p.name.clone())))
-            .ok_or_else(|| {
-                (
-                    INVALID_PARAMS,
-                    format!("Unknown prompt: {}", jsrt::value::string(params.get("name"))),
-                )
-            })?;
+        let prompt = find_by_param(&prompts, params, "name", "prompt", |p| &p.name)?;
         Ok(json!({
             "description": prompt.description,
             "messages": [{"role": "user", "content": {"type": "text", "text": prompt.text}}],
@@ -171,38 +190,24 @@ impl<H: McpHandlers + 'static> Server<H> {
     }
 
     fn handle_resources_list(&self) -> Value {
-        let items: Vec<Value> = self
-            .handlers
-            .resources()
-            .unwrap_or_default()
-            .iter()
-            .map(|r| {
-                let mut item = Map::new();
-                item.insert("uri".into(), r.uri.clone().into());
-                item.insert("name".into(), r.name.clone().into());
-                if let Some(title) = &r.title {
-                    item.insert("title".into(), title.clone().into());
-                }
-                item.insert("description".into(), r.description.clone().into());
-                item.insert("mimeType".into(), r.mime_type.clone().into());
-                Value::Object(item)
-            })
-            .collect();
-        json!({"resources": items})
+        encode_list("resources", self.handlers.resources(), |r| {
+            let mut item = Map::new();
+            item.insert("uri".into(), r.uri.clone().into());
+            insert_named_meta(&mut item, &r.name, r.title.as_deref(), &r.description);
+            item.insert("mimeType".into(), r.mime_type.clone().into());
+            item
+        })
     }
 
     fn handle_resources_read(&self, params: &Map<String, Value>) -> Result<Value, (i64, String)> {
         let resources = self.handlers.resources().unwrap_or_default();
-        let resource = resources
-            .iter()
-            .find(|r| params.get("uri") == Some(&Value::String(r.uri.clone())))
-            .ok_or_else(|| {
-                (
-                    INVALID_PARAMS,
-                    format!("Unknown resource: {}", jsrt::value::string(params.get("uri"))),
-                )
-            })?;
-        Ok(json!({"contents": [{"uri": resource.uri, "mimeType": resource.mime_type, "text": resource.text}]}))
+        let resource = find_by_param(&resources, params, "uri", "resource", |r| &r.uri)?;
+        let content = json!({
+            "uri": resource.uri,
+            "mimeType": resource.mime_type,
+            "text": resource.text,
+        });
+        Ok(json!({"contents": [content]}))
     }
 
     /// A synchronous request's result, or its JSON-RPC error.

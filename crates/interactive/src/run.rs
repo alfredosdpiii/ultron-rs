@@ -86,6 +86,47 @@ pub fn spawn_gated_input(tx: Sender<UiEvent>, paused: Arc<AtomicBool>) {
     });
 }
 
+struct StoppableStdin {
+    stop: Arc<AtomicBool>,
+}
+
+impl std::io::Read for StoppableStdin {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        use rustix::event::{PollFd, PollFlags, Timespec, poll};
+        let stdin = std::io::stdin();
+        loop {
+            if self.stop.load(Ordering::SeqCst) {
+                return Ok(0);
+            }
+            let mut fds = [PollFd::new(&stdin, PollFlags::IN)];
+            let timeout = Timespec {
+                tv_sec: 0,
+                tv_nsec: 50_000_000,
+            };
+            match poll(&mut fds, Some(&timeout)) {
+                Ok(0) => continue,
+                Ok(_) if self.stop.load(Ordering::SeqCst) => return Ok(0),
+                Ok(_) => return std::io::Read::read(&mut stdin.lock(), buf),
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+}
+
+/// Forward stdin input sequences into `tx` until `stop` becomes true (at most one 50ms poll interval).
+pub fn spawn_stoppable_input(tx: Sender<UiEvent>, stop: Arc<AtomicBool>) {
+    let input = tui::spawn_input_pump(StoppableStdin { stop });
+    std::thread::spawn(move || {
+        for data in input {
+            if tx.send(UiEvent::Input(data)).is_err() {
+                return;
+            }
+        }
+        let _ = tx.send(UiEvent::InputClosed);
+    });
+}
+
 /// Run `command` on a temporary `prompt.md` holding `content` with the terminal handed over (`editInExternalEditor`):
 /// the edited text without a trailing newline, or `None` when the editor failed.
 pub fn edit_externally(command: &str, content: &str) -> Option<String> {

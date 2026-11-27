@@ -55,7 +55,7 @@
    "plan": {
     "verdict": "approve",
     "event": "APPROVE",
-    "body": "**Approve.** No confirmed finding at medium or above.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron",
+    "body": "**Approve** — `abcdef0` (1 file, +1 / -1)\nNo confirmed finding at medium or above.\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [],
     "overCap": []
@@ -63,7 +63,7 @@
    "withoutInline": {
     "verdict": "approve",
     "event": "APPROVE",
-    "body": "**Approve.** No confirmed finding at medium or above.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron",
+    "body": "**Approve** — `abcdef0` (1 file, +1 / -1)\nNo confirmed finding at medium or above.\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [],
     "overCap": []
@@ -140,7 +140,7 @@
    "plan": {
     "verdict": "request_changes",
     "event": "REQUEST_CHANGES",
-    "body": "**Request changes.** To resolve before merge: `calc.py:4` (inline) total() skips the last item.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron",
+    "body": "**Request changes** — `abcdef0` (1 file, +1 / -1)\n1 blocking finding to resolve before merge.\n\n## Findings\n1. **[High]** `calc.py:4` (inline) — total() skips the last item.\n\nAutomated review by Ultron",
     "comments": [
      {
       "finding": 0,
@@ -159,7 +159,7 @@
    "withoutInline": {
     "verdict": "request_changes",
     "event": "REQUEST_CHANGES",
-    "body": "**Request changes.** To resolve before merge: `calc.py:4` (inline) total() skips the last item.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nThese could not be attached to the diff: `calc.py:4` [high] total() skips the last item. range(len(items) - 1) stops one short.\n\nAutomated review by Ultron",
+    "body": "**Request changes** — `abcdef0` (1 file, +1 / -1)\n1 blocking finding to resolve before merge.\n\n## Findings\n1. **[High]** `calc.py:4` (inline) — total() skips the last item.\n\nThese could not be attached to the diff: `calc.py:4` [high] total() skips the last item. range(len(items) - 1) stops one short.\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [
      0
@@ -255,7 +255,7 @@
    "plan": {
     "verdict": "approve",
     "event": "APPROVE",
-    "body": "**Approve.** No confirmed finding at medium or above.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\n2 non-blocking notes inline.",
+    "body": "**Approve** — `abcdef0` (1 file, +1 / -1)\nNo confirmed finding at medium or above.\n\n## Findings\n1. **[Low]** `calc.py:4` (inline) — total() skips the last item.\n2. **[Nit]** `calc.py:2` (inline) — total() skips the last item.",
     "comments": [
      {
       "finding": 0,
@@ -284,7 +284,7 @@
    "withoutInline": {
     "verdict": "approve",
     "event": "APPROVE",
-    "body": "**Approve.** No confirmed finding at medium or above.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\n2 non-blocking notes inline.\n\nThese could not be attached to the diff: `calc.py:4` [low] total() skips the last item. range(len(items) - 1) stops one short. `calc.py:2` [nit] total() skips the last item. range(len(items) - 1) stops one short.",
+    "body": "**Approve** — `abcdef0` (1 file, +1 / -1)\nNo confirmed finding at medium or above.\n\n## Findings\n1. **[Low]** `calc.py:4` (inline) — total() skips the last item.\n2. **[Nit]** `calc.py:2` (inline) — total() skips the last item.\n\nThese could not be attached to the diff: `calc.py:4` [low] total() skips the last item. range(len(items) - 1) stops one short. `calc.py:2` [nit] total() skips the last item. range(len(items) - 1) stops one short.",
     "comments": [],
     "inSummary": [
      0,
@@ -353,22 +353,22 @@
     "signature": true
    },
    "verdict": {
-    "verdict": "comment",
-    "reason": "the review did not cover everything"
+    "verdict": "approve",
+    "reason": "no confirmed finding at medium or above"
    },
    "ranked": [],
    "plan": {
-    "verdict": "comment",
-    "event": "COMMENT",
-    "body": "**Comment.** The review did not cover everything.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nNot checked: 3 reviewer passes failed: a.py; timeout; x.bin; and 2 more.\n\nAutomated review by Ultron",
+    "verdict": "approve",
+    "event": "APPROVE",
+    "body": "**Approve** — `abcdef0` (1 file, +1 / -1)\nNo confirmed finding at medium or above.\n\nNot checked: 3 reviewer passes failed: a.py; timeout; x.bin; and 2 more.\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [],
     "overCap": []
    },
    "withoutInline": {
-    "verdict": "comment",
-    "event": "COMMENT",
-    "body": "**Comment.** The review did not cover everything.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nNot checked: 3 reviewer passes failed: a.py; timeout; x.bin; and 2 more.\n\nAutomated review by Ultron",
+    "verdict": "approve",
+    "event": "APPROVE",
+    "body": "**Approve** — `abcdef0` (1 file, +1 / -1)\nNo confirmed finding at medium or above.\n\nNot checked: 3 reviewer passes failed: a.py; timeout; x.bin; and 2 more.\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [],
     "overCap": []
@@ -445,7 +445,7 @@
    "plan": {
     "verdict": "comment",
     "event": "COMMENT",
-    "body": "**Comment.** Worth resolving: `calc.py:4` (inline) total() skips the last item. This account opened the pull request.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron",
+    "body": "**Comment** — `abcdef0` (1 file, +1 / -1)\nThis account opened the pull request.\n\n## Findings\n1. **[High]** `calc.py:4` (inline) — total() skips the last item.\n\nAutomated review by Ultron",
     "comments": [
      {
       "finding": 0,
@@ -464,7 +464,7 @@
    "withoutInline": {
     "verdict": "comment",
     "event": "COMMENT",
-    "body": "**Comment.** Worth resolving: `calc.py:4` (inline) total() skips the last item. This account opened the pull request.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nThese could not be attached to the diff: `calc.py:4` [high] total() skips the last item. range(len(items) - 1) stops one short.\n\nAutomated review by Ultron",
+    "body": "**Comment** — `abcdef0` (1 file, +1 / -1)\nThis account opened the pull request.\n\n## Findings\n1. **[High]** `calc.py:4` (inline) — total() skips the last item.\n\nThese could not be attached to the diff: `calc.py:4` [high] total() skips the last item. range(len(items) - 1) stops one short.\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [
      0
@@ -545,7 +545,7 @@
    "plan": {
     "verdict": "comment",
     "event": "COMMENT",
-    "body": "**Comment.** Worth resolving: `calc.py:4` (inline) total() skips the last item. The pull request is merged.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron",
+    "body": "**Comment** — `abcdef0` (1 file, +1 / -1)\nThe pull request is merged.\n\n## Findings\n1. **[High]** `calc.py:4` (inline) — total() skips the last item.\n\nAutomated review by Ultron",
     "comments": [
      {
       "finding": 0,
@@ -564,7 +564,7 @@
    "withoutInline": {
     "verdict": "comment",
     "event": "COMMENT",
-    "body": "**Comment.** Worth resolving: `calc.py:4` (inline) total() skips the last item. The pull request is merged.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nThese could not be attached to the diff: `calc.py:4` [high] total() skips the last item. range(len(items) - 1) stops one short.\n\nAutomated review by Ultron",
+    "body": "**Comment** — `abcdef0` (1 file, +1 / -1)\nThe pull request is merged.\n\n## Findings\n1. **[High]** `calc.py:4` (inline) — total() skips the last item.\n\nThese could not be attached to the diff: `calc.py:4` [high] total() skips the last item. range(len(items) - 1) stops one short.\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [
      0
@@ -647,7 +647,7 @@
    "plan": {
     "verdict": "approve",
     "event": "APPROVE",
-    "body": "**Approve.** No confirmed finding at high or above.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\n1 non-blocking note inline.\n\nAutomated review by Ultron",
+    "body": "**Approve** — `abcdef0` (1 file, +1 / -1)\nNo confirmed finding at high or above.\n\n## Findings\n1. **[Medium]** `calc.py:4` (inline) — total() skips the last item.\n\nAutomated review by Ultron",
     "comments": [
      {
       "finding": 0,
@@ -666,7 +666,7 @@
    "withoutInline": {
     "verdict": "approve",
     "event": "APPROVE",
-    "body": "**Approve.** No confirmed finding at high or above.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\n1 non-blocking note inline.\n\nThese could not be attached to the diff: `calc.py:4` [medium] total() skips the last item. range(len(items) - 1) stops one short.\n\nAutomated review by Ultron",
+    "body": "**Approve** — `abcdef0` (1 file, +1 / -1)\nNo confirmed finding at high or above.\n\n## Findings\n1. **[Medium]** `calc.py:4` (inline) — total() skips the last item.\n\nThese could not be attached to the diff: `calc.py:4` [medium] total() skips the last item. range(len(items) - 1) stops one short.\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [
      0
@@ -749,7 +749,7 @@
    "plan": {
     "verdict": "request_changes",
     "event": "REQUEST_CHANGES",
-    "body": "**Request changes.** To resolve before merge: `calc.py:4` (inline) total() skips the last item.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron",
+    "body": "**Request changes** — `abcdef0` (1 file, +1 / -1)\n1 blocking finding to resolve before merge.\n\n## Findings\n1. **[Low]** `calc.py:4` (inline) — total() skips the last item.\n\nAutomated review by Ultron",
     "comments": [
      {
       "finding": 0,
@@ -768,7 +768,7 @@
    "withoutInline": {
     "verdict": "request_changes",
     "event": "REQUEST_CHANGES",
-    "body": "**Request changes.** To resolve before merge: `calc.py:4` (inline) total() skips the last item.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nThese could not be attached to the diff: `calc.py:4` [low] total() skips the last item. range(len(items) - 1) stops one short.\n\nAutomated review by Ultron",
+    "body": "**Request changes** — `abcdef0` (1 file, +1 / -1)\n1 blocking finding to resolve before merge.\n\n## Findings\n1. **[Low]** `calc.py:4` (inline) — total() skips the last item.\n\nThese could not be attached to the diff: `calc.py:4` [low] total() skips the last item. range(len(items) - 1) stops one short.\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [
      0
@@ -848,7 +848,7 @@
    "plan": {
     "verdict": "approve",
     "event": "APPROVE",
-    "body": "**Approve.** No confirmed finding at medium or above.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\n1 non-blocking note inline.\n\nAutomated review by Ultron",
+    "body": "**Approve** — `abcdef0` (1 file, +1 / -1)\nNo confirmed finding at medium or above.\n\n## Findings\n1. **[Low]** `calc.py:4` (inline) — total() skips the last item.\n\nAutomated review by Ultron",
     "comments": [
      {
       "finding": 0,
@@ -867,7 +867,7 @@
    "withoutInline": {
     "verdict": "approve",
     "event": "APPROVE",
-    "body": "**Approve.** No confirmed finding at medium or above.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\n1 non-blocking note inline.\n\nThese could not be attached to the diff: `calc.py:4` [low] total() skips the last item. range(len(items) - 1) stops one short. Use range(len(items)).\n\nAutomated review by Ultron",
+    "body": "**Approve** — `abcdef0` (1 file, +1 / -1)\nNo confirmed finding at medium or above.\n\n## Findings\n1. **[Low]** `calc.py:4` (inline) — total() skips the last item.\n\nThese could not be attached to the diff: `calc.py:4` [low] total() skips the last item. range(len(items) - 1) stops one short. Use range(len(items)).\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [
      0
@@ -947,7 +947,7 @@
    "plan": {
     "verdict": "approve",
     "event": "APPROVE",
-    "body": "**Approve.** No confirmed finding at medium or above.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nNot posted: 1 unconfirmed.\n\nAutomated review by Ultron",
+    "body": "**Approve** — `abcdef0` (1 file, +1 / -1)\nNo confirmed finding at medium or above.\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [],
     "overCap": []
@@ -955,7 +955,7 @@
    "withoutInline": {
     "verdict": "approve",
     "event": "APPROVE",
-    "body": "**Approve.** No confirmed finding at medium or above.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nNot posted: 1 unconfirmed.\n\nAutomated review by Ultron",
+    "body": "**Approve** — `abcdef0` (1 file, +1 / -1)\nNo confirmed finding at medium or above.\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [],
     "overCap": []
@@ -1065,7 +1065,7 @@
    "plan": {
     "verdict": "request_changes",
     "event": "REQUEST_CHANGES",
-    "body": "**Request changes.** 1 finding from an earlier review still present. Still present from an earlier review: `calc.py:4` The in-flight cap is not pinned by a test. Re-check: Line 4 still reads `const MAX_IN_FLIGHT_WRITES = 2` and no test asserts it. Earlier findings: 1 fixed (`b.py:9`); 2 still present (`calc.py:4`, `calc.py:4`); 2 no longer applicable or not re-checked.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron",
+    "body": "**Request changes** — `abcdef0` (1 file, +1 / -1)\n1 finding from an earlier review still present.\n\n## Previous findings\n- `calc.py:4` **[still present]** — The in-flight cap is not pinned by a test. (Line 4 still reads `const MAX_IN_FLIGHT_WRITES = 2` and no test asserts it.)\n- `b.py:9` **[fixed]** — x.\n- `calc.py:4` **[not re-checked]** — x.\n- `calc.py:4` **[not applicable]** — x.\n- `calc.py:4` **[still present]** — x.\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [],
     "overCap": []
@@ -1073,7 +1073,7 @@
    "withoutInline": {
     "verdict": "request_changes",
     "event": "REQUEST_CHANGES",
-    "body": "**Request changes.** 1 finding from an earlier review still present. Still present from an earlier review: `calc.py:4` The in-flight cap is not pinned by a test. Re-check: Line 4 still reads `const MAX_IN_FLIGHT_WRITES = 2` and no test asserts it. Earlier findings: 1 fixed (`b.py:9`); 2 still present (`calc.py:4`, `calc.py:4`); 2 no longer applicable or not re-checked.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron",
+    "body": "**Request changes** — `abcdef0` (1 file, +1 / -1)\n1 finding from an earlier review still present.\n\n## Previous findings\n- `calc.py:4` **[still present]** — The in-flight cap is not pinned by a test. (Line 4 still reads `const MAX_IN_FLIGHT_WRITES = 2` and no test asserts it.)\n- `b.py:9` **[fixed]** — x.\n- `calc.py:4` **[not re-checked]** — x.\n- `calc.py:4` **[not applicable]** — x.\n- `calc.py:4` **[still present]** — x.\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [],
     "overCap": []
@@ -1145,7 +1145,7 @@
    "plan": {
     "verdict": "approve",
     "event": "APPROVE",
-    "body": "**Approve.** No confirmed finding at medium or above. Earlier findings: 1 still present (`calc.py:4`).\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron",
+    "body": "**Approve** — `abcdef0` (1 file, +1 / -1)\nNo confirmed finding at medium or above.\n\n## Previous findings\n- `calc.py:4` **[still present]** — x.\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [],
     "overCap": []
@@ -1153,7 +1153,7 @@
    "withoutInline": {
     "verdict": "approve",
     "event": "APPROVE",
-    "body": "**Approve.** No confirmed finding at medium or above. Earlier findings: 1 still present (`calc.py:4`).\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron",
+    "body": "**Approve** — `abcdef0` (1 file, +1 / -1)\nNo confirmed finding at medium or above.\n\n## Previous findings\n- `calc.py:4` **[still present]** — x.\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [],
     "overCap": []
@@ -1517,7 +1517,7 @@
    "plan": {
     "verdict": "request_changes",
     "event": "REQUEST_CHANGES",
-    "body": "**Request changes.** To resolve before merge: (1) `calc.py:100` (inline) total() skips the last item. (2) `b.py:22` (inline) total() skips the last item. (3) `calc.py:42` (inline) total() skips the last item. (4) `calc.py:5` total() skips the last item. And 2 more at medium or above.\n\nRead the diff of `abcdef0` (3 files, +120 -7) with the code around it; every finding below was checked against the source by a second pass, which rejected 2.\n\n1 non-blocking note inline. Outside the diff: `nowhere.py:8` [low] outside one. `nowhere.py:9` [low] outside two. `nowhere.py:10` [low] outside three. And 1 more. Not posted: 3 lower-ranked findings (2 low, 1 nit) and 1 unconfirmed. 1 finding is notes because this repository rarely accepted their kind. 2 findings were already raised by @al, @bo, @cy, @di and are not repeated.\n\nAutomated review by Ultron",
+    "body": "**Request changes** — `abcdef0` (3 files, +120 / -7)\n6 blocking findings to resolve before merge.\n\n## Findings\n1. **[Critical]** `calc.py:100` (inline) — total() skips the last item.\n2. **[High]** `b.py:22` (inline) — total() skips the last item.\n3. **[Medium]** `calc.py:42` (inline) — total() skips the last item.\n4. **[Medium]** `calc.py:5` — total() skips the last item.\n5. **[Medium]** `nowhere.py:7` — word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word.\n6. **[Medium]** `c.py:4` — total() skips the last item.\n7. **[Low]** `calc.py:3` (inline) — total() skips the last item.\n8. **[Low]** `nowhere.py:8` (outside diff) — outside one.\n9. **[Low]** `nowhere.py:9` (outside diff) — outside two.\n10. **[Low]** `nowhere.py:10` (outside diff) — outside three.\n11. **[Low]** `nowhere.py:11` (outside diff) — outside four?\n\nNot posted: 3 lower-ranked findings (2 low, 1 nit). 1 finding is notes because this repository rarely accepted their kind. 2 findings were already raised by @al, @bo, @cy, @di and are not repeated.\n\nAutomated review by Ultron",
     "comments": [
      {
       "finding": 4,
@@ -1580,7 +1580,7 @@
    "withoutInline": {
     "verdict": "request_changes",
     "event": "REQUEST_CHANGES",
-    "body": "**Request changes.** To resolve before merge: (1) `calc.py:100` (inline) total() skips the last item. (2) `b.py:22` (inline) total() skips the last item. (3) `calc.py:42` (inline) total() skips the last item. (4) `calc.py:5` total() skips the last item. And 2 more at medium or above.\n\nRead the diff of `abcdef0` (3 files, +120 -7) with the code around it; every finding below was checked against the source by a second pass, which rejected 2.\n\n1 non-blocking note inline. Outside the diff: `nowhere.py:8` [low] outside one. `nowhere.py:9` [low] outside two. `nowhere.py:10` [low] outside three. And 1 more. Not posted: 3 lower-ranked findings (2 low, 1 nit) and 1 unconfirmed. 1 finding is notes because this repository rarely accepted their kind. 2 findings were already raised by @al, @bo, @cy, @di and are not repeated.\n\nThese could not be attached to the diff: `calc.py:100` [critical] total() skips the last item. range(len(items) - 1) stops one short. `b.py:22` [high] total() skips the last item. input [] gives 0; should raise. Use range(len(items)). `calc.py:42` [medium] total() skips the last item. range(len(items) - 1) stops one short. `calc.py:3` [low] total() skips the last item. range(len(items) - 1) stops one short. Proven by a test run the reviewer made. Posted as a note: this repository accepted 1 of 7 such findings in the last 180 days.\n\nAutomated review by Ultron",
+    "body": "**Request changes** — `abcdef0` (3 files, +120 / -7)\n6 blocking findings to resolve before merge.\n\n## Findings\n1. **[Critical]** `calc.py:100` (inline) — total() skips the last item.\n2. **[High]** `b.py:22` (inline) — total() skips the last item.\n3. **[Medium]** `calc.py:42` (inline) — total() skips the last item.\n4. **[Medium]** `calc.py:5` — total() skips the last item.\n5. **[Medium]** `nowhere.py:7` — word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word.\n6. **[Medium]** `c.py:4` — total() skips the last item.\n7. **[Low]** `calc.py:3` (inline) — total() skips the last item.\n8. **[Low]** `nowhere.py:8` (outside diff) — outside one.\n9. **[Low]** `nowhere.py:9` (outside diff) — outside two.\n10. **[Low]** `nowhere.py:10` (outside diff) — outside three.\n11. **[Low]** `nowhere.py:11` (outside diff) — outside four?\n\nNot posted: 3 lower-ranked findings (2 low, 1 nit). 1 finding is notes because this repository rarely accepted their kind. 2 findings were already raised by @al, @bo, @cy, @di and are not repeated.\n\nThese could not be attached to the diff: `calc.py:100` [critical] total() skips the last item. range(len(items) - 1) stops one short. `b.py:22` [high] total() skips the last item. input [] gives 0; should raise. Use range(len(items)). `calc.py:42` [medium] total() skips the last item. range(len(items) - 1) stops one short. `calc.py:3` [low] total() skips the last item. range(len(items) - 1) stops one short. Proven by a test run the reviewer made. Posted as a note: this repository accepted 1 of 7 such findings in the last 180 days.\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [
      2,
@@ -1770,7 +1770,7 @@
    "plan": {
     "verdict": "request_changes",
     "event": "REQUEST_CHANGES",
-    "body": "**Request changes.** To resolve before merge: (1) `calc.py:1` total() skips the last item. (2) `calc.py:3` total() skips the last item. (3) `calc.py:4` total() skips the last item. (4) `calc.py:5` total() skips the last item. And 2 more at medium or above.\n\nRe-review of the changes since `0011223`. The cache key holds. word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word c d\n\nAutomated review by Ultron",
+    "body": "**Request changes** — `0011223`..`abcdef0` (1 file, +1 / -1)\n6 blocking findings to resolve before merge.\n\n## Findings\n1. **[Critical]** `calc.py:1` — total() skips the last item.\n2. **[High]** `calc.py:3` — total() skips the last item.\n3. **[High]** `calc.py:4` — total() skips the last item.\n4. **[High]** `calc.py:5` — total() skips the last item.\n5. **[Medium]** `calc.py:6` — total() skips the last item.\n6. **[Medium]** `calc.py:2` — total() skips the last item.\n\n## Checked\n- The cache key holds.\n- word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word\n- c\n- d\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [
      3,
@@ -1785,7 +1785,7 @@
    "withoutInline": {
     "verdict": "request_changes",
     "event": "REQUEST_CHANGES",
-    "body": "**Request changes.** To resolve before merge: (1) `calc.py:1` total() skips the last item. (2) `calc.py:3` total() skips the last item. (3) `calc.py:4` total() skips the last item. (4) `calc.py:5` total() skips the last item. And 2 more at medium or above.\n\nRe-review of the changes since `0011223`. The cache key holds. word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word c d\n\nAutomated review by Ultron",
+    "body": "**Request changes** — `0011223`..`abcdef0` (1 file, +1 / -1)\n6 blocking findings to resolve before merge.\n\n## Findings\n1. **[Critical]** `calc.py:1` — total() skips the last item.\n2. **[High]** `calc.py:3` — total() skips the last item.\n3. **[High]** `calc.py:4` — total() skips the last item.\n4. **[High]** `calc.py:5` — total() skips the last item.\n5. **[Medium]** `calc.py:6` — total() skips the last item.\n6. **[Medium]** `calc.py:2` — total() skips the last item.\n\n## Checked\n- The cache key holds.\n- word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word\n- c\n- d\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [
      3,
@@ -1878,7 +1878,7 @@
    "plan": {
     "verdict": "comment",
     "event": "COMMENT",
-    "body": "**Comment.** Worth resolving: `calc.py:4` (inline) Weirdspace and café 😀xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx. The pull request is closed.\n\nRead the changes from `0011223` to `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron",
+    "body": "**Comment** — `0011223`..`abcdef0` (1 file, +1 / -1)\nThe pull request is closed.\n\n## Findings\n1. **[High]** `calc.py:4` (inline) — Weirdspace and café 😀xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.\n\nAutomated review by Ultron",
     "comments": [
      {
       "finding": 0,
@@ -1897,7 +1897,7 @@
    "withoutInline": {
     "verdict": "comment",
     "event": "COMMENT",
-    "body": "**Comment.** Worth resolving: `calc.py:4` (inline) Weirdspace and café 😀xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx. The pull request is closed.\n\nRead the changes from `0011223` to `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nThese could not be attached to the diff: `calc.py:4` [high] Weirdspace and café 😀xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.\n\nAutomated review by Ultron",
+    "body": "**Comment** — `0011223`..`abcdef0` (1 file, +1 / -1)\nThe pull request is closed.\n\n## Findings\n1. **[High]** `calc.py:4` (inline) — Weirdspace and café 😀xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.\n\nThese could not be attached to the diff: `calc.py:4` [high] Weirdspace and café 😀xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [
      0
@@ -2000,7 +2000,7 @@
    "plan": {
     "verdict": "approve",
     "event": "APPROVE",
-    "body": "**Approve.** No confirmed finding at critical or above.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\n1 non-blocking note inline. Outside the diff: `c.py:40` [low] total() skips the last item.\n\nAutomated review by Ultron",
+    "body": "**Approve** — `abcdef0` (1 file, +1 / -1)\nNo confirmed finding at critical or above.\n\n## Findings\n1. **[Low]** `calc.py:2` (inline) — \n2. **[Low]** `c.py:40` (outside diff) — total() skips the last item.\n\nAutomated review by Ultron",
     "comments": [
      {
       "finding": 1,
@@ -2021,7 +2021,7 @@
    "withoutInline": {
     "verdict": "approve",
     "event": "APPROVE",
-    "body": "**Approve.** No confirmed finding at critical or above.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\n1 non-blocking note inline. Outside the diff: `c.py:40` [low] total() skips the last item.\n\nThese could not be attached to the diff: `calc.py:2` [low]  ends with colon:\n\nAutomated review by Ultron",
+    "body": "**Approve** — `abcdef0` (1 file, +1 / -1)\nNo confirmed finding at critical or above.\n\n## Findings\n1. **[Low]** `calc.py:2` (inline) — \n2. **[Low]** `c.py:40` (outside diff) — total() skips the last item.\n\nThese could not be attached to the diff: `calc.py:2` [low]  ends with colon:\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [
      0,
@@ -2104,7 +2104,7 @@
    "plan": {
     "verdict": "request_changes",
     "event": "REQUEST_CHANGES",
-    "body": "**Request changes.** To resolve before merge: `calc.py:4` (inline) aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron",
+    "body": "**Request changes** — `abcdef0` (1 file, +1 / -1)\n1 blocking finding to resolve before merge.\n\n## Findings\n1. **[High]** `calc.py:4` (inline) — aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.\n\nAutomated review by Ultron",
     "comments": [
      {
       "finding": 0,
@@ -2123,7 +2123,7 @@
    "withoutInline": {
     "verdict": "request_changes",
     "event": "REQUEST_CHANGES",
-    "body": "**Request changes.** To resolve before merge: `calc.py:4` (inline) aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.\n\nRead the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nThese could not be attached to the diff: `calc.py:4` [high] aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb. range(len(items) - 1) stops one short.\n\nAutomated review by Ultron",
+    "body": "**Request changes** — `abcdef0` (1 file, +1 / -1)\n1 blocking finding to resolve before merge.\n\n## Findings\n1. **[High]** `calc.py:4` (inline) — aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.\n\nThese could not be attached to the diff: `calc.py:4` [high] aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb. range(len(items) - 1) stops one short.\n\nAutomated review by Ultron",
     "comments": [],
     "inSummary": [
      0

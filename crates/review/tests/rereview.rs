@@ -129,17 +129,16 @@ fn review_rereview_a_commit_reviewed_incompletely_is_read_again_and_what_is_new_
     let spec = &context.engine.specs()[1];
     assert!(spec.get("recheckOnly").is_none());
     assert_eq!(spec["diff"], json!(DIFF));
-    assert_eq!(outcome.plan.event, "COMMENT");
+    assert_eq!(outcome.plan.event, "APPROVE");
     let body = &outcome.plan.body;
     assert!(
-        body.contains("**Comment.** Nothing that changed since the last review blocks the merge.\n"),
+        body.contains(
+            "**Approve** — `aaaaaaa` (1 file, +1 / -1)\nNothing that changed since the last review blocks the merge."
+        ),
         "{body}"
     );
     assert!(
-        body.contains(
-            "1 finding at medium or above is on lines that did not change since the last review, so it does not block. \
-             1 non-blocking note inline."
-        ),
+        body.contains("1 finding at medium or above is on unchanged lines, so it does not block."),
         "{body}"
     );
 }
@@ -199,7 +198,7 @@ fn review_rereview_a_new_finding_outside_what_changed_blocks_only_when_critical(
             "replacement": null }),
         )
     };
-    for (level, event) in [("high", "COMMENT"), ("critical", "REQUEST_CHANGES")] {
+    for (level, event) in [("high", "APPROVE"), ("critical", "REQUEST_CHANGES")] {
         let context = reviewed_at(
             old(),
             vec![
@@ -240,22 +239,13 @@ fn review_rereview_a_comment_that_blocks_nothing_dismisses_the_accounts_request_
     assert_eq!(context.hub.pull().reviews[0].state, "CHANGES_REQUESTED");
     push(&context);
     let outcome = posted(run(&context, &["requested_changes"]));
-    assert_eq!(outcome.plan.event, "COMMENT");
+    assert_eq!(outcome.plan.event, "APPROVE");
     let reviews = context.hub.pull().reviews;
     assert_eq!(
         reviews.iter().map(|r| r.state.as_str()).collect::<Vec<_>>(),
-        ["DISMISSED", "COMMENTED"]
+        ["CHANGES_REQUESTED", "APPROVED"]
     );
-    let dismissals = context.hub.api(&format!(
-        r"^PUT repos/o/r/pulls/1/reviews/{}/dismissals$",
-        reviews[0].id
-    ));
-    assert_eq!(
-        dismissals[0].body.as_ref().expect("body"),
-        &json!({ "message": "Lifted by the review of `ddddddd`: none of its findings blocks the merge.",
-            "event": "DISMISS" })
-    );
-    assert!(context.logs().contains("dismissed its request for changes at ccccccc"));
+    assert!(context.hub.api("dismissals").is_empty());
 
     // A COMMENT that still names a blocking finding is a request for changes, and nothing is dismissed: only a
     // review whose verdict is COMMENT lifts a block.

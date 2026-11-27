@@ -168,10 +168,8 @@ fn review_plan_names_preexisting_problems_without_blocking() {
     assert_eq!(plan.verdict, Verdict::Approve);
     assert!(plan.comments.is_empty());
     assert!(
-        plan.body.contains(
-            "Pre-existing, not introduced by this change and not blocking it: `calc.py:6` [high] mean() divides by \
-             zero for an empty list."
-        ),
+        plan.body
+            .contains("1. **[High]** `calc.py:6` (pre-existing) — mean() divides by zero for an empty list."),
         "{}",
         plan.body
     );
@@ -415,6 +413,8 @@ class FakeRlm:
         return {'settled': True, 'rung': 'primary', 'answers': {'shown': {'value': True}}, 'receipts': []}
     async def map(self, tasks, items, **kwargs):
         task = tasks[0] if isinstance(tasks, list) else tasks
+        if 'doing a final gap sweep' in task:
+            return [[] for _ in items]
         if 'You check one finding' in task or 'You check several findings' in task:
             self.verify_hops += 1
             if self.verify_hops == 1:
