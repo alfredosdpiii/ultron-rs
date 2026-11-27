@@ -303,7 +303,8 @@ fn tui_wrap_carries_an_osc8_link_onto_every_row() {
 
 /// A link target wraps like any OSC 8 link, so the viewport finds the whole URL on each row, and stripping the targets
 /// from the wrapped or truncated rows gives exactly the rows of the text without them: every close the wrapper writes
-/// for a target is a target's, and the resets other code writes stay.
+/// for a target is a target's, the resets other code writes stay, and a row's trailing space goes even when a
+/// target's close follows it.
 #[test]
 fn tui_wrapped_link_targets_strip_to_the_rows_without_them() {
     let url = "https://example.com/a/very/long/path/that/wraps/around";
@@ -322,6 +323,16 @@ fn tui_wrapped_link_targets_strip_to_the_rows_without_them() {
         rows.iter().filter(|r| osc8_link_at_column(r, 0).is_some()).count() >= 3,
         "{rows:?}"
     );
+
+    // A label and its URL in one target, no underline: the break before the URL leaves a space inside the target,
+    // which goes as it would without it.
+    let shown = format!("\x1b[36mthe docs\x1b[39m\x1b[90m ({url})\x1b[39m");
+    for prefix in ["", "see ", "a b c d e f g h i "] {
+        let rows = wrap_text_with_ansi(&format!("{prefix}{} and more", link_target(&shown, url)), 20);
+        let plain = wrap_text_with_ansi(&format!("{prefix}{shown} and more"), 20);
+        let stripped: Vec<_> = rows.iter().map(|r| strip_link_targets(r).into_owned()).collect();
+        assert_eq!(stripped, plain, "{prefix:?}");
+    }
 
     let reset = "\x1b[0m\x1b]8;;\x07";
     let row = format!(

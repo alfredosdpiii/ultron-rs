@@ -1,7 +1,7 @@
 use jsrt::string;
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::ansi::{AnsiCodeTracker, active_osc8_close, ansi_len, text_run_end};
+use super::ansi::{AnsiCodeTracker, active_osc8_close, ansi_len, text_run_end, trailing_link_target};
 use super::width::{grapheme_width, is_cjk_break, is_printable_ascii, visible_width};
 
 fn js_is_blank(s: &str) -> bool {
@@ -141,7 +141,7 @@ fn wrap_fitting_token(
     wrapped: &mut Vec<String>,
 ) {
     if *current_width + token_width > width && *current_width > 0 {
-        let mut line_to_wrap = current.trim_end_matches(string::is_space).to_string();
+        let mut line_to_wrap = trim_line_end(current);
         line_to_wrap.push_str(&tracker.line_end_reset());
         wrapped.push(line_to_wrap);
         if is_ws {
@@ -155,6 +155,19 @@ fn wrap_fitting_token(
         current.push_str(token);
         *current_width += token_width;
     }
+}
+
+/// `line` without trailing whitespace, also the whitespace before the [`crate::link_target`] sequences that end it
+/// (they stay): a row with targets strips to the row it would be without them, where a space would go before a
+/// target's close the wrapper wrote.
+fn trim_line_end(line: &str) -> String {
+    let mut kept = Vec::new();
+    let mut rest = line.trim_end_matches(string::is_space);
+    while let Some(at) = trailing_link_target(rest) {
+        kept.push(&rest[at..]);
+        rest = rest[..at].trim_end_matches(string::is_space);
+    }
+    kept.into_iter().rev().fold(rest.to_string(), |line, code| line + code)
 }
 
 fn wrap_single_line(line: &str, width: usize) -> Vec<String> {
@@ -193,10 +206,7 @@ fn wrap_single_line(line: &str, width: usize) -> Vec<String> {
     if wrapped.is_empty() {
         return vec![String::new()];
     }
-    wrapped
-        .iter()
-        .map(|l| l.trim_end_matches(string::is_space).to_string())
-        .collect()
+    wrapped.iter().map(|l| trim_line_end(l)).collect()
 }
 
 fn break_long_word(word: &str, width: usize, tracker: &mut AnsiCodeTracker) -> Vec<String> {

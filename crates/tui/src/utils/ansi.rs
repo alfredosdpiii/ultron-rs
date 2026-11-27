@@ -165,6 +165,13 @@ pub fn strip_link_targets(s: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(out)
 }
 
+/// Where the [`link_target`] sequence that ends `s` starts, if one does. A row's trailing whitespace is found through
+/// these (see `trim_line_end` in the wrapper): a target is not shown, so the row ends as it would without it.
+pub(super) fn trailing_link_target(s: &str) -> Option<usize> {
+    let at = s.rfind(TARGET_OPEN)?;
+    (ansi_len(s, at) == Some(s.len() - at)).then_some(at)
+}
+
 /// The close of `link`, written where a row or a truncation ends inside it. A [`link_target`]'s close keeps its
 /// mark so [`strip_link_targets`] needs no state; any other link closes with empty params, as in TypeScript.
 fn osc8_close(link: &Hyperlink) -> &'static str {

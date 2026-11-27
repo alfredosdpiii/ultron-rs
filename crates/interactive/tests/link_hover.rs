@@ -191,10 +191,11 @@ fn product(hyperlinks: bool, link_targets: bool) -> RenderSettings {
     }
 }
 
-/// A session whose links wrap: in a user message, as a bare URL, under a label, in a list, a quote and tool output.
+/// A session whose links wrap: in a user message, as a bare URL, under a label, in a list, a quote, a table and tool
+/// output.
 fn link_transcript() -> Vec<Value> {
     vec![
-        json!({"role": "user", "content": format!("see {LONG} and [the docs](https://example.com/docs)"), "timestamp": 1}),
+        json!({"role": "user", "content": format!("see {LONG} and [the docs]({LONG})"), "timestamp": 1}),
         json!({"role": "assistant", "stopReason": "toolUse", "content": [
             {"type": "text", "text": format!("Open {LONG} now.\n\nOr read [the long manual with a label]({LONG}).")},
             {"type": "toolCall", "id": "call_1", "name": "rlm", "arguments": {"code": "print('https://example.com/tool')"}}
@@ -202,7 +203,9 @@ fn link_transcript() -> Vec<Value> {
         json!({"role": "toolResult", "toolCallId": "call_1", "toolName": "rlm", "isError": false,
             "content": [{"type": "text", "text": format!("fetched {LONG}")}]}),
         json!({"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": format!(
-            "- item [docs](https://example.com/docs), then (see {LONG}).\n- <{LONG}>\n\n> quoted [q](https://example.com/q)"
+            "- item [docs](https://example.com/docs), then (see {LONG}).\n- <{LONG}>\n- see [the manual]({LONG})\n\n\
+             > quoted [q](https://example.com/q) and [the manual]({LONG})\n\n\
+             | link | note |\n|---|---|\n| [the manual]({LONG}) | x |"
         )}]}),
     ]
 }
