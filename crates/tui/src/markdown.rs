@@ -110,6 +110,9 @@ pub struct MarkdownTheme {
     pub underline: StyleFn,
     pub highlight_code: Option<HighlightFn>,
     pub code_block_indent: Option<String>,
+    /// Links get `underline` inside `link`, as in TypeScript. Off, a link keeps only its colors (the Rust TUI
+    /// underlines the one under the pointer instead).
+    pub underline_links: bool,
 }
 
 #[derive(Default)]
@@ -373,7 +376,12 @@ impl Markdown {
 
     fn render_inline_link(&self, href: &str, text: &str, tokens: &[Token], ctx: &Ctx) -> String {
         let p = &ctx.prefix;
-        let styled = (self.theme.link)(&(self.theme.underline)(&self.render_inline(tokens, Some(ctx))));
+        let label = self.render_inline(tokens, Some(ctx));
+        let styled = if self.theme.underline_links {
+            (self.theme.link)(&(self.theme.underline)(&label))
+        } else {
+            (self.theme.link)(&label)
+        };
         if self.options.hyperlinks {
             format!("{}{p}", hyperlink(&styled, href))
         } else if text == href || Some(text) == href.strip_prefix("mailto:") {

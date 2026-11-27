@@ -20,6 +20,7 @@ fn interactive_render_settings_reach_the_transcript_markdown_like_ts() {
         render_settings::set(RenderSettings {
             hyperlinks: case["hyperlinks"] == true,
             code_block_indent: case["codeBlockIndent"].as_str().map(str::to_string),
+            ..RenderSettings::default()
         });
         let width = case["width"].as_u64().unwrap() as usize;
         let lines = match case["kind"].as_str().unwrap() {

@@ -5,7 +5,7 @@ use crate::scroll_view::{ScrollbarGeometry, scrollbar_geometry};
 
 use super::{
     DOUBLE_CLICK_INTERVAL, FullscreenViewport, Granularity, MouseDispatch, MouseTarget, MouseTargets, Sgr,
-    ViewportInput, decode_button, is_right_click_press, retarget_mouse_event,
+    ViewportInput, decode_button, is_right_click_press, links, retarget_mouse_event,
 };
 
 fn classify_sgr_kind(ev: Sgr) -> MouseEventType {
@@ -28,6 +28,7 @@ impl FullscreenViewport {
         self.press_active = false;
         self.stop_auto_scroll();
         self.set_hover(false);
+        self.pointer = None;
         self.scrollbar_drag = None;
         self.pressed_url = None;
         self.dragged = false;
@@ -54,12 +55,14 @@ impl FullscreenViewport {
         let lines = direction * self.wheel_scroll_lines(button);
         let mut event = self.mouse_event(MouseEventType::Wheel, button, x, y, None);
         event.wheel_delta = Some(lines);
+        self.pointer = None;
         if let Some(d) = targets.dispatch_at(&event) {
             self.apply_dispatch(d);
             return ViewportInput::Consumed;
         }
         self.view.scroll_by(lines);
         self.update_hover(x, y);
+        self.point_at(x, y);
         ViewportInput::Consumed
     }
 
@@ -183,10 +186,13 @@ impl FullscreenViewport {
     }
 
     /// `handleMouseEvent`: the component gesture in progress, the jump-to-end indicator, the scrollbar, the
-    /// component under the pointer, right-click paste, then text selection.
+    /// component under the pointer, right-click paste, then text selection. The pointer is over a link only for an
+    /// event none of the others took; a motion that moved neither hover is [`ViewportInput::Unchanged`].
     pub(super) fn handle_mouse(&mut self, ev: Sgr, now: Instant, targets: &mut dyn MouseTargets) -> ViewportInput {
         let kind = classify_sgr_kind(ev);
         let event = self.mouse_event(kind, ev.button, ev.x, ev.y, None);
+        let shown = (self.scrollbar_hover, self.hovered_link());
+        self.pointer = None;
         if let Some(target) = self.mouse_capture.or(self.press_target) {
             return self.handle_captured_mouse(target, ev, &event, now, targets);
         }
@@ -196,6 +202,10 @@ impl FullscreenViewport {
         if let Some(d) = targets.dispatch_at(&event) {
             self.dispatch_target_press(d, kind, ev);
             return ViewportInput::Consumed;
+        }
+        self.point_at(ev.x, ev.y);
+        if kind == MouseEventType::Move && (self.scrollbar_hover, self.hovered_link()) == shown {
+            return ViewportInput::Unchanged;
         }
         if self.right_click_paste && is_right_click_press(ev.button, ev.release) {
             return ViewportInput::RightClickPaste;
@@ -237,6 +247,19 @@ impl FullscreenViewport {
     fn update_hover(&mut self, x: i64, y: i64) {
         let hover = self.scrollbar_target(x, y, true).is_some();
         self.set_hover(hover);
+    }
+
+    /// With link hover on, the pointer is at `x`, `y`; outside the transcript it is over no link.
+    fn point_at(&mut self, x: i64, y: i64) {
+        let inside = self.rect.is_some_and(|r| r.contains(x, y));
+        self.pointer = (self.link_hover && inside).then_some((y as usize, x as usize));
+    }
+
+    /// The link under the pointer in the last frame: its row and columns.
+    fn hovered_link(&self) -> Option<(usize, usize, usize)> {
+        let (row, col) = self.pointer?;
+        let link = links::link_at(self.screen.get(row)?, col, true)?;
+        Some((row, link.start, link.end))
     }
 
     fn scroll_to_pointer(&mut self, g: ScrollbarGeometry, pointer_y: i64, grab: i64) {

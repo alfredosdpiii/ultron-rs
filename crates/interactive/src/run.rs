@@ -157,7 +157,9 @@ pub fn terminal_debug(
 pub fn run_stdout(app: &mut App, events: &Receiver<UiEvent>, size: &dyn Fn() -> (u16, u16)) -> std::io::Result<()> {
     crate::qol::install_services(app, std::env::var("PATH").ok())?;
     app.set_suspend_hook(Box::new(suspend_process));
-    app.set_mouse_tracking(Some(tui::mouse_tracking(&|name| std::env::var(name).ok())));
+    let (mouse, link_hover) = app.qol().link_hover.mouse_tracking(&|name| std::env::var(name).ok());
+    app.set_mouse_tracking(Some(mouse));
+    app.set_link_hover(link_hover);
     app.set_right_click_paste(tui::right_click_paste_enabled(jsrt::process::platform(), &|name| {
         std::env::var(name).ok()
     }));
@@ -494,11 +496,11 @@ fn poll_events(
 ) -> std::io::Result<bool> {
     match events.recv_timeout(wait) {
         Ok(event) => {
-            handle(app, event, keyboard, out)?;
+            let mut changed = handle(app, event, keyboard, out)?;
             while let Ok(event) = events.try_recv() {
-                handle(app, event, keyboard, out)?;
+                changed |= handle(app, event, keyboard, out)?;
             }
-            Ok(true)
+            Ok(changed)
         }
         Err(RecvTimeoutError::Timeout) => {
             let mut dirty = app.fire_autocomplete();
@@ -558,28 +560,32 @@ fn leave_keyboard(
     if bytes.is_empty() { Ok(()) } else { out(&bytes) }
 }
 
+/// One event; false when it left the frame as it was (input the app reports unchanged, [`App::handle_input`]).
 fn handle(
     app: &mut App,
     event: UiEvent,
     keyboard: &mut KeyboardProtocol,
     out: &mut dyn FnMut(&str) -> std::io::Result<()>,
-) -> std::io::Result<()> {
+) -> std::io::Result<bool> {
     match event {
         UiEvent::Input(data) => {
             let negotiated = keyboard.input(&data, Instant::now());
             if !negotiated.write.is_empty() {
                 out(&negotiated.write)?;
             }
+            let mut changed = negotiated.forward.is_empty();
             if negotiated.kitty_activated {
                 app.set_kitty_protocol_active(true);
+                changed = true;
             }
             for data in negotiated.forward {
-                app.handle_input(&data);
+                changed |= app.handle_input(&data);
             }
+            return Ok(changed);
         }
         UiEvent::Lane(event) => app.apply(event),
         UiEvent::InputClosed => app.exit = true,
         UiEvent::Wake => {}
     }
-    Ok(())
+    Ok(true)
 }

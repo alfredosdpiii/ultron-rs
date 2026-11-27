@@ -30,6 +30,7 @@ fn theme() -> MarkdownTheme {
         underline: sty(4, 24),
         highlight_code: None,
         code_block_indent: None,
+        underline_links: true,
     }
 }
 

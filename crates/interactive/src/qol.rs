@@ -17,6 +17,9 @@
 //! - `autocomplete.emoji`, `autocomplete.modelMentions` (default on), `autocomplete.githubRefs` (default off).
 //! - `overlays`: bool (default on): the omp-inspired overlays (F5 retry, Alt+L display reset, Alt+A agent hub, the
 //!   `/copy` picker, the Esc-Esc rewind selector and the model hub for `/model` and Ctrl+L).
+//! - `terminal.linkHover`: bool or `"auto"` (default `"auto"`; `PI_LINK_HOVER=1|0|auto` under it): the fullscreen
+//!   link under the pointer is underlined ([`tui::LinkHover`]). Links are not underlined otherwise (`plain_links`,
+//!   not a setting).
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -38,6 +41,9 @@ use crate::lane::ModelInfo;
 
 /// The environment variable that turns every Rust-only addition off.
 pub const PARITY_ENV: &str = "ULTRON_TUI_PARITY";
+/// `1`, `0` or `auto`: `terminal.linkHover` when the setting is unset or `"auto"` (a setting wins, as with
+/// `PI_HYPERLINKS` and `terminal.hyperlinks`).
+pub const LINK_HOVER_ENV: &str = "PI_LINK_HOVER";
 /// The model mention trigger (omp's): `@` stays file completion.
 pub const MODEL_MENTION_TRIGGER: char = '^';
 
@@ -95,6 +101,10 @@ pub struct QolSettings {
     pub autocomplete_github: bool,
     /// The omp-inspired overlays and keys (retry, display reset, agent hub, copy picker, rewind, model hub).
     pub overlays: bool,
+    /// Markdown links keep only their colors (no underline); see [`crate::render_settings`].
+    pub plain_links: bool,
+    /// Underline the fullscreen link under the pointer, and the mouse tracking that takes.
+    pub link_hover: tui::LinkHover,
 }
 
 impl Default for QolSettings {
@@ -115,6 +125,8 @@ impl Default for QolSettings {
             autocomplete_models: true,
             autocomplete_github: false,
             overlays: true,
+            plain_links: true,
+            link_hover: tui::LinkHover::Auto,
         }
     }
 }
@@ -128,6 +140,15 @@ fn flag(v: &Value) -> Option<bool> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// `terminal.linkHover`, else [`LINK_HOVER_ENV`], else `Auto`.
+fn link_hover(setting: &Value, env: Option<String>) -> tui::LinkHover {
+    match (setting.as_bool(), env.as_deref()) {
+        (Some(true), _) | (None, Some("1")) => tui::LinkHover::On,
+        (Some(false), _) | (None, Some("0")) => tui::LinkHover::Off,
+        _ => tui::LinkHover::Auto,
     }
 }
 
@@ -159,6 +180,8 @@ impl QolSettings {
             autocomplete_models: false,
             autocomplete_github: false,
             overlays: false,
+            plain_links: false,
+            link_hover: tui::LinkHover::Off,
         }
     }
 
@@ -209,6 +232,7 @@ impl QolSettings {
         set(&mut q.autocomplete_models, &settings["autocomplete"]["modelMentions"]);
         set(&mut q.autocomplete_github, &settings["autocomplete"]["githubRefs"]);
         set(&mut q.overlays, &settings["overlays"]);
+        q.link_hover = link_hover(&settings["terminal"]["linkHover"], var(LINK_HOVER_ENV));
         q
     }
 }

@@ -1,0 +1,212 @@
+//! Claude-Code-style links in the fullscreen viewport: with `link_hover` on, the link under the pointer (an OSC 8
+//! hyperlink or a plain-text URL) is underlined while the pointer is over it, pointer motion that changes nothing
+//! asks for no paint, and `LinkHover` picks the mouse tracking that hover needs.
+
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use tui::{
+    ENABLE_BUTTON_MOTION_MOUSE, FullscreenViewport, KeyContext, KeybindingsManager, LinkHover, Rect, ScrollView,
+    Scrollbar, ViewportInput, tui_keybindings, visible_width,
+};
+
+const COLS: usize = 48;
+const ROWS: usize = 4;
+/// The transcript's rows; the last screen row is the dock.
+const TRANSCRIPT: usize = 3;
+const ALL_MOTION: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1004h\x1b[?1006h";
+
+fn keys() -> KeybindingsManager {
+    KeybindingsManager::new(tui_keybindings(), Default::default(), KeyContext::default())
+}
+
+fn hovering() -> FullscreenViewport {
+    let mut view = FullscreenViewport::new(ScrollView::new(true, Scrollbar::Hidden));
+    view.link_hover = true;
+    view.set_size(COLS, ROWS);
+    view
+}
+
+/// A frame: `lines` in the transcript's rows, then a dock row.
+fn paint(view: &mut FullscreenViewport, lines: &[&str]) -> Vec<String> {
+    let rect = Rect {
+        x: 0,
+        y: 0,
+        width: COLS,
+        height: TRANSCRIPT,
+    };
+    let mut screen = view.layout(lines.iter().map(ToString::to_string).collect(), rect);
+    screen.push("> dock https://dock.example/x".into());
+    view.finish_frame(screen, COLS, ROWS)
+}
+
+/// A pointer motion (no button) to 0-based column `x`, row `y`.
+fn motion(x: usize, y: usize) -> String {
+    format!("\x1b[<35;{};{}M", x + 1, y + 1)
+}
+
+fn without_underline(line: &str) -> String {
+    line.replace("\x1b[4m", "").replace("\x1b[24m", "")
+}
+
+#[test]
+fn tui_fullscreen_hover_underlines_the_plain_url_under_the_pointer() {
+    let keys = keys();
+    let mut view = hovering();
+    let row = "PR: https://github.com/a/b/pull/1 is open";
+    let lines = [row, "second row"];
+    assert_eq!(paint(&mut view, &lines)[0], row);
+    let now = Instant::now();
+    assert_eq!(view.handle_input(&motion(10, 0), &keys, now), ViewportInput::Consumed);
+    let frame = paint(&mut view, &lines);
+    assert_eq!(frame[0], "PR: \x1b[4mhttps://github.com/a/b/pull/1\x1b[24m is open");
+    assert_eq!(frame[1], "second row");
+    // Elsewhere on the same link: nothing to paint.
+    assert_eq!(view.handle_input(&motion(30, 0), &keys, now), ViewportInput::Unchanged);
+    assert_eq!(paint(&mut view, &lines)[0], frame[0]);
+    // Off the link: the underline goes.
+    assert_eq!(view.handle_input(&motion(38, 0), &keys, now), ViewportInput::Consumed);
+    assert_eq!(paint(&mut view, &lines)[0], row);
+    assert_eq!(view.handle_input(&motion(2, 1), &keys, now), ViewportInput::Unchanged);
+}
+
+#[test]
+fn tui_fullscreen_hover_underlines_an_osc8_link_and_keeps_it_whole() {
+    let keys = keys();
+    let mut view = hovering();
+    let row = "see \x1b]8;;https://example.com/docs\x1b\\the docs\x1b]8;;\x1b\\ here";
+    let lines = [row];
+    paint(&mut view, &lines);
+    let now = Instant::now();
+    assert_eq!(view.handle_input(&motion(9, 0), &keys, now), ViewportInput::Consumed);
+    assert_eq!(
+        paint(&mut view, &lines)[0],
+        "see \x1b]8;;https://example.com/docs\x1b\\\x1b[4mthe docs\x1b[24m\x1b]8;;\x1b\\ here"
+    );
+    assert_eq!(view.handle_input(&motion(4, 0), &keys, now), ViewportInput::Unchanged);
+    assert_eq!(view.handle_input(&motion(13, 0), &keys, now), ViewportInput::Consumed);
+    assert_eq!(paint(&mut view, &lines)[0], row);
+}
+
+/// A reset inside the link does not end its underline, wide graphemes before it keep its columns, and only SGR 4
+/// and 24 are added: without them the row is the one the application painted.
+#[test]
+fn tui_fullscreen_hover_underline_survives_resets_and_wide_text() {
+    let keys = keys();
+    let now = Instant::now();
+    let reset = "x \x1b[34mhttps://a.dev/\x1b[0mpath\x1b[39m y";
+    let wide = "日本語 https://x.dev/a end";
+    let lines = [reset, wide];
+    let mut view = hovering();
+    paint(&mut view, &lines);
+    view.handle_input(&motion(5, 0), &keys, now);
+    view.handle_input(&motion(10, 1), &keys, now);
+    let frame = paint(&mut view, &lines);
+    assert_eq!(frame[0], reset);
+    assert_eq!(frame[1], "日本語 \x1b[4mhttps://x.dev/a\x1b[24m end");
+    assert_eq!(visible_width(&frame[1]), visible_width(wide));
+
+    view.handle_input(&motion(18, 0), &keys, now);
+    let frame = paint(&mut view, &lines);
+    assert_eq!(
+        frame[0],
+        "x \x1b[34m\x1b[4mhttps://a.dev/\x1b[0m\x1b[4mpath\x1b[24m\x1b[39m y"
+    );
+    assert_eq!(without_underline(&frame[0]), reset);
+    // Inside the wide text, before the URL: no link.
+    view.handle_input(&motion(3, 1), &keys, now);
+    assert_eq!(paint(&mut view, &lines)[1], wide);
+}
+
+/// The underline is found again in each frame: output that moves the link away from a still pointer takes the
+/// underline with it, and a key, a lost focus or the pointer leaving the transcript ends it.
+#[test]
+fn tui_fullscreen_hover_ends_when_the_link_or_the_pointer_leaves() {
+    let keys = keys();
+    let now = Instant::now();
+    let link = "go https://x.dev/a";
+    let mut view = hovering();
+    paint(&mut view, &[link]);
+    view.handle_input(&motion(5, 0), &keys, now);
+    assert_ne!(paint(&mut view, &[link])[0], link);
+    assert_eq!(paint(&mut view, &["moved", link])[0], "moved");
+
+    let underlined = |view: &mut FullscreenViewport| paint(view, &[link])[0] != link;
+    let below = motion(5, TRANSCRIPT);
+    for leave in ["a", "\x1b[O", below.as_str()] {
+        view.handle_input(&motion(5, 0), &keys, now);
+        assert!(underlined(&mut view), "{leave:?}");
+        view.handle_input(leave, &keys, now);
+        assert!(!underlined(&mut view), "{leave:?}");
+    }
+    // The dock row's URL is outside the transcript: never underlined.
+    view.handle_input(&motion(10, TRANSCRIPT), &keys, now);
+    assert_eq!(paint(&mut view, &[link])[TRANSCRIPT], "> dock https://dock.example/x");
+}
+
+#[test]
+fn tui_fullscreen_hover_is_off_by_default() {
+    let keys = keys();
+    let mut view = FullscreenViewport::new(ScrollView::new(true, Scrollbar::Hidden));
+    view.set_size(COLS, ROWS);
+    let link = "go https://x.dev/a";
+    paint(&mut view, &[link]);
+    assert_eq!(
+        view.handle_input(&motion(5, 0), &keys, Instant::now()),
+        ViewportInput::Unchanged
+    );
+    assert_eq!(paint(&mut view, &[link])[0], link);
+}
+
+/// An underlined link still opens: a plain click on its OSC 8 link, an Option/Alt click on a plain URL.
+#[test]
+fn tui_fullscreen_hovered_links_still_open() {
+    let keys = keys();
+    let opened: Arc<Mutex<Vec<String>>> = Arc::default();
+    let mut view = hovering();
+    let sink = Arc::clone(&opened);
+    view.open_url = Some(Arc::new(move |url: &str| sink.lock().unwrap().push(url.to_string())));
+    let lines = [
+        "see \x1b]8;;https://example.com/docs\x1b\\the docs\x1b]8;;\x1b\\ here",
+        "PR: https://github.com/a/b/pull/1 is open",
+    ];
+    paint(&mut view, &lines);
+    let now = Instant::now();
+    view.handle_input(&motion(9, 0), &keys, now);
+    paint(&mut view, &lines);
+    for data in ["\x1b[<0;10;1M", "\x1b[<0;10;1m"] {
+        view.handle_input(data, &keys, now);
+    }
+    let later = now + std::time::Duration::from_secs(2);
+    view.handle_input(&motion(10, 1), &keys, later);
+    paint(&mut view, &lines);
+    for data in ["\x1b[<8;11;2M", "\x1b[<8;11;2m"] {
+        view.handle_input(data, &keys, later);
+    }
+    assert_eq!(
+        *opened.lock().unwrap(),
+        ["https://example.com/docs", "https://github.com/a/b/pull/1"]
+    );
+}
+
+/// `terminal.linkHover`: `On` asks for all-motion tracking inside a multiplexer too, `Auto` hovers only where
+/// all-motion is on anyway (outside multiplexers), `Off` never hovers and keeps the tracking.
+#[test]
+fn tui_link_hover_picks_the_mouse_tracking() {
+    let tmux = |name: &str| (name == "TMUX").then(|| "/tmp/tmux-1/default,1,0".to_string());
+    let plain = |name: &str| (name == "TERM").then(|| "xterm-256color".to_string());
+    assert_eq!(LinkHover::default(), LinkHover::Auto);
+    assert_eq!(LinkHover::On.mouse_tracking(&tmux), (ALL_MOTION, true));
+    assert_eq!(
+        LinkHover::Auto.mouse_tracking(&tmux),
+        (ENABLE_BUTTON_MOTION_MOUSE, false)
+    );
+    assert_eq!(
+        LinkHover::Off.mouse_tracking(&tmux),
+        (ENABLE_BUTTON_MOTION_MOUSE, false)
+    );
+    assert_eq!(LinkHover::Auto.mouse_tracking(&plain), (ALL_MOTION, true));
+    assert_eq!(LinkHover::On.mouse_tracking(&plain), (ALL_MOTION, true));
+    assert_eq!(LinkHover::Off.mouse_tracking(&plain), (ALL_MOTION, false));
+    assert_eq!(LinkHover::Auto.mouse_tracking(&plain).0, tui::mouse_tracking(&plain));
+}

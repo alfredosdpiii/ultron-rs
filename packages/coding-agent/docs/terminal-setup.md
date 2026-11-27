@@ -68,6 +68,8 @@ Links remain clickable in fullscreen mode, but Ghostty does not show its normal 
 
 Where links reach the screen as plain text (tmux without its `hyperlinks` terminal feature, Terminal.app), hold `Option` on macOS or `Alt` on Linux and click a URL to open it in the default browser. Terminal.app passes the modifier on when its profile uses Option as Meta key. A plain click still selects.
 
+Ultron's native TUI draws links in their link color without an underline, and underlines the link under the pointer, whether it is an OSC 8 hyperlink or a URL shown as plain text. Hover needs the terminal to report every pointer movement, which Ultron requests outside terminal multiplexers. Inside tmux, zellij, or screen it requests only clicks and drags, because forwarding every movement can make a multiplexer lag, so links are not underlined on hover there. To turn hover on inside a multiplexer, set `terminal.linkHover` to `true` or export `PI_LINK_HOVER=1`. Set it to `false` or `PI_LINK_HOVER=0` to turn hover off everywhere. `ULTRON_TUI_PARITY=1` keeps the TypeScript behavior: links underlined, no hover.
+
 ## WezTerm
 
 WezTerm normally reports `Shift+Enter` through xterm extended keys. To enable the Kitty keyboard protocol explicitly, create `~/.wezterm.lua`:
@@ -215,6 +217,7 @@ Pi automatically detects OSC 8 hyperlinks, inline image protocols, and truecolor
 | Hyperlinks | `PI_HYPERLINKS=1\|0\|auto` | `terminal.hyperlinks: true\|false\|"auto"` |
 | Inline images | `PI_IMAGE_PROTOCOL=kitty\|iterm2\|none\|auto` | `terminal.images: "kitty"\|"iterm2"\|false\|"auto"` |
 | Truecolor | `PI_TRUE_COLOR=1\|0\|auto` | `terminal.trueColor: true\|false\|"auto"` |
+| Link hover (Ultron's native TUI) | `PI_LINK_HOVER=1\|0\|auto` | `terminal.linkHover: true\|false\|"auto"` |
 
 Settings take precedence over environment variables. An unset value or `auto` preserves automatic detection.
 

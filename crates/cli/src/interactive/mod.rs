@@ -512,7 +512,7 @@ fn configure_app(
 fn build_app_options(
     parsed: &Args,
     env: &Env,
-    presentation: &Value,
+    qol: interactive::qol::QolSettings,
     theme: Rc<theme::Theme>,
     server_id: String,
 ) -> AppOptions {
@@ -543,7 +543,7 @@ fn build_app_options(
         ),
         fd_path: crate::tools_manager::ensure_fd(env, crate::tools_manager::GITHUB),
         highlight,
-        qol: interactive::qol::QolSettings::from_settings(presentation, &|k| (env.var)(k)),
+        qol,
         bug_report_target: (
             crate::bug_report::gateway_host(&crate::bug_report::gateway_url(env)),
             config::env::offline(&*env.var),
@@ -567,9 +567,11 @@ fn run_tui(
         &config::paths::AgentPaths::new(env.agent_dir()).custom_themes_dir(),
         tui::color_mode(&caps),
     ));
+    let qol = interactive::qol::QolSettings::from_settings(&presentation, &|k| (env.var)(k));
     interactive::render_settings::set(interactive::render_settings::RenderSettings {
         hyperlinks: caps.hyperlinks,
         code_block_indent: Some(config::keys::code_block_indent(settings.settings())),
+        plain_links: qol.plain_links,
     });
 
     let (ui_tx, ui_rx) = mpsc::channel::<UiEvent>();
@@ -608,7 +610,7 @@ fn run_tui(
         let (commands, env, ui) = (command_tx.clone(), env.clone(), ui_tx.clone());
         std::thread::spawn(move || route(handle, lane_rx, commands, env, ui, cancels))
     };
-    let options = build_app_options(parsed, env, &presentation, theme, server_id);
+    let options = build_app_options(parsed, env, qol, theme, server_id);
     let mut app = App::new(options, lane_tx);
     let (code, end) = (signalled, std::sync::Mutex::new(ui_tx.clone()));
     crate::print_mode::exit_on_signal(move |exit| {

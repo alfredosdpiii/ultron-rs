@@ -227,6 +227,7 @@ See [Compaction Reference](compaction.md) for trigger, summarization, and valida
 | `terminal.clearOnShrink` | boolean | `false` | Clear empty rows when rendered content shrinks. |
 | `terminal.showTerminalProgress` | boolean | `false` | Show OSC 9;4 progress in the terminal tab. |
 | `terminal.hyperlinks` | `boolean \| "auto"` | `"auto"` | Override OSC 8 hyperlink detection. |
+| `terminal.linkHover` | `boolean \| "auto"` | `"auto"` | Ultron's native TUI, fullscreen: underline the link under the pointer (links are not underlined otherwise). `"auto"` hovers outside terminal multiplexers, where Ultron already tracks every pointer movement. `true` also tracks pointer movement inside tmux, zellij, and screen, which can make them lag. `false` turns hover off. Overrides `PI_LINK_HOVER`. |
 | `terminal.images` | `"kitty" \| "iterm2" \| "auto" \| false` | `"auto"` | Override inline-image protocol detection. |
 | `terminal.trueColor` | `boolean \| "auto"` | `"auto"` | Override true-color detection. |
 | `images.autoResize` | boolean | `true` | Resize images to at most 2000 by 2000 pixels before sending them to a model. |

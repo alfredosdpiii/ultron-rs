@@ -27,21 +27,26 @@ const APP_SHORTCUTS: &[AppShortcut] = &[
 ];
 
 impl App {
-    pub fn handle_input(&mut self, data: &str) {
+    /// Take terminal input. False when it left the frame as it was (pointer motion that moved no hover), so the
+    /// frame need not be painted again.
+    pub fn handle_input(&mut self, data: &str) -> bool {
         let expecting = self
             .theme_controller
             .as_ref()
             .is_some_and(crate::theme_setup::ThemeController::expects_background);
         let read = self.osc11.input(data, expecting);
+        let mut changed = read.forward.is_empty();
         if let Some(rgb) = read.reply {
             self.background_reported(rgb);
+            changed = true;
         }
         for data in read.forward {
-            self.handle_terminal_input(&data);
+            changed |= self.handle_terminal_input(&data);
         }
+        changed
     }
 
-    pub(super) fn handle_terminal_input(&mut self, data: &str) {
+    pub(super) fn handle_terminal_input(&mut self, data: &str) -> bool {
         if let Some((height, width)) = parse_cell_size_response(data) {
             if height > 0 && width > 0 {
                 let mut images = self.chat.image_settings();
@@ -51,7 +56,7 @@ impl App {
                 };
                 self.chat.set_image_settings(images);
             }
-            return;
+            return true;
         }
         if let Some(scheme) = crate::theme_setup::parse_color_scheme_report(data) {
             if let Some(theme) = self
@@ -63,24 +68,28 @@ impl App {
             }
             self.tell_terminal_theme();
             self.sync_scheme_notifications(false);
-            return;
+            return true;
         }
-        self.handle_key(data);
+        self.handle_key(data)
     }
 
-    pub(super) fn handle_key(&mut self, data: &str) {
-        if self.handle_modal_key(data)
+    /// False when the input left the frame as it was ([`App::fullscreen_input`]).
+    pub(super) fn handle_key(&mut self, data: &str) -> bool {
+        if let Some(changed) = self.fullscreen_input(data) {
+            return changed;
+        }
+        if !(self.handle_modal_key(data)
             || self.handle_qol_key(data)
             || self.handle_priority_key(data)
-            || self.handle_app_shortcut(data)
+            || self.handle_app_shortcut(data))
         {
-            return;
+            self.feed_editor(data);
         }
-        self.feed_editor(data);
+        true
     }
 
     fn handle_modal_key(&mut self, data: &str) -> bool {
-        if self.fullscreen_input(data) || tui::is_key_release(data) {
+        if tui::is_key_release(data) {
             return true;
         }
         if self.recovering {

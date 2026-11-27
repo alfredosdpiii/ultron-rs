@@ -10,15 +10,15 @@
 //! for the application to copy (through its injected clipboard), which then reports with
 //! [`FullscreenViewport::copied`]. Time is passed in: timers are deadlines that [`FullscreenViewport::poll`] expires.
 
+mod links;
 mod mouse;
 mod selection;
 
+pub use links::{osc8_link_at_column, plain_url_at_column};
 pub use selection::word_selection;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-use unicode_segmentation::UnicodeSegmentation;
 
 use crate::frame::is_image_line;
 use crate::keybindings::KeybindingsManager;
@@ -27,7 +27,7 @@ use crate::mouse::parse_sgr_mouse;
 use crate::mouse::{MouseButton, MouseEvent, MouseResult};
 use crate::overlay::composite_line;
 use crate::scroll_view::{Rect, ScrollView, Scrollbar, paint_scrollbar, scrollbar_geometry, slice_by_column};
-use crate::utils::{ansi_len, grapheme_width, truncate_to_width, visible_width};
+use crate::utils::{truncate_to_width, visible_width};
 
 /// Rows a page scroll keeps from the previous page (`PAGE_SCROLL_OVERLAP`).
 pub const PAGE_SCROLL_OVERLAP: usize = 4;
@@ -62,6 +62,30 @@ pub fn mouse_tracking(var: &dyn Fn(&str) -> Option<String>) -> &'static str {
     }
 }
 
+/// `terminal.linkHover`: whether the fullscreen viewport underlines the link under the pointer, which takes
+/// all-motion mouse tracking.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LinkHover {
+    /// Where all-motion tracking is on anyway: outside terminal multiplexers.
+    #[default]
+    Auto,
+    /// Everywhere: inside multiplexers too, at the cost of every pointer movement reaching the TUI.
+    On,
+    Off,
+}
+
+impl LinkHover {
+    /// The mouse tracking the alternate screen turns on ([`mouse_tracking`], or all-motion for `On`) and whether
+    /// links are underlined under the pointer ([`FullscreenViewport::link_hover`]) with it.
+    pub fn mouse_tracking(self, var: &dyn Fn(&str) -> Option<String>) -> (&'static str, bool) {
+        let tracking = match self {
+            Self::On => ENABLE_ALL_MOTION_MOUSE,
+            Self::Auto | Self::Off => mouse_tracking(var),
+        };
+        (tracking, self != Self::Off && tracking == ENABLE_ALL_MOTION_MOUSE)
+    }
+}
+
 /// Strip the leading OSC 133 zone markers of a row (`OSC133_ZONE_PREFIX`).
 pub fn strip_zone_prefix(line: &str) -> &str {
     let mut rest = line;
@@ -87,112 +111,6 @@ pub fn strip_zone_prefix(line: &str) -> &str {
 /// Opens a clicked OSC 8 hyperlink (`openUrl`); the application injects it (its launcher comes from the session's
 /// PATH only).
 pub type UrlOpener = Arc<dyn Fn(&str) + Send + Sync>;
-
-/// `getOsc8LinkAtColumn`: the OSC 8 hyperlink covering visible column `column` of `line` (tabs are 3 columns).
-pub fn osc8_link_at_column(line: &str, column: usize) -> Option<String> {
-    let mut active: Option<&str> = None;
-    let mut col = 0;
-    let mut i = 0;
-    while i < line.len() {
-        if let Some(len) = ansi_len(line, i) {
-            if let Some(url) = osc8_url(&line[i..i + len]) {
-                active = (!url.is_empty()).then_some(url);
-            }
-            i += len;
-            continue;
-        }
-        let mut end = i;
-        while end < line.len() && ansi_len(line, end).is_none() {
-            end += line[end..].chars().next().map_or(1, char::len_utf8);
-        }
-        for g in line[i..end].graphemes(true) {
-            let width = if g == "\t" { 3 } else { grapheme_width(g) };
-            if column >= col && column < col + width {
-                return active.map(str::to_string);
-            }
-            col += width;
-        }
-        i = end;
-    }
-    None
-}
-
-/// `/^\x1b\]8;[^;]*;([^\x07\x1b]*)(?:\x07|\x1b\\)$/`: the URL of an OSC 8 sequence (empty closes the link).
-fn osc8_url(code: &str) -> Option<&str> {
-    let body = code.strip_prefix("\x1b]8;")?;
-    let body = body.strip_suffix('\x07').or_else(|| body.strip_suffix("\x1b\\"))?;
-    let (params, url) = body.split_once(';')?;
-    (!params.contains(';') && !url.contains(['\x07', '\x1b'])).then_some(url)
-}
-
-/// The `http://` or `https://` URL shown as plain text that covers visible column `column` of `line` (tabs are 3
-/// columns). An Option/Alt click opens it where links reach the screen without OSC 8: tmux without its hyperlinks
-/// feature, Terminal.app, a markdown link printed as `label (url)`, a URL in tool output. Trailing punctuation and
-/// unbalanced closing brackets end the URL, so `(see https://x.dev/a).` gives `https://x.dev/a`.
-pub fn plain_url_at_column(line: &str, column: usize) -> Option<String> {
-    let mut cells: Vec<(&str, usize, usize)> = Vec::new();
-    let mut col = 0;
-    let mut i = 0;
-    while i < line.len() {
-        if let Some(len) = ansi_len(line, i) {
-            i += len;
-            continue;
-        }
-        let mut end = i;
-        while end < line.len() && ansi_len(line, end).is_none() {
-            end += line[end..].chars().next().map_or(1, char::len_utf8);
-        }
-        for g in line[i..end].graphemes(true) {
-            let width = if g == "\t" { 3 } else { grapheme_width(g) };
-            cells.push((g, col, width));
-            col += width;
-        }
-        i = end;
-    }
-    let at = cells
-        .iter()
-        .position(|&(_, start, width)| column >= start && column < start + width)?;
-    let is_url_char = |g: &str| g.len() == 1 && g.as_bytes()[0].is_ascii_graphic() && !"<>\"'`".contains(g);
-    if !is_url_char(cells[at].0) {
-        return None;
-    }
-    let first = cells[..at]
-        .iter()
-        .rposition(|&(g, ..)| !is_url_char(g))
-        .map_or(0, |p| p + 1);
-    let last = cells[at..]
-        .iter()
-        .position(|&(g, ..)| !is_url_char(g))
-        .map_or(cells.len(), |p| at + p);
-    let token: String = cells[first..last].iter().map(|&(g, ..)| g).collect();
-    // Every cell of the token is one ASCII byte, so byte offsets are cell offsets.
-    let clicked = at - first;
-    let start = (0..=clicked).rev().find(|&p| {
-        let rest = token[p..].to_ascii_lowercase();
-        rest.starts_with("https://") || rest.starts_with("http://")
-    })?;
-    let mut url = &token[start..];
-    while let Some(tail) = url.chars().last() {
-        let unbalanced = |open: char| url.matches(tail).count() > url.matches(open).count();
-        let trim = match tail {
-            '.' | ',' | ';' | ':' | '!' | '?' => true,
-            ')' => unbalanced('('),
-            ']' => unbalanced('['),
-            '}' => unbalanced('{'),
-            _ => false,
-        };
-        if !trim {
-            break;
-        }
-        url = &url[..url.len() - 1];
-    }
-    let scheme_len = if url.to_ascii_lowercase().starts_with("https://") {
-        8
-    } else {
-        7
-    };
-    (url.len() > scheme_len && clicked < start + url.len()).then(|| url.to_string())
-}
 
 #[derive(Clone, Copy)]
 enum ViewportKeyAction {
@@ -283,6 +201,8 @@ pub enum ViewportInput {
     Pass,
     /// Handled (paint again).
     Consumed,
+    /// Handled, and the frame is as it was: pointer motion that changed no hover (no paint needed).
+    Unchanged,
     /// A selection finished with copy-on-select: copy this text, then report with [`FullscreenViewport::copied`].
     Copy(String),
     /// A right-button press with [`FullscreenViewport::right_click_paste`] on: paste the clipboard's text
@@ -384,6 +304,12 @@ pub struct FullscreenViewport {
     pub open_url: Option<UrlOpener>,
     /// The hyperlink under the press, opened when the release ends a click (`pressedUrl`).
     pressed_url: Option<String>,
+    /// Underline the link under the pointer, an OSC 8 hyperlink or a plain-text URL, while it is there (pointer
+    /// motion needs all-motion tracking: [`LinkHover::mouse_tracking`]); off by default.
+    pub link_hover: bool,
+    /// The transcript cell (row, column) under the pointer while link hover is on. The link there is found again in
+    /// every finished frame, so output or a scroll under a still pointer never leaves a stale underline.
+    pointer: Option<(usize, usize)>,
     /// `mouseCapture`, `mousePressTarget`, `mousePressPoint`, `mousePressMoved`, `lastComponentClick`.
     mouse_capture: Option<MouseTarget>,
     press_target: Option<MouseTarget>,
@@ -429,6 +355,8 @@ impl FullscreenViewport {
             right_click_paste: false,
             open_url: None,
             pressed_url: None,
+            link_hover: false,
+            pointer: None,
             mouse_capture: None,
             press_target: None,
             press_point: None,
@@ -464,6 +392,7 @@ impl FullscreenViewport {
         self.initial = None;
         self.last_click = None;
         self.pressed_url = None;
+        self.pointer = None;
         self.dragged = false;
         self.rect = None;
         self.screen.clear();
@@ -503,10 +432,11 @@ impl FullscreenViewport {
     /// The layout is not shown (an overlay owns the frame): mouse input then has no transcript to hit.
     pub fn hide_layout(&mut self) {
         self.rect = None;
+        self.pointer = None;
     }
 
     /// Finish a `width` x `height` frame (`doRender` after the layout): the jump-to-end indicator, the selection
-    /// highlight and the flashes.
+    /// highlight, the flashes and the underline of the link under the pointer.
     pub fn finish_frame(&mut self, screen: Vec<String>, width: usize, height: usize) -> Vec<String> {
         self.cols = width;
         self.rows = height;
@@ -515,7 +445,8 @@ impl FullscreenViewport {
             screen.drain(..screen.len() - height);
         }
         let screen = self.apply_selection(screen);
-        let screen = self.composite_flashes(screen, width, height);
+        let mut screen = self.composite_flashes(screen, width, height);
+        self.underline_hovered_link(&mut screen);
         self.screen = screen
             .iter()
             .map(|l| {
@@ -593,6 +524,9 @@ impl FullscreenViewport {
         now: Instant,
         targets: &mut dyn MouseTargets,
     ) -> ViewportInput {
+        if !is_mouse_sequence(data) {
+            self.pointer = None;
+        }
         if data == FOCUS_OUT {
             return self.handle_focus_out();
         }
@@ -690,6 +624,22 @@ impl FullscreenViewport {
         screen[row] = composite_line(&screen[row], &text, column, text_width, width);
         self.indicator_rect = Some((row, column, text_width));
         screen
+    }
+
+    /// The link under the pointer, found in the finished rows of this frame, underlined.
+    fn underline_hovered_link(&self, screen: &mut [String]) {
+        let Some((row, col)) = self.pointer else {
+            return;
+        };
+        if !self.rect.is_some_and(|r| r.contains(col as i64, row as i64)) {
+            return;
+        }
+        let Some(line) = screen.get_mut(row).filter(|l| !is_image_line(l)) else {
+            return;
+        };
+        if let Some(link) = links::link_at(line, col, true) {
+            *line = links::underline_columns(line, link.start, link.end);
+        }
     }
 
     /// `compositeFlashes`: the newest `height` flashes at the top right.

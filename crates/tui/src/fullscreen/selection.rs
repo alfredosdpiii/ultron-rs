@@ -8,7 +8,7 @@ use jsrt::string;
 
 use super::{
     AUTO_SCROLL_INTERVAL, Click, DOUBLE_CLICK_INTERVAL, FullscreenViewport, Granularity, MouseTargets, Point, Range,
-    ScreenPoint, Sgr, ViewportInput, osc8_link_at_column, plain_url_at_column,
+    ScreenPoint, Sgr, ViewportInput, links,
 };
 
 fn is_primary_or_release(ev: Sgr) -> bool {
@@ -307,23 +307,16 @@ impl FullscreenViewport {
         ViewportInput::Consumed
     }
 
+    /// The link a click at `ev` opens: an OSC 8 hyperlink, and with Option/Alt (SGR modifier bit 8) also a URL shown
+    /// as plain text. Without OSC 8 (tmux without its hyperlinks feature, Terminal.app) the screen has no link to
+    /// find, and the captured mouse keeps the terminal's own URL detection away.
     fn hovered_url_at(&self, ev: Sgr, has_range: bool) -> Option<String> {
         if has_range {
             return None;
         }
         let row = ev.y.clamp(0, (self.rows as i64 - 1).max(0)) as usize;
         let col = ev.x.clamp(0, (self.cols as i64 - 1).max(0)) as usize;
-        let line = self.screen.get(row)?;
-        // Option/Alt (SGR modifier bit 8) also opens a URL shown as plain text: without OSC 8 (tmux without its
-        // hyperlinks feature, Terminal.app) the screen has no link to find, and the captured mouse keeps the
-        // terminal's own URL detection away.
-        osc8_link_at_column(line, col).or_else(|| {
-            if ev.button & 8 != 0 {
-                plain_url_at_column(line, col)
-            } else {
-                None
-            }
-        })
+        links::link_at(self.screen.get(row)?, col, ev.button & 8 != 0).map(|link| link.url)
     }
 
     fn selection_press(&mut self, ev: Sgr, now: Instant) -> ViewportInput {

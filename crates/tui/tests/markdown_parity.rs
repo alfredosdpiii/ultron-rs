@@ -134,6 +134,7 @@ fn theme(c: &Value) -> MarkdownTheme {
             }) as tui::HighlightFn
         }),
         code_block_indent: c["indent"].as_str().map(str::to_string),
+        underline_links: true,
     }
 }
 

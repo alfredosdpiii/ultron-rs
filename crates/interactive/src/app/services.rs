@@ -476,6 +476,12 @@ impl App {
         self.viewport.right_click_paste = enabled;
     }
 
+    /// The fullscreen link under the pointer is underlined ([`tui::LinkHover::mouse_tracking`] of the
+    /// terminal's environment; off unless the product turns it on with the tracking it needs).
+    pub fn set_link_hover(&mut self, enabled: bool) {
+        self.viewport.link_hover = enabled;
+    }
+
     pub fn viewport(&self) -> &tui::FullscreenViewport {
         &self.viewport
     }
@@ -498,14 +504,14 @@ impl App {
 
     /// `handleViewportInput` in fullscreen: focus reports are the viewport's; while a full-frame overlay shows it
     /// gets the keys and the mouse (`shouldDeferViewportInputToOverlay`; the search and the pickers read SGR
-    /// reports, the others ignore them); otherwise the viewport takes the mouse and its scroll keys. True when the
-    /// input was taken.
-    pub(super) fn fullscreen_input(&mut self, data: &str) -> bool {
+    /// reports, the others ignore them); otherwise the viewport takes the mouse and its scroll keys. `Some` when the
+    /// input was taken: `Some(false)` when the frame stays as it was ([`tui::ViewportInput::Unchanged`]).
+    pub(super) fn fullscreen_input(&mut self, data: &str) -> Option<bool> {
         if self.qol.viewport_split {
-            return false;
+            return None;
         }
         if self.overlay.is_some() && !tui::is_focus_report(data) {
-            return false;
+            return None;
         }
         let now = self.now();
         let mut mouse = AppMouse {
@@ -530,18 +536,19 @@ impl App {
             self.settings_event(Some(event));
         }
         match input {
-            tui::ViewportInput::Pass => false,
-            tui::ViewportInput::Consumed => true,
+            tui::ViewportInput::Pass => None,
+            tui::ViewportInput::Unchanged => Some(false),
+            tui::ViewportInput::Consumed => Some(true),
             tui::ViewportInput::Copy(text) => {
                 self.copy_selection(&text);
-                true
+                Some(true)
             }
             tui::ViewportInput::RightClickPaste => {
                 if let Some(clipboard) = &self.clipboard {
                     self.pending_reads.push_back(true);
                     clipboard.request(ClipboardRead::Text);
                 }
-                true
+                Some(true)
             }
         }
     }

@@ -46,6 +46,8 @@ mod keybindings_file;
 mod keybindings_reload;
 #[path = "link_click.rs"]
 mod link_click;
+#[path = "link_hover.rs"]
+mod link_hover;
 #[path = "mcp_dialog_theme.rs"]
 mod mcp_dialog_theme;
 #[path = "model_hub.rs"]

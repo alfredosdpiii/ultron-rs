@@ -64,8 +64,8 @@ pub use editing::{find_word_backward, find_word_forward};
 pub use editor::{AUTOCOMPLETE_DEBOUNCE_MS, Editor, word_wrap_line};
 pub use frame::CURSOR_MARKER;
 pub use fullscreen::{
-    ENABLE_BUTTON_MOTION_MOUSE, FullscreenViewport, MouseDispatch, MouseTarget, MouseTargets, UrlOpener, ViewportInput,
-    is_focus_report, is_right_click_press, mouse_tracking, osc8_link_at_column, plain_url_at_column,
+    ENABLE_BUTTON_MOTION_MOUSE, FullscreenViewport, LinkHover, MouseDispatch, MouseTarget, MouseTargets, UrlOpener,
+    ViewportInput, is_focus_report, is_right_click_press, mouse_tracking, osc8_link_at_column, plain_url_at_column,
     retarget_mouse_event, right_click_paste_enabled, word_selection,
 };
 pub use fuzzy::{fuzzy_filter, fuzzy_match};

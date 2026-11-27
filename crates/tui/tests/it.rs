@@ -26,6 +26,8 @@ mod editor_parity;
 mod escape_timeout;
 #[path = "fullscreen_clicks.rs"]
 mod fullscreen_clicks;
+#[path = "fullscreen_link_hover.rs"]
+mod fullscreen_link_hover;
 #[path = "fullscreen_scroll.rs"]
 mod fullscreen_scroll;
 #[path = "highlight.rs"]
