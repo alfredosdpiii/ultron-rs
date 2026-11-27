@@ -183,6 +183,9 @@ impl App {
             PickerEvent::Open { href, .. } => {
                 self.overlay = None;
                 match self.viewport.open_url.clone() {
+                    Some(_) if !tui::openable_url(&href) => {
+                        self.show_status("Error: only http, https and mailto links open");
+                    }
                     Some(open) => {
                         open(&href);
                         self.show_status(&format!("Opened {href}"));

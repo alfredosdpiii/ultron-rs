@@ -137,11 +137,21 @@ const TARGET_PARAMS: &str = target_params!();
 const TARGET_OPEN: &str = concat!("\x1b]8;", target_params!(), ";");
 const TARGET_CLOSE: &str = concat!("\x1b]8;", target_params!(), ";\x1b\\");
 
+/// No control character (C0 with ESC and BEL, DEL, C1) in `url`. One inside an OSC 8 sequence can end it early, so
+/// what follows reaches the terminal as escape sequences of its own; such a URL never goes into one, and a link that
+/// carries one is not followed.
+pub(crate) fn clean_link_url(url: &str) -> bool {
+    !url.chars().any(char::is_control)
+}
+
 /// `text` linked to `url` for the fullscreen viewport only: an OSC 8 link it reads under every column of `text`
 /// (wrapping carries it onto each row), which [`strip_link_targets`] removes before the bytes reach the terminal.
 /// A markdown link carries its whole URL this way where the terminal gets no OSC 8, so a click on any row of a link
-/// that wraps opens all of it.
+/// that wraps opens all of it. A `url` with a control character gives `text` alone ([`clean_link_url`]).
 pub fn link_target(text: &str, url: &str) -> String {
+    if !clean_link_url(url) {
+        return text.to_string();
+    }
     format!("{TARGET_OPEN}{url}\x1b\\{text}{TARGET_CLOSE}")
 }
 

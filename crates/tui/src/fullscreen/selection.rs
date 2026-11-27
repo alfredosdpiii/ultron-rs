@@ -249,7 +249,10 @@ impl FullscreenViewport {
     }
 
     fn open_clicked_url(&mut self, is_click: bool) -> bool {
-        let clicked = self.pressed_url.take().filter(|_| is_click);
+        let clicked = self
+            .pressed_url
+            .take()
+            .filter(|url| is_click && links::openable_url(url));
         let (Some(url), Some(open)) = (clicked, self.open_url.clone()) else {
             return false;
         };

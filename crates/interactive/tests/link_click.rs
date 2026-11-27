@@ -123,3 +123,68 @@ fn interactive_copy_picker_without_an_opener_opens_nothing() {
     let rows = screen(&mut app);
     assert!(rows.iter().any(|l| l.contains("Error: no browser opener")), "{rows:#?}");
 }
+
+/// Only http, https and mailto links reach the opener: a markdown link to a file or an app scheme is an ordinary
+/// click, plain or with Option, whether it reaches the screen as OSC 8 or carries a viewport target.
+#[test]
+fn interactive_markdown_links_open_only_web_and_mail_urls() {
+    let text = "[passwdlink](file:///etc/passwd) and [vscodelink](vscode://open) and [datalink](data:text/html,x)\n\n\
+                [httpslink](HTTPS://x.dev/s) and [httplink](http://x.dev/p) and [maillink](mailto:a@x.dev)";
+    let labels = [
+        "passwdlink",
+        "vscodelink",
+        "datalink",
+        "httpslink",
+        "httplink",
+        "maillink",
+    ];
+    for hyperlinks in [false, true] {
+        render_settings::set(RenderSettings {
+            hyperlinks,
+            plain_links: true,
+            link_targets: true,
+            ..RenderSettings::default()
+        });
+        let (opener, opened) = recording_opener();
+        let mut app = app(QolSettings::default(), text);
+        app.set_url_opener(opener);
+        let rows = screen(&mut app);
+        for button in [0, 8] {
+            for label in labels {
+                let row = rows.iter().position(|l| l.contains(label)).unwrap();
+                let col = rows[row].find(label).unwrap() + 2;
+                for end in ['M', 'm'] {
+                    app.handle_input(&format!("\x1b[<{button};{};{}{end}", col + 1, row + 1));
+                }
+            }
+        }
+        let web = ["HTTPS://x.dev/s", "http://x.dev/p", "mailto:a@x.dev"];
+        assert_eq!(*opened.lock().unwrap(), [web, web].concat(), "hyperlinks {hyperlinks}");
+    }
+    render_settings::set(RenderSettings::default());
+}
+
+/// The copy picker's open goes through the same check: a link whose URL carries a control character is not opened.
+#[test]
+fn interactive_copy_picker_does_not_open_a_link_with_control_characters() {
+    let (opener, opened) = recording_opener();
+    let mut app = app(
+        QolSettings::default(),
+        "Docs at [the docs](<https://x.dev/a\u{1b}[31mb>)",
+    );
+    app.set_url_opener(opener);
+    for data in ["/copy", "\r"] {
+        app.handle_input(data);
+    }
+    app.render(W, H);
+    app.handle_input("\x1b[C");
+    app.render(W, H);
+    app.handle_input("o");
+    assert!(opened.lock().unwrap().is_empty());
+    let rows = screen(&mut app);
+    assert!(
+        rows.iter()
+            .any(|l| l.contains("only http, https and mailto links open")),
+        "{rows:#?}"
+    );
+}

@@ -5,7 +5,7 @@
 use crate::components::Component;
 use crate::frame::{KITTY_PREFIX, kitty_command};
 use crate::select::StyleFn;
-use crate::utils::truncate_to_width;
+use crate::utils::{clean_link_url, truncate_to_width};
 use std::sync::{LazyLock, Mutex};
 
 pub const HYPERLINKS_ENV: &str = "PI_HYPERLINKS";
@@ -377,8 +377,11 @@ pub fn render_image(
     })
 }
 
-/// OSC 8 hyperlink.
+/// OSC 8 hyperlink; `text` alone when `url` has a control character, which would end the sequence early.
 pub fn hyperlink(text: &str, url: &str) -> String {
+    if !clean_link_url(url) {
+        return text.to_string();
+    }
     format!("\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\")
 }
 

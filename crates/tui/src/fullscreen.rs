@@ -14,7 +14,7 @@ mod links;
 mod mouse;
 mod selection;
 
-pub use links::{osc8_link_at_column, plain_url_at_column};
+pub use links::{openable_url, osc8_link_at_column, plain_url_at_column};
 pub use selection::word_selection;
 
 use std::sync::Arc;

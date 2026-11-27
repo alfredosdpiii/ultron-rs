@@ -6,7 +6,7 @@ use crate::components::Component;
 use crate::frame::is_image_line;
 use crate::image::hyperlink;
 use crate::select::StyleFn;
-use crate::utils::{apply_background_to_line, link_target, visible_width, wrap_text_with_ansi};
+use crate::utils::{apply_background_to_line, clean_link_url, link_target, visible_width, wrap_text_with_ansi};
 
 /// One marked token (block or inline).
 #[derive(Clone, Debug, PartialEq)]
@@ -378,6 +378,9 @@ impl Markdown {
         text.split('\n').map(|s| (ctx.apply)(s)).collect::<Vec<_>>().join("\n")
     }
 
+    /// A link: its label as an OSC 8 link, or with the URL after it, or alone where the label is the URL. An `href`
+    /// with a control character shows the label alone, since the href would end an OSC 8 sequence early or put raw
+    /// escapes on the row.
     fn render_inline_link(&self, href: &str, text: &str, tokens: &[Token], ctx: &Ctx) -> String {
         let p = &ctx.prefix;
         let label = self.render_inline(tokens, Some(ctx));
@@ -386,6 +389,9 @@ impl Markdown {
         } else {
             (self.theme.link)(&label)
         };
+        if !clean_link_url(href) {
+            return format!("{styled}{p}");
+        }
         if self.options.hyperlinks {
             return format!("{}{p}", hyperlink(&styled, href));
         }

@@ -59,6 +59,8 @@ Fullscreen mode routes normalized mouse events to components. A handler can mark
 
 Unhandled wheel events scroll the nearest `ScrollView`. Unhandled primary-button drags remain available for transcript selection. OSC 8 links take precedence over enclosing click regions. An Option-click (Alt-click on Linux and Windows) also opens a URL shown as plain text, for terminals and multiplexers without OSC 8. Ultron's native TUI gives every markdown link its URL as an OSC 8 target the viewport reads even when the terminal gets no OSC 8 (the targets are removed from what is written to the terminal), so a click opens the whole link from any row it wraps onto.
 
+Only `http`, `https` and `mailto` links open, in any letter case, whether from a click, an Option-click or the `/copy` picker. A click on a link to any other scheme (`file:`, `javascript:`, `data:`, app schemes such as `vscode:` or `x-apple.systempreferences:`) is an ordinary click, and hover does not underline it. A link whose URL contains a control character (C0, including ESC and BEL, DEL, or C1) is drawn as plain text and never written inside an OSC 8 sequence, and such a link is never opened.
+
 Ultron's native TUI does not underline links. Where the terminal reports pointer movement, it underlines the transcript link under the pointer, an OSC 8 hyperlink or a plain-text URL, until the pointer leaves it, a key is pressed, or the terminal loses focus. A movement that keeps the same link under the pointer does not repaint the screen. See `terminal.linkHover` in [Settings](settings.md).
 
 Regular mode leaves mouse input to the terminal because the terminal owns scrollback. Design every interaction with a keyboard path even when fullscreen mouse input is available.

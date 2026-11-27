@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use tui::{
     ENABLE_BUTTON_MOTION_MOUSE, FullscreenViewport, KeyContext, KeybindingsManager, LinkHover, MouseDispatch,
     MouseEvent, MouseResult, MouseTarget, MouseTargets, Rect, ScrollView, Scrollbar, ViewportInput, hyperlink,
-    link_target, osc8_link_at_column, strip_link_targets, truncate_to_width, tui_keybindings, visible_width,
-    wrap_text_with_ansi,
+    link_target, openable_url, osc8_link_at_column, strip_link_targets, truncate_to_width, tui_keybindings,
+    visible_width, wrap_text_with_ansi,
 };
 
 const COLS: usize = 48;
@@ -342,4 +342,72 @@ fn tui_wrapped_link_targets_strip_to_the_rows_without_them() {
     let want = format!("{}{reset}", truncate_to_width(&text, 12, "", false));
     assert_eq!(strip_link_targets(&row), want);
     assert!(strip_link_targets(&row).ends_with(reset));
+}
+
+/// Only `http`, `https` and `mailto` links reach the opener, in any case: a link to a file, an app scheme, a script
+/// or data is an ordinary click, plain or with Option/Alt, and hover does not underline it.
+#[test]
+fn tui_fullscreen_opens_only_web_and_mail_links() {
+    let keys = keys();
+    let opened: Arc<Mutex<Vec<String>>> = Arc::default();
+    let mut view = hovering();
+    let sink = Arc::clone(&opened);
+    view.open_url = Some(Arc::new(move |url: &str| sink.lock().unwrap().push(url.to_string())));
+    let urls = [
+        ("file:///etc/passwd", false),
+        ("vscode://open", false),
+        ("javascript:alert(1)", false),
+        ("data:text/html,x", false),
+        ("x-apple.systempreferences:com.apple.preference", false),
+        ("https://x.dev/s", true),
+        ("HTTP://x.dev/p", true),
+        ("mailto:a@x.dev", true),
+    ];
+    let mut now = Instant::now();
+    let mut want = Vec::new();
+    for (url, opens) in urls {
+        let row = format!("go {}", hyperlink("the link", url));
+        paint(&mut view, &[&row]);
+        view.handle_input(&motion(5, 0), &keys, now);
+        assert_eq!(paint(&mut view, &[&row])[0].contains("\x1b[4m"), opens, "{url}");
+        for button in [0, 8] {
+            now += Duration::from_secs(2);
+            for end in ['M', 'm'] {
+                assert_eq!(
+                    view.handle_input(&format!("\x1b[<{button};6;1{end}"), &keys, now),
+                    ViewportInput::Consumed
+                );
+            }
+            if opens {
+                want.push(url.to_string());
+            }
+        }
+        assert_eq!(*opened.lock().unwrap(), want, "{url}");
+    }
+    assert!(!openable_url("https://x.dev/a\u{7}b"));
+    assert!(!openable_url("https"));
+}
+
+/// A link whose URL has a control character (C0 with ESC and BEL, DEL, C1) never goes into an OSC 8 sequence, which
+/// it could end early, and the viewport follows no link that carries one.
+#[test]
+fn tui_links_with_control_characters_stay_plain_text() {
+    for bad in [
+        "https://x.dev/a\x1b]8;;\x07b",
+        "https://x.dev/\x07",
+        "https://x.dev/\u{1}",
+        "https://x.dev/\u{7f}",
+        "https://x.dev/\u{9b}31m",
+    ] {
+        assert_eq!(hyperlink("the docs", bad), "the docs", "{bad:?}");
+        assert_eq!(link_target("the docs", bad), "the docs", "{bad:?}");
+    }
+    for url in ["https://x.dev/\u{1}", "https://x.dev/\u{7f}", "https://x.dev/\u{85}"] {
+        let row = format!("see \x1b]8;;{url}\x1b\\the docs\x1b]8;;\x1b\\ here");
+        assert_eq!(osc8_link_at_column(&row, 6), None, "{url:?}");
+    }
+    assert_eq!(
+        osc8_link_at_column(&hyperlink("the docs", "https://x.dev/ok"), 2).as_deref(),
+        Some("https://x.dev/ok")
+    );
 }

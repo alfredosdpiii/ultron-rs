@@ -3,7 +3,7 @@
 
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::utils::{ansi_len, grapheme_width};
+use crate::utils::{ansi_len, clean_link_url, grapheme_width};
 
 /// A piece of a row: an escape sequence, or a visible grapheme at a column with its width (tabs are 3 columns).
 enum Piece<'a> {
@@ -50,7 +50,7 @@ fn cells(line: &str) -> Vec<Cell<'_>> {
         match piece {
             Piece::Code(code) => {
                 if let Some(url) = osc8_url(code) {
-                    active = (!url.is_empty()).then_some(url);
+                    active = (!url.is_empty() && clean_link_url(url)).then_some(url);
                 }
             }
             Piece::Cell { text, col, width } => out.push(Cell {
@@ -173,11 +173,27 @@ fn plain_url(cells: &[Cell], column: usize) -> Option<RowLink> {
     })
 }
 
-/// The link under visible column `column` of `line`: its OSC 8 hyperlink, else with `plain` the http(s) URL shown
-/// there as plain text (each of the URL's cells is one ASCII byte one column wide, so its byte offsets are columns).
+/// The link under visible column `column` of `line` that a click opens: its OSC 8 hyperlink, else with `plain` the
+/// http(s) URL shown there as plain text (each of the URL's cells is one ASCII byte one column wide, so its byte
+/// offsets are columns). A link [`openable_url`] refuses is none: a click there is an ordinary click, and hover
+/// does not underline it.
 pub(super) fn link_at(line: &str, column: usize, plain: bool) -> Option<RowLink> {
     let cells = cells(line);
-    osc8_link(&cells, column).or_else(|| plain.then(|| plain_url(&cells, column)).flatten())
+    osc8_link(&cells, column)
+        .filter(|link| openable_url(&link.url))
+        .or_else(|| plain.then(|| plain_url(&cells, column)).flatten())
+}
+
+/// Whether a link may reach the URL opener (the OS launcher): an `http`, `https` or `mailto` URL (any case) without
+/// control characters. A markdown link's target is whatever the model wrote, and a launcher opens `file:`, app
+/// schemes (`vscode:`, `x-apple.systempreferences:`) and scripts as readily as web pages, so every opener call checks
+/// this first.
+pub fn openable_url(url: &str) -> bool {
+    let scheme = url.split_once(':').map_or("", |(scheme, _)| scheme);
+    ["http", "https", "mailto"]
+        .iter()
+        .any(|s| scheme.eq_ignore_ascii_case(s))
+        && clean_link_url(url)
 }
 
 /// `getOsc8LinkAtColumn`: the OSC 8 hyperlink covering visible column `column` of `line` (tabs are 3 columns).

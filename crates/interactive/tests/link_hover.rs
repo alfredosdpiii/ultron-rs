@@ -354,3 +354,25 @@ fn interactive_a_wrapped_markdown_link_opens_whole_from_any_row() {
     assert_eq!(strip_terminal_sequences(underlined), "one/row/of/the/screen?q=1");
     render_settings::set(RenderSettings::default());
 }
+
+/// A markdown link whose URL has a control character shows as its label alone, with or without OSC 8 and link
+/// targets: after the row's zone markers, no OSC 8 sequence, no raw escape or BEL, the row unbroken.
+#[test]
+fn interactive_markdown_link_with_control_characters_is_plain_text() {
+    for hyperlinks in [false, true] {
+        render_settings::set(product(hyperlinks, true));
+        for href in ["https://x.dev/a\u{1b}[2Jb", "https://x.dev/a\u{7}b"] {
+            let rows = assistant(&format!("Read [the docs](<{href}>) now."));
+            let row = rows.iter().find(|l| l.contains("the docs")).unwrap();
+            let row = &row[row.find(" Read").unwrap()..];
+            assert!(!row.contains("\x1b]8;") && !row.contains('\x07'), "{row:?}");
+            assert!(
+                row.match_indices('\x1b')
+                    .all(|(at, _)| row[at..].starts_with("\x1b[") && !row[at..].starts_with("\x1b[2J")),
+                "{row:?}"
+            );
+            assert_eq!(strip_terminal_sequences(row).trim(), "Read the docs now.", "{href:?}");
+        }
+    }
+    render_settings::set(RenderSettings::default());
+}
