@@ -25,6 +25,7 @@ however long it takes; ``yield_after=s`` returns a ToolCall handle after at most
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import re
@@ -210,6 +211,20 @@ class _BoundTool:
         return f"<extension tool {self._name}: await tools.describe({self._name!r}) for its parameters>"
 
 
+def _parse_batch_call(item: Any) -> tuple[str, dict[str, Any]]:
+    if isinstance(item, tuple) and len(item) == 2:
+        name, params = item
+    elif isinstance(item, dict) and "name" in item:
+        name, params = item["name"], item.get("params")
+    else:
+        raise TypeError("each batch call must be (name, params) or {'name': ..., 'params': {...}}")
+    if not isinstance(name, str) or not name:
+        raise ValueError("tool name must be a non-empty string")
+    if params is not None and not isinstance(params, dict):
+        raise TypeError("params must be a dict")
+    return name, dict(params or {})
+
+
 class Tools:
     """Tools registered by Pi extensions, called from Python (see the module docstring)."""
 
@@ -239,6 +254,38 @@ class Tools:
             raise TypeError("params must be a dict")
         arguments = {**(params or {}), **kwargs}
         return await self._invoke(name, arguments, yield_after)
+
+    async def batch(
+        self,
+        calls: Any,
+        *,
+        limit: int = 8,
+        return_exceptions: bool = True,
+        yield_after: Any = waits.DEFAULT,
+    ) -> list[Any]:
+        """Run multiple extension tool calls concurrently with bounded concurrency (default limit=8).
+
+        Each item in ``calls`` is either ``(name, params_dict)`` or ``{"name": ..., "params": {...}}``.
+        Preserves input order; by default returns Exception instances for failed calls instead of cancelling
+        the batch (pass ``return_exceptions=False`` to fail fast).
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("limit must be a positive integer")
+        specs = [_parse_batch_call(item) for item in calls]
+        if not specs:
+            return []
+        sem = asyncio.Semaphore(limit)
+
+        async def _run(tool_name: str, tool_params: dict[str, Any]) -> Any:
+            async with sem:
+                return await self.call(tool_name, tool_params, yield_after=yield_after)
+
+        return list(
+            await asyncio.gather(
+                *(_run(n, p) for n, p in specs),
+                return_exceptions=return_exceptions,
+            )
+        )
 
     async def _invoke(self, name: str, arguments: dict[str, Any], yield_after: Any) -> Any:
         fields, mode, auto = _yield_payload(yield_after)

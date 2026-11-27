@@ -216,3 +216,22 @@ fn resources_runtime_guide_new_apis_memory_tiers_and_footer() {
     });
     assert_eq!(ts, plain);
 }
+
+#[test]
+fn resources_runtime_guide_ergonomics_line_is_durable_only() {
+    let plain = rlm_runtime_prompt(&["rlm"], &RuntimeGuideOptions::default()).unwrap();
+    let rust = rlm_runtime_prompt(
+        &["rlm"],
+        &RuntimeGuideOptions {
+            durable_apis: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(!plain.contains("rlm.gather"));
+    assert!(!plain.contains("last_output"));
+    assert!(!plain.contains("ctx.export()"));
+    assert!(rust.contains("rlm.gather"));
+    assert!(rust.contains("last_output"));
+    assert!(rust.contains("ctx.export()"));
+}

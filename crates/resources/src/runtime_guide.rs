@@ -161,6 +161,7 @@ const RELATIONS_PROMPT: &str = r#"- Before changing a config key, route, table o
 const RESULT_FOOTER: &str =
     r"Each rlm result ends with `[t+<time since the session started> ctx <tokens of the request that ran it>]`.";
 const CONTRACTS_PROMPT: &str = r#"Contracts: `rlm.spawn(brief, name=..., contract={"checks": [{"run": "cargo test -q"}, {"changed_files_within": ["src/**"]}]}, hop={"retry": 1})` makes the host run the checks itself when the child ends, and its result's `check["contract"]["verdict"]` is "verified" or "contract_failed" (`help(rlm.spawn)`)."#;
+const RLM_ERGONOMICS_PROMPT: &str = r"- Batch concurrent awaits with `await rlm.gather(coros, limit=8)` (or `tools.batch`); spilled cell stdout is auto-bound as `last_output`, and `await ctx.export()` loads your active branch as a handle.";
 
 /// Guideline bullets for the `rlm` tool, depending on whether native file tools are active too.
 pub fn rlm_tool_guidelines(active_tools: &[&str]) -> Vec<String> {
@@ -327,7 +328,7 @@ fn other_apis_section(options: &RuntimeGuideOptions, persistent: bool, subagent:
     };
     let topics = if options.memory_topics { MEMORY_TOPICS } else { "" };
     format!(
-        "{context}\n{PROCEDURE_SKILLS_PROMPT}\n{MEMORY_RUST}{procedure}{TYPED_MEMORY}{topics}\n{SESSIONS_PROMPT}\n{JUDGE_PROMPT}\n{RELATIONS_PROMPT}\n{IMAGES_PROMPT}{schedule}\n{DIAGRAM_PROMPT}"
+        "{context}\n{RLM_ERGONOMICS_PROMPT}\n{PROCEDURE_SKILLS_PROMPT}\n{MEMORY_RUST}{procedure}{TYPED_MEMORY}{topics}\n{SESSIONS_PROMPT}\n{JUDGE_PROMPT}\n{RELATIONS_PROMPT}\n{IMAGES_PROMPT}{schedule}\n{DIAGRAM_PROMPT}"
     )
 }
 

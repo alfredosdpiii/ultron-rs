@@ -21,7 +21,7 @@ use session_journal::context::{
     Applied, CONTEXT_EDIT_CUSTOM_TYPE, CONTEXT_OMITTED_CUSTOM_TYPE, apply_context_edits_marked, content_call_ids,
     context_edits_of,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 pub const COMPACTION_TRIM_ENV: &str = "ULTRON_COMPACTION_TRIM";
@@ -53,6 +53,25 @@ const TRIM_HEAD_CHARS: usize = 4096;
 const TRIM_TAIL_CHARS: usize = 1024;
 const STATE_LIST_MAX: usize = 20;
 const KINDS: &[&str] = &["user", "assistant", "tool", "custom", "note", "summary", "compaction"];
+const DISALLOWED_CONTEXT_MARKERS: &[&str] = &[
+    "<system>",
+    "</system>",
+    "<|im_start|>",
+    "<|im_end|>",
+    "<|system|>",
+    "ignore previous instructions",
+    "ignore all previous instructions",
+    "disregard previous instructions",
+    "override system prompt",
+];
+
+fn check_context_text_safety(text: &str) -> Result<(), String> {
+    let lower = text.to_ascii_lowercase();
+    if DISALLOWED_CONTEXT_MARKERS.iter().any(|marker| lower.contains(marker)) {
+        return Err("Context text refused: contains disallowed system-override or prompt-injection marker".into());
+    }
+    Ok(())
+}
 
 /// The conversation branches of the session's lanes, as the harness keeps them.
 pub trait ContextBranches: Send + Sync {
@@ -486,21 +505,49 @@ fn index_tool_calls(window: &[Value]) -> ToolCallIndex {
     ToolCallIndex { call_owner, results_of }
 }
 
-fn parse_history_filter(payload: &Map<String, Value>) -> Result<(i64, Option<HashSet<&str>>), String> {
+fn parse_kinds_filter(payload: &Map<String, Value>) -> Result<Option<HashSet<&str>>, String> {
+    match payload.get("kinds") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(items)) if items.iter().all(|k| k.as_str().is_some_and(|k| KINDS.contains(&k))) => {
+            Ok(Some(items.iter().filter_map(Value::as_str).collect()))
+        }
+        Some(_) => Err(format!("kinds must be a list of: {}", KINDS.join(", "))),
+    }
+}
+
+fn parse_cache_impact_flag(payload: &Map<String, Value>) -> Result<bool, String> {
+    match payload.get("cache_impact") {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(flag)) => Ok(*flag),
+        Some(_) => Err("cache_impact must be a boolean".into()),
+    }
+}
+
+fn parse_history_filter(payload: &Map<String, Value>) -> Result<(i64, Option<HashSet<&str>>, bool), String> {
     let limit = match payload.get("limit") {
         None => HISTORY_DEFAULT,
         Some(value) => jsrt::number::safe_integer(value)
             .filter(|limit| (1..=HISTORY_MAX).contains(limit))
             .ok_or_else(|| format!("limit must be an integer between 1 and {HISTORY_MAX}"))?,
     };
-    let kinds: Option<HashSet<&str>> = match payload.get("kinds") {
-        None | Some(Value::Null) => None,
-        Some(Value::Array(items)) if items.iter().all(|k| k.as_str().is_some_and(|k| KINDS.contains(&k))) => {
-            Some(items.iter().filter_map(Value::as_str).collect())
+    let kinds = parse_kinds_filter(payload)?;
+    let cache_impact = parse_cache_impact_flag(payload)?;
+    Ok((limit, kinds, cache_impact))
+}
+
+fn compute_cache_impact(view: &BranchView) -> HashMap<String, usize> {
+    let mut impact = HashMap::new();
+    let mut after_bytes: usize = 0;
+    for entry in view.window().iter().rev() {
+        let Some(id) = entry["id"].as_str() else { continue };
+        impact.insert(id.to_string(), after_bytes);
+        if let Some(applied) = view.applied(id)
+            && !is_omitted(&applied.entry)
+        {
+            after_bytes = after_bytes.saturating_add(entry_bytes(&applied.entry));
         }
-        Some(_) => return Err(format!("kinds must be a list of: {}", KINDS.join(", "))),
-    };
-    Ok((limit, kinds))
+    }
+    impact
 }
 
 impl ContextControl {
@@ -688,7 +735,7 @@ impl ContextControl {
 
     fn handle_history(view: &BranchView, payload: &Map<String, Value>) -> Result<Value, String> {
         kernel::ops::fields("ctx.history", payload)?;
-        let (limit, kinds) = parse_history_filter(payload)?;
+        let (limit, kinds, include_cache_impact) = parse_history_filter(payload)?;
         let items: Vec<Value> = view
             .window()
             .iter()
@@ -700,9 +747,41 @@ impl ContextControl {
             })
             .collect();
         let visible: u64 = items.iter().filter_map(|item| item["bytes"].as_u64()).sum();
-        let shown: Vec<Value> = items[items.len().saturating_sub(limit as usize)..].to_vec();
+        let mut shown: Vec<Value> = items[items.len().saturating_sub(limit as usize)..].to_vec();
+        if include_cache_impact {
+            let impact = compute_cache_impact(view);
+            for item in &mut shown {
+                let id = item["id"].as_str().unwrap_or_default();
+                item["cache_impact_bytes"] = impact.get(id).copied().unwrap_or(0).into();
+            }
+        }
         Ok(json!({"items": shown, "total": items.len(), "visible_bytes": visible,
             "compacted": view.compaction_index.is_some()}))
+    }
+
+    fn handle_export(view: &BranchView, payload: &Map<String, Value>) -> Result<Value, String> {
+        kernel::ops::fields("ctx.export", payload)?;
+        let kinds = parse_kinds_filter(payload)?;
+        let mut sections = Vec::new();
+        let mut visible_bytes: usize = 0;
+        for entry in view.window() {
+            let Some(kind) = kind_of(entry) else { continue };
+            if kinds.as_ref().is_some_and(|set| !set.contains(kind)) {
+                continue;
+            }
+            let id = entry["id"].as_str().unwrap_or_default();
+            let Some(applied) = view.applied(id).filter(|applied| !is_omitted(&applied.entry)) else {
+                continue;
+            };
+            let bytes = entry_bytes(&applied.entry);
+            visible_bytes = visible_bytes.saturating_add(bytes);
+            sections.push(format!("[{id}] {kind} ({bytes} bytes)\n{}", entry_text(&applied.entry)));
+        }
+        Ok(json!({
+            "text": sections.join("\n\n"),
+            "visible_bytes": visible_bytes,
+            "items": sections.len(),
+        }))
     }
 
     fn handle_get(view: &BranchView, payload: &Map<String, Value>) -> Result<Value, String> {
@@ -763,6 +842,7 @@ impl ContextControl {
         if jsrt::utf16::len(&text) > SUMMARY_MAX_CHARS {
             return Err(format!("text exceeds {SUMMARY_MAX_CHARS} characters"));
         }
+        check_context_text_safety(&text)?;
         let mut ids = Self::closure(view, &id_list(payload.get("ids"))?);
         Self::guard(view, &ids)?;
         let order = |id: &String| view.window().iter().position(|entry| entry["id"] == id.as_str());
@@ -809,6 +889,7 @@ impl ContextControl {
         if jsrt::utf16::len(&text) > NOTE_MAX_CHARS {
             return Err(format!("note exceeds {NOTE_MAX_CHARS} characters"));
         }
+        check_context_text_safety(&text)?;
         Ok(json!({"id": self.append(lane, CONTEXT_NOTE_CUSTOM_TYPE, json!({"text": text}))?}))
     }
 
@@ -820,6 +901,7 @@ impl ContextControl {
         self.known(lane);
         let view = self.view(lane)?;
         match kind {
+            "ctx.export" => Self::handle_export(&view, payload),
             "ctx.history" => Self::handle_history(&view, payload),
             "ctx.get" => Self::handle_get(&view, payload),
             "ctx.forget" => self.handle_forget(&view, payload, lane),

@@ -4,6 +4,7 @@ import ast
 import asyncio
 import contextlib
 import contextvars
+import hashlib
 import io
 import json
 import math
@@ -31,7 +32,7 @@ from release_gate_api import ReleaseGates
 import agent_class_api
 from context_api import Context
 from ext_api import install as install_extensions
-from infer_api import install as install_inference
+from infer_api import ContextHandle, install as install_inference
 from hints_api import Hints
 from goal_api import Goal
 from secret_patterns import REDACTION_MARKER
@@ -290,6 +291,36 @@ class RLMNamespace:
     def __init__(self, bridge: HostBridge) -> None:
         self._bridge = bridge
         self.worktrees = Worktrees(bridge)
+
+    async def gather(
+        self,
+        coros: Any,
+        *,
+        limit: int = 8,
+        return_exceptions: bool = True,
+    ) -> list[Any]:
+        """Run awaitables concurrently with bounded concurrency (default limit=8), preserving order.
+
+        By default ``return_exceptions=True`` so one failure does not cancel sibling calls (failed items are
+        returned as their Exception instance); pass ``return_exceptions=False`` to raise on the first error.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("limit must be a positive integer")
+        items = list(coros)
+        if not items:
+            return []
+        sem = asyncio.Semaphore(limit)
+
+        async def _run(awaitable: Any) -> Any:
+            async with sem:
+                return await awaitable
+
+        return list(
+            await asyncio.gather(
+                *(_run(item) for item in items),
+                return_exceptions=return_exceptions,
+            )
+        )
 
     async def spawn(self, prompt: str, **kwargs: Any) -> SpawnHandle:
         """Start a subagent and return its SpawnHandle at once (`h.rlm_child_id`); options: name (required),
@@ -1640,6 +1671,7 @@ def _output_budget() -> int:
 
 # Bytes of one stream kept in its spill file, and how many spill files a kernel keeps.
 _SPILL_MAX_BYTES = 64 * 1024 * 1024
+_LAST_OUTPUT_MAX_BYTES = 16 * 1024 * 1024
 _SPILL_KEEP = 20
 _SPILL_CHUNK = 1024 * 1024
 
@@ -1850,6 +1882,20 @@ def _finalize_cell_result() -> str:
         return _cell_result_text(value)
 
 
+def _bind_spilled_output(stdout: _MiddleTextIO) -> None:
+    """Bind spilled cell stdout as a ContextHandle (`last_output`) so the next cell can grep/slice it in Python."""
+    path = stdout._spill_path
+    if not path:
+        return
+    with contextlib.suppress(OSError):
+        if os.path.getsize(path) > _LAST_OUTPUT_MAX_BYTES:
+            return
+        raw = Path(path).read_bytes()
+        text = raw.decode("utf-8", errors="replace")
+        digest = hashlib.sha256(raw).hexdigest()
+        _STATE.namespace["last_output"] = ContextHandle(text, digest, "last_output", len(raw))
+
+
 def _emit_cell_error(
     request_id: str,
     live: _LiveOutput | None,
@@ -1861,6 +1907,7 @@ def _emit_cell_error(
     _LiveOutput.close(live)
     try:
         emit("stdout", id=request_id, text=stdout.getvalue())
+        _bind_spilled_output(stdout)
         emit("stderr", id=request_id, text=stderr.getvalue())
         try:
             with _preview_deadline():
@@ -1913,6 +1960,7 @@ async def execute_cell(request_id: str, source: str) -> None:
             if dropped:
                 stderr.write(f"[{dropped} characters printed by a task of an earlier cell were dropped]\n")
             emit("stdout", id=request_id, text=stdout.getvalue())
+            _bind_spilled_output(stdout)
             emit("stderr", id=request_id, text=stderr.getvalue())
             emit("result", id=request_id, result=result_text)
             emit("done", id=request_id, status="ok", flush=_flush_raw_output(request_id))
