@@ -410,7 +410,7 @@ fn acceptance_a07_a_fork_starts_from_the_source_state_then_lessons_written_on_ei
             json!({ "query": "memory", "taskId": "source-recall" }),
         )
         .unwrap();
-    assert!(!texts(&source_recall).contains(&"Fork-only memory".to_string()));
+    assert!(!texts(&source_recall).iter().any(|i| i == "Fork-only memory"));
     // A lesson learned on the source after the fork does not flow into the fork either.
     let source_lesson = resumed_source.learn("Source-only lesson after the fork.");
     resumed_source.close();
@@ -425,7 +425,7 @@ fn acceptance_a07_a_fork_starts_from_the_source_state_then_lessons_written_on_ei
     let fork_recall = resumed_fork
         .call("memory.prepare", json!({ "query": "memory", "taskId": "fork-recall" }))
         .unwrap();
-    assert!(texts(&fork_recall).contains(&"Fork-only memory".to_string()));
+    assert!(texts(&fork_recall).iter().any(|i| i == "Fork-only memory"));
     resumed_fork.close();
 
     // Abandon the fork entirely: the source keeps exactly its own state.

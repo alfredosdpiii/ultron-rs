@@ -577,6 +577,70 @@ impl Inference {
         Ok(json!({"path": shown, "stored": stored}))
     }
 
+    fn text_view(item: &Map<String, Value>, label: String) -> Result<View, String> {
+        let text = item
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or("context text must be a string")?;
+        let chars = trace::view_chars(text);
+        let number = |key: &str| item.get(key).filter(|v| v.is_number()).cloned();
+        Ok(View {
+            label,
+            text: text.to_string(),
+            chars,
+            by_reference: false,
+            digest: item.get("digest").and_then(Value::as_str).map(str::to_string),
+            start: number("start"),
+            end: number("end"),
+        })
+    }
+
+    fn handle_view(&self, item: &Map<String, Value>, label: String, depth: u64) -> Result<View, String> {
+        let digest = item.get("digest").and_then(Value::as_str).unwrap_or_default();
+        let hex = digest_hex(item.get("digest")).ok_or("context handle digest must be sha256:<64 hex>")?;
+        let path = self.context_dir.join(hex);
+        let meta = std::fs::metadata(&path).map_err(|_| format!("Unknown context handle {digest}"))?;
+        if depth > 1 {
+            let chars = item.get("chars").and_then(Value::as_u64).unwrap_or(meta.len());
+            return Ok(View {
+                label,
+                text: String::new(),
+                chars,
+                by_reference: true,
+                digest: Some(digest.to_string()),
+                start: None,
+                end: None,
+            });
+        }
+        if meta.len() > MAX_FRAME_CONTEXT_CHARS * 4 {
+            return Err(format!(
+                "Context handle {label} is too large to give a frame whole; pass slices or chunks"
+            ));
+        }
+        let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let chars = trace::view_chars(&text);
+        Ok(View {
+            label,
+            text,
+            chars,
+            by_reference: false,
+            digest: Some(digest.to_string()),
+            start: None,
+            end: None,
+        })
+    }
+
+    fn parse_view(&self, raw: &Value, depth: u64) -> Result<View, String> {
+        let item = raw.as_object().ok_or("context item must be an object")?;
+        let label = label_of(item, "context");
+        match item.get("kind").and_then(Value::as_str) {
+            Some("text") => Self::text_view(item, label),
+            Some("handle") => self.handle_view(item, label, depth),
+            _ => Err("context item kind must be text or handle".into()),
+        }
+    }
+
     /// A frame's views; a frame that runs code (`depth > 1`) gets handles by reference, one that cannot their text.
     fn views(&self, items: Option<&Value>, depth: u64) -> Result<Vec<View>, String> {
         let empty = Vec::new();
@@ -588,66 +652,11 @@ impl Inference {
         let mut total = 0u64;
         let mut views = Vec::new();
         for raw in items {
-            let item = raw.as_object().ok_or("context item must be an object")?;
-            let label = label_of(item, "context");
-            match item.get("kind").and_then(Value::as_str) {
-                Some("text") => {
-                    let text = item
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .ok_or("context text must be a string")?;
-                    let chars = trace::view_chars(text);
-                    total += chars;
-                    let number = |key: &str| item.get(key).filter(|v| v.is_number()).cloned();
-                    views.push(View {
-                        label,
-                        text: text.to_string(),
-                        chars,
-                        by_reference: false,
-                        digest: item.get("digest").and_then(Value::as_str).map(str::to_string),
-                        start: number("start"),
-                        end: number("end"),
-                    });
-                }
-                Some("handle") => {
-                    let digest = item.get("digest").and_then(Value::as_str).unwrap_or_default();
-                    let hex = digest_hex(item.get("digest")).ok_or("context handle digest must be sha256:<64 hex>")?;
-                    let path = self.context_dir.join(hex);
-                    let meta = std::fs::metadata(&path).map_err(|_| format!("Unknown context handle {digest}"))?;
-                    if depth > 1 {
-                        let chars = item.get("chars").and_then(Value::as_u64).unwrap_or(meta.len());
-                        views.push(View {
-                            label,
-                            text: String::new(),
-                            chars,
-                            by_reference: true,
-                            digest: Some(digest.to_string()),
-                            start: None,
-                            end: None,
-                        });
-                        continue;
-                    }
-                    if meta.len() > MAX_FRAME_CONTEXT_CHARS * 4 {
-                        return Err(format!(
-                            "Context handle {label} is too large to give a frame whole; pass slices or chunks"
-                        ));
-                    }
-                    let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
-                    let text = String::from_utf8_lossy(&bytes).into_owned();
-                    let chars = trace::view_chars(&text);
-                    total += chars;
-                    views.push(View {
-                        label,
-                        text,
-                        chars,
-                        by_reference: false,
-                        digest: Some(digest.to_string()),
-                        start: None,
-                        end: None,
-                    });
-                }
-                _ => return Err("context item kind must be text or handle".into()),
+            let view = self.parse_view(raw, depth)?;
+            if !view.by_reference {
+                total += view.chars;
             }
+            views.push(view);
         }
         if total > MAX_FRAME_CONTEXT_CHARS {
             return Err(format!(
@@ -657,13 +666,7 @@ impl Inference {
         Ok(views)
     }
 
-    /// `options`: the call's contract, budget node (under the calling frame's when the request comes from one),
-    /// depth, model, repairs, thinking and timeout. `default_tokens`: a top-level map's token limit when unset.
-    fn options(
-        &self,
-        payload: &Map<String, Value>,
-        default_tokens: Option<u64>,
-    ) -> Result<(Options, session::Admission), String> {
+    fn parse_contract(payload: &Map<String, Value>) -> Result<Option<Value>, String> {
         let contract = payload
             .get("contract")
             .filter(|c| !c.is_null())
@@ -675,6 +678,10 @@ impl Inference {
                 return Err(format!("{at}: this contract keyword is not checked by this host yet"));
             }
         }
+        Ok(contract)
+    }
+
+    fn parse_budget(payload: &Map<String, Value>) -> Result<ParsedBudget, String> {
         let empty = Map::new();
         let budget = match payload.get("budget") {
             None | Some(Value::Null) => &empty,
@@ -694,29 +701,50 @@ impl Inference {
             0,
             jsrt::number::MAX_SAFE_INTEGER as u64,
         )?;
-        let requested_depth = optional_integer(budget.get("depth"), "budget.depth", 1, MAX_DEPTH)?;
-        let model = match payload.get("model") {
-            None | Some(Value::Null) => None,
-            Some(model) => Some(model_scope::model_ref(model)?),
+        let depth = optional_integer(budget.get("depth"), "budget.depth", 1, MAX_DEPTH)?;
+        Ok(ParsedBudget { calls, tokens, depth })
+    }
+
+    fn parse_max_repairs(payload: &Map<String, Value>, contract: Option<&Value>) -> Result<u64, String> {
+        let default = if contract.is_some_and(|c| is_plain_type(c, &["string", "integer", "number", "boolean", "null"]))
+        {
+            DEFAULT_SCALAR_REPAIRS
+        } else {
+            DEFAULT_REPAIRS
         };
-        let max_repairs = optional_integer(payload.get("max_repairs"), "max_repairs", 0, MAX_REPAIRS)?.unwrap_or(
-            if contract
-                .as_ref()
-                .is_some_and(|c| is_plain_type(c, &["string", "integer", "number", "boolean", "null"]))
-            {
-                DEFAULT_SCALAR_REPAIRS
-            } else {
-                DEFAULT_REPAIRS
-            },
-        );
+        Ok(optional_integer(payload.get("max_repairs"), "max_repairs", 0, MAX_REPAIRS)?.unwrap_or(default))
+    }
+
+    fn parse_optional_model(payload: &Map<String, Value>) -> Result<Option<String>, String> {
+        match payload.get("model") {
+            None | Some(Value::Null) => Ok(None),
+            Some(model) => Ok(Some(model_scope::model_ref(model)?)),
+        }
+    }
+
+    fn parse_optional_thinking(payload: &Map<String, Value>) -> Result<Option<String>, String> {
+        match payload.get("thinking") {
+            None | Some(Value::Null) => Ok(None),
+            Some(level) => Ok(Some(model_scope::thinking_level(level)?)),
+        }
+    }
+
+    /// `options`: the call's contract, budget node (under the calling frame's when the request comes from one),
+    /// depth, model, repairs, thinking and timeout. `default_tokens`: a top-level map's token limit when unset.
+    fn options(
+        &self,
+        payload: &Map<String, Value>,
+        default_tokens: Option<u64>,
+    ) -> Result<(Options, session::Admission), String> {
+        let contract = Self::parse_contract(payload)?;
+        let budget = Self::parse_budget(payload)?;
+        let model = Self::parse_optional_model(payload)?;
+        let max_repairs = Self::parse_max_repairs(payload, contract.as_ref())?;
         let timeout = optional_integer(payload.get("timeout_ms"), "timeout_ms", 1, MAX_TIMEOUT_MS)?;
-        let thinking = match payload.get("thinking") {
-            None | Some(Value::Null) => None,
-            Some(level) => Some(model_scope::thinking_level(level)?),
-        };
+        let thinking = Self::parse_optional_thinking(payload)?;
         let admission = self
             .session
-            .admission(&self.lane, requested_depth, calls, tokens, default_tokens);
+            .admission(&self.lane, budget.depth, budget.calls, budget.tokens, default_tokens);
         let options = Options {
             contract,
             max_repairs,
@@ -781,6 +809,12 @@ impl Inference {
         self.session.run_frame(&live, &self.lane, signal);
         Ok(self.session.observation(&live))
     }
+}
+
+struct ParsedBudget {
+    calls: Option<u64>,
+    tokens: Option<u64>,
+    depth: Option<u64>,
 }
 
 fn create_private_dir(dir: &Path) -> Result<(), String> {

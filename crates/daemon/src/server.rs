@@ -400,6 +400,102 @@ fn remove_dead_endpoints(directory: &Path, server_id: &str) {
     }
 }
 
+fn build_schedule_manager(
+    options: &ServerOptions,
+    server_id: &str,
+    hub: &Arc<Hub>,
+    manager: &Arc<Manager>,
+    lifetime: &Arc<Lifetime>,
+) -> Arc<crate::prompt_schedules::Scheduler> {
+    let schedule_log = error_log_path(&options.directory, server_id);
+    let schedule_clock = kernel_apis::prompt_schedule::clock_for(&|key| std::env::var(key).ok());
+    let home = std::env::var_os("HOME").map_or_default(PathBuf::from);
+    let schedules = crate::prompt_schedules::Scheduler::new(
+        schedule_clock.clone(),
+        Arc::new(crate::dream::QuietDreams {
+            inner: Arc::new(crate::prompt_schedules::HubDeliver(Arc::downgrade(hub))),
+            instance_dir: options.directory.clone(),
+            session_dir: options.session_dir.clone(),
+            agent_dir: config::paths::agent_dir(|key| std::env::var(key).ok(), &home),
+            home,
+            clock: schedule_clock,
+            zone: jsrt::localtime::Zone::from_env(std::env::var("TZ").ok().as_deref()),
+        }),
+        Some(Box::new(move |message| {
+            record_error(&schedule_log, "[ultron server warning]", message);
+        })),
+    );
+    let reports = schedules.clone();
+    manager.on_schedules(Box::new(move |meta, active| reports.update(meta, active)));
+    schedules.record_errors(options.directory.join(crate::prompt_schedules::ERRORS_FILE));
+    let held = lifetime.clone();
+    schedules.on_hold(Box::new(move |pending| held.set_schedules(pending)));
+    schedules
+}
+
+fn connect_coordinator(
+    socket_path: &Path,
+    control_path: &Path,
+    endpoint_path: &Path,
+    hub: &Arc<Hub>,
+    manager: &Arc<Manager>,
+    mut lease: coord_client::StartupLease,
+) -> Result<Arc<CoordinatorConnection>, io::Result<RegistrationRejected>> {
+    let mut attempts = 0;
+    loop {
+        let events = manager.clone();
+        let result = CoordinatorConnection::connect(
+            control_path,
+            endpoint_path,
+            Box::new(move |event| events.handle_event(event)),
+        );
+        let exited = match &result {
+            Err(Err(error)) => matches!(error.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused),
+            Err(Ok(_)) => !sockets::is_live(control_path),
+            Ok(_) => false,
+        };
+        attempts += 1;
+        if exited && attempts < COORDINATOR_REGISTRATION_ATTEMPTS {
+            match coord_client::ensure_coordinator(socket_path, control_path) {
+                Ok(next) => {
+                    lease = next;
+                    continue;
+                }
+                Err(error) => {
+                    hub.close();
+                    let _ = sockets::cleanup_socket(endpoint_path);
+                    return Err(Err(error));
+                }
+            }
+        }
+        drop(lease);
+        return result.inspect_err(|_| {
+            hub.close();
+            let _ = sockets::cleanup_socket(endpoint_path);
+        });
+    }
+}
+
+fn spawn_server_watchers(
+    running: &Arc<RunningServer>,
+    coordinator: Arc<CoordinatorConnection>,
+    lifetime: Arc<Lifetime>,
+) {
+    let lost = Arc::downgrade(running);
+    std::thread::spawn(move || {
+        coordinator.wait_lost();
+        if let Some(running) = lost.upgrade() {
+            running.close();
+        }
+    });
+    let retiring = Arc::downgrade(running);
+    lifetime.start(Box::new(move || {
+        if let Some(running) = retiring.upgrade() {
+            std::thread::spawn(move || running.close());
+        }
+    }));
+}
+
 fn start_generation(
     options: &ServerOptions,
     server_id: &str,
@@ -412,7 +508,7 @@ fn start_generation(
     let endpoint_path = sockets_dir.join(protocol::sockets::generation_name(server_id, nonce));
     remove_dead_endpoints(&sockets_dir, server_id);
     crate::process::trace_startup("server.coordinator");
-    let mut lease = coord_client::ensure_coordinator(&socket_path, &control_path).map_err(Err)?;
+    let lease = coord_client::ensure_coordinator(&socket_path, &control_path).map_err(Err)?;
     crate::process::trace_startup("server.coordinator-ready");
     let lifetime = Lifetime::with_graces(
         options.keep_alive,
@@ -439,69 +535,11 @@ fn start_generation(
     }
     let log_path = error_log_path(&options.directory, server_id);
     manager.set_logger(Box::new(move |label, message| record_error(&log_path, label, message)));
-    let schedule_log = error_log_path(&options.directory, server_id);
-    let schedule_clock = kernel_apis::prompt_schedule::clock_for(&|key| std::env::var(key).ok());
-    let home = std::env::var_os("HOME").map_or_default(PathBuf::from);
-    let schedules = crate::prompt_schedules::Scheduler::new(
-        schedule_clock.clone(),
-        Arc::new(crate::dream::QuietDreams {
-            inner: Arc::new(crate::prompt_schedules::HubDeliver(Arc::downgrade(&hub))),
-            instance_dir: options.directory.clone(),
-            session_dir: options.session_dir.clone(),
-            agent_dir: config::paths::agent_dir(|key| std::env::var(key).ok(), &home),
-            home,
-            clock: schedule_clock,
-            zone: jsrt::localtime::Zone::from_env(std::env::var("TZ").ok().as_deref()),
-        }),
-        Some(Box::new(move |message| {
-            record_error(&schedule_log, "[ultron server warning]", message);
-        })),
-    );
-    let reports = schedules.clone();
-    manager.on_schedules(Box::new(move |meta, active| reports.update(meta, active)));
-    schedules.record_errors(options.directory.join(crate::prompt_schedules::ERRORS_FILE));
-    let held = lifetime.clone();
-    schedules.on_hold(Box::new(move |pending| held.set_schedules(pending)));
+    let schedules = build_schedule_manager(options, server_id, &hub, &manager, &lifetime);
     let listener = sockets::listen(&endpoint_path).map_err(Err)?;
     hub.serve(listener);
-    let mut attempts = 0;
-    let coordinator = loop {
-        let events = manager.clone();
-        let result = CoordinatorConnection::connect(
-            &control_path,
-            &endpoint_path,
-            Box::new(move |event| events.handle_event(event)),
-        );
-        let exited = match &result {
-            Err(Err(error)) => matches!(error.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused),
-            Err(Ok(_)) => !sockets::is_live(&control_path),
-            Ok(_) => false,
-        };
-        attempts += 1;
-        if exited && attempts < COORDINATOR_REGISTRATION_ATTEMPTS {
-            match coord_client::ensure_coordinator(&socket_path, &control_path) {
-                Ok(next) => {
-                    lease = next;
-                    continue;
-                }
-                Err(error) => {
-                    hub.close();
-                    let _ = sockets::cleanup_socket(&endpoint_path);
-                    return Err(Err(error));
-                }
-            }
-        }
-        match result {
-            Ok(coordinator) => break coordinator,
-            Err(error) => {
-                hub.close();
-                let _ = sockets::cleanup_socket(&endpoint_path);
-                return Err(error);
-            }
-        }
-    };
+    let coordinator = connect_coordinator(&socket_path, &control_path, &endpoint_path, &hub, &manager, lease)?;
     manager.set_coordinator(coordinator.clone());
-    drop(lease);
     crate::process::trace_startup("server.connected");
     manager.discover();
     hub.refresh();
@@ -546,19 +584,7 @@ fn start_generation(
         relay: Mutex::new(relay),
         schedules,
     });
-    let lost = Arc::downgrade(&running);
-    std::thread::spawn(move || {
-        coordinator.wait_lost();
-        if let Some(running) = lost.upgrade() {
-            running.close();
-        }
-    });
-    let retiring = Arc::downgrade(&running);
-    lifetime.start(Box::new(move || {
-        if let Some(running) = retiring.upgrade() {
-            std::thread::spawn(move || running.close());
-        }
-    }));
+    spawn_server_watchers(&running, coordinator, lifetime);
     Ok(running)
 }
 
@@ -583,28 +609,21 @@ fn reachable(route: &Route) -> bool {
     protocol::handshake::hello(&mut stream, &route.server_id).is_ok()
 }
 
-/// `activateServer`: make the directory's logical server reachable, launching a detached server process if needed.
-pub fn activate_server(options: &ServerOptions, keep_alive: bool) -> io::Result<Route> {
-    paths::ensure_private_directory(&options.directory)?;
-    let server_id = paths::acquire_profile(&options.directory, options.server_id.as_deref())?.server_id;
-    let route = Route {
-        path: instance::socket_path(&options.directory, &server_id),
-        server_id: server_id.clone(),
-    };
-    let _activation = paths::acquire_activation(&options.directory, &server_id)?;
-    if reachable(&route) {
-        return Ok(route);
-    }
+fn activation_command(
+    options: &ServerOptions,
+    server_id: String,
+    keep_alive: bool,
+) -> (Vec<String>, Vec<(String, String)>) {
     let mut args = vec![
         options.directory.display().to_string(),
         server_id,
         options.session_dir.display().to_string(),
     ];
     if let Some(model) = &options.model.model {
-        let mut selection = json!({"model": model});
-        if let Some(provider) = &options.model.provider {
-            selection = json!({"provider": provider, "model": model});
-        }
+        let selection = match &options.model.provider {
+            Some(provider) => json!({"provider": provider, "model": model}),
+            None => json!({"model": model}),
+        };
         args.push(selection.to_string());
     }
     let mut env = options.model.env.clone();
@@ -614,9 +633,14 @@ pub fn activate_server(options: &ServerOptions, keep_alive: bool) -> io::Result<
     if let Some(root) = &options.root {
         env.push((ROOT_ENV.to_string(), root.display().to_string()));
     }
-    let child = process::spawn(Role::Server, &args, &env)?;
-    let pid = child.id();
-    let exited = process::watch(child);
+    (args, env)
+}
+
+fn wait_for_activation(
+    route: Route,
+    pid: u32,
+    exited: std::sync::mpsc::Receiver<Option<std::process::ExitStatus>>,
+) -> io::Result<Route> {
     let deadline = Instant::now() + ACTIVATION_TIMEOUT;
     loop {
         if reachable(&route) {
@@ -635,6 +659,25 @@ pub fn activate_server(options: &ServerOptions, keep_alive: bool) -> io::Result<
         }
         std::thread::sleep(ACTIVATION_RETRY);
     }
+}
+
+/// `activateServer`: make the directory's logical server reachable, launching a detached server process if needed.
+pub fn activate_server(options: &ServerOptions, keep_alive: bool) -> io::Result<Route> {
+    paths::ensure_private_directory(&options.directory)?;
+    let server_id = paths::acquire_profile(&options.directory, options.server_id.as_deref())?.server_id;
+    let route = Route {
+        path: instance::socket_path(&options.directory, &server_id),
+        server_id: server_id.clone(),
+    };
+    let _activation = paths::acquire_activation(&options.directory, &server_id)?;
+    if reachable(&route) {
+        return Ok(route);
+    }
+    let (args, env) = activation_command(options, server_id, keep_alive);
+    let child = process::spawn(Role::Server, &args, &env)?;
+    let pid = child.id();
+    let exited = process::watch(child);
+    wait_for_activation(route, pid, exited)
 }
 
 fn parse_model(value: Option<&String>) -> Result<WorkerModel, String> {

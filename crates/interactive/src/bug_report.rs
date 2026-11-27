@@ -267,81 +267,93 @@ impl BugFlow {
         matches!(self.step, Step::Summarizing(_) | Step::Uploading(_))
     }
 
+    fn handle_hint_outcome(&mut self, outcome: DialogOutcome) -> Action {
+        match outcome {
+            DialogOutcome::Submit(text) => {
+                let hint = jsrt::string::trim(&text).to_string();
+                self.choices.hint = (!hint.is_empty()).then_some(hint);
+                self.step = Step::Transcript(self.selector(
+                    "Include the session transcript?",
+                    &["Yes, include the transcript", "No"],
+                    TRANSCRIPT_NOTE,
+                ));
+                Action::None
+            }
+            DialogOutcome::Cancel => Action::Cancelled,
+            DialogOutcome::External(text) => Action::External(text),
+            DialogOutcome::None => Action::None,
+        }
+    }
+
+    fn handle_transcript_outcome(&mut self, outcome: DialogOutcome) -> Action {
+        match outcome {
+            DialogOutcome::Submit(choice) => {
+                self.choices.include_session = choice != "No";
+                if self.choices.include_session {
+                    self.step = Step::Delivery(self.delivery());
+                } else {
+                    let (name, provider) = self
+                        .model
+                        .clone()
+                        .unwrap_or_else(|| ("the current model".to_string(), "your provider".to_string()));
+                    self.step = Step::Summary(self.selector(
+                        &format!("Attach a summary written by {name} instead?"),
+                        &["Yes, generate a summary", "No"],
+                        &format!("The transcript is sent to {provider} with your credentials and tokens. Only the generated summary is attached; the transcript stays on your machine."),
+                    ));
+                }
+                Action::None
+            }
+            DialogOutcome::Cancel => Action::Cancelled,
+            _ => Action::None,
+        }
+    }
+
+    fn handle_summary_outcome(&mut self, outcome: DialogOutcome) -> Action {
+        match outcome {
+            DialogOutcome::Submit(choice) => {
+                self.choices.include_summary = choice != "No";
+                self.step = Step::Delivery(self.delivery());
+                Action::None
+            }
+            DialogOutcome::Cancel => Action::Cancelled,
+            _ => Action::None,
+        }
+    }
+
+    fn handle_delivery_outcome(&mut self, outcome: DialogOutcome) -> Action {
+        match outcome {
+            DialogOutcome::Submit(choice) if choice == "Cancel" => Action::Cancelled,
+            DialogOutcome::Submit(choice) => {
+                self.choices.upload = choice == "Upload Report";
+                self.chosen()
+            }
+            DialogOutcome::Cancel => Action::Cancelled,
+            _ => Action::None,
+        }
+    }
+
     pub fn handle_input(&mut self, data: &str) -> Action {
         match &mut self.step {
-            Step::Hint(dialog) => match dialog.handle_input(data) {
-                DialogOutcome::Submit(text) => {
-                    let hint = jsrt::string::trim(&text).to_string();
-                    self.choices.hint = (!hint.is_empty()).then_some(hint);
-                    self.step = Step::Transcript(self.selector(
-                        "Include the session transcript?",
-                        &["Yes, include the transcript", "No"],
-                        TRANSCRIPT_NOTE,
-                    ));
-                    Action::None
-                }
-                DialogOutcome::Cancel => Action::Cancelled,
-                DialogOutcome::External(text) => Action::External(text),
-                DialogOutcome::None => Action::None,
-            },
-            Step::Transcript(dialog) => match dialog.handle_input(data) {
-                DialogOutcome::Submit(choice) => {
-                    self.choices.include_session = choice != "No";
-                    if self.choices.include_session {
-                        self.step = Step::Delivery(self.delivery());
-                    } else {
-                        let (name, provider) = self
-                            .model
-                            .clone()
-                            .unwrap_or_else(|| ("the current model".to_string(), "your provider".to_string()));
-                        self.step = Step::Summary(self.selector(
-                            &format!("Attach a summary written by {name} instead?"),
-                            &["Yes, generate a summary", "No"],
-                            &format!("The transcript is sent to {provider} with your credentials and tokens. Only the generated summary is attached; the transcript stays on your machine."),
-                        ));
-                    }
-                    Action::None
-                }
-                DialogOutcome::Cancel => Action::Cancelled,
-                _ => Action::None,
-            },
-            Step::Summary(dialog) => match dialog.handle_input(data) {
-                DialogOutcome::Submit(choice) => {
-                    self.choices.include_summary = choice != "No";
-                    self.step = Step::Delivery(self.delivery());
-                    Action::None
-                }
-                DialogOutcome::Cancel => Action::Cancelled,
-                _ => Action::None,
-            },
-            Step::Delivery(dialog) => match dialog.handle_input(data) {
-                DialogOutcome::Submit(choice) if choice == "Cancel" => Action::Cancelled,
-                DialogOutcome::Submit(choice) => {
-                    self.choices.upload = choice == "Upload Report";
-                    self.chosen()
-                }
-                DialogOutcome::Cancel => Action::Cancelled,
-                _ => Action::None,
-            },
-            Step::Summarizing(loader) => {
-                if loader.handle_input(data) {
-                    Action::CancelSummary
-                } else {
-                    Action::None
-                }
+            Step::Hint(dialog) => {
+                let outcome = dialog.handle_input(data);
+                self.handle_hint_outcome(outcome)
             }
-            Step::Uploading(loader) => {
-                if loader.handle_input(data) {
-                    Action::CancelUpload
-                } else {
-                    Action::None
-                }
+            Step::Transcript(dialog) => {
+                let outcome = dialog.handle_input(data);
+                self.handle_transcript_outcome(outcome)
             }
-            Step::UploadFailed(dialog) => match dialog.handle_input(data) {
-                DialogOutcome::Submit(choice) if choice == "Export as Zip" => Action::ExportAfterFailure,
-                DialogOutcome::Submit(_) | DialogOutcome::Cancel => Action::Cancelled,
-                _ => Action::None,
-            },
+            Step::Summary(dialog) => {
+                let outcome = dialog.handle_input(data);
+                self.handle_summary_outcome(outcome)
+            }
+            Step::Delivery(dialog) => {
+                let outcome = dialog.handle_input(data);
+                self.handle_delivery_outcome(outcome)
+            }
+            Step::Summarizing(loader) => loader_action(loader.handle_input(data), Action::CancelSummary),
+            Step::Uploading(loader) => loader_action(loader.handle_input(data), Action::CancelUpload),
+            Step::UploadFailed(dialog) => upload_failed_action(dialog.handle_input(data)),
         }
     }
 
@@ -369,5 +381,17 @@ impl BugFlow {
             Step::Hint(dialog) => Some(dialog),
             _ => None,
         }
+    }
+}
+
+fn loader_action(cancelled: bool, on_cancel: Action) -> Action {
+    if cancelled { on_cancel } else { Action::None }
+}
+
+fn upload_failed_action(outcome: DialogOutcome) -> Action {
+    match outcome {
+        DialogOutcome::Submit(choice) if choice == "Export as Zip" => Action::ExportAfterFailure,
+        DialogOutcome::Submit(_) | DialogOutcome::Cancel => Action::Cancelled,
+        _ => Action::None,
     }
 }

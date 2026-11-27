@@ -3,7 +3,7 @@
 //! Evidence: `fixtures/generate-more.mjs` records the TypeScript provider; `tests/providers_more.rs` replays it.
 
 use crate::constrained::{json_schema_tool_parameters, resolve_json_schema_strict_sampling};
-use crate::http::{HeaderBuilder, cancelled, is_aborted, truncate_error_text};
+use crate::http::{HeaderBuilder, HeaderMap, cancelled, is_aborted, truncate_error_text};
 use crate::json::short_hash;
 use crate::models::{calculate_cost, clamp_thinking_level};
 use crate::options::{SimpleStreamOptions, StreamOptions, build_base_options, pi_user_agent};
@@ -13,7 +13,8 @@ use crate::transcript::{
 };
 use crate::types::{
     AssistantContent, AssistantMessage, AssistantMessageEvent, CacheRetention, EventSink, Mapped, Message, Model,
-    StopReason, TextContent, ThinkingContent, Tool, ToolCall, TranscriptContext, UserContent, UserMessageContent,
+    StopReason, SystemMessage, Tool, ToolCall, ToolResultMessage, TranscriptContext, UserContent, UserMessage,
+    UserMessageContent, close_content_block, push_content_delta,
 };
 use crate::{HttpRequest, HttpResponse, Transport};
 use indexmap::IndexMap;
@@ -117,113 +118,118 @@ fn tool_result_text(text: &str, has_images: bool, supports_images: bool, is_erro
     format!("{prefix}(no tool output)")
 }
 
+fn convert_system_message(system: &SystemMessage, is_initial: bool) -> Option<Value> {
+    let text = if is_initial {
+        system_message_text(system)
+    } else {
+        render_system_message_update(system)
+    };
+    (!text.is_empty()).then(|| json!({ "role": "system", "content": text }))
+}
+
+fn convert_user_message(user: &UserMessage, supports_images: bool) -> Option<Value> {
+    match &user.content {
+        UserMessageContent::Text(text) => Some(json!({ "role": "user", "content": text })),
+        UserMessageContent::Blocks(blocks) => {
+            let had_images = blocks.iter().any(|b| matches!(b, UserContent::Image(_)));
+            let content: Vec<Value> = blocks
+                .iter()
+                .filter_map(|block| match block {
+                    UserContent::Text(t) => Some(json!({ "type": "text", "text": t.text })),
+                    UserContent::Image(i) if supports_images => Some(image_url(&i.mime_type, &i.data)),
+                    UserContent::Image(_) => None,
+                })
+                .collect();
+            if !content.is_empty() {
+                Some(json!({ "role": "user", "content": content }))
+            } else if had_images && !supports_images {
+                Some(json!({ "role": "user", "content": "(image omitted: model does not support images)" }))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn push_assistant_block(block: &AssistantContent, content: &mut Vec<Value>, tool_calls: &mut Vec<Value>) {
+    match block {
+        AssistantContent::Text(t) if !t.text.trim().is_empty() => {
+            content.push(json!({ "type": "text", "text": t.text }));
+        }
+        AssistantContent::Thinking(t) if !t.thinking.trim().is_empty() => {
+            content.push(json!({ "type": "thinking", "thinking": [{ "type": "text", "text": t.thinking }] }));
+        }
+        AssistantContent::ToolCall(call) => {
+            let arguments = if jsrt::value::truthy(Some(&call.arguments)) {
+                call.arguments.clone()
+            } else {
+                json!({})
+            };
+            tool_calls.push(json!({
+                "id": call.id,
+                "type": "function",
+                "function": { "name": call.name, "arguments": jsrt::json::stringify(&arguments) },
+                "index": 0,
+            }));
+        }
+        _ => {}
+    }
+}
+
+fn convert_assistant_message(assistant: &AssistantMessage) -> Option<Value> {
+    let mut content = Vec::new();
+    let mut tool_calls = Vec::new();
+    for block in &assistant.content {
+        push_assistant_block(block, &mut content, &mut tool_calls);
+    }
+    if content.is_empty() && tool_calls.is_empty() {
+        return None;
+    }
+    let mut wire = Map::new();
+    wire.insert("role".into(), "assistant".into());
+    wire.insert("prefix".into(), false.into());
+    if !content.is_empty() {
+        wire.insert("content".into(), Value::Array(content));
+    }
+    if !tool_calls.is_empty() {
+        wire.insert("toolCalls".into(), Value::Array(tool_calls));
+    }
+    Some(Value::Object(wire))
+}
+
+fn convert_tool_result_message(tool: &ToolResultMessage, supports_images: bool) -> Value {
+    let text = tool.joined_text();
+    let has_images = tool.has_images();
+    let mut content = vec![json!({
+        "type": "text",
+        "text": tool_result_text(&text, has_images, supports_images, tool.is_error),
+    })];
+    if supports_images {
+        content.extend(tool.content.iter().filter_map(|c| match c {
+            UserContent::Image(i) => Some(image_url(&i.mime_type, &i.data)),
+            UserContent::Text(_) => None,
+        }));
+    }
+    json!({
+        "role": "tool",
+        "toolCallId": tool.tool_call_id,
+        "name": tool.tool_name,
+        "content": content,
+    })
+}
+
 /// `toChatMessages`, in the payload's camelCase shape (`toolCalls`, `toolCallId`, `imageUrl`).
 fn to_chat_messages(messages: &[Message], supports_images: bool) -> Vec<Value> {
     let mut result = Vec::new();
     for (index, message) in messages.iter().enumerate() {
-        match message {
-            Message::System(system) => {
-                let text = if index == 0 {
-                    system_message_text(system)
-                } else {
-                    render_system_message_update(system)
-                };
-                if !text.is_empty() {
-                    result.push(json!({ "role": "system", "content": text }));
-                }
-            }
-            Message::User(user) => match &user.content {
-                UserMessageContent::Text(text) => result.push(json!({ "role": "user", "content": text })),
-                UserMessageContent::Blocks(blocks) => {
-                    let had_images = blocks.iter().any(|b| matches!(b, UserContent::Image(_)));
-                    let content: Vec<Value> = blocks
-                        .iter()
-                        .filter_map(|block| match block {
-                            UserContent::Text(t) => Some(json!({ "type": "text", "text": t.text })),
-                            UserContent::Image(i) if supports_images => Some(image_url(&i.mime_type, &i.data)),
-                            UserContent::Image(_) => None,
-                        })
-                        .collect();
-                    if !content.is_empty() {
-                        result.push(json!({ "role": "user", "content": content }));
-                    } else if had_images && !supports_images {
-                        result.push(
-                            json!({ "role": "user", "content": "(image omitted: model does not support images)" }),
-                        );
-                    }
-                }
-            },
-            Message::Assistant(assistant) => {
-                let mut content = Vec::new();
-                let mut tool_calls = Vec::new();
-                for block in &assistant.content {
-                    match block {
-                        AssistantContent::Text(t) if !t.text.trim().is_empty() => {
-                            content.push(json!({ "type": "text", "text": t.text }));
-                        }
-                        AssistantContent::Thinking(t) if !t.thinking.trim().is_empty() => {
-                            content.push(
-                                json!({ "type": "thinking", "thinking": [{ "type": "text", "text": t.thinking }] }),
-                            );
-                        }
-                        AssistantContent::ToolCall(call) => {
-                            let arguments = if jsrt::value::truthy(Some(&call.arguments)) {
-                                call.arguments.clone()
-                            } else {
-                                json!({})
-                            };
-                            tool_calls.push(json!({
-                                "id": call.id,
-                                "type": "function",
-                                "function": { "name": call.name, "arguments": jsrt::json::stringify(&arguments) },
-                                "index": 0,
-                            }));
-                        }
-                        _ => {}
-                    }
-                }
-                if content.is_empty() && tool_calls.is_empty() {
-                    continue;
-                }
-                let mut wire = Map::new();
-                wire.insert("role".into(), "assistant".into());
-                wire.insert("prefix".into(), false.into());
-                if !content.is_empty() {
-                    wire.insert("content".into(), Value::Array(content));
-                }
-                if !tool_calls.is_empty() {
-                    wire.insert("toolCalls".into(), Value::Array(tool_calls));
-                }
-                result.push(Value::Object(wire));
-            }
-            Message::ToolResult(tool) => {
-                let text = tool
-                    .content
-                    .iter()
-                    .filter_map(|c| match c {
-                        UserContent::Text(t) => Some(t.text.as_str()),
-                        UserContent::Image(_) => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let has_images = tool.content.iter().any(|c| matches!(c, UserContent::Image(_)));
-                let mut content = vec![json!({
-                    "type": "text",
-                    "text": tool_result_text(&text, has_images, supports_images, tool.is_error),
-                })];
-                if supports_images {
-                    content.extend(tool.content.iter().filter_map(|c| match c {
-                        UserContent::Image(i) => Some(image_url(&i.mime_type, &i.data)),
-                        UserContent::Text(_) => None,
-                    }));
-                }
-                result.push(json!({
-                    "role": "tool",
-                    "toolCallId": tool.tool_call_id,
-                    "name": tool.tool_name,
-                    "content": content,
-                }));
-            }
+        let converted = match message {
+            Message::System(system) => convert_system_message(system, index == 0),
+            Message::User(user) => convert_user_message(user, supports_images),
+            Message::Assistant(assistant) => convert_assistant_message(assistant),
+            Message::ToolResult(tool) => Some(convert_tool_result_message(tool, supports_images)),
+        };
+        if let Some(entry) = converted {
+            result.push(entry);
         }
     }
     result
@@ -436,6 +442,58 @@ pub async fn stream(
     run.end(result.map_err(|error| error.format()), options.base.signal())
 }
 
+fn build_request_headers(model: &Model, base: &StreamOptions, api_key: &str) -> HeaderMap {
+    let mut headers = HeaderBuilder::default();
+    headers.set("User-Agent", pi_user_agent());
+    headers.set("accept", "text/event-stream");
+    headers.set("authorization", format!("Bearer {api_key}"));
+    headers.set("content-type", "application/json");
+    headers.extend_set(model.headers.iter().flatten());
+    headers.extend(base.headers.iter().flatten());
+    let explicit_affinity = model
+        .headers
+        .iter()
+        .flatten()
+        .any(|(k, _)| k.to_lowercase() == "x-affinity")
+        || base
+            .headers
+            .iter()
+            .flatten()
+            .any(|(k, _)| k.to_lowercase() == "x-affinity");
+    if let Some(session) = uses_prompt_caching(base).filter(|_| !explicit_affinity) {
+        headers.set("x-affinity", session);
+    }
+    headers.build()
+}
+
+async fn send_and_stream(
+    run: &mut Run<'_, '_, MistralStream>,
+    model: &Model,
+    request: HttpRequest,
+    signal: Option<&crate::AbortSignal>,
+    transport: &dyn Transport,
+) -> Result<(), MistralError> {
+    let sent = tokio::select! {
+        sent = transport.send(request) => sent,
+        () = cancelled(signal) => return Err(MistralError::aborted()),
+    };
+    let mut response = sent.map_err(|_| MistralError::plain("fetch failed"))?;
+    if !(200..300).contains(&response.status) {
+        let mut bytes = Vec::new();
+        while let Ok(Some(chunk)) = response.body.next_chunk().await {
+            bytes.extend_from_slice(&chunk);
+        }
+        return Err(MistralError {
+            // ponytail: the Transport carries no reason phrase, so upstream's `statusText` fallback always applies.
+            message: format!("Request failed with status {}", response.status),
+            status: Some(response.status),
+            body: Some(String::from_utf8_lossy(&bytes).into_owned()),
+        });
+    }
+    run.start();
+    read_mistral_events(&mut response, signal.cloned(), |event| run.handle(event, model)).await
+}
+
 async fn drive(
     run: &mut Run<'_, '_, MistralStream>,
     model: &Model,
@@ -459,55 +517,14 @@ async fn drive(
     if let Some(next) = base.on_payload.as_ref().and_then(|hook| hook(&payload, model)) {
         payload = next;
     }
-    let mut headers = HeaderBuilder::default();
-    headers.set("User-Agent", pi_user_agent());
-    headers.set("accept", "text/event-stream");
-    headers.set("authorization", format!("Bearer {api_key}"));
-    headers.set("content-type", "application/json");
-    headers.extend_set(model.headers.iter().flatten());
-    headers.extend(base.headers.iter().flatten());
-    let explicit_affinity = model
-        .headers
-        .iter()
-        .flatten()
-        .any(|(k, _)| k.to_lowercase() == "x-affinity")
-        || base
-            .headers
-            .iter()
-            .flatten()
-            .any(|(k, _)| k.to_lowercase() == "x-affinity");
-    if let Some(session) = uses_prompt_caching(base).filter(|_| !explicit_affinity) {
-        headers.set("x-affinity", session);
-    }
     let request = HttpRequest {
         method: "POST".into(),
         url: chat_url(&model.base_url),
-        headers: headers.build(),
+        headers: build_request_headers(model, base, &api_key),
         body: serde_json::to_string(&to_wire_payload(&payload)).unwrap_or_default(),
     };
     let limit = Duration::from_millis(base.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
-    let exchange = async {
-        let sent = tokio::select! {
-            sent = transport.send(request) => sent,
-            () = cancelled(signal) => return Err(MistralError::aborted()),
-        };
-        let mut response = sent.map_err(|_| MistralError::plain("fetch failed"))?;
-        if !(200..300).contains(&response.status) {
-            let mut bytes = Vec::new();
-            while let Ok(Some(chunk)) = response.body.next_chunk().await {
-                bytes.extend_from_slice(&chunk);
-            }
-            return Err(MistralError {
-                // ponytail: the Transport carries no reason phrase, so upstream's `statusText` fallback always applies.
-                message: format!("Request failed with status {}", response.status),
-                status: Some(response.status),
-                body: Some(String::from_utf8_lossy(&bytes).into_owned()),
-            });
-        }
-        run.start();
-        read_mistral_events(&mut response, signal.cloned(), |event| run.handle(event, model)).await
-    };
-    match tokio::time::timeout(limit, exchange).await {
+    match tokio::time::timeout(limit, send_and_stream(run, model, request, signal, transport)).await {
         Ok(result) => result?,
         Err(_) => return Err(MistralError::plain(crate::provider::OPERATION_TIMED_OUT)),
     }
@@ -550,6 +567,29 @@ fn parse_event(raw: &str) -> Result<Parsed, MistralError> {
     Ok(Parsed::Event(parsed))
 }
 
+fn flush_utf8(bytes: &mut Vec<u8>, buffer: &mut String, done: bool) {
+    let valid = match std::str::from_utf8(bytes) {
+        Ok(text) => text.len(),
+        Err(error) if !done && error.error_len().is_none() => error.valid_up_to(),
+        Err(_) => bytes.len(),
+    };
+    buffer.push_str(&String::from_utf8_lossy(&bytes[..valid]));
+    bytes.drain(..valid);
+}
+
+fn drain_mistral_frames(buffer: &mut String, handle: &mut impl FnMut(&Value)) -> Result<bool, MistralError> {
+    while let Some((at, len)) = crate::sse::frame_boundary(buffer.as_bytes(), &EVENT_SEPARATORS) {
+        let raw = buffer[..at].to_string();
+        buffer.drain(..at + len);
+        match parse_event(&raw)? {
+            Parsed::Done => return Ok(true),
+            Parsed::Event(event) => handle(&event),
+            Parsed::Skip => {}
+        }
+    }
+    Ok(false)
+}
+
 /// `readMistralEvents`: events of one read are all handled before the next abort check.
 async fn read_mistral_events(
     response: &mut HttpResponse,
@@ -566,21 +606,9 @@ async fn read_mistral_events(
         }
         let done = chunk.is_none();
         bytes.extend(chunk.into_iter().flatten());
-        let valid = match std::str::from_utf8(&bytes) {
-            Ok(text) => text.len(),
-            Err(error) if !done && error.error_len().is_none() => error.valid_up_to(),
-            Err(_) => bytes.len(),
-        };
-        buffer.push_str(&String::from_utf8_lossy(&bytes[..valid]));
-        bytes.drain(..valid);
-        while let Some((at, len)) = crate::sse::frame_boundary(buffer.as_bytes(), &EVENT_SEPARATORS) {
-            let raw = buffer[..at].to_string();
-            buffer.drain(..at + len);
-            match parse_event(&raw)? {
-                Parsed::Done => return Ok(()),
-                Parsed::Event(event) => handle(&event),
-                Parsed::Skip => {}
-            }
+        flush_utf8(&mut bytes, &mut buffer, done);
+        if drain_mistral_frames(&mut buffer, &mut handle)? {
+            return Ok(());
         }
         if done {
             break;
@@ -626,112 +654,50 @@ struct MistralStream {
 
 impl Run<'_, '_, MistralStream> {
     fn close_block(&mut self) {
-        let Some(index) = self.state.current.take() else { return };
-        match self.output.content[index].clone() {
-            AssistantContent::Text(t) => self.emit(|partial| AssistantMessageEvent::TextEnd {
-                content_index: index,
-                content: t.text,
-                partial,
-            }),
-            AssistantContent::Thinking(t) => self.emit(|partial| AssistantMessageEvent::ThinkingEnd {
-                content_index: index,
-                content: t.thinking,
-                partial,
-            }),
-            AssistantContent::ToolCall(_) => {}
-        }
+        let index = self.state.current.take();
+        close_content_block(self, index);
     }
 
     fn push_text(&mut self, delta: &str, thinking: bool) {
-        let open = self
-            .state
-            .current
-            .map(|i| matches!(self.output.content[i], AssistantContent::Thinking(_)));
-        if open != Some(thinking) {
-            self.close_block();
-            let index = self.output.content.len();
-            self.state.current = Some(index);
-            if thinking {
-                self.output.content.push(AssistantContent::Thinking(ThinkingContent {
-                    thinking: String::new(),
-                    thinking_signature: None,
-                    redacted: None,
-                }));
-                self.emit(|partial| AssistantMessageEvent::ThinkingStart {
-                    content_index: index,
-                    partial,
-                });
-            } else {
-                self.output.content.push(AssistantContent::Text(TextContent {
-                    text: String::new(),
-                    text_signature: None,
-                }));
-                self.emit(|partial| AssistantMessageEvent::TextStart {
-                    content_index: index,
-                    partial,
-                });
-            }
-        }
-        let index = self.output.content.len() - 1;
-        let delta = delta.to_string();
-        match &mut self.output.content[index] {
-            AssistantContent::Thinking(t) => {
-                t.thinking.push_str(&delta);
-                self.emit(|partial| AssistantMessageEvent::ThinkingDelta {
-                    content_index: index,
-                    delta,
-                    partial,
-                });
-            }
-            AssistantContent::Text(t) => {
-                t.text.push_str(&delta);
-                self.emit(|partial| AssistantMessageEvent::TextDelta {
-                    content_index: index,
-                    delta,
-                    partial,
-                });
-            }
-            AssistantContent::ToolCall(_) => {}
-        }
+        push_content_delta(self, |s| &mut s.current, delta, thinking, None);
     }
 
-    fn handle(&mut self, chunk: &Value, model: &Model) {
-        if self.output.response_id.is_none()
-            && let Some(id) = chunk.get("id").and_then(Value::as_str).filter(|s| !s.is_empty())
-        {
-            self.output.response_id = Some(id.to_string());
-        }
-        if let Some(usage) = chunk.get("usage").filter(|u| jsrt::value::truthy(Some(u))) {
-            let count = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
-            let prompt = count("prompt_tokens");
-            let cached = cached_prompt_tokens(usage, prompt);
-            let u = &mut self.output.usage;
-            u.input = prompt - cached;
-            u.output = count("completion_tokens");
-            u.cache_read = cached;
-            u.cache_write = 0;
-            u.total_tokens = match count("total_tokens") {
-                0 => u.input + u.output + u.cache_read,
-                total => total,
-            };
-            calculate_cost(model, &mut self.output.usage);
-        }
-        let Some(choice) = chunk.pointer("/choices/0") else {
+    fn apply_usage(&mut self, chunk: &Value, model: &Model) {
+        let Some(usage) = chunk.get("usage").filter(|u| jsrt::value::truthy(Some(u))) else {
             return;
         };
-        if let Some(reason) = choice
+        let count = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+        let prompt = count("prompt_tokens");
+        let cached = cached_prompt_tokens(usage, prompt);
+        let u = &mut self.output.usage;
+        u.input = prompt - cached;
+        u.output = count("completion_tokens");
+        u.cache_read = cached;
+        u.cache_write = 0;
+        u.total_tokens = match count("total_tokens") {
+            0 => u.input + u.output + u.cache_read,
+            total => total,
+        };
+        calculate_cost(model, &mut self.output.usage);
+    }
+
+    fn apply_finish_reason(&mut self, choice: &Value) {
+        let Some(reason) = choice
             .get("finish_reason")
             .and_then(Value::as_str)
             .filter(|r| !r.is_empty())
-        {
-            self.output.raw_stop_reason = Some(reason.to_string());
-            let (stop, error) = map_stop_reason(reason);
-            self.output.stop_reason = stop;
-            if error.is_some() {
-                self.output.error_message = error;
-            }
+        else {
+            return;
+        };
+        self.output.raw_stop_reason = Some(reason.to_string());
+        let (stop, error) = map_stop_reason(reason);
+        self.output.stop_reason = stop;
+        if error.is_some() {
+            self.output.error_message = error;
         }
-        let delta = choice.get("delta").cloned().unwrap_or(Value::Null);
+    }
+
+    fn apply_delta_content(&mut self, delta: &Value) {
         let items = match delta.get("content") {
             Some(Value::String(s)) => vec![Value::String(s.clone())],
             Some(Value::Array(items)) => items.clone(),
@@ -759,56 +725,80 @@ impl Run<'_, '_, MistralStream> {
                 _ => {}
             }
         }
+    }
+
+    fn ensure_tool_call_started(&mut self, call: &Value, call_id: String, key: &str) {
+        if self.state.tools.contains_key(key) {
+            return;
+        }
+        let name = call
+            .pointer("/function/name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let index = self.output.content.len();
+        self.output.content.push(AssistantContent::ToolCall(ToolCall {
+            id: call_id,
+            name: name.to_string(),
+            arguments: json!({}),
+            thought_signature: None,
+            namespace: None,
+        }));
+        self.state.tools.insert(key.to_string(), (index, String::new()));
+        self.emit(|partial| AssistantMessageEvent::ToolCallStart {
+            content_index: index,
+            partial,
+        });
+    }
+
+    fn apply_delta_tool_call(&mut self, call: &Value) {
+        self.close_block();
+        let stream_index = call.get("index").and_then(Value::as_i64);
+        let call_id = match call.get("id").and_then(Value::as_str) {
+            Some(id) if !id.is_empty() && id != "null" => id.to_string(),
+            _ => derive_mistral_tool_call_id(&format!("toolcall:{}", stream_index.unwrap_or(0)), 0),
+        };
+        let key = match stream_index {
+            Some(i) => format!("index:{i}"),
+            None => format!("id:{call_id}"),
+        };
+        self.ensure_tool_call_started(call, call_id, &key);
+        let args_delta = match call.pointer("/function/arguments") {
+            Some(Value::String(s)) => s.clone(),
+            Some(other) if jsrt::value::truthy(Some(other)) => jsrt::json::stringify(other),
+            _ => "{}".to_string(),
+        };
+        let (index, partial_args) = self
+            .state
+            .tools
+            .get_mut(&key)
+            .map_or_else(|| unreachable!(), |(i, p)| (*i, p));
+        partial_args.push_str(&args_delta);
+        let arguments = parse_streaming_json(partial_args);
+        if let AssistantContent::ToolCall(block) = &mut self.output.content[index] {
+            block.arguments = arguments;
+        }
+        self.emit(|partial| AssistantMessageEvent::ToolCallDelta {
+            content_index: index,
+            delta: args_delta,
+            partial,
+        });
+    }
+
+    fn handle(&mut self, chunk: &Value, model: &Model) {
+        if self.output.response_id.is_none()
+            && let Some(id) = chunk.get("id").and_then(Value::as_str).filter(|s| !s.is_empty())
+        {
+            self.output.response_id = Some(id.to_string());
+        }
+        self.apply_usage(chunk, model);
+        let Some(choice) = chunk.pointer("/choices/0") else {
+            return;
+        };
+        self.apply_finish_reason(choice);
+        let delta = choice.get("delta").cloned().unwrap_or(Value::Null);
+        self.apply_delta_content(&delta);
         for call in delta.get("tool_calls").and_then(Value::as_array).into_iter().flatten() {
-            self.close_block();
-            let stream_index = call.get("index").and_then(Value::as_i64);
-            let call_id = match call.get("id").and_then(Value::as_str) {
-                Some(id) if !id.is_empty() && id != "null" => id.to_string(),
-                _ => derive_mistral_tool_call_id(&format!("toolcall:{}", stream_index.unwrap_or(0)), 0),
-            };
-            let key = match stream_index {
-                Some(i) => format!("index:{i}"),
-                None => format!("id:{call_id}"),
-            };
-            if !self.state.tools.contains_key(&key) {
-                let name = call
-                    .pointer("/function/name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let index = self.output.content.len();
-                self.output.content.push(AssistantContent::ToolCall(ToolCall {
-                    id: call_id,
-                    name: name.to_string(),
-                    arguments: json!({}),
-                    thought_signature: None,
-                    namespace: None,
-                }));
-                self.state.tools.insert(key.clone(), (index, String::new()));
-                self.emit(|partial| AssistantMessageEvent::ToolCallStart {
-                    content_index: index,
-                    partial,
-                });
-            }
-            let args_delta = match call.pointer("/function/arguments") {
-                Some(Value::String(s)) => s.clone(),
-                Some(other) if jsrt::value::truthy(Some(other)) => jsrt::json::stringify(other),
-                _ => "{}".to_string(),
-            };
-            let (index, partial_args) = self
-                .state
-                .tools
-                .get_mut(&key)
-                .map_or_else(|| unreachable!(), |(i, p)| (*i, p));
-            partial_args.push_str(&args_delta);
-            let arguments = parse_streaming_json(partial_args);
-            if let AssistantContent::ToolCall(block) = &mut self.output.content[index] {
-                block.arguments = arguments;
-            }
-            self.emit(|partial| AssistantMessageEvent::ToolCallDelta {
-                content_index: index,
-                delta: args_delta,
-                partial,
-            });
+            self.apply_delta_tool_call(call);
         }
     }
 

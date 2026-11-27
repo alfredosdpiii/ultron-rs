@@ -141,59 +141,37 @@ impl KeptContracts {
             Ok(contract) => contract,
             Err(error) => return Some(Err(format!("rlm.finish: the kept contract is unreadable: {error}"))),
         };
-        if !kept["final"].is_null() {
-            return Some(Err(final_error(&contract)));
-        }
-        if kept["invalid"] == true {
-            return Some(Err(
-                "rlm.finish: no attempts left; end your turn, your reply is returned unverified".into(),
-            ));
+        if let Some(err) = finish_precondition_error(&kept, &contract) {
+            return Some(Err(err));
         }
         let cwd = self
             .stack
             .upgrade()
             .map(|stack| stack.config().cwd.display().to_string());
-        let checked = delegation::verdict::validate_verdict(payload, cwd.as_deref()).and_then(|verdict| {
-            let problems = contract.returns_problems(&verdict["outputs"]);
-            if problems.is_empty() {
-                Ok(verdict)
-            } else {
-                Err(problems)
-            }
-        });
+        let checked = validate_kept_verdict(payload, cwd.as_deref(), &contract);
         Some(match checked {
-            Ok(verdict) => {
-                let status = verdict["status"].clone();
-                kept["verdict"] = verdict;
-                self.keep(&id, kept).map(|()| {
-                    json!({ "recorded": true, "status": status,
-                        "next": "End your turn now with a short reply; the host checks your answer against your contract." })
-                })
-            }
-            Err(problems) => {
-                let rejections = count(&kept, "rejections") + 1;
-                kept["rejections"] = json!(rejections);
-                let list = problems.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n");
-                let left = MAX_VERDICT_REJECTIONS + 1 - rejections.min(MAX_VERDICT_REJECTIONS + 1);
-                let error = if left > 0 || !kept["verdict"].is_null() {
-                    let tail = if kept["verdict"].is_null() {
-                        format!(" ({left} attempt{} left)", if left == 1 { "" } else { "s" })
-                    } else {
-                        "; your earlier verdict stands until then".to_string()
-                    };
-                    format!("rlm.finish rejected:\n{list}\nFix these and call rlm.finish again{tail}.")
-                } else {
-                    kept["invalid"] = json!(true);
-                    format!(
-                        "rlm.finish rejected:\n{list}\nNo attempts left: end your turn; your reply is returned unverified, with these problems."
-                    )
-                };
-                match self.keep(&id, kept) {
-                    Ok(()) => Err(error),
-                    Err(keep) => Err(keep),
-                }
-            }
+            Ok(verdict) => self.record_valid_verdict(&id, kept, verdict),
+            Err(problems) => self.record_rejected_verdict(&id, &mut kept, &problems),
         })
+    }
+
+    fn record_valid_verdict(&self, id: &str, mut kept: Value, verdict: Value) -> Result<Value, String> {
+        let status = verdict["status"].clone();
+        kept["verdict"] = verdict;
+        self.keep(id, kept).map(|()| {
+            json!({ "recorded": true, "status": status,
+                "next": "End your turn now with a short reply; the host checks your answer against your contract." })
+        })
+    }
+
+    fn record_rejected_verdict(&self, id: &str, kept: &mut Value, problems: &[String]) -> Result<Value, String> {
+        let rejections = count(kept, "rejections") + 1;
+        kept["rejections"] = json!(rejections);
+        let list = problems.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n");
+        let left = MAX_VERDICT_REJECTIONS + 1 - rejections.min(MAX_VERDICT_REJECTIONS + 1);
+        let error = rejection_error_message(kept, &list, left);
+        self.keep(id, kept.clone())?;
+        Err(error)
     }
 
     /// The child's verdict starts afresh: a question (or a retry) is answered on a verdict of its own.
@@ -262,25 +240,10 @@ impl KeptContracts {
     fn check(&self, id: &str, kept: &Value, result: Value, lane: &str, signal: &Signal, serve: Serve<'_>) -> Value {
         let contract = match SpawnContract::from_described(&kept["contract"]) {
             Ok(contract) => contract,
-            Err(error) => {
-                let mut result = result;
-                result["status"] = json!("failed");
-                result["error"] = json!(format!(
-                    "Contract failed: the session's kept contract is unreadable: {error}"
-                ));
-                return result;
-            }
+            Err(error) => return unreadable_contract_result(result, &error),
         };
         if let Some(last) = kept.get("final").filter(|f| !f.is_null()) {
-            let mut result = result;
-            result["status"] = json!("failed");
-            result["error"] = last["error"].clone();
-            if !result["check"].is_object() {
-                result["check"] = json!({});
-            }
-            result["check"]["contract"] = last["contract"].clone();
-            result["verdict"] = self.kept(id).map_or(Value::Null, |kept| kept["verdict"].clone());
-            return result;
+            return self.final_failed_result(id, result, last);
         }
         let Some(stack) = self.stack.upgrade() else {
             return result;
@@ -288,59 +251,10 @@ impl KeptContracts {
         let baseline = GitBaseline::from_value(&kept["baseline"]);
         let used = count(kept, "failed_attempts");
         let failures = Cell::new(0u32);
-        let name = self
-            .children
-            .chat()
-            .and_then(|chat| chat.get_task(durable::TaskId(id.parse().ok()?)).ok().flatten())
-            .and_then(|task| task.input["name"].as_str().map(String::from))
-            .unwrap_or_else(|| id.to_string());
+        let name = self.kept_child_name(id);
         let runner = crate::contract_checks::check_runner(self.stack.clone());
-        let mut check = || {
-            let cwd = stack.config().cwd.clone();
-            let verdict = self
-                .kept(id)
-                .map(|kept| kept["verdict"].clone())
-                .filter(|v| !v.is_null());
-            let before = sync::lock(&self.before).get(id).cloned();
-            let diff = match (&before, &baseline) {
-                (Some(before), _) => diff_snapshots(before, &snapshot_workspace(&cwd)).ok(),
-                (None, Some(baseline)) => baseline.changes(&cwd, &stack.config().child_env()).ok(),
-                (None, None) => None,
-            };
-            let place = CheckPlace {
-                cwd: Some(&cwd),
-                env: &[],
-                diff: diff.as_ref(),
-                signal,
-            };
-            let report = contract.evaluate(verdict.as_ref(), &place, &runner);
-            if signal.is_aborted() {
-                return None;
-            }
-            if report["verdict"] != "verified" {
-                failures.set(failures.get() + 1);
-            }
-            Some(report)
-        };
-        let mut retry = |note: &str| {
-            self.clear_verdict(id);
-            let mut ask = Map::new();
-            ask.insert("child".into(), json!(id));
-            ask.insert("question".into(), json!(note));
-            let answer = serve("rlm.ask", &ask);
-            if signal.is_aborted() {
-                return None;
-            }
-            Some(Some(match answer {
-                Ok(mut answer) => {
-                    if let Some(fields) = answer.as_object_mut() {
-                        fields.remove("id");
-                    }
-                    answer
-                }
-                Err(error) => json!({ "status": "failed", "error": error }),
-            }))
-        };
+        let mut check = || self.evaluate_kept_check(id, &stack, &contract, &baseline, signal, &runner, &failures);
+        let mut retry = |note: &str| self.retry_kept_child(id, note, signal, serve);
         let mut review = |name: &str, prompt: &str| {
             let payload = json!({ "prompt": prompt, "kwargs": { "name": name } });
             stack.delegation.handle("rlm.spawn", payload, lane)
@@ -352,17 +266,147 @@ impl KeptContracts {
         };
         let fallback = result.clone();
         let mut checked = enforce_after(&contract, result, id, &name, &mut enforcer, used).unwrap_or(fallback);
-        if failures.get() > 0
-            && let Some(mut kept) = self.kept(id)
-        {
-            let failed = used + failures.get();
+        self.record_failed_attempts(id, &contract, used, failures.get(), &checked);
+        checked["verdict"] = self.kept(id).map_or(Value::Null, |kept| kept["verdict"].clone());
+        checked
+    }
+
+    fn final_failed_result(&self, id: &str, mut result: Value, last: &Value) -> Value {
+        result["status"] = json!("failed");
+        result["error"] = last["error"].clone();
+        if !result["check"].is_object() {
+            result["check"] = json!({});
+        }
+        result["check"]["contract"] = last["contract"].clone();
+        result["verdict"] = self.kept(id).map_or(Value::Null, |kept| kept["verdict"].clone());
+        result
+    }
+
+    fn kept_child_name(&self, id: &str) -> String {
+        self.children
+            .chat()
+            .and_then(|chat| chat.get_task(durable::TaskId(id.parse().ok()?)).ok().flatten())
+            .and_then(|task| task.input["name"].as_str().map(String::from))
+            .unwrap_or_else(|| id.to_string())
+    }
+
+    #[expect(clippy::too_many_arguments, reason = "internal kept-contract check helper")]
+    fn evaluate_kept_check(
+        &self,
+        id: &str,
+        stack: &Arc<Stack>,
+        contract: &SpawnContract,
+        baseline: &Option<GitBaseline>,
+        signal: &Signal,
+        runner: &delegation::spawn_contract::CheckRunner,
+        failures: &Cell<u32>,
+    ) -> Option<Value> {
+        let cwd = stack.config().cwd.clone();
+        let verdict = self
+            .kept(id)
+            .map(|kept| kept["verdict"].clone())
+            .filter(|v| !v.is_null());
+        let before = sync::lock(&self.before).get(id).cloned();
+        let diff = match (&before, baseline) {
+            (Some(before), _) => diff_snapshots(before, &snapshot_workspace(&cwd)).ok(),
+            (None, Some(baseline)) => baseline.changes(&cwd, &stack.config().child_env()).ok(),
+            (None, None) => None,
+        };
+        let place = CheckPlace {
+            cwd: Some(&cwd),
+            env: &[],
+            diff: diff.as_ref(),
+            signal,
+        };
+        let report = contract.evaluate(verdict.as_ref(), &place, runner);
+        if signal.is_aborted() {
+            return None;
+        }
+        if report["verdict"] != "verified" {
+            failures.set(failures.get() + 1);
+        }
+        Some(report)
+    }
+
+    fn retry_kept_child(&self, id: &str, note: &str, signal: &Signal, serve: Serve<'_>) -> Option<Option<Value>> {
+        self.clear_verdict(id);
+        let mut ask = Map::new();
+        ask.insert("child".into(), json!(id));
+        ask.insert("question".into(), json!(note));
+        let answer = serve("rlm.ask", &ask);
+        if signal.is_aborted() {
+            return None;
+        }
+        Some(Some(match answer {
+            Ok(mut answer) => {
+                if let Some(fields) = answer.as_object_mut() {
+                    fields.remove("id");
+                }
+                answer
+            }
+            Err(error) => json!({ "status": "failed", "error": error }),
+        }))
+    }
+
+    fn record_failed_attempts(&self, id: &str, contract: &SpawnContract, used: u32, delta: u32, checked: &Value) {
+        if delta == 0 {
+            return;
+        }
+        if let Some(mut kept) = self.kept(id) {
+            let failed = used + delta;
             kept["failed_attempts"] = json!(failed);
             if failed >= contract.hop.attempts() && checked["check"]["contract"]["verdict"] == "contract_failed" {
                 kept["final"] = json!({ "error": checked["error"], "contract": checked["check"]["contract"] });
             }
             let _ = self.keep(id, kept);
         }
-        checked["verdict"] = self.kept(id).map_or(Value::Null, |kept| kept["verdict"].clone());
-        checked
     }
+}
+
+fn finish_precondition_error(kept: &Value, contract: &SpawnContract) -> Option<String> {
+    if !kept["final"].is_null() {
+        return Some(final_error(contract));
+    }
+    if kept["invalid"] == true {
+        return Some("rlm.finish: no attempts left; end your turn, your reply is returned unverified".into());
+    }
+    None
+}
+
+fn validate_kept_verdict(
+    payload: &Map<String, Value>,
+    cwd: Option<&str>,
+    contract: &SpawnContract,
+) -> Result<Value, Vec<String>> {
+    let verdict = delegation::verdict::validate_verdict(payload, cwd)?;
+    let problems = contract.returns_problems(&verdict["outputs"]);
+    if problems.is_empty() {
+        Ok(verdict)
+    } else {
+        Err(problems)
+    }
+}
+
+fn rejection_error_message(kept: &mut Value, list: &str, left: u32) -> String {
+    if left > 0 || !kept["verdict"].is_null() {
+        let tail = if kept["verdict"].is_null() {
+            format!(" ({left} attempt{} left)", if left == 1 { "" } else { "s" })
+        } else {
+            "; your earlier verdict stands until then".to_string()
+        };
+        format!("rlm.finish rejected:\n{list}\nFix these and call rlm.finish again{tail}.")
+    } else {
+        kept["invalid"] = json!(true);
+        format!(
+            "rlm.finish rejected:\n{list}\nNo attempts left: end your turn; your reply is returned unverified, with these problems."
+        )
+    }
+}
+
+fn unreadable_contract_result(mut result: Value, error: &str) -> Value {
+    result["status"] = json!("failed");
+    result["error"] = json!(format!(
+        "Contract failed: the session's kept contract is unreadable: {error}"
+    ));
+    result
 }

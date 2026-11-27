@@ -132,7 +132,7 @@ fn cli_local_themes_are_offered_and_applied_by_the_settings() {
     assert_eq!(json!(available), fixture()["available"]);
     // `/settings` theme: choosing a settings theme applies it.
     let mut controller = interactive::theme_setup::ThemeController::new(registry, Some("dark".into()), None);
-    assert!(controller.available().contains(&"zest".to_string()));
+    assert!(controller.available().iter().any(|i| i == "zest"));
     let applied = controller.set_setting("zest");
     assert_eq!((applied.theme.name.as_deref(), applied.error), (Some("zest"), None));
     assert_eq!(

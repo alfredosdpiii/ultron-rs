@@ -153,6 +153,71 @@ pub struct FrameSession {
     tasks: OnceLock<Arc<dyn FrameTasks>>,
 }
 
+enum TurnResult {
+    Done(Outcome),
+    Retry(String),
+}
+
+struct ConverseState<'a> {
+    live: &'a Live,
+    signal: &'a Signal,
+    run: Option<&'a FrameExecution>,
+    engine: Engine,
+    system: String,
+    deadline: Instant,
+    conversation_chars: u64,
+    history: Vec<Message>,
+}
+
+type PendingHold = Arc<Mutex<Option<(u64, u64)>>>;
+
+struct CodeConverseState<'a> {
+    live: &'a Live,
+    run: &'a FrameExecution,
+    engine: Engine,
+    deadline: Instant,
+    pending: PendingHold,
+    agent: Agent,
+    runtime: tokio::runtime::Runtime,
+    conversation_chars: u64,
+}
+
+fn estimate_tokens(conversation_chars: u64, message: &str) -> u64 {
+    (conversation_chars + jsrt::utf16::len(message) as u64).div_ceil(3) + REQUEST_OVERHEAD_TOKENS
+}
+
+fn request_settlement(
+    response: &Result<Option<AssistantMessage>, String>,
+    signal: &Signal,
+) -> (&'static str, Option<Value>) {
+    match response {
+        Ok(Some(reply)) => ("succeeded", measured(std::slice::from_ref(reply))),
+        Ok(None) => ("cancelled", None),
+        Err(_) if signal.is_aborted() => ("cancelled", None),
+        Err(_) => ("failed", None),
+    }
+}
+
+fn assistant_replies(messages: &[Message]) -> Vec<AssistantMessage> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::Assistant(reply) => Some(reply.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn loop_code_attempts(session: &FrameSession, state: &mut CodeConverseState<'_>, message: &mut String) -> Outcome {
+    for attempt in 0u64.. {
+        match session.converse_with_code_turn(state, attempt, message) {
+            TurnResult::Done(outcome) => return outcome,
+            TurnResult::Retry(next) => *message = next,
+        }
+    }
+    unreachable!("the attempt counter is unbounded")
+}
+
 impl FrameSession {
     /// A session whose traces live in `store`; frames run on their callers' threads until [`Self::set_tasks`].
     pub fn new(store: Arc<dyn TraceStore>) -> Arc<Self> {
@@ -397,107 +462,146 @@ impl FrameSession {
         }
     }
 
+    fn seed_prompt(live: &Live, engine: &Engine) -> String {
+        let mut frame = lock(&live.frame);
+        frame.model = Some(engine.own_model());
+        frame_prompt(&frame.task, &frame.views, live.options.contract.as_ref())
+    }
+
+    fn prepare_attempt(
+        &self,
+        live: &Live,
+        engine: &Engine,
+        deadline: Instant,
+        signal: &Signal,
+        attempt: u64,
+        estimate: u64,
+    ) -> Result<(u64, u64), Outcome> {
+        if signal.is_aborted() || Instant::now() >= deadline {
+            return Err(Outcome::Error("cancelled".into()));
+        }
+        if let Some(error) = self.window_error(engine, estimate) {
+            return Err(Outcome::Error(error));
+        }
+        self.claim(live, estimate)
+            .ok_or_else(|| Outcome::Incomplete("budget_exhausted", exhausted_detail(attempt)))
+    }
+
+    fn finish_converse_reply(
+        &self,
+        state: &mut ConverseState<'_>,
+        attempt: u64,
+        reply: AssistantMessage,
+    ) -> TurnResult {
+        add_measured(state.live, std::slice::from_ref(&reply));
+        if let (Some(run), Some(tasks)) = (state.run, self.tasks.get()) {
+            tasks.charge_turn(run.usage_root.as_deref(), &reply);
+        }
+        if state.signal.is_aborted() {
+            return TurnResult::Done(Outcome::Error("cancelled".into()));
+        }
+        if let Some(outcome) = failed_reply(&reply) {
+            return TurnResult::Done(outcome);
+        }
+        let text = reply_text(&reply);
+        state.history.push(Message::Assistant(reply));
+        state.conversation_chars += jsrt::utf16::len(&text) as u64;
+        match self.judge(state.live, attempt, text) {
+            Ok(outcome) => TurnResult::Done(outcome),
+            Err(next) => TurnResult::Retry(next),
+        }
+    }
+
+    fn converse_turn(&self, state: &mut ConverseState<'_>, attempt: u64, message: &str) -> TurnResult {
+        let estimate = estimate_tokens(state.conversation_chars, message);
+        let (held, tranche) = match self.prepare_attempt(
+            state.live,
+            &state.engine,
+            state.deadline,
+            state.signal,
+            attempt,
+            estimate,
+        ) {
+            Ok(hold) => hold,
+            Err(outcome) => return TurnResult::Done(outcome),
+        };
+        state.conversation_chars += jsrt::utf16::len(message) as u64;
+        state.history.push(user_message(message));
+        let reservation = match self.reserve(state.live, state.run, attempt) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                self.release(state.live, held);
+                return TurnResult::Done(Outcome::Error(error));
+            }
+        };
+        let response = state.engine.request(
+            &state.system,
+            &state.history,
+            tranche,
+            &state.live.options,
+            state.deadline,
+            state.signal,
+        );
+        let charged = response
+            .as_ref()
+            .ok()
+            .and_then(Option::as_ref)
+            .map_or(0, |reply| charged_tokens(&reply.usage));
+        self.settle_request(
+            state.live,
+            held,
+            tranche,
+            response.as_ref().ok().and_then(Option::as_ref),
+            charged,
+        );
+        let (status, usage) = request_settlement(&response, state.signal);
+        self.settle(reservation, status, usage);
+        match response {
+            Ok(Some(reply)) => self.finish_converse_reply(state, attempt, reply),
+            Ok(None) => TurnResult::Done(Outcome::Error("cancelled".into())),
+            Err(error) => TurnResult::Done(Outcome::Error(format!(
+                "frame request failed: {}",
+                Value::String(error)
+            ))),
+        }
+    }
+
     /// The frame's code-free conversation: the seeded prompt, then re-asks within budget until the contract holds.
     /// A request the provider does not answer before the deadline (or before the frame is cancelled) is refunded.
     fn converse(&self, live: &Live, signal: &Signal, run: Option<&FrameExecution>) -> Outcome {
-        let options = &live.options;
-        let engine = &live.engine();
-        let deadline = Instant::now() + options.timeout;
-        let system = frame_system(options);
-        let mut conversation_chars = jsrt::utf16::len(&system) as u64;
-        let mut message = {
-            let mut frame = lock(&live.frame);
-            frame.model = Some(engine.own_model());
-            frame_prompt(&frame.task, &frame.views, options.contract.as_ref())
+        let engine = live.engine();
+        let system = frame_system(&live.options);
+        let mut message = Self::seed_prompt(live, &engine);
+        let mut state = ConverseState {
+            live,
+            signal,
+            run,
+            engine,
+            conversation_chars: jsrt::utf16::len(&system) as u64,
+            system,
+            deadline: Instant::now() + live.options.timeout,
+            history: Vec::new(),
         };
-        let mut history: Vec<Message> = Vec::new();
         for attempt in 0u64.. {
-            if signal.is_aborted() || Instant::now() >= deadline {
-                return Outcome::Error("cancelled".into());
-            }
-            let estimate =
-                (conversation_chars + jsrt::utf16::len(&message) as u64).div_ceil(3) + REQUEST_OVERHEAD_TOKENS;
-            if let Some(error) = self.window_error(engine, estimate) {
-                return Outcome::Error(error);
-            }
-            let Some((held, tranche)) = self.claim(live, estimate) else {
-                return Outcome::Incomplete("budget_exhausted", exhausted_detail(attempt));
-            };
-            conversation_chars += jsrt::utf16::len(&message) as u64;
-            history.push(user_message(&message));
-            let reservation = match self.reserve(live, run, attempt) {
-                Ok(reservation) => reservation,
-                Err(error) => {
-                    self.release(live, held);
-                    return Outcome::Error(error);
-                }
-            };
-            let response = engine.request(&system, &history, tranche, options, deadline, signal);
-            let charged = match &response {
-                Ok(Some(reply)) => charged_tokens(&reply.usage),
-                _ => 0,
-            };
-            self.settle_request(
-                live,
-                held,
-                tranche,
-                response.as_ref().ok().and_then(Option::as_ref),
-                charged,
-            );
-            let (status, usage) = match &response {
-                Ok(Some(reply)) => ("succeeded", measured(std::slice::from_ref(reply))),
-                Ok(None) => ("cancelled", None),
-                Err(_) if signal.is_aborted() => ("cancelled", None),
-                Err(_) => ("failed", None),
-            };
-            self.settle(reservation, status, usage);
-            let reply = match response {
-                Ok(Some(reply)) => reply,
-                Ok(None) => return Outcome::Error("cancelled".into()),
-                Err(error) => return Outcome::Error(format!("frame request failed: {}", Value::String(error))),
-            };
-            add_measured(live, std::slice::from_ref(&reply));
-            if let (Some(run), Some(tasks)) = (run, self.tasks.get()) {
-                tasks.charge_turn(run.usage_root.as_deref(), &reply);
-            }
-            if signal.is_aborted() {
-                return Outcome::Error("cancelled".into());
-            }
-            if let Some(outcome) = failed_reply(&reply) {
-                return outcome;
-            }
-            let text = reply_text(&reply);
-            history.push(Message::Assistant(reply));
-            conversation_chars += jsrt::utf16::len(&text) as u64;
-            match self.judge(live, attempt, text) {
-                Ok(outcome) => return outcome,
-                Err(next) => message = next,
+            match self.converse_turn(&mut state, attempt, &message) {
+                TurnResult::Done(outcome) => return outcome,
+                TurnResult::Retry(next) => message = next,
             }
         }
         unreachable!("the attempt counter is unbounded")
     }
 
-    /// A frame with depth: its conversation is an agent on the task's lane with the `rlm` cell as its only tool.
-    /// Each attempt is one prompt; its first request uses the hold claimed for it, every further request (a tool
-    /// round) claims its own or is refused unsent, and each response is charged as it arrives.
-    fn converse_with_code(self: &Arc<Self>, live: &Arc<Live>, run: &FrameExecution) -> Outcome {
-        let Some(tasks) = self.tasks.get() else {
-            return Outcome::Error("frames that run code need a task host".into());
-        };
-        let options = &live.options;
-        let engine = &live.engine();
-        let tool = match tasks.code_tool(&run.lane) {
-            Ok(tool) => tool,
-            Err(error) => return Outcome::Error(error),
-        };
-        let deadline = Instant::now() + options.timeout;
-        let system = frame_system(options);
-        let mut message = {
-            let mut frame = lock(&live.frame);
-            frame.model = Some(engine.own_model());
-            frame_prompt(&frame.task, &frame.views, options.contract.as_ref())
-        };
-        let pending: Arc<Mutex<Option<(u64, u64)>>> = Arc::default();
+    fn build_code_agent(
+        self: &Arc<Self>,
+        live: &Arc<Live>,
+        run: &FrameExecution,
+        tasks: &Arc<dyn FrameTasks>,
+        engine: &Engine,
+        system: &str,
+        deadline: Instant,
+    ) -> Result<(Agent, PendingHold), String> {
+        let tool = tasks.code_tool(&run.lane)?;
+        let pending: PendingHold = Arc::default();
         let context_use: Arc<Mutex<Option<u64>>> = Arc::default();
         let meter_use = context_use.clone();
         tasks.frame_context(&run.lane, &engine.model, Arc::new(move || *lock(&meter_use)));
@@ -513,7 +617,7 @@ impl FrameSession {
             root: run.usage_root.clone(),
         };
         let mut agent_options = AgentOptions::new(engine.model.clone());
-        agent_options.system_prompt = Some(system.clone());
+        agent_options.system_prompt = Some(system.to_string());
         agent_options.tools = vec![tool];
         let (gate_tasks, gate_lane, gate_root) = (tasks.clone(), run.lane.clone(), run.usage_root.clone());
         agent_options.before_tool_call = Some(Arc::new(move |_, _| {
@@ -526,83 +630,114 @@ impl FrameSession {
                 }))
             })
         }));
-        agent_options.thinking_level = options
+        agent_options.thinking_level = live
+            .options
             .thinking
             .clone()
             .filter(|_| engine.model.reasoning)
             .unwrap_or_else(|| "off".into());
-        let mut agent = Agent::new(agent_options, Box::new(stream));
+        Ok((Agent::new(agent_options, Box::new(stream)), pending))
+    }
+
+    fn finish_code_attempt(
+        &self,
+        state: &mut CodeConverseState<'_>,
+        reservation: Option<Value>,
+        attempt: u64,
+        replies: Vec<AssistantMessage>,
+    ) -> TurnResult {
+        let status = if state.run.signal.is_aborted() {
+            "cancelled"
+        } else {
+            "succeeded"
+        };
+        self.settle(reservation, status, measured(&replies));
+        add_measured(state.live, &replies);
+        if state.run.signal.is_aborted() {
+            return TurnResult::Done(Outcome::Error("cancelled".into()));
+        }
+        if let Some(exhausted) = lock(&state.live.frame).exhausted.clone() {
+            return TurnResult::Done(Outcome::Incomplete("budget_exhausted", exhausted));
+        }
+        let Some(reply) = replies.last() else {
+            return TurnResult::Done(Outcome::Error("frame run did not complete: failed".into()));
+        };
+        if let Some(outcome) = failed_reply(reply) {
+            return TurnResult::Done(outcome);
+        }
+        let text = reply_text(reply);
+        state.conversation_chars += jsrt::utf16::len(&text) as u64;
+        match self.judge(state.live, attempt, text) {
+            Ok(outcome) => TurnResult::Done(outcome),
+            Err(next) => TurnResult::Retry(next),
+        }
+    }
+
+    fn converse_with_code_turn(&self, state: &mut CodeConverseState<'_>, attempt: u64, message: &str) -> TurnResult {
+        let estimate = estimate_tokens(state.conversation_chars, message);
+        let hold = match self.prepare_attempt(
+            state.live,
+            &state.engine,
+            state.deadline,
+            &state.run.signal,
+            attempt,
+            estimate,
+        ) {
+            Ok(hold) => hold,
+            Err(outcome) => return TurnResult::Done(outcome),
+        };
+        *lock(&state.pending) = Some(hold);
+        state.conversation_chars += jsrt::utf16::len(message) as u64;
+        let reservation = match self.reserve(state.live, Some(state.run), attempt) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                if let Some((held, _)) = lock(&state.pending).take() {
+                    self.release(state.live, held);
+                }
+                return TurnResult::Done(Outcome::Error(error));
+            }
+        };
+        let before = state.agent.messages.len();
+        state.runtime.block_on(state.agent.prompt_text(message, Vec::new()));
+        if let Some((held, _)) = lock(&state.pending).take() {
+            self.release(state.live, held);
+        }
+        let replies = assistant_replies(&state.agent.messages[before..]);
+        self.finish_code_attempt(state, reservation, attempt, replies)
+    }
+
+    /// A frame with depth: its conversation is an agent on the task's lane with the `rlm` cell as its only tool.
+    /// Each attempt is one prompt; its first request uses the hold claimed for it, every further request (a tool
+    /// round) claims its own or is refused unsent, and each response is charged as it arrives.
+    fn converse_with_code(self: &Arc<Self>, live: &Arc<Live>, run: &FrameExecution) -> Outcome {
+        let Some(tasks) = self.tasks.get() else {
+            return Outcome::Error("frames that run code need a task host".into());
+        };
+        let engine = live.engine();
+        let deadline = Instant::now() + live.options.timeout;
+        let system = frame_system(&live.options);
+        let mut message = Self::seed_prompt(live, &engine);
+        let (agent, pending) = match self.build_code_agent(live, run, tasks, &engine, &system, deadline) {
+            Ok(built) => built,
+            Err(error) => return Outcome::Error(error),
+        };
         let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
             Ok(runtime) => runtime,
             Err(error) => return Outcome::Error(error.to_string()),
         };
         let control = agent.control();
         let listener = run.signal.on_abort(move |_| control.abort());
-        let mut conversation_chars = jsrt::utf16::len(&system) as u64;
-        let outcome = 'attempts: {
-            for attempt in 0u64.. {
-                if run.signal.is_aborted() || Instant::now() >= deadline {
-                    break 'attempts Outcome::Error("cancelled".into());
-                }
-                let estimate =
-                    (conversation_chars + jsrt::utf16::len(&message) as u64).div_ceil(3) + REQUEST_OVERHEAD_TOKENS;
-                if let Some(error) = self.window_error(engine, estimate) {
-                    break 'attempts Outcome::Error(error);
-                }
-                let Some(hold) = self.claim(live, estimate) else {
-                    break 'attempts Outcome::Incomplete("budget_exhausted", exhausted_detail(attempt));
-                };
-                *lock(&pending) = Some(hold);
-                conversation_chars += jsrt::utf16::len(&message) as u64;
-                let reservation = match self.reserve(live, Some(run), attempt) {
-                    Ok(reservation) => reservation,
-                    Err(error) => {
-                        if let Some((held, _)) = lock(&pending).take() {
-                            self.release(live, held);
-                        }
-                        break 'attempts Outcome::Error(error);
-                    }
-                };
-                let before = agent.messages.len();
-                runtime.block_on(agent.prompt_text(&message, Vec::new()));
-                if let Some((held, _)) = lock(&pending).take() {
-                    self.release(live, held);
-                }
-                let replies: Vec<AssistantMessage> = agent.messages[before..]
-                    .iter()
-                    .filter_map(|message| match message {
-                        Message::Assistant(reply) => Some(reply.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                let status = if run.signal.is_aborted() {
-                    "cancelled"
-                } else {
-                    "succeeded"
-                };
-                self.settle(reservation, status, measured(&replies));
-                add_measured(live, &replies);
-                if run.signal.is_aborted() {
-                    break 'attempts Outcome::Error("cancelled".into());
-                }
-                if let Some(exhausted) = lock(&live.frame).exhausted.clone() {
-                    break 'attempts Outcome::Incomplete("budget_exhausted", exhausted);
-                }
-                let Some(reply) = replies.last() else {
-                    break 'attempts Outcome::Error("frame run did not complete: failed".into());
-                };
-                if let Some(outcome) = failed_reply(reply) {
-                    break 'attempts outcome;
-                }
-                let text = reply_text(reply);
-                conversation_chars += jsrt::utf16::len(&text) as u64;
-                match self.judge(live, attempt, text) {
-                    Ok(outcome) => break 'attempts outcome,
-                    Err(next) => message = next,
-                }
-            }
-            unreachable!("the attempt counter is unbounded")
+        let mut state = CodeConverseState {
+            live,
+            run,
+            engine,
+            deadline,
+            pending,
+            agent,
+            runtime,
+            conversation_chars: jsrt::utf16::len(&system) as u64,
         };
+        let outcome = loop_code_attempts(self, &mut state, &mut message);
         if let Some(listener) = listener {
             run.signal.forget(listener);
         }

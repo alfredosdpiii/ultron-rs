@@ -55,6 +55,57 @@ enum Parsed {
     },
 }
 
+#[derive(Default)]
+struct UpdateFlags<'a> {
+    self_flag: bool,
+    models_flag: bool,
+    force: bool,
+    source: Option<&'a str>,
+}
+
+fn parse_update_flag(arg: &str, flags: &mut UpdateFlags<'_>) -> Option<Parsed> {
+    match arg {
+        "-h" | "--help" => return Some(Parsed::Help),
+        "--self" => flags.self_flag = true,
+        "--models" => flags.models_flag = true,
+        "--force" => flags.force = true,
+        "--extensions" | "--extension" | "--all" => return Some(Parsed::Unsupported),
+        "--approve" | "-a" | "--no-approve" | "-na" => {}
+        _ => return Some(Parsed::InvalidOption(arg.to_string())),
+    }
+    None
+}
+
+fn parse_update_arg<'a>(arg: &'a str, flags: &mut UpdateFlags<'a>) -> Option<Parsed> {
+    if arg.starts_with('-') {
+        return parse_update_flag(arg, flags);
+    }
+    if flags.source.is_none() {
+        flags.source = Some(arg);
+        return None;
+    }
+    Some(Parsed::UnexpectedArgument(arg.to_string()))
+}
+
+fn finalize_update(flags: UpdateFlags<'_>) -> Parsed {
+    match flags.source {
+        Some("self" | "pi" | "ultron") | None => {}
+        Some(_) => return Parsed::Unsupported,
+    }
+    if flags.models_flag && (flags.self_flag || flags.source.is_some()) {
+        return Parsed::Conflict("--models cannot be combined with --self or a positional target");
+    }
+    let target = if flags.models_flag {
+        UpdateTarget::Models
+    } else {
+        UpdateTarget::SelfOnly
+    };
+    Parsed::Update {
+        target,
+        force: flags.force,
+    }
+}
+
 /// `parsePackageCommand` for `update` (and the removed package commands); None for anything else.
 fn parse(args: &[String]) -> Option<Parsed> {
     match args.first().map(String::as_str) {
@@ -62,36 +113,13 @@ fn parse(args: &[String]) -> Option<Parsed> {
         Some("update") => {}
         _ => return None,
     }
-    let (mut self_flag, mut models_flag, mut force) = (false, false, false);
-    let mut source: Option<&str> = None;
+    let mut flags = UpdateFlags::default();
     for arg in &args[1..] {
-        match arg.as_str() {
-            "-h" | "--help" => return Some(Parsed::Help),
-            "--self" => self_flag = true,
-            "--models" => models_flag = true,
-            "--force" => force = true,
-            "--extensions" | "--extension" | "--all" => return Some(Parsed::Unsupported),
-            "--approve" | "-a" | "--no-approve" | "-na" => {}
-            a if a.starts_with('-') => return Some(Parsed::InvalidOption(a.to_string())),
-            a if source.is_none() => source = Some(a),
-            a => return Some(Parsed::UnexpectedArgument(a.to_string())),
+        if let Some(early) = parse_update_arg(arg.as_str(), &mut flags) {
+            return Some(early);
         }
     }
-    match source {
-        Some("self" | "pi" | "ultron") | None => {}
-        Some(_) => return Some(Parsed::Unsupported),
-    }
-    if models_flag && (self_flag || source.is_some()) {
-        return Some(Parsed::Conflict(
-            "--models cannot be combined with --self or a positional target",
-        ));
-    }
-    let target = if models_flag {
-        UpdateTarget::Models
-    } else {
-        UpdateTarget::SelfOnly
-    };
-    Some(Parsed::Update { target, force })
+    Some(finalize_update(flags))
 }
 
 struct Io<'a> {
@@ -227,6 +255,44 @@ fn fetch_error(error: &reqwest::Error) -> String {
     "fetch failed".into()
 }
 
+fn parse_release_version(text: &str) -> Option<String> {
+    let data: Value = serde_json::from_str(text).unwrap_or(Value::Null);
+    data.get("version")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| crate::semver::valid(v).is_some())
+        .map(str::to_string)
+}
+
+async fn fetch_latest_version(
+    client: &reqwest::Client,
+    url: &str,
+    user_agent: &str,
+    retries: u32,
+) -> Result<Option<String>, String> {
+    const RETRYABLE: [u16; 7] = [408, 425, 429, 500, 502, 503, 504];
+    let mut attempt = 0;
+    loop {
+        let sent = client
+            .get(url)
+            .header("user-agent", user_agent)
+            .header("accept", "application/json")
+            .send()
+            .await;
+        match sent {
+            Ok(response) if RETRYABLE.contains(&response.status().as_u16()) && attempt < retries => {}
+            Ok(response) if !response.status().is_success() => return Ok(None),
+            Ok(response) => {
+                let text = response.text().await.unwrap_or_default();
+                return Ok(parse_release_version(&text));
+            }
+            Err(error) if attempt >= retries => return Err(fetch_error(&error)),
+            Err(_) => {}
+        }
+        attempt += 1;
+    }
+}
+
 /// `getLatestRelease(VERSION, { retry: true })`: up to `retries` (2 with `retry`, else 0) retries after a failure or a
 /// transient status, within ten seconds. `Ok(None)`: offline, an error status, or no valid version in the document.
 pub(crate) fn latest_release(env: &Env, url: &str, retries: u32) -> Result<Option<String>, String> {
@@ -240,35 +306,7 @@ pub(crate) fn latest_release(env: &Env, url: &str, retries: u32) -> Result<Optio
     let user_agent = ai::model_refresh::management_user_agent();
     runtime.block_on(async {
         let client = ai::net::ClientConfig::from_lookup(&*env.var).client()?;
-        let work = async {
-            const RETRYABLE: [u16; 7] = [408, 425, 429, 500, 502, 503, 504];
-            let mut attempt = 0;
-            loop {
-                let sent = client
-                    .get(url)
-                    .header("user-agent", &user_agent)
-                    .header("accept", "application/json")
-                    .send()
-                    .await;
-                match sent {
-                    Ok(response) if RETRYABLE.contains(&response.status().as_u16()) && attempt < retries => {}
-                    Ok(response) => {
-                        if !response.status().is_success() {
-                            return Ok(None);
-                        }
-                        let text = response.text().await.unwrap_or_default();
-                        let data: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-                        let version = data.get("version").and_then(Value::as_str).map(str::trim);
-                        return Ok(version
-                            .filter(|v| crate::semver::valid(v).is_some())
-                            .map(str::to_string));
-                    }
-                    Err(error) if attempt >= retries => return Err(fetch_error(&error)),
-                    Err(_) => {}
-                }
-                attempt += 1;
-            }
-        };
+        let work = fetch_latest_version(&client, url, &user_agent, retries);
         match tokio::time::timeout(std::time::Duration::from_secs(10), work).await {
             Ok(result) => result,
             Err(_) => Err("The operation was aborted due to timeout".into()),
@@ -305,6 +343,31 @@ fn self_update(env: &Env, force: bool, io: &mut Io, endpoints: &Endpoints) -> Re
     Ok(1)
 }
 
+enum ConfigArgs<'a> {
+    Help,
+    Run { local: bool, trust_override: Option<bool> },
+    UnknownOption(&'a str),
+    UnexpectedArg(&'a str),
+}
+
+fn parse_config_args(rest: &[String]) -> ConfigArgs<'_> {
+    if rest.iter().any(|a| a == "-h" || a == "--help") {
+        return ConfigArgs::Help;
+    }
+    let mut local = false;
+    let mut trust_override = None;
+    for arg in rest {
+        match arg.as_str() {
+            "-l" | "--local" => local = true,
+            "-a" | "--approve" => trust_override = Some(true),
+            "-na" | "--no-approve" => trust_override = Some(false),
+            a if a.starts_with('-') => return ConfigArgs::UnknownOption(a),
+            a => return ConfigArgs::UnexpectedArg(a),
+        }
+    }
+    ConfigArgs::Run { local, trust_override }
+}
+
 /// `ultron config`: argument checks, then the resource selector.
 pub fn run_config(
     argv: &[String],
@@ -315,12 +378,12 @@ pub fn run_config(
     if argv.first().map(String::as_str) != Some("config") {
         return None;
     }
-    let rest = &argv[1..];
     let usage = "ultron config [-l] [--approve|--no-approve]";
-    if rest.iter().any(|a| a == "-h" || a == "--help") {
-        let _ = writeln!(
-            out,
-            "Usage:
+    let (local, trust_override) = match parse_config_args(&argv[1..]) {
+        ConfigArgs::Help => {
+            let _ = writeln!(
+                out,
+                "Usage:
   {usage}
 
 Open the resource configuration TUI to enable or disable package resources.
@@ -332,28 +395,21 @@ Options:
   -a, --approve     Trust project-local files for this command with -l
   -na, --no-approve Ignore project-local files for this command with -l
 "
-        );
-        return Some(0);
-    }
-    let mut local = false;
-    let mut trust_override = None;
-    for arg in rest {
-        match arg.as_str() {
-            "-l" | "--local" => local = true,
-            "-a" | "--approve" => trust_override = Some(true),
-            "-na" | "--no-approve" => trust_override = Some(false),
-            a if a.starts_with('-') => {
-                let _ = writeln!(err, "Unknown option {a} for \"config\".");
-                let _ = writeln!(err, "Use \"ultron --help\" or \"{usage}\".");
-                return Some(1);
-            }
-            a => {
-                let _ = writeln!(err, "Unexpected argument {a}.");
-                let _ = writeln!(err, "Usage: {usage}");
-                return Some(1);
-            }
+            );
+            return Some(0);
         }
-    }
+        ConfigArgs::UnknownOption(a) => {
+            let _ = writeln!(err, "Unknown option {a} for \"config\".");
+            let _ = writeln!(err, "Use \"ultron --help\" or \"{usage}\".");
+            return Some(1);
+        }
+        ConfigArgs::UnexpectedArg(a) => {
+            let _ = writeln!(err, "Unexpected argument {a}.");
+            let _ = writeln!(err, "Usage: {usage}");
+            return Some(1);
+        }
+        ConfigArgs::Run { local, trust_override } => (local, trust_override),
+    };
     let settings = settings_manager(env, trust_override);
     if local && !settings.is_project_trusted() {
         let _ = writeln!(

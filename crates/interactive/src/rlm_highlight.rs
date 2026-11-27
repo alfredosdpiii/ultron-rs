@@ -18,26 +18,37 @@ enum Style {
     Text(TextStyle),
 }
 
+const SCOPE_STYLES: &[(&str, Style)] = &[
+    ("keyword", Style::Color(Fg::SyntaxKeyword)),
+    ("name", Style::Color(Fg::SyntaxKeyword)),
+    ("built_in", Style::Color(Fg::SyntaxType)),
+    ("class", Style::Color(Fg::SyntaxType)),
+    ("type", Style::Color(Fg::SyntaxType)),
+    ("literal", Style::Color(Fg::SyntaxNumber)),
+    ("number", Style::Color(Fg::SyntaxNumber)),
+    ("regexp", Style::Color(Fg::SyntaxString)),
+    ("string", Style::Color(Fg::SyntaxString)),
+    ("comment", Style::Color(Fg::SyntaxComment)),
+    ("doctag", Style::Color(Fg::SyntaxComment)),
+    ("meta", Style::Color(Fg::Muted)),
+    ("function", Style::Color(Fg::SyntaxFunction)),
+    ("title", Style::Color(Fg::SyntaxFunction)),
+    ("tag", Style::Color(Fg::SyntaxPunctuation)),
+    ("punctuation", Style::Color(Fg::SyntaxPunctuation)),
+    ("attr", Style::Color(Fg::SyntaxVariable)),
+    ("variable", Style::Color(Fg::SyntaxVariable)),
+    ("params", Style::Color(Fg::SyntaxVariable)),
+    ("operator", Style::Color(Fg::SyntaxOperator)),
+    ("emphasis", Style::Text(TextStyle::Italic)),
+    ("strong", Style::Text(TextStyle::Bold)),
+    ("link", Style::Text(TextStyle::Underline)),
+    ("addition", Style::Color(Fg::ToolDiffAdded)),
+    ("deletion", Style::Color(Fg::ToolDiffRemoved)),
+];
+
 /// `buildCliHighlightTheme`: the style for each highlight.js scope that has one.
 fn scope_style(scope: &str) -> Option<Style> {
-    Some(match scope {
-        "keyword" | "name" => Style::Color(Fg::SyntaxKeyword),
-        "built_in" | "class" | "type" => Style::Color(Fg::SyntaxType),
-        "literal" | "number" => Style::Color(Fg::SyntaxNumber),
-        "regexp" | "string" => Style::Color(Fg::SyntaxString),
-        "comment" | "doctag" => Style::Color(Fg::SyntaxComment),
-        "meta" => Style::Color(Fg::Muted),
-        "function" | "title" => Style::Color(Fg::SyntaxFunction),
-        "tag" | "punctuation" => Style::Color(Fg::SyntaxPunctuation),
-        "attr" | "variable" | "params" => Style::Color(Fg::SyntaxVariable),
-        "operator" => Style::Color(Fg::SyntaxOperator),
-        "emphasis" => Style::Text(TextStyle::Italic),
-        "strong" => Style::Text(TextStyle::Bold),
-        "link" => Style::Text(TextStyle::Underline),
-        "addition" => Style::Color(Fg::ToolDiffAdded),
-        "deletion" => Style::Color(Fg::ToolDiffRemoved),
-        _ => return None,
-    })
+    SCOPE_STYLES.iter().find(|(s, _)| *s == scope).map(|(_, style)| *style)
 }
 
 /// `highlightCode(code, lang)`: one styled string per line. A language highlight.js does not know is shown in

@@ -119,26 +119,67 @@ impl Agents {
         parent: Option<&str>,
         records: &[Value],
     ) -> Result<Value, String> {
+        let usage = self.status_usage(parent)?;
+        let graph = payload.get("graph") == Some(&Value::Bool(true));
+        let mut out = self.build_status_body(parent, records, graph, usage);
+        if let Some(extras) = &self.inner.status_extras {
+            out.extend(extras(lane));
+        }
+        out.insert(
+            "controls".into(),
+            Value::Object(CONTROLS.iter().map(|k| (k.to_string(), json!(false))).collect()),
+        );
+        Ok(Value::Object(out))
+    }
+
+    fn status_usage(&self, parent: Option<&str>) -> Result<Option<Value>, String> {
         let root = {
             let state = self.state();
             self.status_root(&state, parent)
         };
-        let usage = match &self.inner.usage {
-            Some(ledger) => Some(ledger.status(root.as_deref())?),
-            None => None,
-        };
+        match &self.inner.usage {
+            Some(ledger) => Ok(Some(ledger.status(root.as_deref())?)),
+            None => Ok(None),
+        }
+    }
+
+    fn build_status_body(
+        &self,
+        parent: Option<&str>,
+        records: &[Value],
+        graph: bool,
+        usage: Option<Value>,
+    ) -> Map<String, Value> {
         let state = self.state();
         let shown: Vec<&Value> = records
             .iter()
             .filter(|r| Self::visible(records, r["id"].as_str().unwrap_or_default(), parent))
             .collect();
-        let graph = payload.get("graph") == Some(&Value::Bool(true));
-        let listed = if graph && shown.len() > GRAPH_TASK_LIMIT {
-            &shown[shown.len() - GRAPH_TASK_LIMIT..]
-        } else {
-            &shown[..]
-        };
-        let tasks: Vec<Value> = listed
+        let listed = slice_status_tasks(&shown, graph);
+        let tasks = self.render_status_tasks(&state, listed, graph);
+        let mut out = Map::new();
+        out.insert("definitions".into(), Value::from(state.registry.list()));
+        out.insert("tasks".into(), Value::from(tasks));
+        if graph && shown.len() > listed.len() {
+            out.insert("truncatedTasks".into(), json!(shown.len() - listed.len()));
+        }
+        if graph {
+            out.insert(
+                "workflows".into(),
+                Value::from(visible_workflows(&state, records, parent)),
+            );
+        }
+        out.insert("usage".into(), usage.clone().unwrap_or(Value::Null));
+        out.insert(
+            "limits".into(),
+            usage.as_ref().map_or(Value::Null, |u| u["limits"].clone()),
+        );
+        out.insert("spend".into(), status_spend(usage.as_ref()));
+        out
+    }
+
+    fn render_status_tasks(&self, state: &State, listed: &[&Value], graph: bool) -> Vec<Value> {
+        listed
             .iter()
             .map(|record| {
                 if graph {
@@ -148,50 +189,7 @@ impl Agents {
                     public_task(record)
                 }
             })
-            .collect();
-        let mut out = Map::new();
-        out.insert("definitions".into(), Value::from(state.registry.list()));
-        out.insert("tasks".into(), Value::from(tasks));
-        if graph && shown.len() > listed.len() {
-            out.insert("truncatedTasks".into(), json!(shown.len() - listed.len()));
-        }
-        if graph {
-            let workflows: Vec<Value> = state
-                .workflow_runs
-                .iter()
-                .filter(|run| match run["parentId"].as_str() {
-                    None => parent.is_none(),
-                    Some(owner) => Self::visible(records, owner, parent),
-                })
-                .map(graph_workflow)
-                .collect();
-            out.insert("workflows".into(), Value::from(workflows));
-        }
-        out.insert("usage".into(), usage.clone().unwrap_or(Value::Null));
-        out.insert(
-            "limits".into(),
-            usage.as_ref().map_or(Value::Null, |u| u["limits"].clone()),
-        );
-        out.insert(
-            "spend".into(),
-            match &usage {
-                None => Value::Null,
-                Some(u) => json!({
-                    "root": u["rootId"], "turns": u["turns"]["turns"], "tokens": u["turns"]["tokens"],
-                    "costUsd": u["cost"]["spentUsd"], "maxTotalTurns": u["limits"]["maxTotalTurns"],
-                    "maxTotalTokens": u["limits"]["maxTotalTokens"], "maxCostUsd": u["limits"]["maxCostUsd"],
-                }),
-            },
-        );
-        drop(state);
-        if let Some(extras) = &self.inner.status_extras {
-            out.extend(extras(lane));
-        }
-        out.insert(
-            "controls".into(),
-            Value::Object(CONTROLS.iter().map(|k| (k.to_string(), json!(false))).collect()),
-        );
-        Ok(Value::Object(out))
+            .collect()
     }
 
     /// `graphTask`: the bounded graph view of a task.
@@ -232,5 +230,36 @@ impl Agents {
         }
         out["fetch"] = json!(fetch_hint(definition, id));
         out
+    }
+}
+
+fn slice_status_tasks<'a>(shown: &'a [&'a Value], graph: bool) -> &'a [&'a Value] {
+    if graph && shown.len() > GRAPH_TASK_LIMIT {
+        &shown[shown.len() - GRAPH_TASK_LIMIT..]
+    } else {
+        shown
+    }
+}
+
+fn visible_workflows(state: &State, records: &[Value], parent: Option<&str>) -> Vec<Value> {
+    state
+        .workflow_runs
+        .iter()
+        .filter(|run| match run["parentId"].as_str() {
+            None => parent.is_none(),
+            Some(owner) => Agents::visible(records, owner, parent),
+        })
+        .map(graph_workflow)
+        .collect()
+}
+
+fn status_spend(usage: Option<&Value>) -> Value {
+    match usage {
+        None => Value::Null,
+        Some(u) => json!({
+            "root": u["rootId"], "turns": u["turns"]["turns"], "tokens": u["turns"]["tokens"],
+            "costUsd": u["cost"]["spentUsd"], "maxTotalTurns": u["limits"]["maxTotalTurns"],
+            "maxTotalTokens": u["limits"]["maxTotalTokens"], "maxCostUsd": u["limits"]["maxCostUsd"],
+        }),
     }
 }

@@ -248,137 +248,169 @@ fn replace_images(content: &[UserContent], placeholder: &str) -> Vec<UserContent
 /// Callback normalizing a foreign tool call id for the target model.
 pub type NormalizeToolCallId<'a> = &'a dyn Fn(&str, &AssistantMessage) -> String;
 
-/// Prepare a transcript for `model`: downgrade images for text-only models, convert foreign thinking to text, drop
-/// errored turns, normalize tool call ids, and insert "No result provided" results for orphaned tool calls.
-pub fn transform_messages(
-    messages: &[Message],
+fn transform_thinking_block(
+    block: &AssistantContent,
+    thinking: &crate::types::ThinkingContent,
+    same_model: bool,
+) -> Option<AssistantContent> {
+    if thinking.redacted == Some(true) {
+        return same_model.then(|| block.clone());
+    }
+    if same_model && thinking.thinking_signature.as_ref().is_some_and(|s| !s.is_empty()) {
+        return Some(block.clone());
+    }
+    if thinking.thinking.trim().is_empty() {
+        return None;
+    }
+    if same_model {
+        return Some(block.clone());
+    }
+    Some(AssistantContent::Text(TextContent {
+        text: thinking.thinking.clone(),
+        text_signature: None,
+    }))
+}
+
+fn transform_tool_call_block(
+    call: &ToolCall,
+    assistant: &AssistantMessage,
+    same_model: bool,
+    normalize: Option<NormalizeToolCallId<'_>>,
+    id_map: &mut std::collections::HashMap<String, String>,
+) -> AssistantContent {
+    let mut call = call.clone();
+    if !same_model {
+        call.thought_signature = None;
+        if let Some(normalize) = normalize {
+            let id = normalize(&call.id, assistant);
+            if id != call.id {
+                id_map.insert(call.id.clone(), id.clone());
+                call.id = id;
+            }
+        }
+    }
+    AssistantContent::ToolCall(call)
+}
+
+fn transform_assistant_message(
+    assistant: &AssistantMessage,
     model: &Model,
     normalize: Option<NormalizeToolCallId<'_>>,
-    now: i64,
-) -> Vec<Message> {
-    let mut id_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let supports_images = model.supports_images();
-    let mut transformed = Vec::with_capacity(messages.len());
-    for message in messages {
-        let message = match message {
-            Message::User(user) if !supports_images => match &user.content {
-                UserMessageContent::Blocks(blocks) => {
-                    let mut user = user.clone();
-                    user.content =
-                        UserMessageContent::Blocks(replace_images(blocks, NON_VISION_USER_IMAGE_PLACEHOLDER));
-                    Message::User(user)
+    id_map: &mut std::collections::HashMap<String, String>,
+) -> AssistantMessage {
+    let same_model = assistant.provider == model.provider && assistant.api == model.api && assistant.model == model.id;
+    let mut content = Vec::new();
+    for block in &assistant.content {
+        match block {
+            AssistantContent::Thinking(thinking) => {
+                if let Some(transformed) = transform_thinking_block(block, thinking, same_model) {
+                    content.push(transformed);
                 }
-                UserMessageContent::Text(_) => message.clone(),
-            },
-            Message::ToolResult(result) => {
-                let mut result = result.clone();
-                if !supports_images {
-                    result.content = replace_images(&result.content, NON_VISION_TOOL_IMAGE_PLACEHOLDER);
-                }
-                if let Some(id) = id_map.get(&result.tool_call_id) {
-                    result.tool_call_id = id.clone();
-                }
-                Message::ToolResult(result)
             }
-            Message::Assistant(assistant) => {
-                let same_model =
-                    assistant.provider == model.provider && assistant.api == model.api && assistant.model == model.id;
-                let mut content = Vec::new();
-                for block in &assistant.content {
-                    match block {
-                        AssistantContent::Thinking(thinking) => {
-                            if thinking.redacted == Some(true) {
-                                if same_model {
-                                    content.push(block.clone());
-                                }
-                            } else if same_model && thinking.thinking_signature.as_ref().is_some_and(|s| !s.is_empty())
-                            {
-                                content.push(block.clone());
-                            } else if thinking.thinking.trim().is_empty() {
-                            } else if same_model {
-                                content.push(block.clone());
-                            } else {
-                                content.push(AssistantContent::Text(TextContent {
-                                    text: thinking.thinking.clone(),
-                                    text_signature: None,
-                                }));
-                            }
-                        }
-                        AssistantContent::Text(text) => content.push(if same_model {
-                            block.clone()
-                        } else {
-                            AssistantContent::Text(TextContent {
-                                text: text.text.clone(),
-                                text_signature: None,
-                            })
-                        }),
-                        AssistantContent::ToolCall(call) => {
-                            let mut call: ToolCall = call.clone();
-                            if !same_model {
-                                call.thought_signature = None;
-                                if let Some(normalize) = normalize {
-                                    let id = normalize(&call.id, assistant);
-                                    if id != call.id {
-                                        id_map.insert(call.id.clone(), id.clone());
-                                        call.id = id;
-                                    }
-                                }
-                            }
-                            content.push(AssistantContent::ToolCall(call));
-                        }
-                    }
-                }
-                let mut assistant = assistant.clone();
-                assistant.content = content;
-                Message::Assistant(assistant)
+            AssistantContent::Text(text) => content.push(if same_model {
+                block.clone()
+            } else {
+                AssistantContent::Text(TextContent {
+                    text: text.text.clone(),
+                    text_signature: None,
+                })
+            }),
+            AssistantContent::ToolCall(call) => {
+                content.push(transform_tool_call_block(
+                    call, assistant, same_model, normalize, id_map,
+                ));
             }
-            other => other.clone(),
-        };
-        transformed.push(message);
+        }
     }
+    let mut assistant = assistant.clone();
+    assistant.content = content;
+    assistant
+}
 
+fn transform_message(
+    message: &Message,
+    model: &Model,
+    supports_images: bool,
+    normalize: Option<NormalizeToolCallId<'_>>,
+    id_map: &mut std::collections::HashMap<String, String>,
+) -> Message {
+    match message {
+        Message::User(user) if !supports_images => match &user.content {
+            UserMessageContent::Blocks(blocks) => {
+                let mut user = user.clone();
+                user.content = UserMessageContent::Blocks(replace_images(blocks, NON_VISION_USER_IMAGE_PLACEHOLDER));
+                Message::User(user)
+            }
+            UserMessageContent::Text(_) => message.clone(),
+        },
+        Message::ToolResult(result) => {
+            let mut result = result.clone();
+            if !supports_images {
+                result.content = replace_images(&result.content, NON_VISION_TOOL_IMAGE_PLACEHOLDER);
+            }
+            if let Some(id) = id_map.get(&result.tool_call_id) {
+                result.tool_call_id = id.clone();
+            }
+            Message::ToolResult(result)
+        }
+        Message::Assistant(assistant) => {
+            Message::Assistant(transform_assistant_message(assistant, model, normalize, id_map))
+        }
+        other => other.clone(),
+    }
+}
+
+fn close_pending_tool_calls(
+    result: &mut Vec<Message>,
+    pending: &mut Vec<ToolCall>,
+    answered: &mut HashSet<String>,
+    held: &mut Vec<Message>,
+    now: i64,
+) {
+    for call in pending.drain(..) {
+        if !answered.contains(&call.id) {
+            result.push(Message::ToolResult(ToolResultMessage {
+                tool_call_id: call.id,
+                tool_name: call.name,
+                content: vec![UserContent::Text(TextContent {
+                    text: "No result provided".into(),
+                    text_signature: None,
+                })],
+                details: None,
+                usage: None,
+                is_error: true,
+                timestamp: now,
+            }));
+        }
+    }
+    answered.clear();
+    result.append(held);
+}
+
+fn extract_tool_calls(assistant: &AssistantMessage) -> Vec<ToolCall> {
+    assistant
+        .content
+        .iter()
+        .filter_map(|b| match b {
+            AssistantContent::ToolCall(c) => Some(c.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn finalize_tool_results(transformed: Vec<Message>, now: i64) -> Vec<Message> {
     let mut result = Vec::with_capacity(transformed.len());
     let mut pending: Vec<ToolCall> = Vec::new();
     let mut answered: HashSet<String> = HashSet::new();
     let mut held: Vec<Message> = Vec::new();
-    let close = |result: &mut Vec<Message>,
-                 pending: &mut Vec<ToolCall>,
-                 answered: &mut HashSet<String>,
-                 held: &mut Vec<Message>| {
-        for call in pending.drain(..) {
-            if !answered.contains(&call.id) {
-                result.push(Message::ToolResult(ToolResultMessage {
-                    tool_call_id: call.id,
-                    tool_name: call.name,
-                    content: vec![UserContent::Text(TextContent {
-                        text: "No result provided".into(),
-                        text_signature: None,
-                    })],
-                    details: None,
-                    usage: None,
-                    is_error: true,
-                    timestamp: now,
-                }));
-            }
-        }
-        answered.clear();
-        result.append(held);
-    };
     for message in transformed {
         match &message {
             Message::Assistant(assistant) => {
-                close(&mut result, &mut pending, &mut answered, &mut held);
+                close_pending_tool_calls(&mut result, &mut pending, &mut answered, &mut held, now);
                 if matches!(assistant.stop_reason, StopReason::Error | StopReason::Aborted) {
                     continue;
                 }
-                let calls: Vec<ToolCall> = assistant
-                    .content
-                    .iter()
-                    .filter_map(|b| match b {
-                        AssistantContent::ToolCall(c) => Some(c.clone()),
-                        _ => None,
-                    })
-                    .collect();
+                let calls = extract_tool_calls(assistant);
                 if !calls.is_empty() {
                     pending = calls;
                     answered.clear();
@@ -392,13 +424,30 @@ pub fn transform_messages(
             Message::System(_) if !pending.is_empty() => held.push(message),
             Message::System(_) => result.push(message),
             Message::User(_) => {
-                close(&mut result, &mut pending, &mut answered, &mut held);
+                close_pending_tool_calls(&mut result, &mut pending, &mut answered, &mut held, now);
                 result.push(message);
             }
         }
     }
-    close(&mut result, &mut pending, &mut answered, &mut held);
+    close_pending_tool_calls(&mut result, &mut pending, &mut answered, &mut held, now);
     result
+}
+
+/// Prepare a transcript for `model`: downgrade images for text-only models, convert foreign thinking to text, drop
+/// errored turns, normalize tool call ids, and insert "No result provided" results for orphaned tool calls.
+pub fn transform_messages(
+    messages: &[Message],
+    model: &Model,
+    normalize: Option<NormalizeToolCallId<'_>>,
+    now: i64,
+) -> Vec<Message> {
+    let mut id_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let supports_images = model.supports_images();
+    let transformed: Vec<Message> = messages
+        .iter()
+        .map(|message| transform_message(message, model, supports_images, normalize, &mut id_map))
+        .collect();
+    finalize_tool_results(transformed, now)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]

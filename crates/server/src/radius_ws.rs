@@ -120,7 +120,7 @@ pub struct WsReader {
 impl WsReader {
     /// The next event; after the close event, it repeats.
     pub async fn next(&mut self) -> WsEvent {
-        if self.failed {
+        if self.failed || self.done {
             self.done = true;
             self.failed = false;
             return WsEvent::Closed {
@@ -128,31 +128,10 @@ impl WsReader {
                 reason: String::new(),
             };
         }
-        if self.done {
-            return WsEvent::Closed {
-                code: 1006,
-                reason: String::new(),
-            };
-        }
         let mut buffer = vec![0u8; 64 * 1024];
         loop {
-            while let Some(message) = self.queued.pop_front() {
-                match message {
-                    Message::Text(text) => return WsEvent::Text(text),
-                    Message::Binary(bytes) => return WsEvent::Binary(bytes),
-                    Message::Ping(payload) => self.writer.control(Message::Pong(payload)),
-                    Message::Pong(_) => {}
-                    Message::Close(code, reason) => {
-                        if !self.writer.closed.load(Ordering::SeqCst) {
-                            self.writer.close_socket(code.unwrap_or(1000), "");
-                        }
-                        self.done = true;
-                        return WsEvent::Closed {
-                            code: code.unwrap_or(1005),
-                            reason,
-                        };
-                    }
-                }
+            if let Some(event) = self.pop_queued_event() {
+                return event;
             }
             let read = match self.read.read(&mut buffer).await {
                 Ok(0) | Err(_) => return self.fail(),
@@ -166,6 +145,28 @@ impl WsReader {
                 }
             }
         }
+    }
+
+    fn pop_queued_event(&mut self) -> Option<WsEvent> {
+        while let Some(message) = self.queued.pop_front() {
+            match message {
+                Message::Text(text) => return Some(WsEvent::Text(text)),
+                Message::Binary(bytes) => return Some(WsEvent::Binary(bytes)),
+                Message::Ping(payload) => self.writer.control(Message::Pong(payload)),
+                Message::Pong(_) => {}
+                Message::Close(code, reason) => {
+                    if !self.writer.closed.load(Ordering::SeqCst) {
+                        self.writer.close_socket(code.unwrap_or(1000), "");
+                    }
+                    self.done = true;
+                    return Some(WsEvent::Closed {
+                        code: code.unwrap_or(1005),
+                        reason,
+                    });
+                }
+            }
+        }
+        None
     }
 
     fn fail(&mut self) -> WsEvent {

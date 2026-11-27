@@ -107,28 +107,47 @@ impl<T: Read + Write> Client<T> {
             target,
             call: call.clone(),
         })?;
+        self.await_response(&id)
+    }
+
+    fn await_response(&mut self, id: &str) -> Result<Option<Value>, ClientError> {
         loop {
-            match self.next()? {
-                ServerMessage::Response {
-                    id: response_id,
-                    result,
-                } if response_id == id => {
-                    return result.map_err(ClientError::Server);
-                }
-                ServerMessage::Response { .. } => return Err(self.fail("Response has no matching request")),
-                ServerMessage::Hello { .. } | ServerMessage::HelloError { .. } => {
-                    return Err(self.fail("Unexpected handshake message"));
-                }
-                ServerMessage::Attachment { attachment } => {
-                    if attachment.as_ref().is_some_and(|a| a.server_id != self.server_id) {
-                        return Err(self.fail("Attachment update belongs to another server"));
-                    }
-                    self.attachment = attachment;
-                }
-                // ponytail: service subscriptions are not ported; their updates are dropped.
-                ServerMessage::ServiceUpdate { .. } => {}
+            let message = self.next()?;
+            if let Some(result) = self.handle_response_message(id, message)? {
+                return Ok(result);
             }
         }
+    }
+
+    fn handle_response_message(
+        &mut self,
+        id: &str,
+        message: ServerMessage,
+    ) -> Result<Option<Option<Value>>, ClientError> {
+        match message {
+            ServerMessage::Response {
+                id: response_id,
+                result,
+            } if response_id == id => result.map(Some).map_err(ClientError::Server),
+            ServerMessage::Response { .. } => Err(self.fail("Response has no matching request")),
+            ServerMessage::Hello { .. } | ServerMessage::HelloError { .. } => {
+                Err(self.fail("Unexpected handshake message"))
+            }
+            ServerMessage::Attachment { attachment } => {
+                self.apply_attachment(attachment)?;
+                Ok(None)
+            }
+            // ponytail: service subscriptions are not ported; their updates are dropped.
+            ServerMessage::ServiceUpdate { .. } => Ok(None),
+        }
+    }
+
+    fn apply_attachment(&mut self, attachment: Option<SessionTarget>) -> Result<(), ClientError> {
+        if attachment.as_ref().is_some_and(|a| a.server_id != self.server_id) {
+            return Err(self.fail("Attachment update belongs to another server"));
+        }
+        self.attachment = attachment;
+        Ok(())
     }
 
     fn fail(&mut self, message: &str) -> ClientError {
@@ -184,27 +203,35 @@ pub fn discover_unix_servers(directory: &Path, timeout: Duration) -> io::Result<
     };
     let mut routes = Vec::new();
     for entry in entries {
-        let entry = entry?;
-        let name = entry.file_name();
-        let Some(server_id) = name.to_str().and_then(protocol::sockets::server_id_of) else {
-            continue;
-        };
-        let path = entry.path();
-        match std::fs::symlink_metadata(&path) {
-            Ok(meta) if meta.file_type().is_socket() => {}
-            Ok(_) => continue,
-            Err(e) if e.kind() == ErrorKind::NotFound => continue,
-            Err(e) => return Err(e),
-        }
-        if probe(&path, server_id, timeout)? {
-            routes.push(Route {
-                server_id: server_id.into(),
-                path,
-            });
+        if let Some(route) = probe_entry(entry?, timeout)? {
+            routes.push(route);
         }
     }
     routes.sort_by(|a, b| a.server_id.cmp(&b.server_id));
     Ok(routes)
+}
+
+fn probe_entry(entry: std::fs::DirEntry, timeout: Duration) -> io::Result<Option<Route>> {
+    let name = entry.file_name();
+    let Some(server_id) = name.to_str().and_then(protocol::sockets::server_id_of) else {
+        return Ok(None);
+    };
+    let path = entry.path();
+    if !is_unix_socket(&path)? || !probe(&path, server_id, timeout)? {
+        return Ok(None);
+    }
+    Ok(Some(Route {
+        server_id: server_id.into(),
+        path,
+    }))
+}
+
+fn is_unix_socket(path: &Path) -> io::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => Ok(meta.file_type().is_socket()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 fn probe(path: &Path, server_id: &str, timeout: Duration) -> io::Result<bool> {
@@ -217,14 +244,22 @@ fn probe(path: &Path, server_id: &str, timeout: Duration) -> io::Result<bool> {
     stream.set_write_timeout(Some(timeout))?;
     match Client::connect(stream, server_id) {
         Ok(_) => Ok(true),
-        Err(ClientError::Validation(_) | ClientError::Disconnected(_)) => Ok(false),
-        Err(ClientError::Server(error)) if error.code == "version" => Ok(false),
-        Err(ClientError::Io(e)) if is_absent(&e) || matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-            Ok(false)
-        }
-        Err(ClientError::Io(e)) => Err(e),
-        Err(other) => Err(io::Error::other(other.to_string())),
+        Err(error) => classify_probe_error(error),
     }
+}
+
+fn classify_probe_error(error: ClientError) -> io::Result<bool> {
+    match error {
+        ClientError::Validation(_) | ClientError::Disconnected(_) => Ok(false),
+        ClientError::Server(error) if error.code == "version" => Ok(false),
+        ClientError::Io(e) if is_probe_timeout_or_absent(&e) => Ok(false),
+        ClientError::Io(e) => Err(e),
+        other => Err(io::Error::other(other.to_string())),
+    }
+}
+
+fn is_probe_timeout_or_absent(error: &io::Error) -> bool {
+    is_absent(error) || matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
 }
 
 fn is_absent(error: &io::Error) -> bool {

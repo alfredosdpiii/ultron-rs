@@ -2,9 +2,10 @@
 //! API key. The identity token is stored as `refresh` and the minted key as `access`, so a refresh re-mints the key.
 
 use crate::auth::{AuthEvent, AuthInteraction, ModelAuth, OAuthAuth, OAuthCredential};
-use crate::http::{AbortSignal, BoxFuture, HttpRequest, Transport, is_aborted};
+use crate::http::{AbortSignal, BoxFuture, HttpRequest, Transport};
 use crate::oauth_flow::{
-    Clock, ClockLoginEnv, Poll, TextResponse, fetch_text, form_request, poll_device_code_flow, trusted_http_url,
+    Clock, ClockLoginEnv, Poll, TextResponse, api_key_model_auth, fetch_text, form_request, map_aborted_login,
+    poll_device_code_flow, trusted_http_url,
 };
 use serde_json::{Map, Value};
 use std::sync::Arc;
@@ -54,6 +55,68 @@ const FORM_HEADERS: &[(&str, &str)] = &[
     ("Content-Type", "application/x-www-form-urlencoded"),
     ("Accept", "application/json"),
 ];
+
+struct MetaDeviceAuth {
+    device_code: String,
+    user_code: String,
+    uri: String,
+    interval: Option<f64>,
+    expires_in: Option<f64>,
+}
+
+fn parse_device_auth(response: &TextResponse) -> Result<MetaDeviceAuth, String> {
+    let json = read_json(response);
+    if !response.ok() {
+        return Err(format!(
+            "Meta device authorization failed with status {}{}",
+            response.status,
+            error_detail(&json)
+        ));
+    }
+    let device_code = field(&json, "device_code")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty());
+    let user_code = field(&json, "user_code")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty());
+    let uri = trusted_http_url(field(&json, "verification_uri_complete"), false)
+        .or_else(|| trusted_http_url(field(&json, "verification_uri"), false));
+    let (Some(device_code), Some(user_code), Some(uri)) = (device_code, user_code, uri) else {
+        return Err(format!(
+            "Invalid Meta device authorization response: {}",
+            jsrt::json::stringify(json.as_ref().unwrap_or(&Value::Null))
+        ));
+    };
+    Ok(MetaDeviceAuth {
+        device_code: device_code.to_string(),
+        user_code: user_code.to_string(),
+        uri,
+        interval: positive(field(&json, "interval")),
+        expires_in: positive(field(&json, "expires_in")),
+    })
+}
+
+fn parse_device_poll(response: &TextResponse) -> Poll<String> {
+    let json = read_json(response);
+    if response.ok()
+        && let Some(token) = field(&json, "access_token")
+            .and_then(Value::as_str)
+            .filter(|t| !t.is_empty())
+    {
+        return Poll::Complete(token.to_string());
+    }
+    match field(&json, "error").and_then(Value::as_str) {
+        Some("authorization_pending") => Poll::Pending,
+        Some("slow_down") => Poll::SlowDown(positive(field(&json, "interval"))),
+        Some("access_denied") => Poll::Failed("Meta login was denied.".into()),
+        Some("expired_token") => Poll::Failed("Meta device authorization expired. Please restart login.".into()),
+        _ => Poll::Failed(format!(
+            "Meta device token request failed with status {}{}",
+            response.status,
+            error_detail(&json)
+        )),
+    }
+}
 
 impl MetaOAuth {
     async fn mint_api_key(&self, identity: &str, signal: Option<&AbortSignal>) -> Result<OAuthCredential, String> {
@@ -120,41 +183,18 @@ impl MetaOAuth {
         )
         .await
         .map_err(|e| e.message())?;
-        let json = read_json(&response);
-        if !response.ok() {
-            return Err(format!(
-                "Meta device authorization failed with status {}{}",
-                response.status,
-                error_detail(&json)
-            ));
-        }
-        let device_code = field(&json, "device_code")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty());
-        let user_code = field(&json, "user_code")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty());
-        let uri = trusted_http_url(field(&json, "verification_uri_complete"), false)
-            .or_else(|| trusted_http_url(field(&json, "verification_uri"), false));
-        let (Some(device_code), Some(user_code), Some(uri)) = (device_code, user_code, uri) else {
-            return Err(format!(
-                "Invalid Meta device authorization response: {}",
-                jsrt::json::stringify(json.as_ref().unwrap_or(&Value::Null))
-            ));
-        };
-        let interval = positive(field(&json, "interval"));
-        let expires_in = positive(field(&json, "expires_in"));
+        let auth = parse_device_auth(&response)?;
         interaction.notify(AuthEvent::DeviceCode {
-            user_code: user_code.into(),
-            verification_uri: uri,
-            interval_seconds: interval,
-            expires_in_seconds: expires_in,
+            user_code: auth.user_code,
+            verification_uri: auth.uri,
+            interval_seconds: auth.interval,
+            expires_in_seconds: auth.expires_in,
         });
         let identity = poll_device_code_flow(
             &ClockLoginEnv(self.clock),
             signal,
-            interval,
-            expires_in,
+            auth.interval,
+            auth.expires_in,
             true,
             || async {
                 let response = fetch_text(
@@ -163,7 +203,7 @@ impl MetaOAuth {
                         DEVICE_TOKEN_URL,
                         &[
                             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-                            ("device_code", device_code),
+                            ("device_code", &auth.device_code),
                             ("client_id", CLIENT_ID),
                         ],
                         FORM_HEADERS,
@@ -173,27 +213,7 @@ impl MetaOAuth {
                 )
                 .await
                 .map_err(|e| e.message())?;
-                let json = read_json(&response);
-                if response.ok()
-                    && let Some(token) = field(&json, "access_token")
-                        .and_then(Value::as_str)
-                        .filter(|t| !t.is_empty())
-                {
-                    return Ok(Poll::Complete(token.to_string()));
-                }
-                Ok(match field(&json, "error").and_then(Value::as_str) {
-                    Some("authorization_pending") => Poll::Pending,
-                    Some("slow_down") => Poll::SlowDown(positive(field(&json, "interval"))),
-                    Some("access_denied") => Poll::Failed("Meta login was denied.".into()),
-                    Some("expired_token") => {
-                        Poll::Failed("Meta device authorization expired. Please restart login.".into())
-                    }
-                    _ => Poll::Failed(format!(
-                        "Meta device token request failed with status {}{}",
-                        response.status,
-                        error_detail(&json)
-                    )),
-                })
+                Ok(parse_device_poll(&response))
             },
         )
         .await?;
@@ -221,10 +241,7 @@ impl OAuthAuth for MetaOAuth {
         Box::pin(async move {
             let signal = interaction.signal();
             let result = self.login_flow(interaction, signal.as_ref()).await;
-            match result {
-                Err(_) if is_aborted(signal.as_ref()) => Err("Login cancelled".into()),
-                other => other,
-            }
+            map_aborted_login(result, signal.as_ref())
         })
     }
 
@@ -237,9 +254,6 @@ impl OAuthAuth for MetaOAuth {
     }
 
     fn to_auth(&self, credential: &OAuthCredential) -> Result<ModelAuth, String> {
-        Ok(ModelAuth {
-            api_key: Some(credential.access.clone()),
-            ..Default::default()
-        })
+        api_key_model_auth(credential)
     }
 }

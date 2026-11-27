@@ -125,56 +125,66 @@ fn replace_prefix(s: &str, old: &str, new: &str) -> String {
     format!("{new}{}", without_prefix(s, old))
 }
 
+fn dedupe_replace(changes: &mut [Change], start: Option<usize>, d: usize, n: usize, end: Option<usize>) {
+    let (dv, nv) = (changes[d].value.clone(), changes[n].value.clone());
+    if let Some(s) = start {
+        let common = common_prefix(leading_ws(&dv), leading_ws(&nv)).to_string();
+        let sv = changes[s].value.clone();
+        changes[s].value = replace_suffix(&sv, leading_ws(&nv), &common);
+        changes[d].value = without_prefix(&changes[d].value, &common);
+        changes[n].value = without_prefix(&changes[n].value, &common);
+    }
+    if let Some(e) = end {
+        let common = common_suffix(trailing_ws(&dv), trailing_ws(&nv)).to_string();
+        let ev = changes[e].value.clone();
+        changes[e].value = replace_prefix(&ev, trailing_ws(&nv), &common);
+        changes[d].value = without_suffix(&changes[d].value, &common);
+        changes[n].value = without_suffix(&changes[n].value, &common);
+    }
+}
+
+fn dedupe_insert(changes: &mut [Change], start: Option<usize>, n: usize, end: Option<usize>) {
+    if start.is_some() {
+        changes[n].value = changes[n].value.trim_start_matches(string::is_space).to_string();
+    }
+    if let Some(e) = end {
+        changes[e].value = changes[e].value.trim_start_matches(string::is_space).to_string();
+    }
+}
+
+fn dedupe_delete(changes: &mut [Change], start: Option<usize>, d: usize, end: Option<usize>) {
+    match (start, end) {
+        (Some(s), Some(e)) => {
+            let (dv, ev) = (changes[d].value.clone(), changes[e].value.clone());
+            let new_full = leading_ws(&ev);
+            let ws_start = common_prefix(new_full, leading_ws(&dv));
+            let dv2 = without_prefix(&dv, ws_start);
+            let ws_end = common_suffix(&new_full[ws_start.len()..], trailing_ws(&dv)).to_string();
+            changes[d].value = without_suffix(&dv2, &ws_end);
+            changes[e].value = replace_prefix(&ev, new_full, &ws_end);
+            let keep = &new_full[..new_full.len() - ws_end.len()];
+            let sv = changes[s].value.clone();
+            changes[s].value = replace_suffix(&sv, new_full, keep);
+        }
+        (None, Some(e)) => {
+            let dv = changes[d].value.clone();
+            let overlap = maximum_overlap(trailing_ws(&dv), leading_ws(&changes[e].value)).to_string();
+            changes[d].value = without_suffix(&dv, &overlap);
+        }
+        (Some(s), None) => {
+            let dv = changes[d].value.clone();
+            let overlap = maximum_overlap(trailing_ws(&changes[s].value), leading_ws(&dv)).to_string();
+            changes[d].value = without_prefix(&dv, &overlap);
+        }
+        (None, None) => {}
+    }
+}
+
 fn dedupe(changes: &mut [Change], start: Option<usize>, del: Option<usize>, ins: Option<usize>, end: Option<usize>) {
-    let v = |c: &[Change], i: usize| c[i].value.clone();
     match (del, ins) {
-        (Some(d), Some(n)) => {
-            let (dv, nv) = (v(changes, d), v(changes, n));
-            if let Some(s) = start {
-                let common = common_prefix(leading_ws(&dv), leading_ws(&nv)).to_string();
-                changes[s].value = replace_suffix(&v(changes, s), leading_ws(&nv), &common);
-                changes[d].value = without_prefix(&v(changes, d), &common);
-                changes[n].value = without_prefix(&v(changes, n), &common);
-            }
-            if let Some(e) = end {
-                let common = common_suffix(trailing_ws(&dv), trailing_ws(&nv)).to_string();
-                changes[e].value = replace_prefix(&v(changes, e), trailing_ws(&nv), &common);
-                changes[d].value = without_suffix(&v(changes, d), &common);
-                changes[n].value = without_suffix(&v(changes, n), &common);
-            }
-        }
-        (None, Some(n)) => {
-            if start.is_some() {
-                changes[n].value = changes[n].value.trim_start_matches(string::is_space).to_string();
-            }
-            if let Some(e) = end {
-                changes[e].value = changes[e].value.trim_start_matches(string::is_space).to_string();
-            }
-        }
-        (Some(d), None) => match (start, end) {
-            (Some(s), Some(e)) => {
-                let (dv, ev) = (v(changes, d), v(changes, e));
-                let new_full = leading_ws(&ev);
-                let ws_start = common_prefix(new_full, leading_ws(&dv));
-                let dv2 = without_prefix(&dv, ws_start);
-                let ws_end = common_suffix(&new_full[ws_start.len()..], trailing_ws(&dv)).to_string();
-                changes[d].value = without_suffix(&dv2, &ws_end);
-                changes[e].value = replace_prefix(&ev, new_full, &ws_end);
-                let keep = &new_full[..new_full.len() - ws_end.len()];
-                changes[s].value = replace_suffix(&v(changes, s), new_full, keep);
-            }
-            (None, Some(e)) => {
-                let dv = v(changes, d);
-                let overlap = maximum_overlap(trailing_ws(&dv), leading_ws(&changes[e].value)).to_string();
-                changes[d].value = without_suffix(&dv, &overlap);
-            }
-            (Some(s), None) => {
-                let dv = v(changes, d);
-                let overlap = maximum_overlap(trailing_ws(&changes[s].value), leading_ws(&dv)).to_string();
-                changes[d].value = without_prefix(&dv, &overlap);
-            }
-            (None, None) => {}
-        },
+        (Some(d), Some(n)) => dedupe_replace(changes, start, d, n, end),
+        (None, Some(n)) => dedupe_insert(changes, start, n, end),
+        (Some(d), None) => dedupe_delete(changes, start, d, end),
         (None, None) => {}
     }
 }

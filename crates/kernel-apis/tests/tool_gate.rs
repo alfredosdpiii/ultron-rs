@@ -139,14 +139,18 @@ fn kernel_apis_sequential_tool_waits_for_lane_calls_and_runs_alone() {
     runner.until("the other lane's call ended", || {
         record(&calls, &other)["status"] == "completed"
     });
-    assert!(!runner.log().contains(&"start seq_a".to_string()));
+    assert!(!runner.log().iter().any(|i: &String| i == "start seq_a"));
     runner.open("par_a");
-    runner.until("seq_a started", || runner.log().contains(&"start seq_a".to_string()));
-    assert!(!runner.log().contains(&"start seq_b".to_string()));
+    runner.until("seq_a started", || {
+        runner.log().iter().any(|i: &String| i == "start seq_a")
+    });
+    assert!(!runner.log().iter().any(|i: &String| i == "start seq_b"));
     assert_eq!(record(&calls, &seq_b)["preview"], QUEUED_PREVIEW);
     assert!(record(&calls, &seq_a).get("preview").is_none());
     runner.open("seq_a");
-    runner.until("seq_b started", || runner.log().contains(&"start seq_b".to_string()));
+    runner.until("seq_b started", || {
+        runner.log().iter().any(|i: &String| i == "start seq_b")
+    });
     assert_eq!(runner.log().iter().filter(|l| *l == "start par_b").count(), 1);
     runner.open("seq_b");
     runner.until("par_b started", || {
@@ -185,12 +189,14 @@ fn kernel_apis_call_cancelled_while_queued_never_starts() {
     assert_eq!(record(&calls, &seq_b)["status"], "cancelled");
     assert!(record(&calls, &seq_b).get("preview").is_none());
     runner.open("seq_a");
-    runner.until("par_a started", || runner.log().contains(&"start par_a".to_string()));
+    runner.until("par_a started", || {
+        runner.log().iter().any(|i: &String| i == "start par_a")
+    });
     runner.open("par_a");
     for id in [&seq_a, &par_a] {
         runner.until("the calls ended", || record(&calls, id)["status"] == "completed");
     }
-    assert!(!runner.log().contains(&"start seq_b".to_string()));
+    assert!(!runner.log().iter().any(|i: &String| i == "start seq_b"));
     calls.close();
 }
 

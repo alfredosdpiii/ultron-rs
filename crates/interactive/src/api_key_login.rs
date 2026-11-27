@@ -148,18 +148,28 @@ fn bedrock(a: &[&str]) -> Vec<Step> {
     }
 }
 
-fn vertex(a: &[&str]) -> Vec<Step> {
-    let notice = |method: &str| {
-        info(
-            if method == "adc" {
-                "Run `gcloud auth application-default login`, then provide the project and location."
-            } else {
-                "Provide a service account credentials file, project, and location."
-            },
-            "Application Default Credentials",
-            "https://cloud.google.com/docs/authentication/provide-credentials-adc",
-        )
+fn vertex_notice(method: &str) -> Step {
+    let message = if method == "adc" {
+        "Run `gcloud auth application-default login`, then provide the project and location."
+    } else {
+        "Provide a service account credentials file, project, and location."
     };
+    info(
+        message,
+        "Application Default Credentials",
+        "https://cloud.google.com/docs/authentication/provide-credentials-adc",
+    )
+}
+
+fn vertex_sa_credential(project: &str, location: &str, path: &str) -> Vec<Step> {
+    let mut env = vec![("GOOGLE_CLOUD_PROJECT", project), ("GOOGLE_CLOUD_LOCATION", location)];
+    if !path.is_empty() {
+        env.push(("GOOGLE_APPLICATION_CREDENTIALS", path));
+    }
+    vec![credential(None, &env)]
+}
+
+fn vertex(a: &[&str]) -> Vec<Step> {
     match a {
         [] => vec![select(
             "Select Google Vertex AI authentication method:",
@@ -171,20 +181,14 @@ fn vertex(a: &[&str]) -> Vec<Step> {
         )],
         ["api-key"] => vec![secret("Enter Google Cloud API key")],
         ["api-key", key] => vec![credential(Some(key), &[])],
-        [method @ ("adc" | "service-account")] => vec![notice(method), text("Enter Google Cloud project ID")],
+        [method @ ("adc" | "service-account")] => vec![vertex_notice(method), text("Enter Google Cloud project ID")],
         ["adc" | "service-account", _] => vec![text("Enter Google Cloud location")],
         ["adc", project, location] => vec![credential(
             None,
             &[("GOOGLE_CLOUD_PROJECT", project), ("GOOGLE_CLOUD_LOCATION", location)],
         )],
         ["service-account", _, _] => vec![text("Enter service account credentials file path")],
-        ["service-account", project, location, path] => {
-            let mut env = vec![("GOOGLE_CLOUD_PROJECT", *project), ("GOOGLE_CLOUD_LOCATION", *location)];
-            if !path.is_empty() {
-                env.push(("GOOGLE_APPLICATION_CREDENTIALS", path));
-            }
-            vec![credential(None, &env)]
-        }
+        ["service-account", project, location, path] => vertex_sa_credential(project, location, path),
         [other, ..] => vec![Step::Failed(format!("Unknown Google Vertex AI auth method: {other}"))],
     }
 }

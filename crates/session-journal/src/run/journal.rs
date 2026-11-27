@@ -189,42 +189,18 @@ impl Run {
         &self.operation_id
     }
 
-    /// The open operation `operation_id` as its stored state left it: meta, state and lane state give the source
-    /// tip, the control, the step and response ids, and the tool batch (each call's id from the assistant entry,
-    /// each reported result from its pending entry).
-    pub fn reopen(session: &Session, operation_id: &str) -> Result<Run, String> {
-        let meta = session
-            .value(OP_META, operation_id)
-            .cloned()
-            .ok_or_else(|| format!("Operation {operation_id} is not open"))?;
-        let state = session.value(OP_STATE, operation_id).cloned().unwrap_or(Value::Null);
-        let lane = session
-            .value(LANE_STATE, MAIN_LANE)
-            .cloned()
-            .unwrap_or_else(|| json!({"inbox": []}));
-        let text = |value: &Value| value.as_str().map(str::to_string);
-        let context = &state["generationContext"];
-        let prompt = meta["intent"]["promptEntryIds"][0]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
-        let config = match &context["configuration"] {
-            Value::Null => session.value(LANE_CONFIG, MAIN_LANE).cloned().unwrap_or(Value::Null),
-            config => config.clone(),
-        };
-        let batch = &state["batch"];
-        let assistant_entry_id = text(&batch["assistantEntryId"]).unwrap_or_default();
+    fn reopen_tool_calls(session: &Session, batch: &Value, assistant_entry_id: &str) -> Vec<ToolCallState> {
         let content = session
             .state()
-            .entry(&assistant_entry_id)
+            .entry(assistant_entry_id)
             .map_or(Value::Null, |entry| entry["message"]["content"].clone());
-        let calls = batch["calls"]
+        batch["calls"]
             .as_array()
             .into_iter()
             .flatten()
             .map(|call| {
                 let source_index = call["sourceIndex"].as_u64().unwrap_or(0) as usize;
-                let result_entry_id = text(&call["resultEntryId"]).unwrap_or_default();
+                let result_entry_id = call["resultEntryId"].as_str().unwrap_or_default().to_string();
                 let result = session
                     .value(PENDING_ENTRY, &result_entry_id)
                     .map(|pending| pending["payload"].clone());
@@ -241,28 +217,70 @@ impl Run {
                     result,
                 }
             })
-            .collect();
+            .collect()
+    }
+
+    fn value_str(value: &Value) -> Option<String> {
+        value.as_str().map(str::to_string)
+    }
+
+    fn non_null_or(value: &Value, default: fn() -> Value) -> Value {
+        match value {
+            Value::Null => default(),
+            other => other.clone(),
+        }
+    }
+
+    fn reopen_config(session: &Session, context: &Value) -> Value {
+        match &context["configuration"] {
+            Value::Null => session.value(LANE_CONFIG, MAIN_LANE).cloned().unwrap_or(Value::Null),
+            config => config.clone(),
+        }
+    }
+
+    /// The open operation `operation_id` as its stored state left it: meta, state and lane state give the source
+    /// tip, the control, the step and response ids, and the tool batch (each call's id from the assistant entry,
+    /// each reported result from its pending entry).
+    pub fn reopen(session: &Session, operation_id: &str) -> Result<Run, String> {
+        let meta = session
+            .value(OP_META, operation_id)
+            .cloned()
+            .ok_or_else(|| format!("Operation {operation_id} is not open"))?;
+        let state = session.value(OP_STATE, operation_id).cloned().unwrap_or(Value::Null);
+        let lane = session
+            .value(LANE_STATE, MAIN_LANE)
+            .cloned()
+            .unwrap_or_else(|| json!({"inbox": []}));
+        let context = &state["generationContext"];
+        let prompt = meta["intent"]["promptEntryIds"][0]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let batch = &state["batch"];
+        let assistant_entry_id = Self::value_str(&batch["assistantEntryId"]).unwrap_or_default();
+        let calls = Self::reopen_tool_calls(session, batch, &assistant_entry_id);
         let resume_after = &state["task"]["boundary"]["resumeAfter"];
-        let trigger = text(&state["triggerEntryId"])
-            .or_else(|| text(&context["triggerEntryId"]))
-            .or_else(|| text(&resume_after["triggerEntryId"]))
+        let trigger = Self::value_str(&state["triggerEntryId"])
+            .or_else(|| Self::value_str(&context["triggerEntryId"]))
+            .or_else(|| Self::value_str(&resume_after["triggerEntryId"]))
             .unwrap_or(prompt);
-        let preparations = text(&state["task"]["taskId"]).map_or_default(|task| vec![format!("{operation_id}:{task}")]);
+        let preparations =
+            Self::value_str(&state["task"]["taskId"]).map_or_default(|task| vec![format!("{operation_id}:{task}")]);
         Ok(Run {
             operation_id: operation_id.to_string(),
-            config,
+            config: Self::reopen_config(session, context),
             settings: state.get("settings").cloned().unwrap_or_else(super::default_settings),
-            source_tip: text(&meta["sourceTipId"]),
+            source_tip: Self::value_str(&meta["sourceTipId"]),
             started_at: meta["startedAt"].as_i64().unwrap_or(0),
             last_operation_id: lane.get("lastOperationId").cloned().unwrap_or(Value::Null),
-            latest_assistant: text(&state["latestAssistantEntryId"]),
-            generation_trigger: text(&context["triggerEntryId"]).filter(|t| *t != trigger),
+            latest_assistant: Self::value_str(&state["latestAssistantEntryId"]),
+            generation_trigger: Self::value_str(&context["triggerEntryId"]).filter(|t| *t != trigger),
             trigger,
-            step_id: text(&context["stepId"])
-                .or_else(|| text(&batch["turnId"]))
+            step_id: Self::value_str(&context["stepId"])
+                .or_else(|| Self::value_str(&batch["turnId"]))
                 .unwrap_or_default(),
-            response_entry_id: text(&state["responseEntryId"]).unwrap_or_default(),
-            usage_id: text(&state["usageId"]).unwrap_or_default(),
+            response_entry_id: Self::value_str(&state["responseEntryId"]).unwrap_or_default(),
+            usage_id: Self::value_str(&state["usageId"]).unwrap_or_default(),
             calls,
             assistant_entry_id,
             encoder: FrameEncoder::default(),
@@ -275,14 +293,8 @@ impl Run {
             compaction_with_answer: None,
             preparations,
             ready_written: false,
-            retry_policy: match &context["retryPolicy"] {
-                Value::Null => retry_policy(),
-                policy => policy.clone(),
-            },
-            stream_options: match &context["streamOptions"] {
-                Value::Null => stream_options(),
-                options => options.clone(),
-            },
+            retry_policy: Self::non_null_or(&context["retryPolicy"], retry_policy),
+            stream_options: Self::non_null_or(&context["streamOptions"], stream_options),
             attempt: state["attempt"]
                 .as_u64()
                 .or_else(|| state["nextAttempt"].as_u64())
@@ -484,6 +496,27 @@ impl Run {
         format!("{}:{}", self.operation_id, self.response_entry_id)
     }
 
+    fn merge_held_frame(&mut self, frame: &mut Option<Value>, delta: bool, key: &str, writes: &mut Vec<Write>) -> bool {
+        let Some((mut held, since)) = self.held.take() else {
+            return false;
+        };
+        let same = |f: &mut Value| delta && f["type"] == held["type"] && f["contentIndex"] == held["contentIndex"];
+        if let Some(next) = frame.take_if(same) {
+            let joined = format!(
+                "{}{}",
+                held["delta"].as_str().unwrap_or(""),
+                next["delta"].as_str().unwrap_or("")
+            );
+            held["delta"] = joined.into();
+            if since.elapsed() < FRAME_WINDOW {
+                self.held = Some((held, since));
+                return true;
+            }
+        }
+        writes.push(Write::append(PENDING_FRAMES, key, held));
+        false
+    }
+
     /// One stream event (`AssistantMessageEvent` JSON) as a progress frame, when it carries progress. Consecutive
     /// deltas of one block join into one frame until [`FRAME_WINDOW`] passes or another frame comes: recovery
     /// concatenates deltas, so the joined frame replays to the same text.
@@ -498,31 +531,17 @@ impl Run {
         let key = self.frames_key();
         let mut writes = Vec::new();
         let mut frame = Some(frame);
-        if let Some((mut held, since)) = self.held.take() {
-            let same = |f: &mut Value| delta && f["type"] == held["type"] && f["contentIndex"] == held["contentIndex"];
-            if let Some(next) = frame.take_if(same) {
-                let joined = format!(
-                    "{}{}",
-                    held["delta"].as_str().unwrap_or(""),
-                    next["delta"].as_str().unwrap_or("")
-                );
-                held["delta"] = joined.into();
-                if since.elapsed() < FRAME_WINDOW {
-                    self.held = Some((held, since));
-                    return Ok(());
-                }
-            }
-            writes.push(Write::append(PENDING_FRAMES, &key, held));
+        if self.merge_held_frame(&mut frame, delta, &key, &mut writes) {
+            return Ok(());
         }
         match frame {
             Some(frame) if delta => self.held = Some((frame, Instant::now())),
             Some(frame) => writes.push(Write::append(PENDING_FRAMES, &key, frame)),
             None => {}
         }
-        if writes.is_empty() {
-            return Ok(());
+        if !writes.is_empty() {
+            session.commit(&writes)?;
         }
-        session.commit(&writes)?;
         Ok(())
     }
 
@@ -568,12 +587,13 @@ impl Run {
         Ok(())
     }
 
-    /// Commit the settled response with its usage row; the next state is the tool batch when it calls tools,
-    /// else a checkpoint that may finish. Returns whether tools follow.
-    pub fn commit_assistant(&mut self, session: &mut Session, message: Value) -> Result<bool, String> {
-        let tip = session.branch_tip(MAIN_LANE).flatten();
-        let id = self.response_entry_id.clone();
-        let usage_row = Write::usage(&self.usage_id, message["usage"].clone(), Some(&id));
+    fn next_state_after_assistant(
+        &mut self,
+        session: &mut Session,
+        id: &str,
+        message: &Value,
+        writes: &mut Vec<Write>,
+    ) -> Value {
         let calls: Vec<(usize, String)> = message["content"].as_array().map_or_default(|content| {
             content
                 .iter()
@@ -582,40 +602,55 @@ impl Run {
                 .map(|(i, c)| (i, c["id"].as_str().unwrap_or("").to_string()))
                 .collect()
         });
+        if let Some((task, prepared)) = self.compaction_with_answer.take() {
+            self.calls.clear();
+            writes.push(self.prepare_compaction(&task, prepared));
+            self.compaction = Some(Compaction { task, summary: None });
+            return self.summary_scope().state(OpAt::SummaryDeciding, vec![]);
+        }
+        if calls.is_empty() || message["stopReason"] != "toolUse" {
+            self.trigger = id.to_string();
+            self.calls.clear();
+            return self.checkpoint(json!({"kind": "may_finish", "includeFinalAssistant": true}));
+        }
+        self.calls = calls
+            .into_iter()
+            .map(|(source_index, call_id)| ToolCallState {
+                source_index,
+                call_id,
+                result_entry_id: mint(session),
+                status: "planned",
+                result: None,
+            })
+            .collect();
+        self.tools_state()
+    }
+
+    fn assistant_retry_state(&self, next: u64, not_before: i64, error_message: String) -> Value {
+        let mut wait = self.scope(OpAt::AssistantRetryWait);
+        wait.insert("generationContext".into(), self.generation_context());
+        wait.insert("nextAttempt".into(), next.into());
+        wait.insert("notBefore".into(), not_before.into());
+        wait.insert("errorMessage".into(), error_message.into());
+        Value::Object(wait)
+    }
+
+    /// Commit the settled response with its usage row; the next state is the tool batch when it calls tools,
+    /// else a checkpoint that may finish. Returns whether tools follow.
+    pub fn commit_assistant(&mut self, session: &mut Session, message: Value) -> Result<bool, String> {
+        let tip = session.branch_tip(MAIN_LANE).flatten();
+        let id = self.response_entry_id.clone();
+        let usage_row = Write::usage(&self.usage_id, message["usage"].clone(), Some(&id));
         self.latest_assistant = Some(id.clone());
         self.assistant_entry_id = id.clone();
         let mut writes = Vec::new();
-        let next = if let Some((task, prepared)) = self.compaction_with_answer.take() {
-            self.calls.clear();
-            writes.push(self.prepare_compaction(&task, prepared));
-            self.compaction = Some(Compaction {
-                task: task.clone(),
-                summary: None,
-            });
-            self.summary_scope().state(OpAt::SummaryDeciding, vec![])
-        } else if calls.is_empty() || message["stopReason"] != "toolUse" {
-            self.trigger = id.clone();
-            self.calls.clear();
-            self.checkpoint(json!({"kind": "may_finish", "includeFinalAssistant": true}))
-        } else {
-            self.calls = calls
-                .into_iter()
-                .map(|(source_index, call_id)| ToolCallState {
-                    source_index,
-                    call_id,
-                    result_entry_id: mint(session),
-                    status: "planned",
-                    result: None,
-                })
-                .collect();
-            self.tools_state()
-        };
+        let next = self.next_state_after_assistant(session, &id, &message, &mut writes);
         if self.compaction.is_none() {
             self.overflow_recovery_used = false;
         }
         let error = message["stopReason"] == "error" && writes.is_empty();
         let error_message = message["errorMessage"].clone();
-        let retry = if error { self.retry_next.take() } else { None };
+        let retry = error.then(|| self.retry_next.take()).flatten();
         let mut all = vec![
             Write::message_entry(&id, tip.as_deref(), message),
             usage_row,
@@ -623,15 +658,11 @@ impl Run {
             Write::delete_list(PENDING_FRAMES, &self.frames_key()),
         ];
         if let Some((not_before, error_message)) = retry {
-            let next = self.attempt + 1;
-            let mut wait = self.scope(OpAt::AssistantRetryWait);
-            wait.insert("generationContext".into(), self.generation_context());
-            wait.insert("nextAttempt".into(), next.into());
-            wait.insert("notBefore".into(), not_before.into());
-            wait.insert("errorMessage".into(), error_message.into());
-            all.push(Write::set(OP_STATE, &self.operation_id, Value::Object(wait)));
+            let next_attempt = self.attempt + 1;
+            let wait = self.assistant_retry_state(next_attempt, not_before, error_message);
+            all.push(Write::set(OP_STATE, &self.operation_id, wait));
             session.commit(&all)?;
-            self.retry_waiting = Some(next);
+            self.retry_waiting = Some(next_attempt);
             return Ok(false);
         }
         if error {

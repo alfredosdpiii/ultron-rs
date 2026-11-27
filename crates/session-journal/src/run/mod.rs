@@ -117,81 +117,89 @@ fn pick(source: &Value, keys: &[&str]) -> Map<String, Value> {
     out
 }
 
+fn build_frame(kind: &str, index: &Value, mut rest: Map<String, Value>) -> Option<Value> {
+    let mut out = Map::new();
+    out.insert("type".into(), kind.into());
+    out.insert("contentIndex".into(), index.clone());
+    out.append(&mut rest);
+    Some(Value::Object(out))
+}
+
+fn encode_start_or_end(kind: &str, event: &Value, index: &Value, block: &Value) -> Option<Value> {
+    let one = |key: &str, value: Value| [(key.to_string(), value)].into_iter().collect();
+    match kind {
+        "text_start" => build_frame(
+            "text_start",
+            index,
+            one(
+                "content",
+                Value::Object(pick(block, &["type", "text", "textSignature"])),
+            ),
+        ),
+        "thinking_start" => build_frame(
+            "thinking_start",
+            index,
+            one(
+                "content",
+                Value::Object(pick(block, &["type", "thinking", "thinkingSignature", "redacted"])),
+            ),
+        ),
+        "text_end" => {
+            let mut rest = one("content", event["content"].clone());
+            rest.append(&mut pick(block, &["textSignature"]));
+            build_frame("text_end", index, rest)
+        }
+        "thinking_end" => {
+            let mut rest = one("content", event["content"].clone());
+            rest.append(&mut pick(block, &["thinkingSignature", "redacted"]));
+            build_frame("thinking_end", index, rest)
+        }
+        "toolcall_start" => build_frame(
+            "toolcall_start",
+            index,
+            one(
+                "toolCall",
+                Value::Object(pick(
+                    block,
+                    &["type", "id", "name", "arguments", "thoughtSignature", "namespace"],
+                )),
+            ),
+        ),
+        "toolcall_end" => build_frame(
+            "toolcall_end",
+            index,
+            pick(
+                &event["toolCall"],
+                &["id", "name", "arguments", "thoughtSignature", "namespace"],
+            ),
+        ),
+        _ => None,
+    }
+}
+
 impl FrameEncoder {
     pub fn encode(&mut self, event: &Value) -> Option<Value> {
         let kind = event["type"].as_str()?;
-        let index = event.get("contentIndex").cloned().unwrap_or(Value::Null);
-        let block = || event["partial"]["content"][index.as_u64().unwrap_or(0) as usize].clone();
-        let frame = |kind: &str, mut rest: Map<String, Value>| {
-            let mut out = Map::new();
-            out.insert("type".into(), kind.into());
-            out.insert("contentIndex".into(), index.clone());
-            out.append(&mut rest);
-            Some(Value::Object(out))
-        };
-        match kind {
-            "start" => {
-                self.started = true;
-                Some(json!({"type": "start", "partial": clone_start(&event["partial"])}))
-            }
-            _ if !self.started => None,
-            "text_start" => frame(
-                "text_start",
-                [(
-                    "content".to_string(),
-                    Value::Object(pick(&block(), &["type", "text", "textSignature"])),
-                )]
-                .into_iter()
-                .collect(),
-            ),
-            "thinking_start" => frame(
-                "thinking_start",
-                [(
-                    "content".to_string(),
-                    Value::Object(pick(&block(), &["type", "thinking", "thinkingSignature", "redacted"])),
-                )]
-                .into_iter()
-                .collect(),
-            ),
-            "text_delta" | "thinking_delta" | "toolcall_delta" => {
-                let delta = event["delta"].as_str().unwrap_or("");
-                if delta.is_empty() && kind == "toolcall_delta" {
-                    return None;
-                }
-                frame(kind, [("delta".to_string(), delta.into())].into_iter().collect())
-            }
-            "text_end" => {
-                let mut rest = Map::new();
-                rest.insert("content".into(), event["content"].clone());
-                rest.append(&mut pick(&block(), &["textSignature"]));
-                frame("text_end", rest)
-            }
-            "thinking_end" => {
-                let mut rest = Map::new();
-                rest.insert("content".into(), event["content"].clone());
-                rest.append(&mut pick(&block(), &["thinkingSignature", "redacted"]));
-                frame("thinking_end", rest)
-            }
-            "toolcall_start" => frame(
-                "toolcall_start",
-                [(
-                    "toolCall".to_string(),
-                    Value::Object(pick(
-                        &block(),
-                        &["type", "id", "name", "arguments", "thoughtSignature", "namespace"],
-                    )),
-                )]
-                .into_iter()
-                .collect(),
-            ),
-            "toolcall_end" => frame(
-                "toolcall_end",
-                pick(
-                    &event["toolCall"],
-                    &["id", "name", "arguments", "thoughtSignature", "namespace"],
-                ),
-            ),
-            _ => None,
+        if kind == "start" {
+            self.started = true;
+            return Some(json!({"type": "start", "partial": clone_start(&event["partial"])}));
         }
+        if !self.started {
+            return None;
+        }
+        let index = event.get("contentIndex").cloned().unwrap_or(Value::Null);
+        if matches!(kind, "text_delta" | "thinking_delta" | "toolcall_delta") {
+            let delta = event["delta"].as_str().unwrap_or("");
+            if delta.is_empty() && kind == "toolcall_delta" {
+                return None;
+            }
+            return build_frame(
+                kind,
+                &index,
+                [("delta".to_string(), delta.into())].into_iter().collect(),
+            );
+        }
+        let block = &event["partial"]["content"][index.as_u64().unwrap_or(0) as usize];
+        encode_start_or_end(kind, event, &index, block)
     }
 }

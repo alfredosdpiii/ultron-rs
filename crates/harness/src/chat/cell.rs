@@ -203,35 +203,59 @@ pub struct CellProgress {
     throttle: Arc<Mutex<Option<Throttle<Published>>>>,
 }
 
+fn write_slot_fields(
+    live: &chord_delta::Draft,
+    index: usize,
+    retained: &Retained,
+    details: Option<Value>,
+) -> Result<()> {
+    if retained.dropped_bytes > 0 {
+        d(live.set(&slot_path(index, Some("droppedBytes")), json!(retained.dropped_bytes)))?;
+        d(live.set(&slot_path(index, Some("droppedLines")), json!(retained.dropped_lines)))?;
+    }
+    if let Some(details) = details {
+        d(live.set(&slot_path(index, Some("details")), details))?;
+    }
+    Ok(())
+}
+
+fn write_slot_progress(
+    tx: &mut Tx<'_>,
+    conversation_id: ConversationId,
+    task_id: TaskId,
+    retained: &Retained,
+    details: Option<Value>,
+) -> Result<Option<NextState>> {
+    let live = live(tx, conversation_id)?;
+    let Some(index) = slot_index(&live, task_id)? else {
+        return Ok(None);
+    };
+    let current = d(live.get(&slot_path(index, Some("output"))))?;
+    if current.as_ref().and_then(Value::as_str).unwrap_or_default() != retained.text {
+        d(live.set(&slot_path(index, Some("output")), json!(retained.text)))?;
+    }
+    write_slot_fields(&live, index, retained, details)?;
+    Ok(None)
+}
+
+fn publish_cell_progress(committer: &TaskRuntime, retained: Retained, details: Option<Value>) {
+    let conversation_id = committer.conversation_id();
+    let task_id = committer.task_id();
+    let result = committer.commit(&committer.ctx(), |tx, _| {
+        write_slot_progress(tx, conversation_id, task_id, &retained, details.clone())
+    });
+    if let Err(error) = result
+        && !committer.signal().is_cancelled()
+    {
+        let _ = committer.report(&error);
+    }
+}
+
 impl CellProgress {
     fn new(runtime: &TaskRuntime, interval: Duration) -> CellProgress {
         let committer = runtime.clone();
-        let throttle = Throttle::new(interval, move |(retained, details): (Retained, Option<Value>)| {
-            let conversation_id = committer.conversation_id();
-            let task_id = committer.task_id();
-            let result = committer.commit(&committer.ctx(), |tx, _| {
-                let live = live(tx, conversation_id)?;
-                let Some(index) = slot_index(&live, task_id)? else {
-                    return Ok(None);
-                };
-                let current = d(live.get(&slot_path(index, Some("output"))))?;
-                if current.as_ref().and_then(Value::as_str).unwrap_or_default() != retained.text {
-                    d(live.set(&slot_path(index, Some("output")), json!(retained.text)))?;
-                }
-                if retained.dropped_bytes > 0 {
-                    d(live.set(&slot_path(index, Some("droppedBytes")), json!(retained.dropped_bytes)))?;
-                    d(live.set(&slot_path(index, Some("droppedLines")), json!(retained.dropped_lines)))?;
-                }
-                if let Some(details) = details {
-                    d(live.set(&slot_path(index, Some("details")), details))?;
-                }
-                Ok(None)
-            });
-            if let Err(error) = result
-                && !committer.signal().is_cancelled()
-            {
-                let _ = committer.report(&error);
-            }
+        let throttle = Throttle::new(interval, move |(retained, details): Published| {
+            publish_cell_progress(&committer, retained, details);
         });
         CellProgress {
             retained: Arc::new(Mutex::new((Retained::default(), None))),
@@ -357,10 +381,42 @@ enum Ending {
     Failed(String),
 }
 
+fn check_tool_gate(services: &Services, runtime: &TaskRuntime, call: &CellCall) -> Result<Option<CellResult>> {
+    let Some(gate) = &services.hooks.gate_tool else {
+        return Ok(None);
+    };
+    let run = runtime.read(|tx| super::gate::gate_run(tx, call.conversation_id))?;
+    Ok(gate(&run, call).map(|block| CellResult {
+        output: Some(vec![json!({ "type": "text", "text": block.reason })]),
+        is_error: true,
+        control: block.terminate.then_some(Control {
+            terminate: Some(true),
+            handoff: None,
+        }),
+        ..CellResult::default()
+    }))
+}
+
+fn commit_execute_intent(runtime: &TaskRuntime, arguments: &Value, replay: Replay) -> Result<()> {
+    let conversation_id = runtime.conversation_id();
+    let task_id = runtime.task_id();
+    runtime.commit(&runtime.ctx(), |tx, _| {
+        let live = live(tx, conversation_id)?;
+        if let Some(index) = slot_index(&live, task_id)? {
+            d(live.set(&slot_path(index, Some("status")), json!("running")))?;
+        }
+        Ok(Some(NextState::Running {
+            checkpoint: to_value(&CellCheckpoint::Execute {
+                arguments: arguments.clone(),
+                replay,
+            }),
+        }))
+    })
+}
+
 fn call_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> Result<()> {
     let (call_id, name, arguments) = read_call(runtime, task)?;
-    let tool = services.cells.tool();
-    if name != tool.name {
+    if name != services.cells.tool().name {
         let error = CellResult::error("tool_unavailable", &format!("Tool {name} is not available"));
         return settle(
             runtime,
@@ -394,45 +450,36 @@ fn call_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> 
         name: name.clone(),
         arguments: arguments.clone(),
     };
-    if let Some(gate) = &services.hooks.gate_tool {
-        let run = runtime.read(|tx| super::gate::gate_run(tx, call.conversation_id))?;
-        if let Some(block) = gate(&run, &call) {
-            let blocked = CellResult {
-                output: Some(vec![json!({ "type": "text", "text": block.reason })]),
-                is_error: true,
-                control: block.terminate.then_some(Control {
-                    terminate: Some(true),
-                    handoff: None,
-                }),
-                ..CellResult::default()
-            };
-            return settle(
-                runtime,
-                task,
-                &call_id,
-                &name,
-                Ending::Completed,
-                |_| blocked.clone(),
-                None,
-            );
-        }
+    if let Some(blocked) = check_tool_gate(services, runtime, &call)? {
+        return settle(
+            runtime,
+            task,
+            &call_id,
+            &name,
+            Ending::Completed,
+            |_| blocked.clone(),
+            None,
+        );
     }
     let replay = services.cells.replay(&call);
+    commit_execute_intent(runtime, &arguments, replay)?;
+    run(services, runtime, task, call)
+}
+
+fn can_replay_cell(services: &Services, call: &CellCall, replay: Replay) -> bool {
+    replay == Replay::Safe && call.name == services.cells.tool().name && services.cells.replay(call) == Replay::Safe
+}
+
+fn clear_cell_slot_progress(runtime: &TaskRuntime) -> Result<()> {
     let conversation_id = runtime.conversation_id();
     let task_id = runtime.task_id();
     runtime.commit(&runtime.ctx(), |tx, _| {
         let live = live(tx, conversation_id)?;
         if let Some(index) = slot_index(&live, task_id)? {
-            d(live.set(&slot_path(index, Some("status")), json!("running")))?;
+            clear_progress(&live, index)?;
         }
-        Ok(Some(NextState::Running {
-            checkpoint: to_value(&CellCheckpoint::Execute {
-                arguments: arguments.clone(),
-                replay,
-            }),
-        }))
-    })?;
-    run(services, runtime, task, call)
+        Ok(None)
+    })
 }
 
 /// Recovery after intent: run again only when the recorded and the current policy both say `safe`.
@@ -448,16 +495,8 @@ fn execute_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) 
         name: name.clone(),
         arguments,
     };
-    if replay == Replay::Safe && name == services.cells.tool().name && services.cells.replay(&call) == Replay::Safe {
-        let conversation_id = runtime.conversation_id();
-        let task_id = runtime.task_id();
-        runtime.commit(&runtime.ctx(), |tx, _| {
-            let live = live(tx, conversation_id)?;
-            if let Some(index) = slot_index(&live, task_id)? {
-                clear_progress(&live, index)?;
-            }
-            Ok(None)
-        })?;
+    if can_replay_cell(services, &call, replay) {
+        clear_cell_slot_progress(runtime)?;
         return run(services, runtime, task, call);
     }
     let message = interrupted_message(&name);
@@ -595,6 +634,32 @@ fn from_slot(slot: Option<&Value>, code: &str, message: &str) -> CellResult {
     }
 }
 
+fn update_settled_slot(live: &chord_delta::Draft, task_id: TaskId, entry_id: EntryId) -> Result<()> {
+    if let Some(index) = slot_index(live, task_id)? {
+        finish_slot(live, index)?;
+        d(live.set(&slot_path(index, Some("entry")), json!(entry_id.0)))?;
+    }
+    Ok(())
+}
+
+fn outcome_for_ending(ending: Ending, entry_id: EntryId, control: Option<&Control>) -> TaskOutcome {
+    let mut settled = json!({ "kind": "model", "entryId": entry_id.0 });
+    if let (Ending::Completed, Some(control)) = (&ending, control) {
+        settled["control"] = strict(to_value(control));
+    }
+    match ending {
+        Ending::Completed => TaskOutcome::Completed { result: settled },
+        Ending::Aborted => TaskOutcome::Aborted {
+            reason: None,
+            result: Some(settled),
+        },
+        Ending::Failed(message) => TaskOutcome::Failed {
+            error: TaskOutcomeError { message, detail: None },
+            result: Some(settled),
+        },
+    }
+}
+
 /// Commit the cell's terminal state: append its result entry, mark its slot done with the entry, and complete with
 /// `{ kind: "model", entryId, control? }`. `build` receives the slot so interruption and abort report the durable
 /// partial output.
@@ -614,25 +679,8 @@ fn settle(
         let current = slot(&live, task_id)?;
         let result = build(current.as_ref());
         let entry = append_tool_result(tx, conversation_id, call_id, name, &result, runtime.now()?, duration_ms)?;
-        if let Some(index) = slot_index(&live, task_id)? {
-            finish_slot(&live, index)?;
-            d(live.set(&slot_path(index, Some("entry")), json!(entry.id.0)))?;
-        }
-        let mut settled = json!({ "kind": "model", "entryId": entry.id.0 });
-        if let (Ending::Completed, Some(control)) = (&ending, &result.control) {
-            settled["control"] = strict(to_value(control));
-        }
-        let outcome = match ending {
-            Ending::Completed => TaskOutcome::Completed { result: settled },
-            Ending::Aborted => TaskOutcome::Aborted {
-                reason: None,
-                result: Some(settled),
-            },
-            Ending::Failed(message) => TaskOutcome::Failed {
-                error: TaskOutcomeError { message, detail: None },
-                result: Some(settled),
-            },
-        };
+        update_settled_slot(&live, task_id, entry.id)?;
+        let outcome = outcome_for_ending(ending, entry.id, result.control.as_ref());
         Ok(Some(NextState::Terminal { outcome }))
     })
 }

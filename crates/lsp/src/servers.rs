@@ -192,21 +192,45 @@ static EFFECT_TSGO: Spec = Spec {
     status: false,
 };
 
-/// The server for `root` where `spec` is the server of the file's extension: a project whose tsconfig.json names
-/// the Effect plugin gets `effect-tsgo`, unless its own TypeScript is 5 or 6, where tsserver loads the plugin.
-/// ponytail: only the root tsconfig.json is read (where the plugin's README puts it for a monorepo), and mise's
-/// `@effect/tsgo` runs, not the version the project pins; prefer `node_modules/.bin/effect-tsgo` if they drift.
-pub fn in_project(spec: &'static Spec, root: &Path) -> &'static Spec {
+fn project_dirs<'a>(root: &'a Path, file: &'a Path) -> Vec<&'a Path> {
+    let mut dirs = Vec::new();
+    let start = file.parent().unwrap_or(root);
+    for dir in start.ancestors() {
+        dirs.push(dir);
+        if dir == root {
+            break;
+        }
+    }
+    if !dirs.contains(&root) {
+        dirs.push(root);
+    }
+    dirs
+}
+
+fn typescript_major(dir: &Path) -> Option<u32> {
+    let text = std::fs::read_to_string(dir.join("node_modules/typescript/package.json")).ok()?;
+    let package = serde_json::from_str::<Value>(&text).ok()?;
+    package["version"].as_str()?.split('.').next()?.parse::<u32>().ok()
+}
+
+/// The server for `root` where `spec` is the server of `file`'s extension: a project whose `tsconfig.json` (checked
+/// walking up from `file`'s directory to `root` for monorepo packages) names the Effect plugin gets `effect-tsgo`,
+/// unless its TypeScript is 5 or 6, where tsserver loads the plugin.
+pub fn in_project(spec: &'static Spec, root: &Path, file: &Path) -> &'static Spec {
     if spec.name != "typescript-language-server" {
         return spec;
     }
-    let read = |file: &str| std::fs::read_to_string(root.join(file)).ok();
-    let effect = read("tsconfig.json").is_some_and(|text| text.contains("\"@effect/language-service\""));
-    let older = read("node_modules/typescript/package.json")
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|package| package["version"].as_str()?.split('.').next()?.parse::<u32>().ok())
-        .is_some_and(|major| major < 7);
-    if effect && !older { &EFFECT_TSGO } else { spec }
+    let dirs = project_dirs(root, file);
+    let effect = dirs.iter().any(|dir| {
+        std::fs::read_to_string(dir.join("tsconfig.json"))
+            .is_ok_and(|text| text.contains("\"@effect/language-service\""))
+    });
+    let older = dirs.iter().find_map(|dir| typescript_major(dir).map(|major| major < 7));
+    if effect && older != Some(true) {
+        &EFFECT_TSGO
+    } else {
+        spec
+    }
 }
 
 /// The server and `languageId` of `file`, by its extension.

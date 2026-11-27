@@ -29,20 +29,8 @@ pub fn message_of(event: &Value) -> Option<&Value> {
     event.get("message").filter(|message| message.is_object())
 }
 
-pub fn fold_frame(message: &mut Value, frame: &Value) {
-    let Some(kind) = frame["type"].as_str() else {
-        return;
-    };
-    let Some(index) = frame["contentIndex"].as_u64().map(|index| index as usize) else {
-        return;
-    };
-    if !message["content"].is_array() {
-        message["content"] = json!([]);
-    }
-    let Some(content) = message["content"].as_array_mut() else {
-        return;
-    };
-    let block = match kind {
+fn replacement_block(kind: &str, frame: &Value) -> Option<Value> {
+    match kind {
         "text_start" => Some(json!({"type": "text", "text": ""})),
         "thinking_start" => Some(json!({"type": "thinking", "thinking": ""})),
         "toolcall_start" => Some(json!({
@@ -50,19 +38,19 @@ pub fn fold_frame(message: &mut Value, frame: &Value) {
         })),
         "toolcall_end" => frame.get("toolCall").filter(|call| call.is_object()).cloned(),
         _ => None,
-    };
-    if let Some(block) = block {
-        if index < content.len() {
-            content[index] = block;
-        } else {
-            content.resize(index, Value::Null);
-            content.push(block);
-        }
-        return;
     }
-    let Some(block) = content.get_mut(index).and_then(Value::as_object_mut) else {
-        return;
-    };
+}
+
+fn set_content_block(content: &mut Vec<Value>, index: usize, block: Value) {
+    if index < content.len() {
+        content[index] = block;
+    } else {
+        content.resize(index, Value::Null);
+        content.push(block);
+    }
+}
+
+fn apply_block_delta(block: &mut Map<String, Value>, kind: &str, frame: &Value) {
     match kind {
         "text_delta" | "thinking_delta" => {
             let key = if kind == "text_delta" { "text" } else { "thinking" };
@@ -80,6 +68,28 @@ pub fn fold_frame(message: &mut Value, frame: &Value) {
             block.insert("arguments".into(), arguments);
         }
         _ => {}
+    }
+}
+
+pub fn fold_frame(message: &mut Value, frame: &Value) {
+    let Some(kind) = frame["type"].as_str() else {
+        return;
+    };
+    let Some(index) = frame["contentIndex"].as_u64().map(|index| index as usize) else {
+        return;
+    };
+    if !message["content"].is_array() {
+        message["content"] = json!([]);
+    }
+    let Some(content) = message["content"].as_array_mut() else {
+        return;
+    };
+    if let Some(block) = replacement_block(kind, frame) {
+        set_content_block(content, index, block);
+        return;
+    }
+    if let Some(block) = content.get_mut(index).and_then(Value::as_object_mut) {
+        apply_block_delta(block, kind, frame);
     }
 }
 

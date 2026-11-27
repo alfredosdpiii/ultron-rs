@@ -5,24 +5,22 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value, json};
 
-use super::knowledge::{backfill_notes, index_knowledge, learn, learned_guide, repo_key, repo_ledger};
+use super::knowledge::{backfill_notes, index_knowledge, learned_guide, repo_key, repo_ledger};
+use super::publish::{finalize_posted_threads, persist_review_state, publish_review, write_posted_review_record};
 use super::{
-    Outcome, Prepared, PreparedEnvironment, Reviewed, ReviewerDeps, dry_run_markdown, github_of, pull_state_key,
-    seconds, short,
+    Outcome, Prepared, PreparedEnvironment, Reviewed, ReviewerDeps, github_of, pull_state_key, seconds, short,
 };
-use crate::accounts::account_key;
 use crate::ban::banned_reason;
 use crate::checkout::{Checkout, PullHeads, make_private_dir, random_hex};
 use crate::github::{Comment, Error, GitHub, PullRef, PullRequest, ReviewCommentInput, ReviewInput, pull_key};
-use crate::ledger::{FateInput, ThreadState, fates_of, lessons_for};
+use crate::ledger::{ThreadState, lessons_for};
 use crate::local::{expand_path, find_checkout, without_guide_mentions};
-use crate::plan::{EngineResult, PlanOptions, PromotionNote, ReviewPlan, Verdict, plan_review, without_inline};
+use crate::plan::{EngineResult, PlanOptions, PromotionNote, ReviewPlan, plan_review};
 use crate::promotion::{
     PromotionDelta, PromotionSource, changed_new_lines, cherry_sources, promotion_delta, referenced_pulls, source_label,
 };
 use crate::settings::{engine_settings, tests_eligible};
-use crate::state::{PostedFinding, PullState, ReviewRecord, claim_hash, to_json_1};
-use jsrt::json::Num;
+use crate::state::{PostedFinding, PullState, to_json_1};
 
 /// A reply in a finding's thread is cut to this many characters for the re-check.
 pub const MAX_REPLY_CHARS: usize = 2000;
@@ -50,10 +48,10 @@ pub(super) fn thread_states(
 }
 
 /// An earlier finding's status as the re-review settled it.
-struct EarlierStatus {
-    id: String,
-    status: String,
-    line: i64,
+pub(super) struct EarlierStatus {
+    pub(super) id: String,
+    pub(super) status: String,
+    pub(super) line: i64,
 }
 
 fn earlier_statuses(result: &Value) -> Vec<EarlierStatus> {
@@ -72,7 +70,7 @@ fn earlier_statuses(result: &Value) -> Vec<EarlierStatus> {
 
 /// Dismiss this account's requests for changes on the pull request, after a review at `head` that blocks nothing.
 /// Never fails a review: an error (an account that may not dismiss reviews there) is logged.
-fn lift_own_blocks(deps: &ReviewerDeps, github: &GitHub, r: &PullRef, me: &str, head: &str, name: &str) {
+pub(super) fn lift_own_blocks(deps: &ReviewerDeps, github: &GitHub, r: &PullRef, me: &str, head: &str, name: &str) {
     let reviews = match github.reviews(r) {
         Ok(reviews) => reviews,
         Err(error) => {
@@ -104,7 +102,7 @@ fn lift_own_blocks(deps: &ReviewerDeps, github: &GitHub, r: &PullRef, me: &str, 
 }
 
 /// Writes `<dir>/reviews/<name>.json` and removes the oldest records beyond [`MAX_REVIEW_RECORDS`].
-fn write_review_record(dir: &str, name: &str, record: &Value) -> std::io::Result<()> {
+pub(super) fn write_review_record(dir: &str, name: &str, record: &Value) -> std::io::Result<()> {
     let reviews = jsrt::path::join(&[dir, "reviews"]);
     make_private_dir(&reviews)?;
     write_private(
@@ -125,11 +123,11 @@ fn write_review_record(dir: &str, name: &str, record: &Value) -> std::io::Result
     Ok(())
 }
 
-fn write_private(path: &str, text: &str) -> std::io::Result<()> {
+pub(super) fn write_private(path: &str, text: &str) -> std::io::Result<()> {
     config::paths::write_private(std::path::Path::new(path), text)
 }
 
-fn review_input(head: &str, plan: &ReviewPlan) -> ReviewInput {
+pub(super) fn review_input(head: &str, plan: &ReviewPlan) -> ReviewInput {
     ReviewInput {
         commit_id: head.into(),
         event: plan.event.into(),
@@ -150,7 +148,7 @@ fn review_input(head: &str, plan: &ReviewPlan) -> ReviewInput {
 }
 
 /// The number after the highest `<short_sha>-<n>` id among `findings` (1 when there is none).
-fn next_finding_number(findings: &[PostedFinding], short_sha: &str) -> usize {
+pub(super) fn next_finding_number(findings: &[PostedFinding], short_sha: &str) -> usize {
     findings
         .iter()
         .filter_map(|finding| {
@@ -398,6 +396,84 @@ struct PreparedDiffs {
     promotion_inputs: Vec<PromotionSource>,
 }
 
+struct RawDiffs {
+    full_diff: String,
+    review_diff: String,
+    earlier_diff: Option<String>,
+    since_sha: Option<String>,
+}
+
+fn compute_raw_diffs(
+    github: &GitHub,
+    r: &PullRef,
+    checkout: Option<&Checkout>,
+    head: &str,
+    last_sha: Option<&str>,
+) -> Result<RawDiffs, Error> {
+    let Some(checkout) = checkout else {
+        let full_diff = github.pull_diff(r)?;
+        let earlier_diff = (last_sha == Some(head)).then(String::new);
+        return Ok(RawDiffs {
+            review_diff: full_diff.clone(),
+            full_diff,
+            earlier_diff,
+            since_sha: None,
+        });
+    };
+    let full_diff = checkout.diff(&checkout.merge_base, head)?;
+    if let Some(last) = last_sha.filter(|last| *last != head)
+        && checkout.is_ancestor(last, head)
+    {
+        let incremental = checkout.diff(last, head)?;
+        let pr_paths = changes_paths(&full_diff);
+        let review_diff = filter_diff_by_paths(&incremental, &pr_paths);
+        return Ok(RawDiffs {
+            full_diff,
+            earlier_diff: Some(review_diff.clone()),
+            review_diff,
+            since_sha: Some(last.to_string()),
+        });
+    }
+    let earlier_diff = (last_sha == Some(head)).then(String::new);
+    Ok(RawDiffs {
+        review_diff: full_diff.clone(),
+        full_diff,
+        earlier_diff,
+        since_sha: None,
+    })
+}
+
+fn compute_promotion(
+    deps: &ReviewerDeps,
+    github: &GitHub,
+    r: &PullRef,
+    pull: &PullRequest,
+    checkout: &Checkout,
+    review_diff: &mut String,
+    name: &str,
+) -> (Option<PromotionDelta>, Vec<PromotionSource>) {
+    let inputs = promotion_sources(github, r, pull, checkout);
+    if inputs.is_empty() {
+        return (None, inputs);
+    }
+    let delta = promotion_delta(review_diff, &inputs, &|path| head_lines(&checkout.work_dir, path));
+    if delta.sources.is_empty() {
+        return (None, inputs);
+    }
+    (deps.log)(&format!(
+        "{name}: carries {}: reading {} of {} changed lines ({} files carried over unchanged, {} read in full \
+         for other code around them, {} with lines left out)",
+        delta.sources.join(", "),
+        changed_lines(&delta.diff),
+        changed_lines(review_diff),
+        delta.carried_files,
+        delta.context_files,
+        delta.missing.len()
+    ));
+    *review_diff = delta.diff.clone();
+    (Some(delta), inputs)
+}
+
 fn prepare_diffs(
     deps: &ReviewerDeps,
     github: &GitHub,
@@ -409,86 +485,43 @@ fn prepare_diffs(
     let r = &prepared.candidate.pull;
     let pull = &prepared.pull;
     let head = &pull.head_sha;
-    let last_sha = &prepared.last_sha;
     let io = |e: std::io::Error| Error::Other(e.to_string());
-
-    let mut since_sha = None;
-    let full_diff;
-    let mut review_diff;
-    let mut earlier_diff = None;
-    if let Some(checkout) = checkout {
-        full_diff = checkout.diff(&checkout.merge_base, head)?;
-        review_diff = full_diff.clone();
-        if let Some(last) = last_sha.as_deref().filter(|last| *last != head)
-            && checkout.is_ancestor(last, head)
-        {
-            since_sha = Some(last.to_string());
-            let incremental = checkout.diff(last, head)?;
-            let pr_paths = changes_paths(&full_diff);
-            review_diff = filter_diff_by_paths(&incremental, &pr_paths);
-            earlier_diff = Some(review_diff.clone());
-        } else if last_sha.as_deref() == Some(head.as_str()) {
-            earlier_diff = Some(String::new());
-        }
-    } else {
-        full_diff = github.pull_diff(r)?;
-        review_diff = full_diff.clone();
-        if last_sha.as_deref() == Some(head.as_str()) {
-            earlier_diff = Some(String::new());
-        }
-    }
+    let mut raw = compute_raw_diffs(github, r, checkout, head, prepared.last_sha.as_deref())?;
     let fresh_lines = if prepared.forced {
         None
-    } else if last_sha.as_deref() == Some(head.as_str()) {
+    } else if prepared.last_sha.as_deref() == Some(head.as_str()) {
         Some(indexmap::IndexMap::new())
     } else {
-        since_sha.as_ref().and(earlier_diff.as_deref()).map(changed_new_lines)
+        raw.since_sha
+            .as_ref()
+            .and(raw.earlier_diff.as_deref())
+            .map(changed_new_lines)
     };
     if prepared.recheck_only {
         (deps.log)(&format!(
             "{name}: {} was reviewed in full: re-checking the earlier findings only",
             short(head)
         ));
-        review_diff = String::new();
+        raw.review_diff = String::new();
     }
-    let mut promotion: Option<PromotionDelta> = None;
-    let mut promotion_inputs: Vec<PromotionSource> = Vec::new();
-    if let Some(checkout) = checkout.filter(|_| !prepared.recheck_only) {
-        promotion_inputs = promotion_sources(github, r, pull, checkout);
-        if !promotion_inputs.is_empty() {
-            let delta = promotion_delta(&review_diff, &promotion_inputs, &|path| {
-                head_lines(&checkout.work_dir, path)
-            });
-            if !delta.sources.is_empty() {
-                (deps.log)(&format!(
-                    "{name}: carries {}: reading {} of {} changed lines ({} files carried over unchanged, {} read in full \
-                     for other code around them, {} with lines left out)",
-                    delta.sources.join(", "),
-                    changed_lines(&delta.diff),
-                    changed_lines(&review_diff),
-                    delta.carried_files,
-                    delta.context_files,
-                    delta.missing.len()
-                ));
-                review_diff = delta.diff.clone();
-                promotion = Some(delta);
-            }
-        }
-    }
+    let (promotion, promotion_inputs) = match checkout.filter(|_| !prepared.recheck_only) {
+        Some(checkout) => compute_promotion(deps, github, r, pull, checkout, &mut raw.review_diff, name),
+        None => (None, Vec::new()),
+    };
     let diff_path = jsrt::path::join(&[scratch, "review.diff"]);
     let post_diff_path = jsrt::path::join(&[scratch, "pull.diff"]);
     let earlier_diff_path = jsrt::path::join(&[scratch, "earlier.diff"]);
-    std::fs::write(&diff_path, &review_diff).map_err(io)?;
-    std::fs::write(&post_diff_path, &full_diff).map_err(io)?;
-    if let Some(earlier_diff) = &earlier_diff {
+    std::fs::write(&diff_path, &raw.review_diff).map_err(io)?;
+    std::fs::write(&post_diff_path, &raw.full_diff).map_err(io)?;
+    if let Some(earlier_diff) = &raw.earlier_diff {
         std::fs::write(&earlier_diff_path, earlier_diff).map_err(io)?;
     }
     Ok(PreparedDiffs {
         diff_path,
         post_diff_path,
         earlier_diff_path,
-        has_earlier_diff: earlier_diff.is_some(),
-        since_sha,
+        has_earlier_diff: raw.earlier_diff.is_some(),
+        since_sha: raw.since_sha,
         fresh_lines,
         promotion,
         promotion_inputs,
@@ -502,6 +535,77 @@ struct TestEnvSetup {
     test_checkout: Option<String>,
 }
 
+fn log_prepared_env(deps: &ReviewerDeps, r: &PullRef, env: &PreparedEnvironment) {
+    let summary = if env.prepared.is_empty() {
+        "nothing prepared".to_string()
+    } else {
+        env.prepared.join("; ")
+    };
+    let failures = if env.failures.is_empty() {
+        String::new()
+    } else {
+        format!("; failed: {}", env.failures.join("; "))
+    };
+    (deps.log)(&format!(
+        "{}: environment {}{}: {summary}{failures}",
+        pull_key(r),
+        env.hash,
+        if env.cached { " (cached)" } else { "" },
+    ));
+}
+
+fn try_prepare_cached_env(
+    deps: &ReviewerDeps,
+    r: &PullRef,
+    checkout: Option<&Checkout>,
+    enabled: bool,
+) -> Option<PreparedEnvironment> {
+    if !enabled {
+        return None;
+    }
+    let (checkout, environments) = (checkout?, deps.environments.as_ref()?);
+    let log = |line: &str| (deps.log)(&format!("{}: {line}", pull_key(r)));
+    match environments.prepare(&checkout.work_dir, &log) {
+        Ok(env) => {
+            log_prepared_env(deps, r, &env);
+            Some(env)
+        }
+        Err(error) => {
+            (deps.log)(&format!("{}: prepare failed: {error}", pull_key(r)));
+            None
+        }
+    }
+}
+
+fn should_run_tests(
+    deps: &ReviewerDeps,
+    github: &GitHub,
+    r: &PullRef,
+    prepared: &Prepared,
+    checkout: Option<&Checkout>,
+) -> Result<bool, Error> {
+    if checkout.is_none() || prepared.recheck_only || deps.config.mode == "fast" || !deps.config.run_tests {
+        return Ok(false);
+    }
+    Ok(tests_eligible(&deps.config, &r.owner, github.can_push(r)?))
+}
+
+fn resolve_test_checkout(
+    deps: &ReviewerDeps,
+    r: &PullRef,
+    prepared_env: Option<&PreparedEnvironment>,
+    run_tests: bool,
+    has_test_env: bool,
+) -> Option<String> {
+    if let Some(env) = prepared_env.filter(|env| !env.prepared.is_empty()) {
+        return Some(env.dir.clone());
+    }
+    if run_tests && !has_test_env && !deps.config.checkout_roots.is_empty() {
+        return find_checkout(deps.runner.as_ref(), &deps.config.checkout_roots, r);
+    }
+    None
+}
+
 fn prepare_test_env(
     deps: &ReviewerDeps,
     github: &GitHub,
@@ -509,54 +613,19 @@ fn prepare_test_env(
     checkout: Option<&Checkout>,
 ) -> Result<TestEnvSetup, Error> {
     let r = &prepared.candidate.pull;
-    let run_tests = checkout.is_some()
-        && !prepared.recheck_only
-        && deps.config.mode != "fast"
-        && deps.config.run_tests
-        && tests_eligible(&deps.config, &r.owner, github.can_push(r)?);
+    let run_tests = should_run_tests(deps, github, r, prepared, checkout)?;
     let test_env = deps
         .config
         .test_env
         .get(&format!("{}/{}", r.owner, r.repo).to_lowercase())
         .cloned();
-    let prepared_env = match (checkout, &deps.environments) {
-        (Some(checkout), Some(environments)) if run_tests && test_env.is_none() && deps.config.prepare_envs => {
-            let log = |line: &str| (deps.log)(&format!("{}: {line}", pull_key(r)));
-            match environments.prepare(&checkout.work_dir, &log) {
-                Ok(env) => Some(env),
-                Err(error) => {
-                    (deps.log)(&format!("{}: prepare failed: {error}", pull_key(r)));
-                    None
-                }
-            }
-        }
-        _ => None,
-    };
-    if let Some(env) = &prepared_env {
-        (deps.log)(&format!(
-            "{}: environment {}{}: {}{}",
-            pull_key(r),
-            env.hash,
-            if env.cached { " (cached)" } else { "" },
-            if env.prepared.is_empty() {
-                "nothing prepared".to_string()
-            } else {
-                env.prepared.join("; ")
-            },
-            if env.failures.is_empty() {
-                String::new()
-            } else {
-                format!("; failed: {}", env.failures.join("; "))
-            }
-        ));
-    }
-    let test_checkout = match prepared_env.as_ref().filter(|env| !env.prepared.is_empty()) {
-        Some(env) => Some(env.dir.clone()),
-        None if run_tests && test_env.is_none() && !deps.config.checkout_roots.is_empty() => {
-            find_checkout(deps.runner.as_ref(), &deps.config.checkout_roots, r)
-        }
-        None => None,
-    };
+    let prepared_env = try_prepare_cached_env(
+        deps,
+        r,
+        checkout,
+        run_tests && test_env.is_none() && deps.config.prepare_envs,
+    );
+    let test_checkout = resolve_test_checkout(deps, r, prepared_env.as_ref(), run_tests, test_env.is_some());
     Ok(TestEnvSetup {
         run_tests,
         test_env,
@@ -565,24 +634,8 @@ fn prepare_test_env(
     })
 }
 
-#[expect(clippy::too_many_arguments, reason = "internal review spec builder")]
-fn build_engine_spec(
-    deps: &ReviewerDeps,
-    github: &GitHub,
-    prepared: &Prepared,
-    checkout: Option<&Checkout>,
-    diffs: &PreparedDiffs,
-    env_setup: &TestEnvSetup,
-    review_comments: &[Comment],
-    earlier: &[PostedFinding],
-    ci: Option<&str>,
-    scratch: &str,
-    me: &str,
-    name: &str,
-) -> Value {
-    let r = &prepared.candidate.pull;
-    let pull = &prepared.pull;
-    let others: Vec<Value> = review_comments
+fn other_review_comments(review_comments: &[Comment], me: &str) -> Vec<Value> {
+    review_comments
         .iter()
         .filter(|comment| comment.user.to_lowercase() != me && comment.path.is_some())
         .map(|comment| {
@@ -597,17 +650,18 @@ fn build_engine_spec(
             }
             Value::Object(item)
         })
-        .collect();
-    let lessons = if deps.config.learn {
-        lessons_for(
-            &repo_ledger(&deps.store.read(), &repo_key(r)),
-            &jsrt::date::iso_string((deps.now)()),
-        )
-    } else {
-        Vec::new()
-    };
+        .collect()
+}
 
-    let mut spec = Map::new();
+fn insert_checkout_and_promotion(
+    spec: &mut Map<String, Value>,
+    deps: &ReviewerDeps,
+    github: &GitHub,
+    r: &PullRef,
+    checkout: Option<&Checkout>,
+    diffs: &PreparedDiffs,
+    name: &str,
+) {
     if let Some(checkout) = checkout {
         spec.insert("workDir".into(), json!(checkout.work_dir));
         spec.insert("baseSha".into(), json!(checkout.merge_base));
@@ -630,10 +684,10 @@ fn build_engine_spec(
             spec.insert("unapprovedSources".into(), json!(unapproved));
         }
     }
+}
+
+fn insert_test_env_spec(spec: &mut Map<String, Value>, env_setup: &TestEnvSetup) {
     spec.insert("runTests".into(), json!(env_setup.run_tests));
-    if prepared.recheck_only {
-        spec.insert("recheckOnly".into(), json!(true));
-    }
     if let Some(test_env) = env_setup.test_env.as_ref().filter(|_| env_setup.run_tests) {
         spec.insert("testEnv".into(), json!(test_env));
         spec.insert("testEnvKind".into(), json!("testEnv"));
@@ -651,6 +705,65 @@ fn build_engine_spec(
         if !env.failures.is_empty() {
             spec.insert("testEnvFailures".into(), json!(env.failures));
         }
+    }
+}
+
+fn earlier_spec_items(earlier: &[PostedFinding], review_comments: &[Comment], me: &str) -> Vec<Value> {
+    earlier
+        .iter()
+        .map(|f| {
+            let mut item =
+                json!({ "id": f.id, "file": f.file, "line": f.line, "severity": f.severity, "claim": f.claim });
+            let replies: Vec<Value> = f.comment_id.map_or_default(|root| {
+                review_comments
+                    .iter()
+                    .filter(|comment| comment.in_reply_to == Some(root) && comment.user.to_lowercase() != me)
+                    .map(|comment| {
+                        json!({
+                            "author": comment.user,
+                            "body": jsrt::utf16::head(&comment.body, MAX_REPLY_CHARS)
+                        })
+                    })
+                    .collect()
+            });
+            if !replies.is_empty() {
+                item["replies"] = Value::Array(replies);
+            }
+            item
+        })
+        .collect()
+}
+
+#[expect(clippy::too_many_arguments, reason = "internal review spec builder")]
+fn build_engine_spec(
+    deps: &ReviewerDeps,
+    github: &GitHub,
+    prepared: &Prepared,
+    checkout: Option<&Checkout>,
+    diffs: &PreparedDiffs,
+    env_setup: &TestEnvSetup,
+    review_comments: &[Comment],
+    earlier: &[PostedFinding],
+    ci: Option<&str>,
+    scratch: &str,
+    me: &str,
+    name: &str,
+) -> Value {
+    let r = &prepared.candidate.pull;
+    let pull = &prepared.pull;
+    let lessons = if deps.config.learn {
+        lessons_for(
+            &repo_ledger(&deps.store.read(), &repo_key(r)),
+            &jsrt::date::iso_string((deps.now)()),
+        )
+    } else {
+        Vec::new()
+    };
+    let mut spec = Map::new();
+    insert_checkout_and_promotion(&mut spec, deps, github, r, checkout, diffs, name);
+    insert_test_env_spec(&mut spec, env_setup);
+    if prepared.recheck_only {
+        spec.insert("recheckOnly".into(), json!(true));
     }
     let mut guides: Vec<String> = deps
         .config
@@ -675,37 +788,19 @@ fn build_engine_spec(
     if let Some(ci) = ci {
         context.insert("ci".into(), json!(ci));
     }
-    context.insert("comments".into(), Value::Array(others));
+    context.insert(
+        "comments".into(),
+        Value::Array(other_review_comments(review_comments, me)),
+    );
     spec.insert("context".into(), Value::Object(context));
     if !lessons.is_empty() {
         spec.insert("lessons".into(), serde_json::to_value(&lessons).unwrap_or(Value::Null));
     }
     if !earlier.is_empty() {
-        let replies = |finding: &PostedFinding| -> Vec<Value> {
-            let Some(root) = finding.comment_id else {
-                return Vec::new();
-            };
-            review_comments
-                .iter()
-                .filter(|comment| comment.in_reply_to == Some(root) && comment.user.to_lowercase() != me)
-                .map(|comment| {
-                    json!({ "author": comment.user, "body": jsrt::utf16::head(&comment.body, MAX_REPLY_CHARS) })
-                })
-                .collect()
-        };
-        let items: Vec<Value> = earlier
-            .iter()
-            .map(|f| {
-                let mut item =
-                    json!({ "id": f.id, "file": f.file, "line": f.line, "severity": f.severity, "claim": f.claim });
-                let replies = replies(f);
-                if !replies.is_empty() {
-                    item["replies"] = Value::Array(replies);
-                }
-                item
-            })
-            .collect();
-        spec.insert("earlier".into(), Value::Array(items));
+        spec.insert(
+            "earlier".into(),
+            Value::Array(earlier_spec_items(earlier, review_comments, me)),
+        );
         if diffs.has_earlier_diff {
             spec.insert("earlierDiffPath".into(), json!(diffs.earlier_diff_path));
         }
@@ -713,324 +808,24 @@ fn build_engine_spec(
     Value::Object(spec)
 }
 
-fn track_finding(
-    result: &EngineResult,
-    raw_findings: &[Value],
-    short_sha: &str,
-    head: &str,
-    numbered: usize,
-    index: usize,
-    posted: &mut Vec<PostedFinding>,
-) -> usize {
-    let finding = &result.findings[index];
-    let kind = raw_findings
-        .get(index)
-        .and_then(|f| f.get("kind"))
-        .and_then(Value::as_str);
-    let mut extra = indexmap::IndexMap::new();
-    if let Some(Value::Array(ids)) = raw_findings.get(index).and_then(|f| f.get("rules"))
-        && ids.iter().all(Value::is_i64)
-        && !ids.is_empty()
-    {
-        extra.insert("rules".to_string(), Value::Array(ids.clone()));
-    }
-    posted.push(PostedFinding {
-        id: format!("{short_sha}-{}", numbered + index),
-        file: finding.file.clone(),
-        line: finding.line,
-        severity: finding.level().into(),
-        claim: finding.claim.clone(),
-        claim_hash: claim_hash(&finding.claim),
-        category: Some(finding.category.clone()),
-        kind: kind.map(String::from),
-        sha: head.to_string(),
-        comment_id: None,
-        thread_id: None,
-        status: "open".into(),
-        extra,
-    });
-    posted.len() - 1
-}
-
-struct PublishOutcome {
-    posted: Vec<PostedFinding>,
-    review_id: Option<i64>,
-    path: Option<String>,
-}
-
-#[expect(clippy::too_many_arguments, reason = "internal review publisher")]
-fn publish_review(
+#[expect(clippy::too_many_arguments, reason = "internal review plan builder")]
+fn build_review_plan(
     deps: &ReviewerDeps,
-    github: &GitHub,
-    prepared: &Prepared,
-    saved: &PullState,
     result: &EngineResult,
     raw: &Value,
-    plan: &mut ReviewPlan,
-    earlier: &[PostedFinding],
-    statuses: &[EarlierStatus],
+    pull: &PullRequest,
+    state: &str,
+    diffs: &mut PreparedDiffs,
     me: &str,
     name: &str,
-) -> Result<PublishOutcome, Error> {
-    let candidate = &prepared.candidate;
-    let (account, r) = (&candidate.account, &candidate.pull);
-    let head = &prepared.pull.head_sha;
-    let short_sha = short(head);
-    let io = |e: std::io::Error| Error::Other(e.to_string());
-    let raw_findings = match raw.get("findings") {
-        Some(Value::Array(items)) => items.clone(),
-        _ => Vec::new(),
-    };
-    let numbered = next_finding_number(&saved.findings, &short_sha);
-    let mut posted: Vec<PostedFinding> = Vec::new();
-
-    if prepared.dry_run {
-        make_private_dir(&deps.paths.dry_run).map_err(io)?;
-        let base = jsrt::path::join(&[
-            &deps.paths.dry_run,
-            &format!("{}-{}-{}-{short_sha}-{}", r.owner, r.repo, r.number, account.login),
-        ]);
-        let mut saved_json = Map::new();
-        saved_json.insert("account".into(), json!(account_key(account)));
-        saved_json.insert("pull".into(), json!(pull_key(r)));
-        saved_json.insert("sha".into(), json!(head));
-        if let Some(ack) = &prepared.ack {
-            saved_json.insert("ack".into(), json!(ack));
-        }
-        saved_json.insert(
-            "review".into(),
-            serde_json::to_value(review_input(head, plan)).unwrap_or(Value::Null),
-        );
-        saved_json.insert("result".into(), raw.clone());
-        write_private(&format!("{base}.json"), &format!("{}\n", to_json_1(&saved_json))).map_err(io)?;
-        write_private(
-            &format!("{base}.md"),
-            &dry_run_markdown(candidate, head, plan, prepared.ack.as_deref()),
-        )
-        .map_err(io)?;
-        for comment in &plan.comments {
-            track_finding(
-                result,
-                &raw_findings,
-                &short_sha,
-                head,
-                numbered,
-                comment.finding,
-                &mut posted,
-            );
-        }
-        for index in &plan.in_summary {
-            track_finding(result, &raw_findings, &short_sha, head, numbered, *index, &mut posted);
-        }
-        return Ok(PublishOutcome {
-            posted,
-            review_id: None,
-            path: Some(base),
-        });
-    }
-
-    let id = match github.post_review(r, &review_input(head, plan)) {
-        Ok(id) => id,
-        Err(Error::GitHub { message, status: 422 }) if !plan.comments.is_empty() => {
-            let created = github.reviews(r)?.into_iter().find(|review| {
-                review.user.to_lowercase() == me && review.commit_id == *head && review.body == plan.body
-            });
-            match created {
-                Some(review) => {
-                    (deps.log)(&format!(
-                        "{name}: GitHub answered {message} but created the review; not posting it again"
-                    ));
-                    review.id
-                }
-                None => {
-                    (deps.log)(&format!(
-                        "{name}: GitHub rejected the inline comments ({message}); posting them in the summary"
-                    ));
-                    *plan = without_inline(plan, result);
-                    github.post_review(r, &review_input(head, plan))?
-                }
-            }
-        }
-        Err(error) => return Err(error),
-    };
-    let mut entries: Vec<(String, usize)> = Vec::new();
-    for comment in &plan.comments {
-        let entry = track_finding(
-            result,
-            &raw_findings,
-            &short_sha,
-            head,
-            numbered,
-            comment.finding,
-            &mut posted,
-        );
-        entries.push((comment.marker.clone(), entry));
-    }
-    for index in &plan.in_summary {
-        track_finding(result, &raw_findings, &short_sha, head, numbered, *index, &mut posted);
-    }
-    if !plan.comments.is_empty() {
-        let read_back = (|| -> Result<(), Error> {
-            let kept = github.comments_of_review(r, id)?;
-            for (comment, (_, entry)) in plan.comments.iter().zip(&entries) {
-                if let Some(found) = kept.iter().find(|item| item.body.contains(&comment.marker)) {
-                    posted[*entry].comment_id = Some(found.id);
-                    continue;
-                }
-                let input = ReviewCommentInput {
-                    path: comment.path.clone(),
-                    line: comment.line,
-                    side: comment.side.into(),
-                    start_line: comment.start_line.filter(|_| comment.start_side.is_some()),
-                    start_side: comment
-                        .start_side
-                        .filter(|_| comment.start_line.is_some())
-                        .map(String::from),
-                    body: comment.body.clone(),
-                };
-                match github.post_review_comment(r, head, &input) {
-                    Ok(comment_id) => {
-                        posted[*entry].comment_id = Some(comment_id);
-                        (deps.log)(&format!(
-                            "{name}: re-posted a dropped inline comment on {}:{}",
-                            comment.path, comment.line
-                        ));
-                    }
-                    Err(error @ Error::RateLimit { .. }) => return Err(error),
-                    Err(error) => (deps.log)(&format!(
-                        "{name}: an inline comment on {}:{} could not be posted: {error}",
-                        comment.path, comment.line
-                    )),
-                }
-            }
-            let threads = github.review_threads(r)?;
-            for (_, entry) in &entries {
-                if let Some(thread) = posted[*entry].comment_id.and_then(|id| threads.get(&id)) {
-                    posted[*entry].thread_id = Some(thread.id.clone());
-                }
-            }
-            Ok(())
-        })();
-        if let Err(error) = read_back {
-            (deps.log)(&format!("{name}: the posted review could not be read back: {error}"));
-        }
-    }
-    if deps.config.learn && !earlier.is_empty() {
-        let learned = (|| -> Result<(), Error> {
-            let threads = github.review_threads(r)?;
-            let fates = fates_of(&FateInput {
-                pull: pull_key(r),
-                now: jsrt::date::iso_string((deps.now)()),
-                findings: earlier.iter().map(PostedFinding::ledger).collect(),
-                statuses: statuses.iter().map(|s| (s.id.clone(), s.status.clone())).collect(),
-                threads: thread_states(threads),
-                resolved_by_us: saved
-                    .findings
-                    .iter()
-                    .filter(|f| f.status == "fixed")
-                    .filter_map(|f| f.thread_id.clone().filter(|id| !id.is_empty()))
-                    .collect::<HashSet<String>>(),
-                merged: false,
-            });
-            learn(deps, r, &fates, earlier, name)
-        })();
-        if let Err(error) = learned {
-            (deps.log)(&format!("{name}: the fates of earlier findings were not read: {error}"));
-        }
-    }
-    Ok(PublishOutcome {
-        posted,
-        review_id: Some(id),
-        path: None,
-    })
-}
-
-fn review_in(
-    deps: &ReviewerDeps,
-    prepared: &Prepared,
-    saved: &PullState,
-    scratch: &str,
-    checkout_slot: &mut Option<Checkout>,
-) -> Result<Outcome, Error> {
-    let candidate = &prepared.candidate;
-    let (account, r) = (&candidate.account, &candidate.pull);
-    let (dry_run, pull) = (prepared.dry_run, &prepared.pull);
-    let github = github_of(deps, account);
-    let key = pull_state_key(account, r);
-    let name = format!("{} as {}", pull_key(r), account.login);
-    let head = pull.head_sha.clone();
-    let me = account.login.to_lowercase();
-    let now = || (deps.now)();
-
-    let heads = PullHeads {
-        head_sha: head.clone(),
-        base_ref: pull.base_ref.clone(),
-        base_sha: pull.base_sha.clone(),
-    };
-    match deps
-        .tokens
-        .env(account)
-        .and_then(|env| deps.checkouts.prepare(r, &heads, &env))
-    {
-        Ok(prepared_checkout) => *checkout_slot = Some(prepared_checkout),
-        Err(Error::StaleHead(message)) => return Ok(Outcome::Requeue(message)),
-        Err(error) => (deps.log)(&format!("{name}: no checkout, reviewing the diff only: {error}")),
-    }
-    let checkout = checkout_slot.as_ref();
-    let review_comments = github.review_comments(r)?;
-    let ci = github.check_summary(r, &head)?;
-    let earlier: Vec<PostedFinding> = saved.findings.iter().filter(|f| f.status == "open").cloned().collect();
-    let diffs = prepare_diffs(deps, &github, prepared, checkout, scratch, &name)?;
-    let env_setup = prepare_test_env(deps, &github, prepared, checkout)?;
-    let spec = build_engine_spec(
-        deps,
-        &github,
-        prepared,
-        checkout,
-        &diffs,
-        &env_setup,
-        &review_comments,
-        &earlier,
-        ci.as_deref(),
-        scratch,
-        &me,
-        &name,
-    );
-    if let Some(reason) = banned_now(deps, prepared) {
-        (deps.log)(&format!("{name}: {reason}; the review was not started"));
-        return Ok(Outcome::Skipped(reason));
-    }
-    let raw = deps.engine.review(&spec, None).map_err(Error::Other)?;
-    let result = EngineResult::parse(&raw).map_err(Error::Other)?;
-    let reviewed_at_ms = now();
-
-    let current = github.pull(r)?;
-    if current.head_sha != head {
-        (deps.log)(&format!(
-            "{name}: the head moved to {} during the review; discarded",
-            short(&current.head_sha)
-        ));
-        return Ok(Outcome::Requeue("the head commit moved during the review".into()));
-    }
-    if let Some(reason) = banned_now(deps, prepared) {
-        (deps.log)(&format!("{name}: {reason}; the finished review was discarded"));
-        return Ok(Outcome::Skipped(reason));
-    }
-
-    let state = if current.state == "open" {
-        "open"
-    } else if current.merged {
-        "merged"
-    } else {
-        "closed"
-    };
+) -> ReviewPlan {
     let mut plan = plan_review(
-        &result,
+        result,
         &PlanOptions {
             self_authored: pull.author.to_lowercase() == me,
             state: state.into(),
-            head_sha: head.clone(),
-            since_sha: diffs.since_sha,
+            head_sha: pull.head_sha.clone(),
+            since_sha: diffs.since_sha.take(),
             signature: deps.config.signature,
             block_at: Some(deps.config.block_at.clone()),
             never_request_changes: deps.config.never_request_changes,
@@ -1043,7 +838,7 @@ fn review_in(
                 missing: delta.missing.clone(),
                 entire: changed_lines(&delta.diff) == 0,
             }),
-            fresh_lines: diffs.fresh_lines,
+            fresh_lines: diffs.fresh_lines.take(),
         },
     );
     let guide_names: Vec<String> = match raw.get("guideNames") {
@@ -1058,123 +853,204 @@ fn review_in(
             withheld.join("; ")
         ));
     }
-    let reviewed_at = jsrt::date::iso_string(now());
+    plan
+}
+
+fn pull_lifecycle_state(current: &PullRequest) -> &'static str {
+    if current.state == "open" {
+        "open"
+    } else if current.merged {
+        "merged"
+    } else {
+        "closed"
+    }
+}
+
+fn prepare_checkout_slot(
+    deps: &ReviewerDeps,
+    prepared: &Prepared,
+    checkout_slot: &mut Option<Checkout>,
+    name: &str,
+) -> Option<Outcome> {
+    let (account, r) = (&prepared.candidate.account, &prepared.candidate.pull);
+    let heads = PullHeads {
+        head_sha: prepared.pull.head_sha.clone(),
+        base_ref: prepared.pull.base_ref.clone(),
+        base_sha: prepared.pull.base_sha.clone(),
+    };
+    match deps
+        .tokens
+        .env(account)
+        .and_then(|env| deps.checkouts.prepare(r, &heads, &env))
+    {
+        Ok(prepared_checkout) => {
+            *checkout_slot = Some(prepared_checkout);
+            None
+        }
+        Err(Error::StaleHead(message)) => Some(Outcome::Requeue(message)),
+        Err(error) => {
+            (deps.log)(&format!("{name}: no checkout, reviewing the diff only: {error}"));
+            None
+        }
+    }
+}
+
+fn check_after_review(
+    deps: &ReviewerDeps,
+    github: &GitHub,
+    prepared: &Prepared,
+    name: &str,
+) -> Result<Result<PullRequest, Outcome>, Error> {
+    let current = github.pull(&prepared.candidate.pull)?;
+    if current.head_sha != prepared.pull.head_sha {
+        (deps.log)(&format!(
+            "{name}: the head moved to {} during the review; discarded",
+            short(&current.head_sha)
+        ));
+        return Ok(Err(Outcome::Requeue("the head commit moved during the review".into())));
+    }
+    if let Some(reason) = banned_now(deps, prepared) {
+        (deps.log)(&format!("{name}: {reason}; the finished review was discarded"));
+        return Ok(Err(Outcome::Skipped(reason)));
+    }
+    Ok(Ok(current))
+}
+
+#[expect(clippy::too_many_arguments, reason = "internal review completion logger")]
+fn log_review_done(
+    deps: &ReviewerDeps,
+    prepared: &Prepared,
+    name: &str,
+    short_sha: &str,
+    plan: &ReviewPlan,
+    finding_count: usize,
+    resolved_count: usize,
+    ack_to_post_ms: Option<i64>,
+) {
+    let elapsed_s = jsrt::number::to_string(jsrt::number::round(
+        ((deps.now)() - prepared.candidate.picked_at) as f64 / 1000.0,
+    ));
+    let ack_tail = ack_to_post_ms.map_or(String::new(), |ms| {
+        format!(", {} after the acknowledgement", seconds(ms))
+    });
+    (deps.log)(&format!(
+        "{name}: {} {} for {short_sha}: {finding_count} findings, {} inline, {resolved_count} threads resolved, {elapsed_s} s from pickup{ack_tail}",
+        if prepared.dry_run { "dry-run" } else { "posted" },
+        plan.event,
+        plan.comments.len(),
+    ));
+}
+
+struct ReviewContext {
+    diffs: PreparedDiffs,
+    earlier: Vec<PostedFinding>,
+    spec: Value,
+}
+
+#[expect(clippy::too_many_arguments, reason = "internal review context builder")]
+fn gather_review_context(
+    deps: &ReviewerDeps,
+    github: &GitHub,
+    prepared: &Prepared,
+    saved: &PullState,
+    checkout: Option<&Checkout>,
+    scratch: &str,
+    me: &str,
+    name: &str,
+) -> Result<ReviewContext, Error> {
+    let r = &prepared.candidate.pull;
+    let review_comments = github.review_comments(r)?;
+    let ci = github.check_summary(r, &prepared.pull.head_sha)?;
+    let earlier: Vec<PostedFinding> = saved.findings.iter().filter(|f| f.status == "open").cloned().collect();
+    let diffs = prepare_diffs(deps, github, prepared, checkout, scratch, name)?;
+    let env_setup = prepare_test_env(deps, github, prepared, checkout)?;
+    let spec = build_engine_spec(
+        deps,
+        github,
+        prepared,
+        checkout,
+        &diffs,
+        &env_setup,
+        &review_comments,
+        &earlier,
+        ci.as_deref(),
+        scratch,
+        me,
+        name,
+    );
+    Ok(ReviewContext { diffs, earlier, spec })
+}
+
+#[expect(clippy::too_many_arguments, reason = "internal review publisher and recorder")]
+fn publish_and_record(
+    deps: &ReviewerDeps,
+    github: &GitHub,
+    prepared: &Prepared,
+    saved: &PullState,
+    key: &str,
+    current: &PullRequest,
+    raw: Value,
+    result: &EngineResult,
+    reviewed_at_ms: i64,
+    mut ctx: ReviewContext,
+    me: &str,
+    name: &str,
+) -> Result<Outcome, Error> {
+    let head = prepared.pull.head_sha.clone();
+    let state = pull_lifecycle_state(current);
+    let mut plan = build_review_plan(deps, result, &raw, &prepared.pull, state, &mut ctx.diffs, me, name);
+    let reviewed_at = jsrt::date::iso_string((deps.now)());
     let short_sha = short(&head);
     let statuses = earlier_statuses(&raw);
     let published = publish_review(
-        deps, &github, prepared, saved, &result, &raw, &mut plan, &earlier, &statuses, &me, &name,
+        deps,
+        github,
+        prepared,
+        saved,
+        result,
+        &raw,
+        &mut plan,
+        &ctx.earlier,
+        &statuses,
+        me,
+        name,
     )?;
-
-    if !dry_run {
-        let mut record = Map::new();
-        record.insert("account".into(), json!(account_key(account)));
-        record.insert("pull".into(), json!(pull_key(r)));
-        record.insert("sha".into(), json!(head));
-        record.insert("reviewId".into(), json!(published.review_id));
-        record.insert(
-            "review".into(),
-            serde_json::to_value(review_input(&head, &plan)).unwrap_or(Value::Null),
+    if !prepared.dry_run {
+        write_posted_review_record(
+            deps,
+            prepared,
+            &plan,
+            &published,
+            &raw,
+            ctx.diffs.promotion.as_ref(),
+            name,
         );
-        record.insert(
-            "posted".into(),
-            serde_json::to_value(&published.posted).unwrap_or(Value::Null),
-        );
-        record.insert("result".into(), raw.clone());
-        if let Some(delta) = &diffs.promotion {
-            record.insert(
-                "promotion".into(),
-                json!({ "sources": delta.sources, "carriedLines": delta.carried_lines,
-                    "carriedFiles": delta.carried_files, "contextFiles": delta.context_files,
-                    "missing": delta.missing }),
-            );
-        }
-        let name_of = format!("{}-{}-{}-{short_sha}-{}", r.owner, r.repo, r.number, account.login);
-        if let Err(error) = write_review_record(&deps.paths.dir, &name_of, &Value::Object(record)) {
-            (deps.log)(&format!("{name}: the review record was not written: {error}"));
-        }
     }
-
-    let ack_to_post_ms = prepared.ack_at.map(|at| (now() - at).max(0));
-    let verdict = plan.verdict.name().to_string();
-    let stages = match raw.get("timing").and_then(|timing| timing.get("stages")) {
-        Some(Value::Object(stages)) => stages.clone().into_iter().collect(),
-        _ => indexmap::IndexMap::new(),
-    };
-    deps.store.update_pull(&key, |pull_state, all| {
-        pull_state.last_reviewed_sha = Some(head.clone());
-        pull_state.last_reviewed_at = Some(reviewed_at.clone());
-        pull_state.last_verdict = Some(verdict.clone());
-        pull_state.last_review_complete = Some(result.complete || prepared.recheck_only);
-        pull_state.closed = None;
-        pull_state.last_review_dry_run = dry_run.then_some(true);
-        if let Some(id) = published.review_id {
-            pull_state.last_review_id = Some(id);
-        }
-        pull_state.attempt_succeeded(&head);
-        for status in &statuses {
-            let Some(finding) = pull_state.findings.iter_mut().find(|item| item.id == status.id) else {
-                continue;
-            };
-            if status.status == "fixed" || status.status == "not_applicable" {
-                finding.status = status.status.clone();
-            } else {
-                finding.line = status.line;
-            }
-        }
-        pull_state.findings.extend(published.posted.iter().cloned());
-        if pull_state.findings.len() > 200 {
-            let excess = pull_state.findings.len() - 200;
-            pull_state.findings.drain(..excess);
-        }
-        let mut stages = stages.clone();
-        stages.insert("postMs".into(), json!(Num(((now() - reviewed_at_ms).max(0)) as f64)));
-        all.recent.push(ReviewRecord {
-            account: account_key(account),
-            pull: pull_key(r),
-            sha: head.clone(),
-            at: reviewed_at.clone(),
-            outcome: if dry_run { "dry-run" } else { "posted" }.into(),
-            verdict: Some(verdict.clone()),
-            findings: Some(Num(result.findings.len() as f64)),
-            total_ms: Some(Num(result.timing.total_ms)),
-            stages: Some(stages),
-            pickup_to_post_ms: Some(Num((now() - candidate.picked_at) as f64)),
-            tag_to_ack_ms: prepared.tag_to_ack_ms.map(|ms| Num(ms as f64)),
-            ack_to_post_ms: ack_to_post_ms.map(|ms| Num(ms as f64)),
-            cost_usd: Some(Num(result.usage.cost_usd)),
-            dry_run: dry_run.then_some(true),
-            extra: Default::default(),
-        });
-    })?;
-    let mut resolved: Vec<String> = Vec::new();
-    if !dry_run {
-        if plan.verdict == Verdict::Comment && state == "open" && pull.author.to_lowercase() != me {
-            lift_own_blocks(deps, &github, r, &me, &head, &name);
-        }
-        for status in statuses.iter().filter(|status| status.status == "fixed") {
-            let Some(finding) = saved.findings.iter().find(|item| item.id == status.id) else {
-                continue;
-            };
-            let Some(thread_id) = &finding.thread_id else { continue };
-            match github.resolve_thread(thread_id) {
-                Ok(()) => resolved.push(finding.id.clone()),
-                Err(error) => (deps.log)(&format!("{name}: thread of {} was not resolved: {error}", finding.id)),
-            }
-        }
-    }
-    (deps.log)(&format!(
-        "{name}: {} {} for {short_sha}: {} findings, {} inline, {} threads resolved, {} s from pickup{}",
-        if dry_run { "dry-run" } else { "posted" },
-        plan.event,
+    let ack_to_post_ms = prepared.ack_at.map(|at| ((deps.now)() - at).max(0));
+    persist_review_state(
+        deps,
+        prepared,
+        key,
+        result,
+        &raw,
+        &plan,
+        &published,
+        &statuses,
+        &reviewed_at,
+        reviewed_at_ms,
+        ack_to_post_ms,
+    )?;
+    let resolved = finalize_posted_threads(deps, github, prepared, saved, &plan, &statuses, state, me, name);
+    log_review_done(
+        deps,
+        prepared,
+        name,
+        &short_sha,
+        &plan,
         result.findings.len(),
-        plan.comments.len(),
         resolved.len(),
-        jsrt::number::to_string(jsrt::number::round((now() - candidate.picked_at) as f64 / 1000.0)),
-        ack_to_post_ms.map_or(String::new(), |ms| format!(
-            ", {} after the acknowledgement",
-            seconds(ms)
-        ))
-    ));
+        ack_to_post_ms,
+    );
     let reviewed = Box::new(Reviewed {
         verdict: plan.verdict.name(),
         sha: head,
@@ -1183,9 +1059,62 @@ fn review_in(
         review_id: published.review_id,
         path: published.path,
     });
-    Ok(if dry_run {
+    Ok(if prepared.dry_run {
         Outcome::DryRun(reviewed)
     } else {
         Outcome::Posted(reviewed)
     })
+}
+
+fn review_in(
+    deps: &ReviewerDeps,
+    prepared: &Prepared,
+    saved: &PullState,
+    scratch: &str,
+    checkout_slot: &mut Option<Checkout>,
+) -> Result<Outcome, Error> {
+    let (account, r) = (&prepared.candidate.account, &prepared.candidate.pull);
+    let github = github_of(deps, account);
+    let key = pull_state_key(account, r);
+    let name = format!("{} as {}", pull_key(r), account.login);
+    let me = account.login.to_lowercase();
+
+    if let Some(early) = prepare_checkout_slot(deps, prepared, checkout_slot, &name) {
+        return Ok(early);
+    }
+    let ctx = gather_review_context(
+        deps,
+        &github,
+        prepared,
+        saved,
+        checkout_slot.as_ref(),
+        scratch,
+        &me,
+        &name,
+    )?;
+    if let Some(reason) = banned_now(deps, prepared) {
+        (deps.log)(&format!("{name}: {reason}; the review was not started"));
+        return Ok(Outcome::Skipped(reason));
+    }
+    let raw = deps.engine.review(&ctx.spec, None).map_err(Error::Other)?;
+    let result = EngineResult::parse(&raw).map_err(Error::Other)?;
+    let reviewed_at_ms = (deps.now)();
+    let current = match check_after_review(deps, &github, prepared, &name)? {
+        Ok(current) => current,
+        Err(early) => return Ok(early),
+    };
+    publish_and_record(
+        deps,
+        &github,
+        prepared,
+        saved,
+        &key,
+        &current,
+        raw,
+        &result,
+        reviewed_at_ms,
+        ctx,
+        &me,
+        &name,
+    )
 }

@@ -222,246 +222,450 @@ impl From<&Op> for Value {
     }
 }
 
+type OpParser = fn(&str, &Value) -> Option<Result<Op, String>>;
+
 impl Op {
     /// The operation a JSON request names (`{op, ...}`), as clients send it over the worker's control service.
     pub fn from_json(value: &Value) -> Result<Op, String> {
-        let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
-        let need = |key: &str| text(key).ok_or_else(|| format!("{key} must be a string"));
-        let images = || value["images"].as_array().cloned().unwrap_or_default();
-        let kind = |key: &str| text(key).as_deref().and_then(QueueKind::parse);
         let op = value["op"].as_str().ok_or("op must be a string")?;
-        Ok(match op {
-            "prompt" => Op::Prompt {
-                message: need("message")?,
-                images: images(),
-                queue: kind("queue"),
-            },
-            "promptAndWait" => Op::PromptAndWait {
-                message: need("message")?,
-                images: images(),
-            },
-            "enqueue" => Op::Enqueue {
-                kind: kind("kind").ok_or("kind must be steer, followUp or nextRun")?,
-                message: need("message")?,
-                images: images(),
-                entry_id: text("entryId"),
-            },
-            "cancelQueued" => Op::CancelQueued {
-                entry_id: need("entryId")?,
-            },
-            "clearQueue" => Op::ClearQueue,
-            "abort" => Op::Abort,
-            "state" => Op::State,
-            "availableModels" => Op::AvailableModels,
-            "setModel" => Op::SetModel {
-                provider: need("provider")?,
-                model_id: need("modelId")?,
-            },
-            "cycleModel" => Op::CycleModel,
-            "thinkingLevels" => Op::ThinkingLevels,
-            "setThinking" => Op::SetThinking { level: need("level")? },
-            "cycleThinking" => Op::CycleThinking,
-            "setQueueMode" => Op::SetQueueMode {
-                kind: kind("kind")
-                    .filter(|kind| *kind != QueueKind::NextRun)
-                    .ok_or("kind must be steer or followUp")?,
-                mode: need("mode")?,
-            },
-            "compact" => Op::Compact {
-                instructions: text("instructions"),
-            },
-            "setAutoCompaction" => Op::SetAutoCompaction(value["enabled"] == true),
-            "setAutoRetry" => Op::SetAutoRetry(value["enabled"] == true),
-            "setTerminalTheme" => Op::SetTerminalTheme { theme: need("theme")? },
-            "abortRetry" => Op::AbortRetry,
-            "bash" => Op::Bash {
-                command: need("command")?,
-                exclude: value["exclude"] == true,
-                id: value["id"].as_str().map(str::to_string),
-            },
-            "abortBash" => Op::AbortBash,
-            "checkpoints" => Op::Checkpoints,
-            "restoreFiles" => Op::RestoreFiles {
-                entry_id: text("entryId"),
-                checkpoint: text("checkpoint"),
-            },
-            "bugSummary" => Op::BugSummary {
-                hint: value["hint"].as_str().map(str::to_string),
-            },
-            "abortBugSummary" => Op::AbortBugSummary,
-            "shareContext" => Op::ShareContext,
-            "appendCustom" => Op::AppendCustom {
-                custom_type: need("customType")?,
-                data: value["data"].clone(),
-            },
-            "stats" => Op::Stats,
-            "forkMessages" => Op::ForkMessages,
-            "entries" => Op::Entries { since: text("since") },
-            "tree" => Op::Tree,
-            "lastAssistantText" => Op::LastAssistantText,
-            "setName" => Op::SetName { name: need("name")? },
-            "messages" => Op::Messages,
-            "forkSource" => Op::ForkSource {
-                entry_id: need("entryId")?,
-            },
-            "cloneSource" => Op::CloneSource,
-            "forked" => Op::Forked {
-                target: need("target")?,
-            },
-            "describe" => Op::Describe,
-            "laneSnapshot" => Op::LaneSnapshot,
-            "listSessions" => Op::ListSessions,
-            "recover" => Op::Recover,
-            "agents" => Op::Agents,
-            "setLabel" => Op::SetLabel {
-                entry_id: need("entryId")?,
-                label: text("label"),
-            },
-            "navigate" => Op::Navigate {
-                target_id: text("targetId"),
-                summarize: value["summarize"] == true,
-                instructions: text("customInstructions"),
-                label: text("label"),
-            },
-            "killAgent" => Op::KillAgent { id: need("id")? },
-            "steerAgent" => Op::SteerAgent {
-                id: need("id")?,
-                message: need("message")?,
-            },
-            "reviveAgent" => Op::ReviveAgent { id: need("id")? },
-            "agentTranscript" => Op::AgentTranscript { id: need("id")? },
-            "observer" => Op::Observer {
-                args: text("args").unwrap_or_default(),
-            },
-            "goal" => Op::Goal {
-                args: text("args").unwrap_or_default(),
-            },
-            "startConversation" => Op::StartConversation {
-                message: need("message")?,
-            },
-            "conversationInput" => Op::ConversationInput {
-                id: value["id"].as_u64().ok_or("id must be a conversation id")?,
-                message: need("message")?,
-            },
-            "conversations" => Op::Conversations {
-                id: value["id"].as_u64(),
-            },
-            "asyncPending" => Op::AsyncPending,
-            "commands" => Op::Commands,
-            "inspect" => Op::Inspect {
-                request: need("request")?,
-                payload: value.get("payload").cloned().unwrap_or(Value::Null),
-            },
-            "scheduleFire" => Op::ScheduleFire {
-                id: need("id")?,
-                due: value["due"].as_i64().ok_or("due must be a time in ms")?,
-            },
-            "scheduleCancel" => Op::ScheduleCancel { id: need("id")? },
-            "persona" => Op::Persona {
-                args: text("args").unwrap_or_default(),
-            },
-            "keepGoing" => Op::KeepGoing {
-                args: text("args").unwrap_or_default(),
-            },
-            "continueFrom" => Op::ContinueFrom {
-                session: need("session")?,
-            },
-            other => return Err(format!("Unknown session operation: {other}")),
-        })
+        const PARSERS: &[OpParser] = &[
+            parse_prompt_op,
+            parse_queue_op,
+            parse_model_op,
+            parse_config_op,
+            parse_execution_op,
+            parse_bug_and_custom_op,
+            parse_view_op,
+            parse_session_nav_op,
+            parse_tree_nav_op,
+            parse_agent_op,
+            parse_conversation_op,
+            parse_control_op,
+            parse_schedule_and_persona_op,
+        ];
+        for parse in PARSERS {
+            if let Some(result) = parse(op, value) {
+                return result;
+            }
+        }
+        Err(format!("Unknown session operation: {op}"))
     }
 
     /// The JSON request for this operation ([`Op::from_json`] reads it back).
     pub fn to_json(&self) -> Value {
-        match self {
-            Op::Prompt { message, images, queue } => {
-                json!({"op": "prompt", "message": message, "images": images, "queue": queue.map(QueueKind::name)})
+        const SERIALIZERS: &[fn(&Op) -> Option<Value>] = &[
+            serialize_prompt_queue_op,
+            serialize_model_thinking_op,
+            serialize_config_execution_op,
+            serialize_bug_and_view_op,
+            serialize_session_view_op,
+            serialize_navigation_op,
+            serialize_agent_op,
+            serialize_conversation_op,
+            serialize_control_op,
+            serialize_schedule_and_persona_op,
+        ];
+        for serialize in SERIALIZERS {
+            if let Some(json) = serialize(self) {
+                return json;
             }
-            Op::PromptAndWait { message, images } => {
-                json!({"op": "promptAndWait", "message": message, "images": images})
-            }
-            Op::Enqueue {
-                kind,
-                message,
-                images,
-                entry_id,
-            } => {
-                json!({"op": "enqueue", "kind": kind.name(), "message": message, "images": images, "entryId": entry_id})
-            }
-            Op::CancelQueued { entry_id } => json!({"op": "cancelQueued", "entryId": entry_id}),
-            Op::ClearQueue => json!({"op": "clearQueue"}),
-            Op::Abort => json!({"op": "abort"}),
-            Op::State => json!({"op": "state"}),
-            Op::AvailableModels => json!({"op": "availableModels"}),
-            Op::SetModel { provider, model_id } => json!({"op": "setModel", "provider": provider, "modelId": model_id}),
-            Op::CycleModel => json!({"op": "cycleModel"}),
-            Op::ThinkingLevels => json!({"op": "thinkingLevels"}),
-            Op::SetThinking { level } => json!({"op": "setThinking", "level": level}),
-            Op::CycleThinking => json!({"op": "cycleThinking"}),
-            Op::SetQueueMode { kind, mode } => json!({"op": "setQueueMode", "kind": kind.name(), "mode": mode}),
-            Op::Compact { instructions } => json!({"op": "compact", "instructions": instructions}),
-            Op::SetAutoCompaction(enabled) => json!({"op": "setAutoCompaction", "enabled": enabled}),
-            Op::SetAutoRetry(enabled) => json!({"op": "setAutoRetry", "enabled": enabled}),
-            Op::SetTerminalTheme { theme } => json!({"op": "setTerminalTheme", "theme": theme}),
-            Op::AbortRetry => json!({"op": "abortRetry"}),
-            Op::Bash { command, exclude, id } => {
-                let mut op = json!({"op": "bash", "command": command, "exclude": exclude});
-                if let Some(id) = id {
-                    op["id"] = json!(id);
-                }
-                op
-            }
-            Op::AbortBash => json!({"op": "abortBash"}),
-            Op::BugSummary { hint } => json!({"op": "bugSummary", "hint": hint}),
-            Op::AbortBugSummary => json!({"op": "abortBugSummary"}),
-            Op::ShareContext => json!({"op": "shareContext"}),
-            Op::AppendCustom { custom_type, data } => {
-                json!({"op": "appendCustom", "customType": custom_type, "data": data})
-            }
-            Op::Stats => json!({"op": "stats"}),
-            Op::ForkMessages => json!({"op": "forkMessages"}),
-            Op::Entries { since } => json!({"op": "entries", "since": since}),
-            Op::Tree => json!({"op": "tree"}),
-            Op::LastAssistantText => json!({"op": "lastAssistantText"}),
-            Op::SetName { name } => json!({"op": "setName", "name": name}),
-            Op::Messages => json!({"op": "messages"}),
-            Op::ForkSource { entry_id } => json!({"op": "forkSource", "entryId": entry_id}),
-            Op::CloneSource => json!({"op": "cloneSource"}),
-            Op::Forked { target } => json!({"op": "forked", "target": target}),
-            Op::Describe => json!({"op": "describe"}),
-            Op::LaneSnapshot => json!({"op": "laneSnapshot"}),
-            Op::ListSessions => json!({"op": "listSessions"}),
-            Op::Recover => json!({"op": "recover"}),
-            Op::Agents => json!({"op": "agents"}),
-            Op::SetLabel { entry_id, label } => json!({"op": "setLabel", "entryId": entry_id, "label": label}),
-            Op::Navigate {
-                target_id,
-                summarize,
-                instructions,
-                label,
-            } => {
-                json!({"op": "navigate", "targetId": target_id, "summarize": summarize, "customInstructions": instructions, "label": label})
-            }
-            Op::KillAgent { id } => json!({"op": "killAgent", "id": id}),
-            Op::SteerAgent { id, message } => json!({"op": "steerAgent", "id": id, "message": message}),
-            Op::ReviveAgent { id } => json!({"op": "reviveAgent", "id": id}),
-            Op::AgentTranscript { id } => json!({"op": "agentTranscript", "id": id}),
-            Op::Goal { args } => json!({"op": "goal", "args": args}),
-            Op::Observer { args } => json!({"op": "observer", "args": args}),
-            Op::StartConversation { message } => json!({"op": "startConversation", "message": message}),
-            Op::ConversationInput { id, message } => json!({"op": "conversationInput", "id": id, "message": message}),
-            Op::Conversations { id } => json!({"op": "conversations", "id": id}),
-            Op::AsyncPending => json!({"op": "asyncPending"}),
-            Op::Inspect { request, payload } => json!({"op": "inspect", "request": request, "payload": payload}),
-            Op::Commands => json!({"op": "commands"}),
-            Op::Checkpoints => json!({"op": "checkpoints"}),
-            Op::RestoreFiles { entry_id, checkpoint } => {
-                json!({"op": "restoreFiles", "entryId": entry_id, "checkpoint": checkpoint})
-            }
-            Op::ScheduleFire { id, due } => json!({"op": "scheduleFire", "id": id, "due": due}),
-            Op::ScheduleCancel { id } => json!({"op": "scheduleCancel", "id": id}),
-            Op::Persona { args } => json!({"op": "persona", "args": args}),
-            Op::KeepGoing { args } => json!({"op": "keepGoing", "args": args}),
-            Op::ContinueFrom { session } => json!({"op": "continueFrom", "session": session}),
         }
+        unreachable!("every Op variant has a serializer")
     }
+}
+
+fn json_text(value: &Value, key: &str) -> Option<String> {
+    value.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+fn json_need(value: &Value, key: &str) -> Result<String, String> {
+    json_text(value, key).ok_or_else(|| format!("{key} must be a string"))
+}
+
+fn json_images(value: &Value) -> Vec<Value> {
+    value["images"].as_array().cloned().unwrap_or_default()
+}
+
+fn json_queue_kind(value: &Value, key: &str) -> Option<QueueKind> {
+    json_text(value, key).as_deref().and_then(QueueKind::parse)
+}
+
+fn parse_prompt_op(op: &str, value: &Value) -> Option<Result<Op, String>> {
+    Some(match op {
+        "prompt" => json_need(value, "message").map(|message| Op::Prompt {
+            message,
+            images: json_images(value),
+            queue: json_queue_kind(value, "queue"),
+        }),
+        "promptAndWait" => json_need(value, "message").map(|message| Op::PromptAndWait {
+            message,
+            images: json_images(value),
+        }),
+        "enqueue" => parse_enqueue(value),
+        "cancelQueued" => json_need(value, "entryId").map(|entry_id| Op::CancelQueued { entry_id }),
+        _ => return None,
+    })
+}
+
+fn parse_enqueue(value: &Value) -> Result<Op, String> {
+    Ok(Op::Enqueue {
+        kind: json_queue_kind(value, "kind").ok_or("kind must be steer, followUp or nextRun")?,
+        message: json_need(value, "message")?,
+        images: json_images(value),
+        entry_id: json_text(value, "entryId"),
+    })
+}
+
+fn parse_queue_op(op: &str, value: &Value) -> Option<Result<Op, String>> {
+    Some(match op {
+        "clearQueue" => Ok(Op::ClearQueue),
+        "abort" => Ok(Op::Abort),
+        "state" => Ok(Op::State),
+        "setQueueMode" => parse_set_queue_mode(value),
+        _ => return None,
+    })
+}
+
+fn parse_set_queue_mode(value: &Value) -> Result<Op, String> {
+    Ok(Op::SetQueueMode {
+        kind: json_queue_kind(value, "kind")
+            .filter(|kind| *kind != QueueKind::NextRun)
+            .ok_or("kind must be steer or followUp")?,
+        mode: json_need(value, "mode")?,
+    })
+}
+
+fn parse_model_op(op: &str, value: &Value) -> Option<Result<Op, String>> {
+    Some(match op {
+        "availableModels" => Ok(Op::AvailableModels),
+        "setModel" => parse_set_model(value),
+        "cycleModel" => Ok(Op::CycleModel),
+        "thinkingLevels" => Ok(Op::ThinkingLevels),
+        "setThinking" => json_need(value, "level").map(|level| Op::SetThinking { level }),
+        "cycleThinking" => Ok(Op::CycleThinking),
+        _ => return None,
+    })
+}
+
+fn parse_set_model(value: &Value) -> Result<Op, String> {
+    Ok(Op::SetModel {
+        provider: json_need(value, "provider")?,
+        model_id: json_need(value, "modelId")?,
+    })
+}
+
+fn parse_config_op(op: &str, value: &Value) -> Option<Result<Op, String>> {
+    Some(match op {
+        "compact" => Ok(Op::Compact {
+            instructions: json_text(value, "instructions"),
+        }),
+        "setAutoCompaction" => Ok(Op::SetAutoCompaction(value["enabled"] == true)),
+        "setAutoRetry" => Ok(Op::SetAutoRetry(value["enabled"] == true)),
+        "setTerminalTheme" => json_need(value, "theme").map(|theme| Op::SetTerminalTheme { theme }),
+        "abortRetry" => Ok(Op::AbortRetry),
+        _ => return None,
+    })
+}
+
+fn parse_execution_op(op: &str, value: &Value) -> Option<Result<Op, String>> {
+    Some(match op {
+        "bash" => json_need(value, "command").map(|command| Op::Bash {
+            command,
+            exclude: value["exclude"] == true,
+            id: value["id"].as_str().map(str::to_string),
+        }),
+        "abortBash" => Ok(Op::AbortBash),
+        "checkpoints" => Ok(Op::Checkpoints),
+        "restoreFiles" => Ok(Op::RestoreFiles {
+            entry_id: json_text(value, "entryId"),
+            checkpoint: json_text(value, "checkpoint"),
+        }),
+        _ => return None,
+    })
+}
+
+fn parse_bug_and_custom_op(op: &str, value: &Value) -> Option<Result<Op, String>> {
+    Some(match op {
+        "bugSummary" => Ok(Op::BugSummary {
+            hint: value["hint"].as_str().map(str::to_string),
+        }),
+        "abortBugSummary" => Ok(Op::AbortBugSummary),
+        "shareContext" => Ok(Op::ShareContext),
+        "appendCustom" => json_need(value, "customType").map(|custom_type| Op::AppendCustom {
+            custom_type,
+            data: value["data"].clone(),
+        }),
+        _ => return None,
+    })
+}
+
+fn parse_view_op(op: &str, value: &Value) -> Option<Result<Op, String>> {
+    Some(match op {
+        "stats" => Ok(Op::Stats),
+        "forkMessages" => Ok(Op::ForkMessages),
+        "entries" => Ok(Op::Entries {
+            since: json_text(value, "since"),
+        }),
+        "tree" => Ok(Op::Tree),
+        "lastAssistantText" => Ok(Op::LastAssistantText),
+        "setName" => json_need(value, "name").map(|name| Op::SetName { name }),
+        "messages" => Ok(Op::Messages),
+        _ => return None,
+    })
+}
+
+fn parse_session_nav_op(op: &str, value: &Value) -> Option<Result<Op, String>> {
+    Some(match op {
+        "forkSource" => json_need(value, "entryId").map(|entry_id| Op::ForkSource { entry_id }),
+        "cloneSource" => Ok(Op::CloneSource),
+        "forked" => json_need(value, "target").map(|target| Op::Forked { target }),
+        "describe" => Ok(Op::Describe),
+        "laneSnapshot" => Ok(Op::LaneSnapshot),
+        "listSessions" => Ok(Op::ListSessions),
+        "recover" => Ok(Op::Recover),
+        _ => return None,
+    })
+}
+
+fn parse_tree_nav_op(op: &str, value: &Value) -> Option<Result<Op, String>> {
+    Some(match op {
+        "setLabel" => json_need(value, "entryId").map(|entry_id| Op::SetLabel {
+            entry_id,
+            label: json_text(value, "label"),
+        }),
+        "navigate" => Ok(Op::Navigate {
+            target_id: json_text(value, "targetId"),
+            summarize: value["summarize"] == true,
+            instructions: json_text(value, "customInstructions"),
+            label: json_text(value, "label"),
+        }),
+        _ => return None,
+    })
+}
+
+fn parse_agent_op(op: &str, value: &Value) -> Option<Result<Op, String>> {
+    Some(match op {
+        "agents" => Ok(Op::Agents),
+        "killAgent" => json_need(value, "id").map(|id| Op::KillAgent { id }),
+        "steerAgent" => parse_steer_agent(value),
+        "reviveAgent" => json_need(value, "id").map(|id| Op::ReviveAgent { id }),
+        "agentTranscript" => json_need(value, "id").map(|id| Op::AgentTranscript { id }),
+        _ => return None,
+    })
+}
+
+fn parse_steer_agent(value: &Value) -> Result<Op, String> {
+    Ok(Op::SteerAgent {
+        id: json_need(value, "id")?,
+        message: json_need(value, "message")?,
+    })
+}
+
+fn parse_conversation_op(op: &str, value: &Value) -> Option<Result<Op, String>> {
+    Some(match op {
+        "startConversation" => json_need(value, "message").map(|message| Op::StartConversation { message }),
+        "conversationInput" => parse_conversation_input(value),
+        "conversations" => Ok(Op::Conversations {
+            id: value["id"].as_u64(),
+        }),
+        _ => return None,
+    })
+}
+
+fn parse_conversation_input(value: &Value) -> Result<Op, String> {
+    Ok(Op::ConversationInput {
+        id: value["id"].as_u64().ok_or("id must be a conversation id")?,
+        message: json_need(value, "message")?,
+    })
+}
+
+fn parse_control_op(op: &str, value: &Value) -> Option<Result<Op, String>> {
+    Some(match op {
+        "observer" => Ok(Op::Observer {
+            args: json_text(value, "args").unwrap_or_default(),
+        }),
+        "goal" => Ok(Op::Goal {
+            args: json_text(value, "args").unwrap_or_default(),
+        }),
+        "asyncPending" => Ok(Op::AsyncPending),
+        "commands" => Ok(Op::Commands),
+        "inspect" => json_need(value, "request").map(|request| Op::Inspect {
+            request,
+            payload: value.get("payload").cloned().unwrap_or(Value::Null),
+        }),
+        _ => return None,
+    })
+}
+
+fn parse_schedule_and_persona_op(op: &str, value: &Value) -> Option<Result<Op, String>> {
+    Some(match op {
+        "scheduleFire" => parse_schedule_fire(value),
+        "scheduleCancel" => json_need(value, "id").map(|id| Op::ScheduleCancel { id }),
+        "persona" => Ok(Op::Persona {
+            args: json_text(value, "args").unwrap_or_default(),
+        }),
+        "keepGoing" => Ok(Op::KeepGoing {
+            args: json_text(value, "args").unwrap_or_default(),
+        }),
+        "continueFrom" => json_need(value, "session").map(|session| Op::ContinueFrom { session }),
+        _ => return None,
+    })
+}
+
+fn parse_schedule_fire(value: &Value) -> Result<Op, String> {
+    Ok(Op::ScheduleFire {
+        id: json_need(value, "id")?,
+        due: value["due"].as_i64().ok_or("due must be a time in ms")?,
+    })
+}
+
+fn serialize_prompt_queue_op(op: &Op) -> Option<Value> {
+    Some(match op {
+        Op::Prompt { message, images, queue } => {
+            json!({"op": "prompt", "message": message, "images": images, "queue": queue.map(QueueKind::name)})
+        }
+        Op::PromptAndWait { message, images } => {
+            json!({"op": "promptAndWait", "message": message, "images": images})
+        }
+        Op::Enqueue {
+            kind,
+            message,
+            images,
+            entry_id,
+        } => {
+            json!({"op": "enqueue", "kind": kind.name(), "message": message, "images": images, "entryId": entry_id})
+        }
+        Op::CancelQueued { entry_id } => json!({"op": "cancelQueued", "entryId": entry_id}),
+        Op::ClearQueue => json!({"op": "clearQueue"}),
+        Op::Abort => json!({"op": "abort"}),
+        Op::State => json!({"op": "state"}),
+        _ => return None,
+    })
+}
+
+fn serialize_model_thinking_op(op: &Op) -> Option<Value> {
+    Some(match op {
+        Op::AvailableModels => json!({"op": "availableModels"}),
+        Op::SetModel { provider, model_id } => json!({"op": "setModel", "provider": provider, "modelId": model_id}),
+        Op::CycleModel => json!({"op": "cycleModel"}),
+        Op::ThinkingLevels => json!({"op": "thinkingLevels"}),
+        Op::SetThinking { level } => json!({"op": "setThinking", "level": level}),
+        Op::CycleThinking => json!({"op": "cycleThinking"}),
+        Op::SetQueueMode { kind, mode } => json!({"op": "setQueueMode", "kind": kind.name(), "mode": mode}),
+        _ => return None,
+    })
+}
+
+fn serialize_config_execution_op(op: &Op) -> Option<Value> {
+    Some(match op {
+        Op::Compact { instructions } => json!({"op": "compact", "instructions": instructions}),
+        Op::SetAutoCompaction(enabled) => json!({"op": "setAutoCompaction", "enabled": enabled}),
+        Op::SetAutoRetry(enabled) => json!({"op": "setAutoRetry", "enabled": enabled}),
+        Op::SetTerminalTheme { theme } => json!({"op": "setTerminalTheme", "theme": theme}),
+        Op::AbortRetry => json!({"op": "abortRetry"}),
+        Op::Bash { command, exclude, id } => serialize_bash_op(command, *exclude, id.as_deref()),
+        Op::AbortBash => json!({"op": "abortBash"}),
+        _ => return None,
+    })
+}
+
+fn serialize_bash_op(command: &str, exclude: bool, id: Option<&str>) -> Value {
+    let mut op = json!({"op": "bash", "command": command, "exclude": exclude});
+    if let Some(id) = id {
+        op["id"] = json!(id);
+    }
+    op
+}
+
+fn serialize_bug_and_view_op(op: &Op) -> Option<Value> {
+    Some(match op {
+        Op::BugSummary { hint } => json!({"op": "bugSummary", "hint": hint}),
+        Op::AbortBugSummary => json!({"op": "abortBugSummary"}),
+        Op::ShareContext => json!({"op": "shareContext"}),
+        Op::AppendCustom { custom_type, data } => {
+            json!({"op": "appendCustom", "customType": custom_type, "data": data})
+        }
+        Op::Stats => json!({"op": "stats"}),
+        Op::ForkMessages => json!({"op": "forkMessages"}),
+        Op::Entries { since } => json!({"op": "entries", "since": since}),
+        _ => return None,
+    })
+}
+
+fn serialize_session_view_op(op: &Op) -> Option<Value> {
+    Some(match op {
+        Op::Tree => json!({"op": "tree"}),
+        Op::LastAssistantText => json!({"op": "lastAssistantText"}),
+        Op::SetName { name } => json!({"op": "setName", "name": name}),
+        Op::Messages => json!({"op": "messages"}),
+        Op::ForkSource { entry_id } => json!({"op": "forkSource", "entryId": entry_id}),
+        Op::CloneSource => json!({"op": "cloneSource"}),
+        Op::Forked { target } => json!({"op": "forked", "target": target}),
+        _ => return None,
+    })
+}
+
+fn serialize_navigation_op(op: &Op) -> Option<Value> {
+    Some(match op {
+        Op::Describe => json!({"op": "describe"}),
+        Op::LaneSnapshot => json!({"op": "laneSnapshot"}),
+        Op::ListSessions => json!({"op": "listSessions"}),
+        Op::Recover => json!({"op": "recover"}),
+        Op::SetLabel { entry_id, label } => json!({"op": "setLabel", "entryId": entry_id, "label": label}),
+        Op::Navigate {
+            target_id,
+            summarize,
+            instructions,
+            label,
+        } => {
+            json!({"op": "navigate", "targetId": target_id, "summarize": summarize, "customInstructions": instructions, "label": label})
+        }
+        _ => return None,
+    })
+}
+
+fn serialize_agent_op(op: &Op) -> Option<Value> {
+    Some(match op {
+        Op::Agents => json!({"op": "agents"}),
+        Op::KillAgent { id } => json!({"op": "killAgent", "id": id}),
+        Op::SteerAgent { id, message } => json!({"op": "steerAgent", "id": id, "message": message}),
+        Op::ReviveAgent { id } => json!({"op": "reviveAgent", "id": id}),
+        Op::AgentTranscript { id } => json!({"op": "agentTranscript", "id": id}),
+        _ => return None,
+    })
+}
+
+fn serialize_conversation_op(op: &Op) -> Option<Value> {
+    Some(match op {
+        Op::StartConversation { message } => json!({"op": "startConversation", "message": message}),
+        Op::ConversationInput { id, message } => json!({"op": "conversationInput", "id": id, "message": message}),
+        Op::Conversations { id } => json!({"op": "conversations", "id": id}),
+        Op::Checkpoints => json!({"op": "checkpoints"}),
+        Op::RestoreFiles { entry_id, checkpoint } => {
+            json!({"op": "restoreFiles", "entryId": entry_id, "checkpoint": checkpoint})
+        }
+        _ => return None,
+    })
+}
+
+fn serialize_control_op(op: &Op) -> Option<Value> {
+    Some(match op {
+        Op::Goal { args } => json!({"op": "goal", "args": args}),
+        Op::Observer { args } => json!({"op": "observer", "args": args}),
+        Op::AsyncPending => json!({"op": "asyncPending"}),
+        Op::Inspect { request, payload } => json!({"op": "inspect", "request": request, "payload": payload}),
+        Op::Commands => json!({"op": "commands"}),
+        _ => return None,
+    })
+}
+
+fn serialize_schedule_and_persona_op(op: &Op) -> Option<Value> {
+    Some(match op {
+        Op::ScheduleFire { id, due } => json!({"op": "scheduleFire", "id": id, "due": due}),
+        Op::ScheduleCancel { id } => json!({"op": "scheduleCancel", "id": id}),
+        Op::Persona { args } => json!({"op": "persona", "args": args}),
+        Op::KeepGoing { args } => json!({"op": "keepGoing", "args": args}),
+        Op::ContinueFrom { session } => json!({"op": "continueFrom", "session": session}),
+        _ => return None,
+    })
 }

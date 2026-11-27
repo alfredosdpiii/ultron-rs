@@ -504,7 +504,7 @@ fn interactive_p_tui_rlm_pane_opens_beside_the_chat_and_moves_the_focus() {
     let mut h = harness();
     h.screen_at(160, 40);
     h.app.handle_input("\x1bw");
-    assert!(h.calls().contains(&"rlm_status".to_string()), "{:?}", h.calls());
+    assert!(h.calls().iter().any(|i| i == "rlm_status"), "{:?}", h.calls());
     let frame = h.app.render(160, 40);
     // Chat 95 columns, the border, the pane 64 columns (rlmPaneWidth(160)).
     let border = tui::strip_terminal_sequences(&frame[0]);
@@ -726,7 +726,7 @@ fn interactive_p_tui_rlm_agents_status_falls_back_to_the_plain_listing() {
     h.advance(5000);
     assert!(h.app.poll_rlm());
     assert!(
-        h.calls().contains(&"inspect agents agents.status {}".to_string()),
+        h.calls().iter().any(|i| i == "inspect agents agents.status {}"),
         "{:?}",
         h.calls()
     );

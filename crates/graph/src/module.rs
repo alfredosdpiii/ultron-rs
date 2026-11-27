@@ -289,24 +289,40 @@ impl KnowledgeModule {
             .get("rev")
             .and_then(Value::as_str)
             .ok_or("knowledge.settle rev must be the commit knowledge.relations answered")?;
-        let verdicts = match request.payload.get("verdicts") {
+        let verdicts = self.parse_verdicts(request.payload)?;
+        let (repo, _) = repository(&self.cwd)?;
+        let (settled, accepted, removed) = self.apply_settle_store(&repo, rev, &verdicts)?;
+        let mirror = self.mirror(|neo4j| {
+            neo4j.remove_relations(&repo, &removed, request.signal)?;
+            neo4j.upsert_relations(&repo, rev, &accepted, request.signal)
+        });
+        Ok(json!({"settled": settled, "mirror": mirror}))
+    }
+
+    fn parse_verdicts(&self, payload: &Map<String, Value>) -> Result<Vec<Settlement>, String> {
+        match payload.get("verdicts") {
             Some(Value::Array(items)) if items.len() <= MAX_VERDICTS => items
                 .iter()
                 .map(|item| Ok(self.vouched(settlement(item)?, item.get("receipt").and_then(Value::as_str))))
-                .collect::<Result<Vec<_>, String>>()?,
-            _ => {
-                return Err(format!(
-                    "knowledge.settle verdicts must be a list of at most {MAX_VERDICTS}"
-                ));
-            }
-        };
-        let (repo, _) = repository(&self.cwd)?;
+                .collect(),
+            _ => Err(format!(
+                "knowledge.settle verdicts must be a list of at most {MAX_VERDICTS}"
+            )),
+        }
+    }
+
+    fn apply_settle_store(
+        &self,
+        repo: &str,
+        rev: &str,
+        verdicts: &[Settlement],
+    ) -> Result<(usize, Vec<Relation>, Vec<Relation>), String> {
         let mut store = Store::open(&self.db).map_err(|e| e.to_string())?;
         let tree = store
-            .tree_id(&repo, rev)
+            .tree_id(repo, rev)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("knowledge.settle: no relations were read at {rev}"))?;
-        let settled = store.settle_relations(&verdicts).map_err(|e| e.to_string())?;
+        let settled = store.settle_relations(verdicts).map_err(|e| e.to_string())?;
         let ids: std::collections::HashSet<i64> = verdicts.iter().map(|v| v.id).collect();
         let changed: Vec<Relation> = store
             .relations(tree, None)
@@ -314,13 +330,8 @@ impl KnowledgeModule {
             .into_iter()
             .filter(|r| ids.contains(&r.id))
             .collect();
-        let (accepted, removed): (Vec<Relation>, Vec<Relation>) =
-            changed.into_iter().partition(|r| r.status == "accepted");
-        let mirror = self.mirror(|neo4j| {
-            neo4j.remove_relations(&repo, &removed, request.signal)?;
-            neo4j.upsert_relations(&repo, rev, &accepted, request.signal)
-        });
-        Ok(json!({"settled": settled, "mirror": mirror}))
+        let (accepted, removed) = changed.into_iter().partition(|r| r.status == "accepted");
+        Ok((settled, accepted, removed))
     }
 
     /// The relations read so far at `HEAD`, mirrored as they are now (judged ones by their verdicts).

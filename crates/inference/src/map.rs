@@ -131,7 +131,7 @@ impl Frames {
         }
     }
 
-    fn map(&self, payload: &mut Map<String, Value>, signal: &Signal) -> Result<Value, String> {
+    fn parse_map_frames(payload: &Map<String, Value>) -> Result<(Vec<Value>, u64), String> {
         fields(
             payload,
             &[
@@ -155,16 +155,30 @@ impl Frames {
             return Err(format!("rlm.map takes at most {MAX_MAP_FRAMES} frames"));
         }
         let concurrency = optional_integer(payload.get("concurrency"), "concurrency", 1, MAX_CONCURRENCY)?.unwrap_or(8);
+        Ok((items, concurrency))
+    }
+
+    fn parse_map_requests<'a>(
+        &self,
+        items: &'a [Value],
+        depth: u64,
+    ) -> Result<Vec<(&'a str, Vec<super::View>)>, String> {
+        let mut requests = Vec::with_capacity(items.len());
+        for item in items {
+            let item = item.as_object().ok_or("frame must be an object")?;
+            let task = Inference::task_of(item)?;
+            requests.push((task, self.inference.views(item.get("context"), depth)?));
+        }
+        Ok(requests)
+    }
+
+    fn map(&self, payload: &mut Map<String, Value>, signal: &Signal) -> Result<Value, String> {
+        let (items, concurrency) = Self::parse_map_frames(payload)?;
         self.defaults(payload);
         let inference = &self.inference;
         let (mut options, admission) = inference.options(payload, self.default_map_tokens())?;
         options.prefix = inference.views(payload.get("prefix"), 1)?;
-        let mut requests = Vec::new();
-        for item in &items {
-            let item = item.as_object().ok_or("frame must be an object")?;
-            let task = Inference::task_of(item)?;
-            requests.push((task, inference.views(item.get("context"), options.depth)?));
-        }
+        let requests = self.parse_map_requests(&items, options.depth)?;
         if options.depth > 1 && !inference.session.has_tasks() {
             return Err(format!(
                 "budget depth {} needs frames that run code (the rlm tool), which this host does not run yet",
@@ -189,18 +203,8 @@ impl Frames {
                 )
             })
             .collect();
-        let next = AtomicUsize::new(0);
-        let worker = || {
-            while let Some(frame) = frames.get(next.fetch_add(1, Ordering::SeqCst)) {
-                session.run_frame(frame, &inference.lane, signal);
-            }
-        };
-        let workers = (concurrency as usize).min(frames.len());
-        std::thread::scope(|scope| {
-            for _ in 1..workers {
-                scope.spawn(worker);
-            }
-            worker();
+        run_concurrent(&frames, concurrency as usize, |frame| {
+            session.run_frame(frame, &inference.lane, signal);
         });
         let mut usage = (0, 0, 0.0);
         let results: Vec<Value> = frames
@@ -217,6 +221,22 @@ impl Frames {
             "usage": jsrt::json::normalize_numbers(json!({"input_tokens": usage.0, "output_tokens": usage.1, "cost": usage.2})),
         }))
     }
+}
+
+fn run_concurrent<T: Sync>(items: &[T], concurrency: usize, work: impl Fn(&T) + Sync) {
+    let next = AtomicUsize::new(0);
+    let worker = || {
+        while let Some(item) = items.get(next.fetch_add(1, Ordering::SeqCst)) {
+            work(item);
+        }
+    };
+    let workers = concurrency.min(items.len());
+    std::thread::scope(|scope| {
+        for _ in 1..workers {
+            scope.spawn(worker);
+        }
+        worker();
+    });
 }
 
 impl HostHandler for Frames {

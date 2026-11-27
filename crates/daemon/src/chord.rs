@@ -254,24 +254,31 @@ enum Control {
     Unsubscribe { id: String },
 }
 
+fn nonempty_str(value: &Value) -> Option<&str> {
+    value.as_str().filter(|s| !s.is_empty())
+}
+
+fn parse_subscribe(args: &[Value]) -> Option<Control> {
+    let [id, service, mode] = args else { return None };
+    let id = nonempty_str(id)?;
+    let service = nonempty_str(service)?;
+    let mode = mode.as_str().filter(|m| matches!(*m, "singleton" | "keyed"))?;
+    Some(Control::Subscribe {
+        id: id.into(),
+        service: service.into(),
+        mode: mode.into(),
+    })
+}
+
 fn control(call: &Call) -> Option<Control> {
     if call.service_id != protocol::names::CHORD_SERVICE || call.has_instance {
         return None;
     }
-    let is_id = |v: &Value| v.as_str().is_some_and(|s| !s.is_empty());
     match (call.member.as_str(), call.args.as_slice()) {
         ("catalogue", []) => Some(Control::Catalogue),
-        ("subscribe", [id, service, mode])
-            if is_id(id) && is_id(service) && matches!(mode.as_str(), Some("singleton" | "keyed")) =>
-        {
-            Some(Control::Subscribe {
-                id: id.as_str()?.into(),
-                service: service.as_str()?.into(),
-                mode: mode.as_str()?.into(),
-            })
-        }
-        ("unsubscribe", [id]) if is_id(id) => Some(Control::Unsubscribe {
-            id: id.as_str()?.into(),
+        ("subscribe", args) => parse_subscribe(args),
+        ("unsubscribe", [id]) => Some(Control::Unsubscribe {
+            id: nonempty_str(id)?.into(),
         }),
         _ => None,
     }

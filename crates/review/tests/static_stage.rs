@@ -520,7 +520,7 @@ fn review_static_stage_emits_loki_and_ruff_nits_without_breaking_contradictions(
 
     // 2. autoreview_static maps Ruff F401/F841 and Loki no-debugger/no-empty to level=nit
     //    and keeps mod.py clean for lint contradictions (no error-class rules triggered).
-    let body = r#"
+    let body = r"
 class Rlm:
     async def host_request(self, kind, payload):
         if kind == 'review.loki':
@@ -541,7 +541,7 @@ print(json.dumps({
     'findings': [[f['file'], f['line'], f['level'], f['severity'], f['category'], f['source']] for f in out['findings']],
     'lint_clean_for_mod': 'lint' in (out['clean'].get('mod.py') or []),
 }))
-"#;
+";
     let got = engine(dir.path(), &base, &head, body);
     assert_eq!(got["lint_clean_for_mod"], true, "{got}");
     assert_eq!(
@@ -590,11 +590,11 @@ fn review_static_orphaned_private_helpers_flags_dead_helper_only() {
     git(repo, &["commit", "-qm", "head"]);
     let head = git(repo, &["rev-parse", "HEAD"]);
 
-    let body = r#"
+    let body = r"
 scope, git, _ = a._scope({'repoDir': repo, 'base': base, 'head': head}, None)
 found = st.orphaned_private_helpers(git, scope)
 print(json.dumps([[f['file'], f['line'], f['level'], f['severity'], f['source'], f['claim']] for f in found]))
-"#;
+";
     let got = engine(dir.path(), &base, &head, body);
     assert_eq!(
         got,

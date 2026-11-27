@@ -22,7 +22,8 @@ class Memory:
         unchecked, judged}. `project` (a directory) checks that project's claims against its files instead of
         this session's."""
         payload = {'days': days, 'limit': limit}
-        if project is not None: payload['project'] = project
+        if project is not None:
+            payload['project'] = project
         return await self._bridge.request('memory.dream', payload)
     async def brief(self, text, *, scope='project', topic=None, project=None):
         """Write the startup brief of `scope` ('project', or 'global' for the user's brief), at most 200 lines and
@@ -30,15 +31,19 @@ class Memory:
         before and opens each new context (memorantado only: Hindsight writes its own). `project` (a directory)
         names another project than this session's."""
         payload = {'text': text, 'scope': scope}
-        if topic is not None: payload['topic'] = topic
-        if project is not None: payload['project'] = project
+        if topic is not None:
+            payload['topic'] = topic
+        if project is not None:
+            payload['project'] = project
         return await self._bridge.request('memory.brief', payload)
     async def topic(self, name=None, *, scope='project', project=None):
         """The topic page `name` of `scope` ({topic, content, refreshedAt}, None when there is none); without a
         name, the names of the scope's topic pages."""
         payload = {'scope': scope}
-        if name is not None: payload['topic'] = name
-        if project is not None: payload['project'] = project
+        if name is not None:
+            payload['topic'] = name
+        if project is not None:
+            payload['project'] = project
         return await self._bridge.request('memory.topic', payload)
 
 class Refinements:
@@ -47,6 +52,7 @@ class Refinements:
         return await self._bridge.request('refinements.propose', {'kind':kind,'target':target,'baseVersion':base_version,'content':content,'evidence':evidence,'scope':scope})
     async def list(self): return await self._bridge.request('refinements.list')
     async def activate(self, id): return await self._bridge.request('refinements.activate', {'id':id})
+    async def promote(self, id): return await self._bridge.request('refinements.promote', {'id':id})
     async def rollback(self, id): return await self._bridge.request('refinements.rollback', {'id':id})
     async def reject(self, id): return await self._bridge.request('refinements.reject', {'id':id})
 

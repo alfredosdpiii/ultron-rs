@@ -98,26 +98,7 @@ impl SwarmOps {
         let Some(contracts) = &self.contracts else {
             return Some(serve(kind, payload));
         };
-        Some(match kind {
-            "rlm.spawn" => contracts.spawn(payload, &serve).unwrap_or_else(|| serve(kind, payload)),
-            "rlm.ask" => {
-                let child = payload.get("child").map(|c| match c {
-                    Value::String(text) => text.clone(),
-                    other => other.to_string(),
-                });
-                if let Some(child) = &child {
-                    contracts.before_ask(child);
-                }
-                serve(kind, payload).map(|answer| match &child {
-                    Some(child) => contracts.ask_answer(child, answer, lane, signal, &serve),
-                    None => answer,
-                })
-            }
-            "rlm.collect" | "rlm.results" => {
-                serve(kind, payload).map(|answer| contracts.reported(answer, lane, signal, &serve))
-            }
-            _ => serve(kind, payload),
-        })
+        Some(handle_with_contracts(contracts, lane, kind, payload, signal, &serve))
     }
 
     /// Serve `kind` for `lane` from the durable runtime's host operations.
@@ -137,4 +118,43 @@ impl SwarmOps {
             .handler(call, None)
             .handle(kind, payload.clone(), signal)
     }
+}
+
+fn handle_with_contracts(
+    contracts: &KeptContracts,
+    lane: &str,
+    kind: &str,
+    payload: &Map<String, Value>,
+    signal: &Signal,
+    serve: crate::kept_contracts::Serve<'_>,
+) -> Result<Value, String> {
+    match kind {
+        "rlm.spawn" => contracts.spawn(payload, serve).unwrap_or_else(|| serve(kind, payload)),
+        "rlm.ask" => handle_ask_with_contracts(contracts, lane, kind, payload, signal, serve),
+        "rlm.collect" | "rlm.results" => {
+            serve(kind, payload).map(|answer| contracts.reported(answer, lane, signal, serve))
+        }
+        _ => serve(kind, payload),
+    }
+}
+
+fn handle_ask_with_contracts(
+    contracts: &KeptContracts,
+    lane: &str,
+    kind: &str,
+    payload: &Map<String, Value>,
+    signal: &Signal,
+    serve: crate::kept_contracts::Serve<'_>,
+) -> Result<Value, String> {
+    let child = payload.get("child").map(|c| match c {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    });
+    if let Some(child) = &child {
+        contracts.before_ask(child);
+    }
+    serve(kind, payload).map(|answer| match &child {
+        Some(child) => contracts.ask_answer(child, answer, lane, signal, serve),
+        None => answer,
+    })
 }

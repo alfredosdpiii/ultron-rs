@@ -144,6 +144,41 @@ pub struct Endpoint {
     pub project: String,
 }
 
+fn backend_for_endpoint(endpoint: Option<Endpoint>, answers: &dyn Fn(&str) -> bool) -> Backend {
+    match endpoint {
+        Some(endpoint) => Backend::Memorantado {
+            up: answers(&endpoint.url),
+            endpoint,
+        },
+        None => Backend::Off,
+    }
+}
+
+fn detect_backend(
+    configured: Option<Endpoint>,
+    agent_dir: &Path,
+    hindsight: Hindsight,
+    offline: bool,
+    answers: &dyn Fn(&str) -> bool,
+) -> Backend {
+    if hindsight == Hindsight::Off {
+        return Backend::Off;
+    }
+    if remembered(agent_dir) == Some(Choice::Memorantado) {
+        return backend_for_endpoint(configured, answers);
+    }
+    if hindsight == Hindsight::Set || offline {
+        return Backend::Hindsight;
+    }
+    match configured {
+        Some(endpoint) if answers(&endpoint.url) => {
+            remember(agent_dir, Choice::Memorantado);
+            Backend::Memorantado { endpoint, up: true }
+        }
+        _ => Backend::Hindsight,
+    }
+}
+
 impl Endpoint {
     /// The server [`memorantado_url`] resolves from `var` and the settings (`None`: off), on the project
     /// `ULTRON_MEMORANTADO_PROJECT` names.
@@ -172,26 +207,10 @@ impl Endpoint {
         answers: &dyn Fn(&str) -> bool,
     ) -> Backend {
         let configured = Self::configured(var, manager);
-        let chosen = |endpoint: Option<Endpoint>| match endpoint {
-            Some(endpoint) => Backend::Memorantado {
-                up: answers(&endpoint.url),
-                endpoint,
-            },
-            None => Backend::Off,
-        };
         match choice(manager) {
-            Some(Choice::Memorantado) => chosen(configured),
+            Some(Choice::Memorantado) => backend_for_endpoint(configured, answers),
             Some(Choice::Hindsight) => Backend::Hindsight,
-            None if hindsight == Hindsight::Off => Backend::Off,
-            None if remembered(agent_dir) == Some(Choice::Memorantado) => chosen(configured),
-            None if hindsight == Hindsight::Set || config::env::offline(var) => Backend::Hindsight,
-            None => match configured {
-                Some(endpoint) if answers(&endpoint.url) => {
-                    remember(agent_dir, Choice::Memorantado);
-                    Backend::Memorantado { endpoint, up: true }
-                }
-                _ => Backend::Hindsight,
-            },
+            None => detect_backend(configured, agent_dir, hindsight, config::env::offline(var), answers),
         }
     }
 

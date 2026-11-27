@@ -96,42 +96,53 @@ pub(crate) fn durable_edits(path: &[Value], durable: &[Option<u64>]) -> Translat
     let applied = session_journal::context::apply_context_edits_marked(&path[start..]);
     let mut groups: Vec<(u64, bool, Vec<Value>)> = Vec::new();
     let mut waiting = Vec::new();
-    for (offset, applied) in applied.iter().enumerate() {
-        let omitted = applied.entry["customType"] == CONTEXT_OMITTED_CUSTOM_TYPE;
-        let visible: Vec<Value> = match applied.entry["type"].as_str() {
-            _ if omitted => Vec::new(),
-            Some("message") => vec![applied.entry["message"].clone()],
-            Some("custom") if applied.entry["customType"] == CONTEXT_NOTE_CUSTOM_TYPE => project_note(&applied.entry),
-            _ => Vec::new(),
-        };
-        let Some(target) = durable[start + offset] else {
-            let note = path[start + offset]["customType"] == CONTEXT_NOTE_CUSTOM_TYPE;
-            if note && applied.changed {
-                waiting.push((start + offset, session_journal::context::convert_to_llm(&visible)));
+    for (offset, item) in applied.iter().enumerate() {
+        let visible = visible_entry_messages(&item.entry);
+        match durable[start + offset] {
+            None => {
+                if path[start + offset]["customType"] == CONTEXT_NOTE_CUSTOM_TYPE && item.changed {
+                    waiting.push((start + offset, session_journal::context::convert_to_llm(&visible)));
+                }
             }
-            continue;
-        };
-        match groups.last_mut() {
-            Some((id, changed, messages)) if *id == target => {
-                *changed |= applied.changed;
-                messages.extend(visible);
-            }
-            _ => groups.push((target, applied.changed, visible)),
+            Some(target) => push_durable_group(&mut groups, target, item.changed, visible),
         }
     }
     let edits = groups
         .into_iter()
         .filter(|(_, changed, _)| *changed)
-        .map(|(target, _, messages)| {
-            if messages.is_empty() {
-                json!({"target": target, "action": "omit"})
-            } else {
-                json!({"target": target, "action": "replace",
-                    "messages": session_journal::context::convert_to_llm(&messages)})
-            }
-        })
+        .map(|(target, _, messages)| durable_edit_action(target, &messages))
         .collect();
     Translated { edits, waiting }
+}
+
+fn visible_entry_messages(entry: &Value) -> Vec<Value> {
+    if entry["customType"] == CONTEXT_OMITTED_CUSTOM_TYPE {
+        return Vec::new();
+    }
+    match entry["type"].as_str() {
+        Some("message") => vec![entry["message"].clone()],
+        Some("custom") if entry["customType"] == CONTEXT_NOTE_CUSTOM_TYPE => project_note(entry),
+        _ => Vec::new(),
+    }
+}
+
+fn push_durable_group(groups: &mut Vec<(u64, bool, Vec<Value>)>, target: u64, changed: bool, visible: Vec<Value>) {
+    match groups.last_mut() {
+        Some((id, prev_changed, messages)) if *id == target => {
+            *prev_changed |= changed;
+            messages.extend(visible);
+        }
+        _ => groups.push((target, changed, visible)),
+    }
+}
+
+fn durable_edit_action(target: u64, messages: &[Value]) -> Value {
+    if messages.is_empty() {
+        json!({"target": target, "action": "omit"})
+    } else {
+        json!({"target": target, "action": "replace",
+            "messages": session_journal::context::convert_to_llm(messages)})
+    }
 }
 
 /// A custom entry appended while its lane's turn ran: its lane, Pi entry and write submission.
@@ -152,6 +163,17 @@ fn custom_write(lane: &str, custom: &Value, model: Option<Vec<Value>>) -> Value 
         stored["model"] = model.into();
     }
     stored
+}
+
+fn initial_custom_write(lane: &str, custom_type: &str, custom: &Value) -> Value {
+    if custom_type == CONTEXT_NOTE_CUSTOM_TYPE {
+        return custom_write(
+            lane,
+            custom,
+            Some(session_journal::context::convert_to_llm(&project_note(custom))),
+        );
+    }
+    custom_write(lane, custom, None)
 }
 
 /// `ctx` on child conversations.
@@ -289,70 +311,7 @@ impl ChildContext {
         };
         let custom = json!({"id": id, "parentId": null, "type": "custom", "customType": custom_type, "data": data,
             "timestamp": timestamp});
-        let mut attempts = 0;
-        let (conversation, stored) = loop {
-            attempts += 1;
-            let (conversation, entries) = self.branch(lane)?;
-            let mut stored = custom_write(lane, &custom, None);
-            if custom_type == CONTEXT_NOTE_CUSTOM_TYPE {
-                stored = custom_write(
-                    lane,
-                    &custom,
-                    Some(session_journal::context::convert_to_llm(&project_note(&custom))),
-                );
-            }
-            if custom_type != CONTEXT_EDIT_CUSTOM_TYPE {
-                break (conversation, stored);
-            }
-            let mut path: Vec<Value> = Vec::new();
-            let mut durable: Vec<Option<u64>> = Vec::new();
-            let mut submissions: Vec<Option<SubmissionId>> = Vec::new();
-            for (entry, target) in entries {
-                path.push(entry);
-                durable.push(Some(target));
-                submissions.push(None);
-            }
-            for queued in sync::lock(&self.queued).iter().filter(|q| q.lane == lane) {
-                path.push(queued.entry.clone());
-                durable.push(None);
-                submissions.push(queued.submission);
-            }
-            path.push(custom.clone());
-            durable.push(None);
-            submissions.push(None);
-            let translated = durable_edits(&path, &durable);
-            if !translated.edits.is_empty() {
-                stored["edits"] = translated.edits.into();
-            }
-            let mut withdrawn = true;
-            for (index, model) in translated.waiting {
-                let Some(submission) = submissions[index] else {
-                    continue;
-                };
-                let chat = conversation.chat();
-                let aborted = match chat.submission(submission).map_err(|e| e.to_string())? {
-                    Some(handle) => handle.abort().map_err(|e| e.to_string())?,
-                    None => harness::chat::SubmissionAbort::NotFound,
-                };
-                if aborted != harness::chat::SubmissionAbort::Aborted {
-                    withdrawn = false;
-                    continue;
-                }
-                let note = path[index].clone();
-                let again = conversation
-                    .submit(SubmissionDraft::write(custom_write(lane, &note, Some(model))))
-                    .map_err(|e| e.to_string())?;
-                if let Some(queued) = sync::lock(&self.queued)
-                    .iter_mut()
-                    .find(|q| q.submission == Some(submission))
-                {
-                    queued.submission = Some(again.id);
-                }
-            }
-            if withdrawn || attempts == 3 {
-                break (conversation, stored);
-            }
-        };
+        let (conversation, stored) = self.prepare_custom_write(lane, custom_type, &custom)?;
         let mut queued = sync::lock(&self.queued);
         let submission = match sync::lock(&self.capture).as_mut() {
             Some((capturing, captured)) if capturing == lane => {
@@ -372,6 +331,99 @@ impl ChildContext {
             submission,
         });
         Ok(id)
+    }
+
+    fn prepare_custom_write(
+        &self,
+        lane: &str,
+        custom_type: &str,
+        custom: &Value,
+    ) -> Result<(harness::chat::Conversation, Value), String> {
+        for attempt in 1..=3 {
+            let (conversation, entries) = self.branch(lane)?;
+            let mut stored = initial_custom_write(lane, custom_type, custom);
+            if custom_type != CONTEXT_EDIT_CUSTOM_TYPE {
+                return Ok((conversation, stored));
+            }
+            let (path, durable, submissions) = self.collect_edit_path(lane, entries, custom);
+            let translated = durable_edits(&path, &durable);
+            if !translated.edits.is_empty() {
+                stored["edits"] = translated.edits.into();
+            }
+            let withdrawn = self.requeue_edited_notes(lane, &conversation, &path, &submissions, translated.waiting)?;
+            if withdrawn || attempt == 3 {
+                return Ok((conversation, stored));
+            }
+        }
+        unreachable!("loop returns by attempt 3")
+    }
+
+    fn collect_edit_path(
+        &self,
+        lane: &str,
+        entries: Vec<(Value, u64)>,
+        custom: &Value,
+    ) -> (Vec<Value>, Vec<Option<u64>>, Vec<Option<SubmissionId>>) {
+        let mut path = Vec::new();
+        let mut durable = Vec::new();
+        let mut submissions = Vec::new();
+        for (entry, target) in entries {
+            path.push(entry);
+            durable.push(Some(target));
+            submissions.push(None);
+        }
+        for queued in sync::lock(&self.queued).iter().filter(|q| q.lane == lane) {
+            path.push(queued.entry.clone());
+            durable.push(None);
+            submissions.push(queued.submission);
+        }
+        path.push(custom.clone());
+        durable.push(None);
+        submissions.push(None);
+        (path, durable, submissions)
+    }
+
+    fn requeue_edited_notes(
+        &self,
+        lane: &str,
+        conversation: &harness::chat::Conversation,
+        path: &[Value],
+        submissions: &[Option<SubmissionId>],
+        waiting: Vec<(usize, Vec<Value>)>,
+    ) -> Result<bool, String> {
+        let mut withdrawn = true;
+        for (index, model) in waiting {
+            let Some(submission) = submissions[index] else {
+                continue;
+            };
+            if !self.abort_submission(conversation, submission)? {
+                withdrawn = false;
+                continue;
+            }
+            let again = conversation
+                .submit(SubmissionDraft::write(custom_write(lane, &path[index], Some(model))))
+                .map_err(|e| e.to_string())?;
+            if let Some(queued) = sync::lock(&self.queued)
+                .iter_mut()
+                .find(|q| q.submission == Some(submission))
+            {
+                queued.submission = Some(again.id);
+            }
+        }
+        Ok(withdrawn)
+    }
+
+    fn abort_submission(
+        &self,
+        conversation: &harness::chat::Conversation,
+        submission: SubmissionId,
+    ) -> Result<bool, String> {
+        let chat = conversation.chat();
+        let aborted = match chat.submission(submission).map_err(|e| e.to_string())? {
+            Some(handle) => handle.abort().map_err(|e| e.to_string())?,
+            None => harness::chat::SubmissionAbort::NotFound,
+        };
+        Ok(aborted == harness::chat::SubmissionAbort::Aborted)
     }
 
     fn tip_id(&self, lane: &str) -> Result<Option<String>, String> {

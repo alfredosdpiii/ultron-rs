@@ -90,6 +90,18 @@ pub(super) fn verdict_gate(result: Value) -> Value {
     gated
 }
 
+fn format_refinement_note(r: &Value) -> String {
+    let version = match &r["version"] {
+        Value::Null => "unversioned".to_string(),
+        other => json::stringify(other),
+    };
+    format!(
+        "Active refinement {} (version {version}):\n{}",
+        r["id"].as_str().unwrap_or_default(),
+        r["text"].as_str().unwrap_or_default()
+    )
+}
+
 impl Agents {
     /// `execute`: the strategy's work; every failure is a typed result, never a success.
     pub(super) fn execute(&self, id: &str, request: &TaskRequest) -> Value {
@@ -110,114 +122,148 @@ impl Agents {
         }
     }
 
+    fn output_error(&self, definition: &Definition, value: &Value) -> Option<String> {
+        let state = self.state();
+        (!state.registry.is_valid_output(definition, value))
+            .then(|| state.registry.validation_error(definition, value, "output"))
+    }
+
     fn work(&self, id: &str, request: &TaskRequest, signal: &Signal) -> Result<Value, String> {
-        let aborted = || signal.reason().map_or(Ok(()), Err);
-        aborted()?;
+        signal.reason().map_or(Ok(()), Err)?;
         let definition = self.definition(&request.definition)?;
-        let public = definition.public();
-        let output_error = |value: &Value| -> Option<String> {
-            let state = self.state();
-            (!state.registry.is_valid_output(&definition, value))
-                .then(|| state.registry.validation_error(&definition, value, "output"))
-        };
         match definition.strategy() {
-            Strategy::Deterministic => {
-                self.state().registry.can_execute(&definition)?;
-                let value = match &self.inner.deterministic {
-                    None if definition.key() == "identity@1" => request.input.clone(),
-                    None => {
-                        return Err(format!(
-                            "Deterministic definition {} requires an injected deterministic adapter",
-                            definition.key()
-                        ));
-                    }
-                    Some(adapter) => adapter(AdapterRequest {
-                        definition: &public,
-                        input: &request.input,
-                        signal,
-                        repair: None,
-                    })?,
-                };
-                aborted()?;
-                match output_error(&value) {
-                    Some(error) => Err(error),
-                    None => Ok(succeeded(value)),
-                }
-            }
-            Strategy::Predict => {
-                self.state().registry.can_execute(&definition)?;
-                let adapter = self.inner.predict.clone().ok_or_else(|| {
-                    format!(
-                        "Predict definition {} requires an injected predict adapter",
-                        definition.key()
-                    )
-                })?;
-                let mut repair: Option<Value> = None;
-                for attempt in 0..=definition.max_repairs() {
-                    aborted()?;
-                    let key = if attempt == 0 {
-                        format!("{id}:model")
-                    } else {
-                        format!("{id}:model:repair-{attempt}")
-                    };
-                    let reservation = self.reserve_model(id, key, request)?;
-                    let answer = adapter(AdapterRequest {
-                        definition: &public,
-                        input: &request.input,
-                        signal,
-                        repair: repair.clone(),
-                    });
-                    let status = match &answer {
-                        Ok(_) => "succeeded",
-                        Err(_) if signal.is_aborted() => "cancelled",
-                        Err(_) => "failed",
-                    };
-                    if let Some(usage) = &self.inner.usage {
-                        if let Some(reservation) = &reservation {
-                            usage.settle(reservation, Some(status), None)?;
-                        }
-                        usage.record_turn(self.root_of_task(id).as_deref(), None, None)?;
-                    }
-                    let value = answer?;
-                    match output_error(&value) {
-                        None => return Ok(succeeded(value)),
-                        Some(error) => {
-                            repair = Some(json!({ "attempt": attempt + 1, "previous": value, "error": error }));
-                        }
-                    }
-                }
-                let error = repair
-                    .as_ref()
-                    .and_then(|r| r["error"].as_str())
-                    .unwrap_or("Predict adapter returned an invalid output")
-                    .to_string();
-                let repairs = definition.max_repairs();
-                Err(match repairs {
-                    0 => error,
-                    1 => format!("{error} after 1 repair attempt"),
-                    n => format!("{error} after {n} repair attempts"),
-                })
-            }
+            Strategy::Deterministic => self.run_deterministic(request, &definition, signal),
+            Strategy::Predict => self.run_predict(id, request, &definition, signal),
             Strategy::Rlm => self.run_lane(id, request, &definition, signal),
         }
     }
 
-    /// The `rlm` strategy: the definition's prompt (or a subagent's brief) on its own lane.
-    fn run_lane(
+    fn run_deterministic(
+        &self,
+        request: &TaskRequest,
+        definition: &Definition,
+        signal: &Signal,
+    ) -> Result<Value, String> {
+        self.state().registry.can_execute(definition)?;
+        let public = definition.public();
+        let value = match &self.inner.deterministic {
+            None if definition.key() == "identity@1" => request.input.clone(),
+            None => {
+                return Err(format!(
+                    "Deterministic definition {} requires an injected deterministic adapter",
+                    definition.key()
+                ));
+            }
+            Some(adapter) => adapter(AdapterRequest {
+                definition: &public,
+                input: &request.input,
+                signal,
+                repair: None,
+            })?,
+        };
+        signal.reason().map_or(Ok(()), Err)?;
+        match self.output_error(definition, &value) {
+            Some(error) => Err(error),
+            None => Ok(succeeded(value)),
+        }
+    }
+
+    fn settle_predict_attempt(
+        &self,
+        id: &str,
+        reservation: Option<&Reservation>,
+        answer: &Result<Value, String>,
+        signal: &Signal,
+    ) -> Result<(), String> {
+        let Some(usage) = &self.inner.usage else {
+            return Ok(());
+        };
+        let status = match answer {
+            Ok(_) => "succeeded",
+            Err(_) if signal.is_aborted() => "cancelled",
+            Err(_) => "failed",
+        };
+        if let Some(reservation) = reservation {
+            usage.settle(reservation, Some(status), None)?;
+        }
+        usage.record_turn(self.root_of_task(id).as_deref(), None, None)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal helper carrying per-attempt predict state"
+    )]
+    fn run_predict_attempt(
+        &self,
+        id: &str,
+        attempt: u64,
+        request: &TaskRequest,
+        public: &Value,
+        adapter: &Adapter,
+        repair: Option<Value>,
+        signal: &Signal,
+    ) -> Result<Value, String> {
+        signal.reason().map_or(Ok(()), Err)?;
+        let key = if attempt == 0 {
+            format!("{id}:model")
+        } else {
+            format!("{id}:model:repair-{attempt}")
+        };
+        let reservation = self.reserve_model(id, key, request)?;
+        let answer = adapter(AdapterRequest {
+            definition: public,
+            input: &request.input,
+            signal,
+            repair,
+        });
+        self.settle_predict_attempt(id, reservation.as_ref(), &answer, signal)?;
+        answer
+    }
+
+    fn run_predict(
         &self,
         id: &str,
         request: &TaskRequest,
         definition: &Definition,
         signal: &Signal,
     ) -> Result<Value, String> {
-        if definition.id() == "rlm-frame" {
-            return self.run_frame(id, request, signal);
+        self.state().registry.can_execute(definition)?;
+        let adapter = self.inner.predict.clone().ok_or_else(|| {
+            format!(
+                "Predict definition {} requires an injected predict adapter",
+                definition.key()
+            )
+        })?;
+        let public = definition.public();
+        let mut repair: Option<Value> = None;
+        for attempt in 0..=definition.max_repairs() {
+            let value = self.run_predict_attempt(id, attempt, request, &public, &adapter, repair.clone(), signal)?;
+            match self.output_error(definition, &value) {
+                None => return Ok(succeeded(value)),
+                Some(error) => {
+                    repair = Some(json!({ "attempt": attempt + 1, "previous": value, "error": error }));
+                }
+            }
         }
-        let runner = self
-            .inner
-            .lanes
-            .clone()
-            .ok_or("Ultron rlm definitions need a lane runner, and this host has none")?;
+        let error = repair
+            .as_ref()
+            .and_then(|r| r["error"].as_str())
+            .unwrap_or("Predict adapter returned an invalid output")
+            .to_string();
+        Err(match definition.max_repairs() {
+            0 => error,
+            1 => format!("{error} after 1 repair attempt"),
+            n => format!("{error} after {n} repair attempts"),
+        })
+    }
+
+    fn register_lane_task(
+        &self,
+        id: &str,
+        request: &TaskRequest,
+        definition: &Definition,
+        signal: &Signal,
+    ) -> Result<(String, Option<String>), String> {
         let lane = request
             .lane
             .clone()
@@ -240,6 +286,15 @@ impl Agents {
             self.abort_lane(&lane);
         }
         signal.reason().map_or(Ok(()), Err)?;
+        Ok((lane, model))
+    }
+
+    fn build_lane_prompt(
+        &self,
+        request: &TaskRequest,
+        definition: &Definition,
+        signal: &Signal,
+    ) -> Result<String, String> {
         let base = if definition.id() == "rlm-child" {
             request.input["prompt"].as_str().unwrap_or_default().to_string()
         } else {
@@ -261,25 +316,83 @@ impl Agents {
             Some(brief) => brief.prompt(&base),
             None => base,
         };
-        let prompt = if refinements.is_empty() {
-            base
-        } else {
-            let notes: Vec<String> = refinements
-                .iter()
-                .map(|r| {
-                    let version = match &r["version"] {
-                        Value::Null => "unversioned".to_string(),
-                        other => json::stringify(other),
-                    };
-                    format!(
-                        "Active refinement {} (version {version}):\n{}",
-                        r["id"].as_str().unwrap_or_default(),
-                        r["text"].as_str().unwrap_or_default()
-                    )
-                })
-                .collect();
-            format!("{base}\n\n{}", notes.join("\n\n"))
+        if refinements.is_empty() {
+            return Ok(base);
+        }
+        let notes: Vec<String> = refinements.iter().map(format_refinement_note).collect();
+        Ok(format!("{base}\n\n{}", notes.join("\n\n")))
+    }
+
+    fn record_lane_reply(
+        &self,
+        id: &str,
+        reply: &Result<LaneReply, String>,
+        reservation: Option<&Reservation>,
+        signal: &Signal,
+    ) -> Result<(), String> {
+        let status = match reply {
+            _ if signal.is_aborted() => "cancelled",
+            Ok(_) => "succeeded",
+            Err(_) => "failed",
         };
+        let usage = reply.as_ref().ok().and_then(|r| r.usage.clone());
+        {
+            let mut state = self.state();
+            if let Some(task) = state.task_mut(id) {
+                task.cost = usage.as_ref().and_then(|u| u.cost);
+                task.tokens = usage.as_ref().and_then(|u| u.total_tokens);
+                if let Ok(reply) = reply {
+                    task.turns = Some(task.turns.unwrap_or(0).max(reply.turns));
+                    task.tool_calls = Some(task.tool_calls.unwrap_or(0).max(reply.tool_calls));
+                    let flat = string::flatten(&reply.text);
+                    if !flat.is_empty() {
+                        task.last_text = Some(json::preview(&json!(flat), GRAPH_TEXT_CHARS));
+                    }
+                }
+            }
+        }
+        if let (Some(ledger), Some(reservation)) = (&self.inner.usage, reservation) {
+            ledger.settle(reservation, Some(status), usage.as_ref())?;
+        }
+        Ok(())
+    }
+
+    fn finish_lane_output(&self, id: &str, definition: &Definition, text: &str) -> Result<Value, String> {
+        if definition.id() == "rlm-child" {
+            return self.child_result(id, text);
+        }
+        if string::trim(text).is_empty() {
+            return Err("Agent produced no assistant result at the completed tip".into());
+        }
+        let value = if definition.id() == "background-job" {
+            json!(text)
+        } else {
+            json_from(text)?
+        };
+        if let Some(error) = self.output_error(definition, &value) {
+            return Err(error);
+        }
+        Ok(succeeded(value))
+    }
+
+    /// The `rlm` strategy: the definition's prompt (or a subagent's brief) on its own lane.
+    fn run_lane(
+        &self,
+        id: &str,
+        request: &TaskRequest,
+        definition: &Definition,
+        signal: &Signal,
+    ) -> Result<Value, String> {
+        if definition.id() == "rlm-frame" {
+            return self.run_frame(id, request, signal);
+        }
+        let runner = self
+            .inner
+            .lanes
+            .clone()
+            .ok_or("Ultron rlm definitions need a lane runner, and this host has none")?;
+        let (lane, model) = self.register_lane_task(id, request, definition, signal)?;
+        let prompt = self.build_lane_prompt(request, definition, signal)?;
         let reservation = self.reserve_model(id, format!("{id}:model"), request)?;
         let deadline = reservation.as_ref().and_then(Reservation::deadline_at).or_else(|| {
             self.state()
@@ -298,48 +411,10 @@ impl Agents {
             definition: definition.key(),
             signal: signal.clone(),
         });
-        let status = match &reply {
-            _ if signal.is_aborted() => "cancelled",
-            Ok(_) => "succeeded",
-            Err(_) => "failed",
-        };
-        let usage = reply.as_ref().ok().and_then(|r| r.usage.clone());
-        {
-            let mut state = self.state();
-            if let Some(task) = state.task_mut(id) {
-                task.cost = usage.as_ref().and_then(|u| u.cost);
-                task.tokens = usage.as_ref().and_then(|u| u.total_tokens);
-                if let Ok(reply) = &reply {
-                    task.turns = Some(task.turns.unwrap_or(0).max(reply.turns));
-                    task.tool_calls = Some(task.tool_calls.unwrap_or(0).max(reply.tool_calls));
-                    let flat = string::flatten(&reply.text);
-                    if !flat.is_empty() {
-                        task.last_text = Some(json::preview(&json!(flat), GRAPH_TEXT_CHARS));
-                    }
-                }
-            }
-        }
-        if let (Some(ledger), Some(reservation)) = (&self.inner.usage, &reservation) {
-            ledger.settle(reservation, Some(status), usage.as_ref())?;
-        }
+        self.record_lane_reply(id, &reply, reservation.as_ref(), signal)?;
         signal.reason().map_or(Ok(()), Err)?;
         let text = reply?.text;
-        if definition.id() == "rlm-child" {
-            return self.child_result(id, &text);
-        }
-        if string::trim(&text).is_empty() {
-            return Err("Agent produced no assistant result at the completed tip".into());
-        }
-        let value = if definition.id() == "background-job" {
-            json!(text)
-        } else {
-            json_from(&text)?
-        };
-        let state = self.state();
-        if !state.registry.is_valid_output(definition, &value) {
-            return Err(state.registry.validation_error(definition, &value, "output"));
-        }
-        Ok(succeeded(value))
+        self.finish_lane_output(id, definition, &text)
     }
 
     /// An `rlm-frame@1` task: its lane acts for it, and the frame runner does the work.

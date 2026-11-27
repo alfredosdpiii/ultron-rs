@@ -372,65 +372,53 @@ fn tokenize(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Goal-weighted, IDF-discounted multi-field ranking over `id`, `tags`, `title`, and `text`.
-///
-/// The current prompt (`goal`) carries 3x weight; up to 4 recent turns decay linearly from 2.0 to 1.25.
-/// When no query terms exist, returns candidates in their original order up to `limit`.
-pub fn rank_refinements(candidates: &[Value], goal: &str, recent_turns: &[String], limit: usize) -> Vec<Value> {
-    if candidates.len() <= 1 || limit == 0 {
-        return candidates.iter().take(limit).cloned().collect();
-    }
+struct DocFields {
+    ids: HashSet<String>,
+    tags: HashSet<String>,
+    titles: HashSet<String>,
+    texts: HashSet<String>,
+}
+
+fn build_query_weights(goal: &str, recent_turns: &[String]) -> HashMap<String, f64> {
     let mut query_weights: HashMap<String, f64> = HashMap::new();
     for term in tokenize(goal) {
         let entry = query_weights.entry(term).or_insert(0.0);
-        if *entry < 3.0 {
-            *entry = 3.0;
-        }
+        *entry = entry.max(3.0);
     }
     for (idx, turn) in recent_turns.iter().take(4).enumerate() {
         let weight = 2.0 - 0.25 * f64::from(idx as u32);
         for term in tokenize(turn) {
             let entry = query_weights.entry(term).or_insert(0.0);
-            if *entry < weight {
-                *entry = weight;
-            }
+            *entry = entry.max(weight);
         }
     }
-    if query_weights.is_empty() {
-        return candidates.iter().take(limit).cloned().collect();
+    query_weights
+}
+
+fn extract_doc_fields(candidate: &Value) -> DocFields {
+    DocFields {
+        ids: tokenize(candidate["id"].as_str().unwrap_or_default())
+            .into_iter()
+            .collect(),
+        titles: tokenize(candidate["title"].as_str().unwrap_or_default())
+            .into_iter()
+            .collect(),
+        texts: tokenize(candidate["text"].as_str().unwrap_or_default())
+            .into_iter()
+            .collect(),
+        tags: candidate["tags"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .flat_map(tokenize)
+            .collect(),
     }
+}
 
-    struct DocFields {
-        ids: HashSet<String>,
-        tags: HashSet<String>,
-        titles: HashSet<String>,
-        texts: HashSet<String>,
-    }
-
-    let doc_fields: Vec<DocFields> = candidates
-        .iter()
-        .map(|candidate| DocFields {
-            ids: tokenize(candidate["id"].as_str().unwrap_or_default())
-                .into_iter()
-                .collect(),
-            titles: tokenize(candidate["title"].as_str().unwrap_or_default())
-                .into_iter()
-                .collect(),
-            texts: tokenize(candidate["text"].as_str().unwrap_or_default())
-                .into_iter()
-                .collect(),
-            tags: candidate["tags"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .flat_map(tokenize)
-                .collect(),
-        })
-        .collect();
-
+fn compute_doc_freq(doc_fields: &[DocFields]) -> HashMap<String, usize> {
     let mut df: HashMap<String, usize> = HashMap::new();
-    for fields in &doc_fields {
+    for fields in doc_fields {
         let mut seen: HashSet<&str> = HashSet::new();
         for term in fields
             .ids
@@ -444,37 +432,58 @@ pub fn rank_refinements(candidates: &[Value], goal: &str, recent_turns: &[String
             }
         }
     }
+    df
+}
 
+fn score_refinement(
+    candidate: &Value,
+    fields: &DocFields,
+    query_weights: &HashMap<String, f64>,
+    df: &HashMap<String, usize>,
+    n: f64,
+) -> f64 {
+    let mut score = match candidate["scope"].as_str() {
+        Some("project") => 0.03,
+        Some("global") => 0.01,
+        _ => 0.05,
+    };
+    for (term, q_weight) in query_weights {
+        let doc_freq = df.get(term).copied().unwrap_or(0) as f64;
+        let idf = ((n + 1.0) / (doc_freq + 1.0)).ln() + 1.0;
+        let field_weight = 2.5 * f64::from(fields.ids.contains(term))
+            + 2.0 * f64::from(fields.tags.contains(term))
+            + 1.5 * f64::from(fields.titles.contains(term))
+            + f64::from(fields.texts.contains(term));
+        score += field_weight * q_weight * idf;
+    }
+    score
+}
+
+/// Goal-weighted, IDF-discounted multi-field ranking over `id`, `tags`, `title`, and `text`.
+///
+/// The current prompt (`goal`) carries 3x weight; up to 4 recent turns decay linearly from 2.0 to 1.25.
+/// When no query terms exist, returns candidates in their original order up to `limit`.
+pub fn rank_refinements(candidates: &[Value], goal: &str, recent_turns: &[String], limit: usize) -> Vec<Value> {
+    if candidates.len() <= 1 || limit == 0 {
+        return candidates.iter().take(limit).cloned().collect();
+    }
+    let query_weights = build_query_weights(goal, recent_turns);
+    if query_weights.is_empty() {
+        return candidates.iter().take(limit).cloned().collect();
+    }
+    let doc_fields: Vec<DocFields> = candidates.iter().map(extract_doc_fields).collect();
+    let df = compute_doc_freq(&doc_fields);
     let n = candidates.len() as f64;
     let mut scored: Vec<(usize, f64)> = doc_fields
         .iter()
         .enumerate()
         .map(|(index, fields)| {
-            let mut score = match candidates[index]["scope"].as_str() {
-                Some("project") => 0.03,
-                Some("global") => 0.01,
-                _ => 0.05,
-            };
-            for (term, q_weight) in &query_weights {
-                let doc_freq = df.get(term).copied().unwrap_or(0) as f64;
-                let idf = ((n + 1.0) / (doc_freq + 1.0)).ln() + 1.0;
-                if fields.ids.contains(term) {
-                    score += 2.5 * q_weight * idf;
-                }
-                if fields.tags.contains(term) {
-                    score += 2.0 * q_weight * idf;
-                }
-                if fields.titles.contains(term) {
-                    score += 1.5 * q_weight * idf;
-                }
-                if fields.texts.contains(term) {
-                    score += 1.0 * q_weight * idf;
-                }
-            }
-            (index, score)
+            (
+                index,
+                score_refinement(&candidates[index], fields, &query_weights, &df, n),
+            )
         })
         .collect();
-
     scored.sort_by(|(idx_a, score_a), (idx_b, score_b)| score_b.total_cmp(score_a).then_with(|| idx_a.cmp(idx_b)));
     scored
         .into_iter()

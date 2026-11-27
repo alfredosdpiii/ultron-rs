@@ -64,32 +64,26 @@ impl PartialOrd for Version {
     }
 }
 
-fn compare_pre(a: &[Ident], b: &[Ident]) -> Ordering {
-    match (a.is_empty(), b.is_empty()) {
-        (true, true) => return Ordering::Equal,
-        (true, false) => return Ordering::Greater,
-        (false, true) => return Ordering::Less,
-        _ => {}
+fn compare_ident(x: &Ident, y: &Ident) -> Ordering {
+    match (x, y) {
+        (Ident::Num(x), Ident::Num(y)) => x.cmp(y),
+        (Ident::Num(_), Ident::Text(_)) => Ordering::Less,
+        (Ident::Text(_), Ident::Num(_)) => Ordering::Greater,
+        (Ident::Text(x), Ident::Text(y)) => x.cmp(y),
     }
-    for i in 0.. {
-        match (a.get(i), b.get(i)) {
-            (None, None) => return Ordering::Equal,
-            (None, Some(_)) => return Ordering::Less,
-            (Some(_), None) => return Ordering::Greater,
-            (Some(x), Some(y)) => {
-                let order = match (x, y) {
-                    (Ident::Num(x), Ident::Num(y)) => x.cmp(y),
-                    (Ident::Num(_), Ident::Text(_)) => Ordering::Less,
-                    (Ident::Text(_), Ident::Num(_)) => Ordering::Greater,
-                    (Ident::Text(x), Ident::Text(y)) => x.cmp(y),
-                };
-                if order != Ordering::Equal {
-                    return order;
-                }
-            }
+}
+
+fn compare_pre(a: &[Ident], b: &[Ident]) -> Ordering {
+    if a.is_empty() || b.is_empty() {
+        return a.is_empty().cmp(&b.is_empty());
+    }
+    for (x, y) in a.iter().zip(b.iter()) {
+        let order = compare_ident(x, y);
+        if order != Ordering::Equal {
+            return order;
         }
     }
-    Ordering::Equal
+    a.len().cmp(&b.len())
 }
 
 /// `NUMERICIDENTIFIER`: `0|[1-9]\d*`, within `Number.MAX_SAFE_INTEGER`.

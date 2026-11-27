@@ -63,57 +63,75 @@ pub fn detect_capabilities(
     caps
 }
 
+const KITTY_ENV_VARS: [&str; 5] = [
+    "KITTY_WINDOW_ID",
+    "GHOSTTY_RESOURCES_DIR",
+    "WEZTERM_PANE",
+    "WARP_SESSION_ID",
+    "WARP_TERMINAL_SESSION_UUID",
+];
+
+const KITTY_PROGRAMS: [&str; 4] = ["kitty", "ghostty", "wezterm", "warpterminal"];
+
+fn env_lower(env: &dyn Fn(&str) -> Option<String>, key: &str) -> String {
+    env(key).unwrap_or_default().to_lowercase()
+}
+
+fn has_env(env: &dyn Fn(&str) -> Option<String>, key: &str) -> bool {
+    env(key).is_some_and(|v| !v.is_empty())
+}
+
+fn make_caps(images: Option<ImageProtocol>, true_color: bool, hyperlinks: bool) -> Capabilities {
+    Capabilities {
+        images,
+        true_color,
+        hyperlinks,
+    }
+}
+
+fn is_kitty_terminal(env: &dyn Fn(&str) -> Option<String>, program: &str, term: &str) -> bool {
+    KITTY_PROGRAMS.contains(&program) || term.contains("ghostty") || KITTY_ENV_VARS.iter().any(|key| has_env(env, key))
+}
+
+fn detect_non_kitty(
+    env: &dyn Fn(&str) -> Option<String>,
+    program: &str,
+    emulator: &str,
+    windows: bool,
+    tc_hint: bool,
+) -> Capabilities {
+    if has_env(env, "ITERM_SESSION_ID") || program == "iterm.app" {
+        return make_caps(Some(ImageProtocol::Iterm2), true, true);
+    }
+    if has_env(env, "WT_SESSION") || ["alacritty", "vscode", "zed"].contains(&program) {
+        return make_caps(None, true, true);
+    }
+    if emulator == "jetbrains-jediterm" || windows {
+        return make_caps(None, true, false);
+    }
+    make_caps(None, tc_hint, false)
+}
+
 fn detect_from_environment(
     env: &dyn Fn(&str) -> Option<String>,
     windows: bool,
     tmux_forwards_hyperlinks: bool,
 ) -> Capabilities {
-    let get = |k: &str| env(k).unwrap_or_default().to_lowercase();
-    let has = |k: &str| env(k).is_some_and(|v| !v.is_empty());
-    let (program, emulator, term, color) = (
-        get("TERM_PROGRAM"),
-        get("TERMINAL_EMULATOR"),
-        get("TERM"),
-        get("COLORTERM"),
-    );
+    let program = env_lower(env, "TERM_PROGRAM");
+    let emulator = env_lower(env, "TERMINAL_EMULATOR");
+    let term = env_lower(env, "TERM");
+    let color = env_lower(env, "COLORTERM");
     let tc_hint = color == "truecolor" || color == "24bit";
-    let caps = |images, true_color, hyperlinks| Capabilities {
-        images,
-        true_color,
-        hyperlinks,
-    };
-    let kitty = caps(Some(ImageProtocol::Kitty), true, true);
-    if has("TMUX") || term.starts_with("tmux") {
-        return caps(None, tc_hint, tmux_forwards_hyperlinks);
+    if has_env(env, "TMUX") || term.starts_with("tmux") {
+        return make_caps(None, tc_hint, tmux_forwards_hyperlinks);
     }
     if term.starts_with("screen") {
-        return caps(None, tc_hint, false);
+        return make_caps(None, tc_hint, false);
     }
-    if has("KITTY_WINDOW_ID") || program == "kitty" {
-        return kitty;
+    if is_kitty_terminal(env, &program, &term) {
+        return make_caps(Some(ImageProtocol::Kitty), true, true);
     }
-    if program == "ghostty" || term.contains("ghostty") || has("GHOSTTY_RESOURCES_DIR") {
-        return kitty;
-    }
-    if has("WEZTERM_PANE") || program == "wezterm" {
-        return kitty;
-    }
-    if program == "warpterminal" || has("WARP_SESSION_ID") || has("WARP_TERMINAL_SESSION_UUID") {
-        return kitty;
-    }
-    if has("ITERM_SESSION_ID") || program == "iterm.app" {
-        return caps(Some(ImageProtocol::Iterm2), true, true);
-    }
-    if has("WT_SESSION") || ["alacritty", "vscode", "zed"].contains(&program.as_str()) {
-        return caps(None, true, true);
-    }
-    if emulator == "jetbrains-jediterm" {
-        return caps(None, true, false);
-    }
-    if windows {
-        return caps(None, true, false);
-    }
-    caps(None, tc_hint, false)
+    detect_non_kitty(env, &program, &emulator, windows, tc_hint)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -240,69 +258,76 @@ fn u16le(b: &[u8], o: usize) -> u32 {
     u32::from(b[o + 1]) << 8 | u32::from(b[o])
 }
 
+fn dims(width_px: u32, height_px: u32) -> Option<Dimensions> {
+    Some(Dimensions { width_px, height_px })
+}
+
+fn png_dimensions(b: &[u8]) -> Option<Dimensions> {
+    if b.len() < 24 || b[..4] != [0x89, 0x50, 0x4e, 0x47] {
+        return None;
+    }
+    dims(
+        u32::from_be_bytes([b[16], b[17], b[18], b[19]]),
+        u32::from_be_bytes([b[20], b[21], b[22], b[23]]),
+    )
+}
+
+fn jpeg_dimensions(b: &[u8]) -> Option<Dimensions> {
+    if b.len() < 2 || b[0] != 0xff || b[1] != 0xd8 {
+        return None;
+    }
+    let mut o = 2;
+    while o + 9 < b.len() {
+        if b[o] != 0xff {
+            o += 1;
+            continue;
+        }
+        if (0xc0..=0xc2).contains(&b[o + 1]) {
+            return dims(u16be(b, o + 7), u16be(b, o + 5));
+        }
+        let len = u16be(b, o + 2) as usize;
+        if len < 2 {
+            return None;
+        }
+        o += 2 + len;
+    }
+    None
+}
+
+fn gif_dimensions(b: &[u8]) -> Option<Dimensions> {
+    if b.len() < 10 || (&b[..6] != b"GIF87a" && &b[..6] != b"GIF89a") {
+        return None;
+    }
+    dims(u16le(b, 6), u16le(b, 8))
+}
+
+fn vp8x_dim(b: &[u8], offset: usize) -> u32 {
+    (u32::from(b[offset]) | u32::from(b[offset + 1]) << 8 | u32::from(b[offset + 2]) << 16) + 1
+}
+
+fn webp_dimensions(b: &[u8]) -> Option<Dimensions> {
+    if b.len() < 30 || &b[..4] != b"RIFF" || &b[8..12] != b"WEBP" {
+        return None;
+    }
+    match &b[12..16] {
+        b"VP8 " => dims(u16le(b, 26) & 0x3fff, u16le(b, 28) & 0x3fff),
+        b"VP8L" => {
+            let bits = u32::from_le_bytes([b[21], b[22], b[23], b[24]]);
+            dims((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1)
+        }
+        b"VP8X" => dims(vp8x_dim(b, 24), vp8x_dim(b, 27)),
+        _ => None,
+    }
+}
+
 /// Pixel size from a PNG, JPEG, GIF or WebP header.
 pub fn image_dimensions(b64: &str, mime: &str) -> Option<Dimensions> {
     let b = jsrt::base64::buffer_from(b64);
-    let d = |w, h| {
-        Some(Dimensions {
-            width_px: w,
-            height_px: h,
-        })
-    };
     match mime {
-        "image/png" => {
-            if b.len() < 24 || b[..4] != [0x89, 0x50, 0x4e, 0x47] {
-                return None;
-            }
-            d(
-                u32::from_be_bytes([b[16], b[17], b[18], b[19]]),
-                u32::from_be_bytes([b[20], b[21], b[22], b[23]]),
-            )
-        }
-        "image/jpeg" => {
-            if b.len() < 2 || b[0] != 0xff || b[1] != 0xd8 {
-                return None;
-            }
-            let mut o = 2;
-            while o + 9 < b.len() {
-                if b[o] != 0xff {
-                    o += 1;
-                    continue;
-                }
-                if (0xc0..=0xc2).contains(&b[o + 1]) {
-                    return d(u16be(&b, o + 7), u16be(&b, o + 5));
-                }
-                let len = u16be(&b, o + 2) as usize;
-                if len < 2 {
-                    return None;
-                }
-                o += 2 + len;
-            }
-            None
-        }
-        "image/gif" => {
-            if b.len() < 10 || (&b[..6] != b"GIF87a" && &b[..6] != b"GIF89a") {
-                return None;
-            }
-            d(u16le(&b, 6), u16le(&b, 8))
-        }
-        "image/webp" => {
-            if b.len() < 30 || &b[..4] != b"RIFF" || &b[8..12] != b"WEBP" {
-                return None;
-            }
-            match &b[12..16] {
-                b"VP8 " => d(u16le(&b, 26) & 0x3fff, u16le(&b, 28) & 0x3fff),
-                b"VP8L" => {
-                    let bits = u32::from_le_bytes([b[21], b[22], b[23], b[24]]);
-                    d((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1)
-                }
-                b"VP8X" => {
-                    let v = |o: usize| (u32::from(b[o]) | u32::from(b[o + 1]) << 8 | u32::from(b[o + 2]) << 16) + 1;
-                    d(v(24), v(27))
-                }
-                _ => None,
-            }
-        }
+        "image/png" => png_dimensions(&b),
+        "image/jpeg" => jpeg_dimensions(&b),
+        "image/gif" => gif_dimensions(&b),
+        "image/webp" => webp_dimensions(&b),
         _ => None,
     }
 }

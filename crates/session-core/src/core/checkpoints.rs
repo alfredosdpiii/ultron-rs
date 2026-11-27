@@ -64,13 +64,29 @@ impl Core {
         if checkpoints.sandboxed {
             return Err(RESTORE_IN_SANDBOX.into());
         }
+        let (key, target) = self.resolve_checkpoint_target(entry_id.as_deref(), key.as_deref())?;
+        let restored = vcs::restore(&self.env.cwd, &target, &checkpoints.limits(), checkpoints.jj.as_deref())?;
+        if target.vcs == "git" && restored.safety.tree == target.tree {
+            return Ok(json!({
+                "checkpoint": key, "commit": target.commit, "written": 0, "deleted": 0, "safety": null,
+                "message": format!("Files already match checkpoint {}", short_commit(&target.commit)),
+            }));
+        }
+        self.record_and_format_restore(&key, &target, &restored)
+    }
+
+    fn resolve_checkpoint_target(
+        &self,
+        entry_id: Option<&str>,
+        key: Option<&str>,
+    ) -> Result<(String, Checkpoint), String> {
         let found = {
             let session = lock_session(&self.session);
-            match (&key, &entry_id) {
+            match (key, entry_id) {
                 (Some(key), _) => session
                     .value(session_journal::ns::CHECKPOINTS, key)
                     .cloned()
-                    .map(|value| (key.clone(), value)),
+                    .map(|value| (key.to_string(), value)),
                 (None, Some(entry)) => stored::for_entry(&session, entry),
                 (None, None) => return Err("Name a checkpoint or an entry to restore files to".into()),
             }
@@ -85,15 +101,15 @@ impl Core {
             return Err(format!("The files at this point were not recorded: {note}"));
         }
         let target = Checkpoint::from_json(&value).ok_or("The checkpoint record is incomplete")?;
-        let restored = vcs::restore(&self.env.cwd, &target, &checkpoints.limits(), checkpoints.jj.as_deref())?;
-        let short = |commit: &str| commit[..commit.len().min(12)].to_string();
-        let already = target.vcs == "git" && restored.safety.tree == target.tree;
-        if already {
-            return Ok(json!({
-                "checkpoint": key, "commit": target.commit, "written": 0, "deleted": 0, "safety": null,
-                "message": format!("Files already match checkpoint {}", short(&target.commit)),
-            }));
-        }
+        Ok((key, target))
+    }
+
+    fn record_and_format_restore(
+        &self,
+        key: &str,
+        target: &Checkpoint,
+        restored: &vcs::Restored,
+    ) -> Result<Value, String> {
         let tip = self.tip();
         let safety_key = format!(
             "{RESTORE_PREFIX}{}",
@@ -119,9 +135,13 @@ impl Core {
             "deleted": restored.deleted.len(), "safety": {"key": safety_key, "commit": restored.safety.commit},
             "message": format!(
                 "Restored files to checkpoint {}{counts}. The files from before are checkpoint {}: restore the current entry in /tree to undo.",
-                short(&target.commit),
-                short(&restored.safety.commit)
+                short_commit(&target.commit),
+                short_commit(&restored.safety.commit)
             ),
         }))
     }
+}
+
+fn short_commit(commit: &str) -> &str {
+    &commit[..commit.len().min(12)]
 }

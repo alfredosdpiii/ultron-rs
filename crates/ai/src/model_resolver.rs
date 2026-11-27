@@ -154,6 +154,165 @@ fn build_fallback_model(provider: &str, id: &str, models: &[Model]) -> Option<Mo
     Some(model)
 }
 
+fn canonical_provider(models: &[Model], name: &str) -> Option<String> {
+    let lower = name.to_lowercase();
+    models
+        .iter()
+        .rev()
+        .find(|m| m.provider.to_lowercase() == lower)
+        .map(|m| m.provider.clone())
+}
+
+fn is_raw_exact(model: &Model, lower: &str) -> bool {
+    model.id.to_lowercase() == lower || model_scope::reference(model).to_lowercase() == lower
+}
+
+fn resolve_explicit_provider(cli_provider: Option<&str>, models: &[Model]) -> Result<Option<String>, String> {
+    let Some(name) = cli_provider.filter(|p| !p.is_empty()) else {
+        return Ok(None);
+    };
+    canonical_provider(models, name)
+        .map(Some)
+        .ok_or_else(|| format!("Unknown provider \"{name}\". Use --list-models to see available providers/models."))
+}
+
+fn resolve_unscoped_exact(
+    cli_model: &str,
+    lower: &str,
+    models: &[Model],
+    has_auth: &dyn Fn(&str) -> bool,
+) -> Option<CliModel> {
+    let exact: Vec<&Model> = models.iter().filter(|m| is_raw_exact(m, lower)).collect();
+    if exact.is_empty() {
+        return None;
+    }
+    if exact.len() == 1 {
+        return Some(CliModel::found(exact[0]));
+    }
+    let authenticated: Vec<&Model> = exact.iter().copied().filter(|m| has_auth(&m.provider)).collect();
+    if authenticated.len() == 1 {
+        return Some(CliModel::found(authenticated[0]));
+    }
+    let mut refs: Vec<String> = exact.iter().map(|m| model_scope::reference(*m)).collect();
+    refs.sort_by(|a, b| jsrt::collate::locale_compare(a, b));
+    let hint = if authenticated.is_empty() {
+        "No matching provider is authenticated."
+    } else {
+        "More than one matching provider is authenticated."
+    };
+    Some(CliModel {
+        error: Some(format!(
+            "Model \"{cli_model}\" is ambiguous across providers: {}. {hint} Use --provider or provider/model.",
+            refs.join(", ")
+        )),
+        ..CliModel::default()
+    })
+}
+
+fn strip_provider_prefix(cli_model: &str, provider: &str) -> Option<String> {
+    let prefix = format!("{provider}/");
+    if cli_model.to_lowercase().starts_with(&prefix.to_lowercase()) {
+        return cli_model.get(prefix.len()..).map(str::to_string);
+    }
+    None
+}
+
+fn resolve_parsed_match(
+    parsed: ParsedModel,
+    inferred: bool,
+    lower: &str,
+    models: &[Model],
+    has_auth: &dyn Fn(&str) -> bool,
+) -> CliModel {
+    if inferred
+        && let Some(model) = &parsed.model
+        && !has_auth(&model.provider)
+    {
+        let authenticated: Vec<&Model> = models
+            .iter()
+            .filter(|m| m.id.to_lowercase() == lower && !model_scope::same(*m, model))
+            .filter(|m| has_auth(&m.provider))
+            .collect();
+        if authenticated.len() == 1 {
+            return CliModel::found(authenticated[0]);
+        }
+    }
+    CliModel {
+        model: parsed.model,
+        thinking_level: parsed.thinking_level,
+        warning: parsed.warning,
+        error: None,
+    }
+}
+
+fn resolve_inferred_fallback(cli_model: &str, lower: &str, models: &[Model]) -> Option<CliModel> {
+    if let Some(exact) = models.iter().find(|m| is_raw_exact(m, lower)) {
+        return Some(CliModel::found(exact));
+    }
+    let fallback = parse_model_pattern(cli_model, models, false);
+    fallback.model.map(|model| CliModel {
+        model: Some(model),
+        thinking_level: fallback.thinking_level,
+        warning: fallback.warning,
+        error: None,
+    })
+}
+
+fn resolve_custom_provider_model(
+    provider: &str,
+    pattern: &str,
+    cli_thinking: Option<&str>,
+    prior_warning: Option<&str>,
+    models: &[Model],
+) -> Option<CliModel> {
+    let (mut id, mut thinking) = (pattern.to_string(), None);
+    if cli_thinking.is_none()
+        && let Some((head, suffix)) = pattern.rsplit_once(':')
+        && is_valid_thinking_level(suffix)
+    {
+        id = head.to_string();
+        thinking = Some(suffix.to_string());
+    }
+    let mut model = build_fallback_model(provider, &id, models)?;
+    if cli_thinking.or(thinking.as_deref()).is_some_and(|t| t != "off") {
+        model.reasoning = true;
+    }
+    let note = format!("Model \"{id}\" not found for provider \"{provider}\". Using custom model id.");
+    let warning = match prior_warning {
+        Some(w) => format!("{w} {note}"),
+        None => note,
+    };
+    Some(CliModel {
+        model: Some(model),
+        thinking_level: thinking,
+        warning: Some(warning),
+        error: None,
+    })
+}
+
+fn infer_provider_and_pattern(
+    explicit: Option<String>,
+    cli_provider: Option<&str>,
+    cli_model: &str,
+    models: &[Model],
+) -> (Option<String>, String, bool) {
+    if explicit.is_none()
+        && let Some((head, rest)) = cli_model.split_once('/')
+        && let Some(found) = canonical_provider(models, head)
+    {
+        return (Some(found), rest.to_string(), true);
+    }
+    let pattern = if cli_provider.is_some()
+        && let Some(p) = explicit.as_deref()
+        && let Some(stripped) = strip_provider_prefix(cli_model, p)
+    {
+        stripped
+    } else {
+        cli_model.to_string()
+    };
+    (explicit, pattern, false)
+}
+
 /// `resolveCliModel`: `--provider` / `--model` (fuzzy, `<pattern>:<thinking>`, `provider/pattern`) against every
 /// model, `has_auth` telling which providers have configured credentials.
 pub fn resolve_cli_model(
@@ -172,140 +331,65 @@ pub fn resolve_cli_model(
             ..CliModel::default()
         };
     }
-    let canonical = |name: &str| -> Option<String> {
-        let lower = name.to_lowercase();
-        models
-            .iter()
-            .rev()
-            .find(|m| m.provider.to_lowercase() == lower)
-            .map(|m| m.provider.clone())
-    };
-    let mut provider = match cli_provider.filter(|p| !p.is_empty()) {
-        Some(name) => match canonical(name) {
-            Some(p) => Some(p),
-            None => {
-                return CliModel {
-                    error: Some(format!(
-                        "Unknown provider \"{name}\". Use --list-models to see available providers/models."
-                    )),
-                    ..CliModel::default()
-                };
-            }
-        },
-        None => None,
-    };
-    let mut pattern = cli_model.to_string();
-    let mut inferred = false;
-    if provider.is_none()
-        && let Some((head, rest)) = cli_model.split_once('/')
-        && let Some(found) = canonical(head)
-    {
-        provider = Some(found);
-        pattern = rest.to_string();
-        inferred = true;
-    }
-    let lower = cli_model.to_lowercase();
-    let raw_exact = |m: &&Model| m.id.to_lowercase() == lower || model_scope::reference(*m).to_lowercase() == lower;
-    if provider.is_none() {
-        let exact: Vec<&Model> = models.iter().filter(raw_exact).collect();
-        if exact.len() == 1 {
-            return CliModel::found(exact[0]);
-        }
-        if exact.len() > 1 {
-            let authenticated: Vec<&Model> = exact.iter().copied().filter(|m| has_auth(&m.provider)).collect();
-            if authenticated.len() == 1 {
-                return CliModel::found(authenticated[0]);
-            }
-            let mut refs: Vec<String> = exact.iter().map(|m| model_scope::reference(*m)).collect();
-            refs.sort_by(|a, b| jsrt::collate::locale_compare(a, b));
-            let hint = if authenticated.is_empty() {
-                "No matching provider is authenticated."
-            } else {
-                "More than one matching provider is authenticated."
-            };
+    let explicit = match resolve_explicit_provider(cli_provider, models) {
+        Ok(p) => p,
+        Err(error) => {
             return CliModel {
-                error: Some(format!(
-                    "Model \"{cli_model}\" is ambiguous across providers: {}. {hint} Use --provider or provider/model.",
-                    refs.join(", ")
-                )),
+                error: Some(error),
                 ..CliModel::default()
             };
         }
-    }
-    if cli_provider.is_some()
-        && let Some(p) = &provider
+    };
+    let (provider, pattern, inferred) = infer_provider_and_pattern(explicit, cli_provider, cli_model, models);
+    let lower = cli_model.to_lowercase();
+    if provider.is_none()
+        && let Some(exact) = resolve_unscoped_exact(cli_model, &lower, models, has_auth)
     {
-        let prefix = format!("{p}/");
-        if cli_model.to_lowercase().starts_with(&prefix.to_lowercase())
-            && let Some(rest) = cli_model.get(prefix.len()..)
-        {
-            pattern = rest.to_string();
-        }
+        return exact;
     }
-    let candidates: Vec<Model> = match &provider {
-        Some(p) => models.iter().filter(|m| &m.provider == p).cloned().collect(),
+    resolve_with_candidates(
+        provider.as_deref(),
+        &pattern,
+        cli_model,
+        &lower,
+        inferred,
+        cli_thinking,
+        models,
+        has_auth,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "internal helper forwarding parsed CLI model state"
+)]
+fn resolve_with_candidates(
+    provider: Option<&str>,
+    pattern: &str,
+    cli_model: &str,
+    lower: &str,
+    inferred: bool,
+    cli_thinking: Option<&str>,
+    models: &[Model],
+    has_auth: &dyn Fn(&str) -> bool,
+) -> CliModel {
+    let candidates: Vec<Model> = match provider {
+        Some(p) => models.iter().filter(|m| m.provider == p).cloned().collect(),
         None => models.to_vec(),
     };
-    let parsed = parse_model_pattern(&pattern, &candidates, false);
-    if let Some(model) = &parsed.model {
-        if inferred && !has_auth(&model.provider) {
-            let authenticated: Vec<&Model> = models
-                .iter()
-                .filter(|m| m.id.to_lowercase() == lower && !model_scope::same(*m, model))
-                .filter(|m| has_auth(&m.provider))
-                .collect();
-            if authenticated.len() == 1 {
-                return CliModel::found(authenticated[0]);
-            }
-        }
-        return CliModel {
-            model: parsed.model,
-            thinking_level: parsed.thinking_level,
-            warning: parsed.warning,
-            error: None,
-        };
+    let parsed = parse_model_pattern(pattern, &candidates, false);
+    if parsed.model.is_some() {
+        return resolve_parsed_match(parsed, inferred, lower, models, has_auth);
     }
-    if inferred {
-        if let Some(exact) = models.iter().find(raw_exact) {
-            return CliModel::found(exact);
-        }
-        let fallback = parse_model_pattern(cli_model, models, false);
-        if fallback.model.is_some() {
-            return CliModel {
-                model: fallback.model,
-                thinking_level: fallback.thinking_level,
-                warning: fallback.warning,
-                error: None,
-            };
-        }
+    if inferred && let Some(fallback) = resolve_inferred_fallback(cli_model, lower, models) {
+        return fallback;
     }
-    if let Some(p) = &provider {
-        let (mut id, mut thinking) = (pattern.clone(), None);
-        if cli_thinking.is_none()
-            && let Some((head, suffix)) = pattern.rsplit_once(':')
-            && is_valid_thinking_level(suffix)
-        {
-            id = head.to_string();
-            thinking = Some(suffix.to_string());
-        }
-        if let Some(mut model) = build_fallback_model(p, &id, models) {
-            if cli_thinking.or(thinking.as_deref()).is_some_and(|t| t != "off") {
-                model.reasoning = true;
-            }
-            let note = format!("Model \"{id}\" not found for provider \"{p}\". Using custom model id.");
-            let warning = match parsed.warning {
-                Some(w) => format!("{w} {note}"),
-                None => note,
-            };
-            return CliModel {
-                model: Some(model),
-                thinking_level: thinking,
-                warning: Some(warning),
-                error: None,
-            };
-        }
+    if let Some(p) = provider
+        && let Some(custom) = resolve_custom_provider_model(p, pattern, cli_thinking, parsed.warning.as_deref(), models)
+    {
+        return custom;
     }
-    let display = match &provider {
+    let display = match provider {
         Some(p) => format!("{p}/{pattern}"),
         None => cli_model.to_string(),
     };
@@ -338,6 +422,31 @@ impl InitialSettings {
     }
 }
 
+fn resolve_thinking_level(explicit: Option<&str>, settings: &InitialSettings, provider: &str, id: &str) -> String {
+    explicit
+        .map(str::to_string)
+        .or_else(|| settings.per_model(provider, id))
+        .or_else(|| settings.default_thinking_level.clone())
+        .unwrap_or_else(|| model_scope::DEFAULT_THINKING_LEVEL.into())
+}
+
+fn pick_fallback_model(available: &[Model]) -> Option<Model> {
+    let eligible: Vec<&Model> = available
+        .iter()
+        .filter(|m| !is_claude_code_model(m) && m.provider != crate::models::ANTIGRAVITY_PROVIDER)
+        .collect();
+    DEFAULT_MODEL_PER_PROVIDER
+        .iter()
+        .find_map(|(provider, id)| {
+            eligible
+                .iter()
+                .copied()
+                .find(|m| m.provider == *provider && m.id == *id)
+        })
+        .or(eligible.first().copied())
+        .cloned()
+}
+
 /// `findInitialModel` without CLI flags (steps 2-5): the first scoped model (not when continuing) with its level,
 /// else the saved default when its provider has credentials, else an available model preferring a known provider's
 /// default. `models` is every model (`getModel`); `available` the ones with credentials. Claude Code CLI models are
@@ -351,36 +460,23 @@ pub fn find_initial_model(
     has_auth: &dyn Fn(&str) -> bool,
 ) -> (Option<Model>, String) {
     if let Some(first) = scoped.first().filter(|_| !is_continuing) {
-        let thinking = first
-            .thinking_level
-            .clone()
-            .or_else(|| settings.per_model(&first.model.provider, &first.model.id))
-            .or_else(|| settings.default_thinking_level.clone())
-            .unwrap_or_else(|| model_scope::DEFAULT_THINKING_LEVEL.into());
+        let thinking = resolve_thinking_level(
+            first.thinking_level.as_deref(),
+            settings,
+            &first.model.provider,
+            &first.model.id,
+        );
         return (Some(first.model.clone()), thinking);
     }
     if let (Some(provider), Some(id)) = (&settings.default_provider, &settings.default_model_id)
         && let Some(found) = models.iter().find(|m| &m.provider == provider && &m.id == id)
         && has_auth(&found.provider)
     {
-        let thinking = settings
-            .per_model(provider, id)
-            .or_else(|| settings.default_thinking_level.clone())
-            .unwrap_or_else(|| model_scope::DEFAULT_THINKING_LEVEL.into());
+        let thinking = resolve_thinking_level(None, settings, provider, id);
         return (Some(found.clone()), thinking);
     }
-    let available: Vec<&Model> = available
-        .iter()
-        .filter(|m| !is_claude_code_model(m) && m.provider != crate::models::ANTIGRAVITY_PROVIDER)
-        .collect();
-    let chosen = DEFAULT_MODEL_PER_PROVIDER
-        .iter()
-        .find_map(|(provider, id)| {
-            available
-                .iter()
-                .copied()
-                .find(|m| m.provider == *provider && m.id == *id)
-        })
-        .or(available.first().copied());
-    (chosen.cloned(), model_scope::DEFAULT_THINKING_LEVEL.into())
+    (
+        pick_fallback_model(available),
+        model_scope::DEFAULT_THINKING_LEVEL.into(),
+    )
 }

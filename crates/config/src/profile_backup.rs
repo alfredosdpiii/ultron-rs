@@ -44,31 +44,46 @@ fn sorted_names(dir: &Path) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
-fn collect_profile(agent_dir: &Path, skip: Option<&Path>) -> Result<Vec<(String, Kind)>, String> {
-    fn walk(root: &Path, rel_dir: &str, skip: Option<&Path>, out: &mut Vec<(String, Kind)>) -> Result<(), String> {
-        for name in sorted_names(&root.join(rel_dir))? {
-            let rel = if rel_dir.is_empty() {
-                name
-            } else {
-                format!("{rel_dir}/{name}")
-            };
-            let absolute = root.join(&rel);
-            if is_excluded(&rel) || skip.is_some_and(|s| is_inside(s, &absolute)) {
-                continue;
-            }
-            let meta = std::fs::symlink_metadata(&absolute).map_err(|e| io_error(&e, "lstat", &absolute))?;
-            if meta.file_type().is_symlink() {
-                out.push((rel, Kind::Symlink));
-            } else if meta.is_dir() {
-                walk(root, &rel, skip, out)?;
-            } else if meta.is_file() {
-                out.push((rel, Kind::File));
-            }
-        }
-        Ok(())
+fn relative_join(rel_dir: &str, name: String) -> String {
+    if rel_dir.is_empty() {
+        name
+    } else {
+        format!("{rel_dir}/{name}")
     }
+}
+
+fn visit_profile_entry(
+    root: &Path,
+    rel: String,
+    skip: Option<&Path>,
+    out: &mut Vec<(String, Kind)>,
+) -> Result<(), String> {
+    let absolute = root.join(&rel);
+    if is_excluded(&rel) || skip.is_some_and(|s| is_inside(s, &absolute)) {
+        return Ok(());
+    }
+    let meta = std::fs::symlink_metadata(&absolute).map_err(|e| io_error(&e, "lstat", &absolute))?;
+    if meta.file_type().is_symlink() {
+        out.push((rel, Kind::Symlink));
+    } else if meta.is_dir() {
+        walk_profile(root, &rel, skip, out)?;
+    } else if meta.is_file() {
+        out.push((rel, Kind::File));
+    }
+    Ok(())
+}
+
+fn walk_profile(root: &Path, rel_dir: &str, skip: Option<&Path>, out: &mut Vec<(String, Kind)>) -> Result<(), String> {
+    for name in sorted_names(&root.join(rel_dir))? {
+        let rel = relative_join(rel_dir, name);
+        visit_profile_entry(root, rel, skip, out)?;
+    }
+    Ok(())
+}
+
+fn collect_profile(agent_dir: &Path, skip: Option<&Path>) -> Result<Vec<(String, Kind)>, String> {
     let mut out = Vec::new();
-    walk(agent_dir, "", skip, &mut out)?;
+    walk_profile(agent_dir, "", skip, &mut out)?;
     Ok(out)
 }
 
@@ -103,6 +118,91 @@ fn write_new(path: &Path, data: &[u8], mode: u32) -> Result<(), String> {
     file.write_all(data).map_err(|e| io_error(&e, "write", path))
 }
 
+fn create_unique_backup_dir(backup_dir: &Path, base: &str) -> Result<PathBuf, String> {
+    for attempt in 0..100 {
+        let name = if attempt == 0 {
+            base.to_string()
+        } else {
+            format!("{base}-{attempt}")
+        };
+        let candidate = backup_dir.join(name);
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => {
+                chmod(&candidate, 0o700)?;
+                return Ok(candidate);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(io_error(&e, "mkdir", &candidate)),
+        }
+    }
+    Err(format!(
+        "Could not create a unique backup directory under {}",
+        backup_dir.display()
+    ))
+}
+
+fn ensure_parent_dirs(files_root: &Path, rel: &str) -> Result<(), String> {
+    let mut current = files_root.to_path_buf();
+    for segment in Path::new(rel).parent().into_iter().flat_map(Path::components) {
+        current.push(segment);
+        if !current.exists() {
+            std::fs::create_dir(&current).map_err(|e| io_error(&e, "mkdir", &current))?;
+        }
+        chmod(&current, 0o700)?;
+    }
+    Ok(())
+}
+
+fn backup_entry(agent_dir: &Path, files_root: &Path, rel: &str, kind: Kind) -> Result<Value, String> {
+    let source = agent_dir.join(rel);
+    let destination = files_root.join(rel);
+    ensure_parent_dirs(files_root, rel)?;
+    if kind == Kind::Symlink {
+        let link = std::fs::read_link(&source).map_err(|e| io_error(&e, "readlink", &source))?;
+        symlink(&link, &destination).map_err(|e| io_error(&e, "symlink", &destination))?;
+        return Ok(json!({"path": rel, "type": "symlink", "target": link.to_string_lossy()}));
+    }
+    let data = std::fs::read(&source).map_err(|e| io_error(&e, "open", &source))?;
+    let mode = std::fs::symlink_metadata(&source)
+        .map_err(|e| io_error(&e, "lstat", &source))?
+        .permissions()
+        .mode()
+        & 0o777;
+    write_new(&destination, &data, 0o600)?;
+    chmod(&destination, 0o600)?;
+    Ok(json!({
+        "path": rel,
+        "type": "file",
+        "size": data.len(),
+        "sha256": jsrt::hash::sha256_hex(&data),
+        "mode": mode,
+    }))
+}
+
+fn populate_backup(agent_dir: &Path, backup_dir: &Path, target: &Path, created: &str) -> Result<usize, String> {
+    let files_root = target.join(FILES_DIR);
+    mkdir_private(&files_root)?;
+    let skip = is_inside(agent_dir, backup_dir).then_some(backup_dir);
+    let mut entries = Vec::new();
+    for (rel, kind) in collect_profile(agent_dir, skip)? {
+        entries.push(backup_entry(agent_dir, &files_root, &rel, kind)?);
+    }
+    let count = entries.len();
+    let manifest = json!({
+        "format": PROFILE_BACKUP_FORMAT,
+        "version": 1,
+        "createdAt": created,
+        "sourceAgentDir": agent_dir.display().to_string(),
+        "entries": entries,
+    });
+    write_new(
+        &target.join(MANIFEST_FILE),
+        format!("{}\n", jsrt::json::stringify_pretty(&manifest)).as_bytes(),
+        0o600,
+    )?;
+    Ok(count)
+}
+
 /// Copy the config profile into `<backup_dir>/ultron-profile-<timestamp>/`; returns the path and the entry count.
 pub fn backup(agent_dir: &Path, backup_dir: &Path) -> Result<(PathBuf, usize), String> {
     if !std::fs::symlink_metadata(agent_dir).is_ok_and(|m| m.is_dir()) {
@@ -111,78 +211,8 @@ pub fn backup(agent_dir: &Path, backup_dir: &Path) -> Result<(PathBuf, usize), S
     mkdir_recursive(backup_dir)?;
     let created = jsrt::date::iso_string(jsrt::date::now_ms());
     let base = format!("ultron-profile-{}", created.replace([':', '.'], "-"));
-    let mut target = None;
-    for attempt in 0..100 {
-        let candidate = backup_dir.join(if attempt == 0 {
-            base.clone()
-        } else {
-            format!("{base}-{attempt}")
-        });
-        match std::fs::create_dir(&candidate) {
-            Ok(()) => {
-                chmod(&candidate, 0o700)?;
-                target = Some(candidate);
-                break;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(io_error(&e, "mkdir", &candidate)),
-        }
-    }
-    let target = target.ok_or_else(|| {
-        format!(
-            "Could not create a unique backup directory under {}",
-            backup_dir.display()
-        )
-    })?;
-    let result = (|| -> Result<usize, String> {
-        let files_root = target.join(FILES_DIR);
-        mkdir_private(&files_root)?;
-        let skip = is_inside(agent_dir, backup_dir).then_some(backup_dir);
-        let mut entries = Vec::new();
-        for (rel, kind) in collect_profile(agent_dir, skip)? {
-            let source = agent_dir.join(&rel);
-            let destination = files_root.join(&rel);
-            let mut current = files_root.clone();
-            for segment in Path::new(&rel).parent().into_iter().flat_map(Path::components) {
-                current.push(segment);
-                if !current.exists() {
-                    std::fs::create_dir(&current).map_err(|e| io_error(&e, "mkdir", &current))?;
-                }
-                chmod(&current, 0o700)?;
-            }
-            if kind == Kind::Symlink {
-                let link = std::fs::read_link(&source).map_err(|e| io_error(&e, "readlink", &source))?;
-                symlink(&link, &destination).map_err(|e| io_error(&e, "symlink", &destination))?;
-                entries.push(json!({"path": rel, "type": "symlink", "target": link.to_string_lossy()}));
-                continue;
-            }
-            let data = std::fs::read(&source).map_err(|e| io_error(&e, "open", &source))?;
-            let mode = std::fs::symlink_metadata(&source)
-                .map_err(|e| io_error(&e, "lstat", &source))?
-                .permissions()
-                .mode()
-                & 0o777;
-            write_new(&destination, &data, 0o600)?;
-            chmod(&destination, 0o600)?;
-            entries
-                .push(json!({"path": rel, "type": "file", "size": data.len(), "sha256": jsrt::hash::sha256_hex(&data), "mode": mode}));
-        }
-        let count = entries.len();
-        let manifest = json!({
-            "format": PROFILE_BACKUP_FORMAT,
-            "version": 1,
-            "createdAt": created,
-            "sourceAgentDir": agent_dir.display().to_string(),
-            "entries": entries,
-        });
-        write_new(
-            &target.join(MANIFEST_FILE),
-            format!("{}\n", jsrt::json::stringify_pretty(&manifest)).as_bytes(),
-            0o600,
-        )?;
-        Ok(count)
-    })();
-    match result {
+    let target = create_unique_backup_dir(backup_dir, &base)?;
+    match populate_backup(agent_dir, backup_dir, &target, &created) {
         Ok(count) => Ok((target, count)),
         Err(e) => {
             let _ = std::fs::remove_dir_all(&target);
@@ -231,8 +261,7 @@ fn list_backup_files(root: &Path, rel_dir: &str, out: &mut Vec<String>) -> std::
     Ok(())
 }
 
-/// Verify a backup against its manifest; returns the manifest's entries.
-fn verify_profile_backup(root: &Path) -> Result<Vec<Value>, String> {
+fn read_manifest_entries(root: &Path) -> Result<Vec<Value>, String> {
     let manifest_path = root.join(MANIFEST_FILE);
     let manifest: Value = match std::fs::read_to_string(&manifest_path) {
         Ok(text) => {
@@ -253,46 +282,70 @@ fn verify_profile_backup(root: &Path) -> Result<Vec<Value>, String> {
     let Some(entries) = manifest.get("entries").and_then(Value::as_array) else {
         return Err(verification_error(&["manifest has no entries list".into()]));
     };
+    Ok(entries.clone())
+}
+
+fn verify_symlink_entry(
+    absolute: &Path,
+    meta: &std::fs::Metadata,
+    entry: &Value,
+    path: &str,
+    problems: &mut Vec<String>,
+) {
+    let target = std::fs::read_link(absolute).ok();
+    if !meta.file_type().is_symlink()
+        || target.map(|t| t.to_string_lossy().into_owned()).as_deref() != entry.get("target").and_then(Value::as_str)
+    {
+        problems.push(format!("symlink changed: {path}"));
+    }
+}
+
+fn verify_file_entry(absolute: &Path, meta: &std::fs::Metadata, entry: &Value, path: &str, problems: &mut Vec<String>) {
+    if !meta.is_file() {
+        problems.push(format!("not a regular file: {path}"));
+        return;
+    }
+    let data = std::fs::read(absolute).unwrap_or_default();
+    if Some(jsrt::hash::sha256_hex(&data).as_str()) != entry.get("sha256").and_then(Value::as_str)
+        || Some(meta.len() as f64) != entry.get("size").and_then(Value::as_f64)
+    {
+        problems.push(format!("hash mismatch: {path}"));
+    }
+}
+
+fn verify_manifest_entry(
+    files_root: &Path,
+    entry: &Value,
+    expected: &mut std::collections::HashSet<String>,
+    problems: &mut Vec<String>,
+) {
+    if !is_safe_relative_path(entry.get("path")) {
+        let shown = entry.get("path").map_or("undefined".to_string(), jsrt::json::stringify);
+        problems.push(format!("unsafe path in manifest: {shown}"));
+        return;
+    }
+    let path = entry["path"].as_str().unwrap_or_default();
+    expected.insert(path.to_string());
+    let absolute = files_root.join(path);
+    let Ok(meta) = std::fs::symlink_metadata(&absolute) else {
+        problems.push(format!("missing: {path}"));
+        return;
+    };
+    match entry.get("type").and_then(Value::as_str) {
+        Some("symlink") => verify_symlink_entry(&absolute, &meta, entry, path, problems),
+        Some("file") => verify_file_entry(&absolute, &meta, entry, path, problems),
+        _ => problems.push(format!("unknown entry type for {path}")),
+    }
+}
+
+/// Verify a backup against its manifest; returns the manifest's entries.
+fn verify_profile_backup(root: &Path) -> Result<Vec<Value>, String> {
+    let entries = read_manifest_entries(root)?;
     let files_root = root.join(FILES_DIR);
     let mut problems = Vec::new();
     let mut expected = std::collections::HashSet::new();
-    for entry in entries {
-        if !is_safe_relative_path(entry.get("path")) {
-            let shown = entry.get("path").map_or("undefined".to_string(), jsrt::json::stringify);
-            problems.push(format!("unsafe path in manifest: {shown}"));
-            continue;
-        }
-        let path = entry["path"].as_str().unwrap_or_default();
-        expected.insert(path.to_string());
-        let absolute = files_root.join(path);
-        let Ok(meta) = std::fs::symlink_metadata(&absolute) else {
-            problems.push(format!("missing: {path}"));
-            continue;
-        };
-        match entry.get("type").and_then(Value::as_str) {
-            Some("symlink") => {
-                let target = std::fs::read_link(&absolute).ok();
-                if !meta.file_type().is_symlink()
-                    || target.map(|t| t.to_string_lossy().into_owned()).as_deref()
-                        != entry.get("target").and_then(Value::as_str)
-                {
-                    problems.push(format!("symlink changed: {path}"));
-                }
-            }
-            Some("file") => {
-                if !meta.is_file() {
-                    problems.push(format!("not a regular file: {path}"));
-                } else {
-                    let data = std::fs::read(&absolute).unwrap_or_default();
-                    if Some(jsrt::hash::sha256_hex(&data).as_str()) != entry.get("sha256").and_then(Value::as_str)
-                        || Some(meta.len() as f64) != entry.get("size").and_then(Value::as_f64)
-                    {
-                        problems.push(format!("hash mismatch: {path}"));
-                    }
-                }
-            }
-            _ => problems.push(format!("unknown entry type for {path}")),
-        }
+    for entry in &entries {
+        verify_manifest_entry(&files_root, entry, &mut expected, &mut problems);
     }
     let mut present = Vec::new();
     if list_backup_files(&files_root, "", &mut present).is_err() {
@@ -306,7 +359,41 @@ fn verify_profile_backup(root: &Path) -> Result<Vec<Value>, String> {
     if !problems.is_empty() {
         return Err(verification_error(&problems));
     }
-    Ok(entries.clone())
+    Ok(entries)
+}
+
+fn stage_restore_entry(files_root: &Path, entry: &Value, rel: &str, temporary: &Path) -> Result<(), String> {
+    if entry["type"].as_str() == Some("symlink") {
+        let target = entry["target"].as_str().unwrap_or_default();
+        return symlink(target, temporary).map_err(|e| io_error(&e, "symlink", temporary));
+    }
+    let source = files_root.join(rel);
+    let data = std::fs::read(&source).map_err(|e| io_error(&e, "open", &source))?;
+    if Some(jsrt::hash::sha256_hex(&data).as_str()) != entry["sha256"].as_str() {
+        return Err(verification_error(&[format!("hash mismatch: {rel}")]));
+    }
+    write_new(temporary, &data, 0o600)?;
+    chmod(temporary, (entry["mode"].as_f64().unwrap_or(0.0) as u32) & 0o777)
+}
+
+fn restore_entry(files_root: &Path, agent_dir: &Path, entry: &Value) -> Result<(), String> {
+    let rel = entry["path"].as_str().unwrap_or_default();
+    let destination = agent_dir.join(rel);
+    if let Some(parent) = destination.parent() {
+        mkdir_recursive(parent)?;
+    }
+    let temporary = PathBuf::from(format!(
+        "{}.ultron-restore-{}",
+        destination.display(),
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&temporary);
+    stage_restore_entry(files_root, entry, rel, &temporary)?;
+    if std::fs::symlink_metadata(&destination).is_ok_and(|m| m.is_dir()) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(format!("Cannot restore {rel}: a directory is in the way"));
+    }
+    std::fs::rename(&temporary, &destination).map_err(|e| io_error(&e, "rename", &temporary))
 }
 
 /// Restore a verified backup into `agent_dir`; returns how many entries were written.
@@ -316,33 +403,7 @@ pub fn restore(root: &Path, agent_dir: &Path) -> Result<usize, String> {
     mkdir_recursive(agent_dir)?;
     let mut restored = 0;
     for entry in &entries {
-        let rel = entry["path"].as_str().unwrap_or_default();
-        let destination = agent_dir.join(rel);
-        if let Some(parent) = destination.parent() {
-            mkdir_recursive(parent)?;
-        }
-        let temporary = PathBuf::from(format!(
-            "{}.ultron-restore-{}",
-            destination.display(),
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&temporary);
-        if entry["type"].as_str() == Some("symlink") {
-            let target = entry["target"].as_str().unwrap_or_default();
-            symlink(target, &temporary).map_err(|e| io_error(&e, "symlink", &temporary))?;
-        } else {
-            let data = std::fs::read(files_root.join(rel)).map_err(|e| io_error(&e, "open", &files_root.join(rel)))?;
-            if Some(jsrt::hash::sha256_hex(&data).as_str()) != entry["sha256"].as_str() {
-                return Err(verification_error(&[format!("hash mismatch: {rel}")]));
-            }
-            write_new(&temporary, &data, 0o600)?;
-            chmod(&temporary, (entry["mode"].as_f64().unwrap_or(0.0) as u32) & 0o777)?;
-        }
-        if std::fs::symlink_metadata(&destination).is_ok_and(|m| m.is_dir()) {
-            let _ = std::fs::remove_file(&temporary);
-            return Err(format!("Cannot restore {rel}: a directory is in the way"));
-        }
-        std::fs::rename(&temporary, &destination).map_err(|e| io_error(&e, "rename", &temporary))?;
+        restore_entry(&files_root, agent_dir, entry)?;
         restored += 1;
     }
     Ok(restored)

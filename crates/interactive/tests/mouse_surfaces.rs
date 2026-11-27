@@ -121,11 +121,7 @@ fn interactive_mouse_settings_select_submenu_row_picks_it() {
     assert!(s.contains("Enter to select · Esc to go back"), "the theme submenu: {s}");
     let at = cell_of(&mut app, "light");
     click(&mut app, at);
-    assert!(
-        calls(&c).contains(&"theme=\"light\"".to_string()),
-        "{:?}\n{s}",
-        calls(&c)
-    );
+    assert!(calls(&c).iter().any(|i| i == "theme=\"light\""), "{:?}\n{s}", calls(&c));
     assert!(
         !shown(&mut app).contains("Enter to select · Esc to go back"),
         "picking closes it"

@@ -93,6 +93,51 @@ pub fn is_kebab(key: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
+fn parse_optional_key(value: Option<&Value>) -> Result<Option<String>, MemoryError> {
+    match value {
+        None => Ok(None),
+        Some(Value::String(key)) if is_kebab(key) => Ok(Some(key.clone())),
+        Some(_) => Err(invalid()),
+    }
+}
+
+fn parse_path_globs(value: Option<&Value>) -> Result<Vec<String>, MemoryError> {
+    match value {
+        None => Ok(Vec::new()),
+        Some(Value::Array(items)) if items.len() <= MAX_GLOBS => {
+            let mut globs: Vec<String> = Vec::new();
+            for item in items {
+                let glob = item.as_str().ok_or_else(invalid)?;
+                Glob::new(glob)?;
+                if !globs.iter().any(|seen| seen == glob) {
+                    globs.push(glob.to_string());
+                }
+            }
+            Ok(globs)
+        }
+        Some(_) => Err(invalid()),
+    }
+}
+
+fn parse_optional_source(value: Option<&Value>) -> Result<Option<String>, MemoryError> {
+    match value {
+        None => Ok(None),
+        Some(Value::String(source)) if source.len() <= MAX_SOURCE_BYTES && !has_control(source) => {
+            Ok(Some(source.clone()))
+        }
+        Some(_) => Err(invalid()),
+    }
+}
+
+fn parse_situation(payload: &Map<String, Value>) -> Result<String, MemoryError> {
+    let situation = payload.get("situation").and_then(Value::as_str).ok_or_else(invalid)?;
+    let situation = situation.trim();
+    if situation.is_empty() || situation.len() > MAX_SITUATION_BYTES || has_control(situation) {
+        return Err(invalid());
+    }
+    Ok(situation.to_string())
+}
+
 /// The typed fields of a propose payload: `None` for an untyped record; INVALID_INPUT when a field is malformed,
 /// `type` or `situation` is missing, or `text` is over the type's cap.
 pub fn typed_fields(payload: &Map<String, Value>, text: &str) -> Result<Option<Typed>, MemoryError> {
@@ -105,43 +150,17 @@ pub fn typed_fields(payload: &Map<String, Value>, text: &str) -> Result<Option<T
         .filter(|kind| RECORD_TYPES.contains(kind))
         .ok_or_else(invalid)?
         .to_string();
-    let situation = payload.get("situation").and_then(Value::as_str).ok_or_else(invalid)?;
-    let situation = situation.trim();
-    if situation.is_empty() || situation.len() > MAX_SITUATION_BYTES || has_control(situation) {
-        return Err(invalid());
-    }
-    let key = match payload.get("key") {
-        None => None,
-        Some(Value::String(key)) if is_kebab(key) => Some(key.clone()),
-        Some(_) => return Err(invalid()),
-    };
-    let path_globs = match payload.get("pathGlobs") {
-        None => Vec::new(),
-        Some(Value::Array(items)) if items.len() <= MAX_GLOBS => {
-            let mut globs: Vec<String> = Vec::new();
-            for item in items {
-                let glob = item.as_str().ok_or_else(invalid)?;
-                Glob::new(glob)?;
-                if !globs.iter().any(|seen| seen == glob) {
-                    globs.push(glob.to_string());
-                }
-            }
-            globs
-        }
-        Some(_) => return Err(invalid()),
-    };
-    let source = match payload.get("source") {
-        None => None,
-        Some(Value::String(source)) if source.len() <= MAX_SOURCE_BYTES && !has_control(source) => Some(source.clone()),
-        Some(_) => return Err(invalid()),
-    };
+    let situation = parse_situation(payload)?;
+    let key = parse_optional_key(payload.get("key"))?;
+    let path_globs = parse_path_globs(payload.get("pathGlobs"))?;
+    let source = parse_optional_source(payload.get("source"))?;
     if text.len() > content_cap(&kind) {
         return Err(invalid());
     }
     Ok(Some(Typed {
         kind,
         key,
-        situation: situation.to_string(),
+        situation,
         path_globs,
         source,
     }))
@@ -191,6 +210,77 @@ fn escape(ch: char, out: &mut String) {
     out.push(ch);
 }
 
+fn translate_globstar(chars: &[char], index: usize, out: &mut String) -> Option<usize> {
+    let starts = index == 0 || chars[index - 1] == '/';
+    let next = chars.get(index + 2);
+    if !starts || !matches!(next, None | Some('/')) {
+        return None;
+    }
+    if next == Some(&'/') {
+        out.push_str("(?:[^/]+/)*");
+        Some(index + 3)
+    } else if index == 0 {
+        out.push_str(".*");
+        Some(index + 2)
+    } else {
+        out.pop();
+        out.push_str("(?:/.*)?");
+        Some(index + 2)
+    }
+}
+
+fn translate_char_class(chars: &[char], index: usize, out: &mut String) -> Option<usize> {
+    let end = chars[index + 1..].iter().position(|c| *c == ']')? + index + 1;
+    let mut set: Vec<char> = chars[index + 1..end].to_vec();
+    let negated = set.first() == Some(&'!');
+    if negated {
+        set.remove(0);
+    }
+    if set.is_empty() || set.contains(&'/') || set.contains(&'[') {
+        return None;
+    }
+    out.push('[');
+    if negated {
+        out.push('^');
+        out.push('/');
+    }
+    for c in set {
+        if c != '-' && "\\^&~".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push(']');
+    Some(end + 1)
+}
+
+fn translate_brace_or_literal(ch: char, in_brace: &mut bool, out: &mut String) -> Option<()> {
+    match ch {
+        '{' if !*in_brace => {
+            *in_brace = true;
+            out.push_str("(?:");
+        }
+        ',' if *in_brace => out.push('|'),
+        '}' if *in_brace => {
+            *in_brace = false;
+            out.push(')');
+        }
+        '{' | '}' => return None,
+        other => escape(other, out),
+    }
+    Some(())
+}
+
+fn translate_single(ch: char, in_brace: &mut bool, out: &mut String) -> Option<()> {
+    match ch {
+        '*' => out.push_str("[^/]*"),
+        '?' => out.push_str("[^/]"),
+        ']' => return None,
+        other => translate_brace_or_literal(other, in_brace, out)?,
+    }
+    Some(())
+}
+
 fn translate(pattern: &str) -> Option<String> {
     let chars: Vec<char> = pattern.chars().collect();
     let mut out = String::from("^");
@@ -198,73 +288,41 @@ fn translate(pattern: &str) -> Option<String> {
     let mut in_brace = false;
     while index < chars.len() {
         let ch = chars[index];
-        match ch {
-            '*' if chars.get(index + 1) == Some(&'*') => {
-                let starts = index == 0 || chars[index - 1] == '/';
-                let next = chars.get(index + 2);
-                if !starts || !matches!(next, None | Some('/')) {
-                    return None;
-                }
-                if next == Some(&'/') {
-                    out.push_str("(?:[^/]+/)*");
-                    index += 3;
-                } else if index == 0 {
-                    out.push_str(".*");
-                    index += 2;
-                } else {
-                    out.pop();
-                    out.push_str("(?:/.*)?");
-                    index += 2;
-                }
-                continue;
-            }
-            '*' => out.push_str("[^/]*"),
-            '?' => out.push_str("[^/]"),
-            '[' => {
-                let end = chars[index + 1..].iter().position(|c| *c == ']')? + index + 1;
-                let mut set: Vec<char> = chars[index + 1..end].to_vec();
-                let negated = set.first() == Some(&'!');
-                if negated {
-                    set.remove(0);
-                }
-                if set.is_empty() || set.contains(&'/') || set.contains(&'[') {
-                    return None;
-                }
-                out.push('[');
-                if negated {
-                    out.push('^');
-                    out.push('/');
-                }
-                for c in set {
-                    if c != '-' && "\\^&~".contains(c) {
-                        out.push('\\');
-                    }
-                    out.push(c);
-                }
-                out.push(']');
-                index = end + 1;
-                continue;
-            }
-            ']' => return None,
-            '{' if !in_brace => {
-                in_brace = true;
-                out.push_str("(?:");
-            }
-            ',' if in_brace => out.push('|'),
-            '}' if in_brace => {
-                in_brace = false;
-                out.push(')');
-            }
-            '{' | '}' => return None,
-            other => escape(other, &mut out),
+        if ch == '*' && chars.get(index + 1) == Some(&'*') {
+            index = translate_globstar(&chars, index, &mut out)?;
+        } else if ch == '[' {
+            index = translate_char_class(&chars, index, &mut out)?;
+        } else {
+            translate_single(ch, &mut in_brace, &mut out)?;
+            index += 1;
         }
-        index += 1;
     }
-    if in_brace {
-        return None;
-    }
-    out.push('$');
-    Some(out)
+    (!in_brace).then(|| {
+        out.push('$');
+        out
+    })
+}
+
+fn json_text(map: &Map<String, Value>, key: &str) -> Option<String> {
+    map.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+fn json_strings(map: &Map<String, Value>, key: &str) -> Option<Vec<String>> {
+    map.get(key)?
+        .as_array()?
+        .iter()
+        .map(|item| item.as_str().map(str::to_string))
+        .collect()
+}
+
+fn typed_from_json(map: &Map<String, Value>) -> Option<Typed> {
+    Some(Typed {
+        kind: json_text(map, "type").filter(|kind| RECORD_TYPES.contains(&kind.as_str()))?,
+        key: json_text(map, "key"),
+        situation: json_text(map, "situation")?,
+        path_globs: json_strings(map, "pathGlobs")?,
+        source: json_text(map, "source"),
+    })
 }
 
 /// One indexed record: its Hindsight document id, typed fields, scope and the identity tags it was stored with.
@@ -294,27 +352,13 @@ impl IndexEntry {
 
     fn from_json(value: &Value) -> Option<IndexEntry> {
         let map = value.as_object()?;
-        let text = |key: &str| map.get(key).and_then(Value::as_str).map(str::to_string);
-        let strings = |key: &str| -> Option<Vec<String>> {
-            map.get(key)?
-                .as_array()?
-                .iter()
-                .map(|item| item.as_str().map(str::to_string))
-                .collect()
-        };
         Some(IndexEntry {
-            id: text("id")?,
-            typed: Typed {
-                kind: text("type").filter(|kind| RECORD_TYPES.contains(&kind.as_str()))?,
-                key: text("key"),
-                situation: text("situation")?,
-                path_globs: strings("pathGlobs")?,
-                source: text("source"),
-            },
-            scope: text("scope")?,
-            tags: strings("tags")?,
-            text_hash: text("textHash")?,
-            updated_at: text("updatedAt").unwrap_or_default(),
+            id: json_text(map, "id")?,
+            typed: typed_from_json(map)?,
+            scope: json_text(map, "scope")?,
+            tags: json_strings(map, "tags")?,
+            text_hash: json_text(map, "textHash")?,
+            updated_at: json_text(map, "updatedAt").unwrap_or_default(),
         })
     }
 

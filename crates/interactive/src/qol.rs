@@ -294,6 +294,32 @@ impl PrLookup for NoPr {
     }
 }
 
+fn install_git_source(app: &mut App, status_pr: bool) -> std::io::Result<()> {
+    let cwd = PathBuf::from(app.cwd());
+    let watcher = if status_pr {
+        GitWatcher::spawn(cwd, GhPrLookup, || {})?
+    } else {
+        GitWatcher::spawn(cwd, NoPr, || {})?
+    };
+    app.set_git_source(Box::new(watcher));
+    Ok(())
+}
+
+fn install_notifications(app: &mut App, path_var: Option<String>) -> std::io::Result<()> {
+    let out: Arc<Mutex<Vec<String>>> = app.side_writes();
+    let sink = ProcessSink::new(
+        move |data: &str| {
+            out.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(data.to_string());
+        },
+        path_var,
+    );
+    let service = NotificationService::spawn(Notifier::detect(), sink)?;
+    app.set_notify_sink(Box::new(move |m| service.notify(m)));
+    Ok(())
+}
+
 /// Start what the enabled additions need on their own threads: the desktop clipboard (attachments, Vim yanks), the
 /// git watcher (status line), the terminal notifier (its bytes reach the terminal through the paint loop), and
 /// grammar warm-up (highlighting). Call once at startup, before the paint loop; fails when a thread cannot start.
@@ -313,26 +339,10 @@ pub fn install_services(app: &mut App, path_var: Option<String>) -> std::io::Res
         || {},
     ));
     if qol.status_line {
-        let cwd = PathBuf::from(app.cwd());
-        let watcher = if qol.status_pr {
-            GitWatcher::spawn(cwd, GhPrLookup, || {})?
-        } else {
-            GitWatcher::spawn(cwd, NoPr, || {})?
-        };
-        app.set_git_source(Box::new(watcher));
+        install_git_source(app, qol.status_pr)?;
     }
     if qol.notifications {
-        let out: Arc<Mutex<Vec<String>>> = app.side_writes();
-        let sink = ProcessSink::new(
-            move |data: &str| {
-                out.lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(data.to_string());
-            },
-            path_var,
-        );
-        let service = NotificationService::spawn(Notifier::detect(), sink)?;
-        app.set_notify_sink(Box::new(move |m| service.notify(m)));
+        install_notifications(app, path_var)?;
     }
     if qol.highlight {
         std::thread::Builder::new()

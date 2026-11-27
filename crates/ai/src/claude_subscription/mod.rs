@@ -265,47 +265,88 @@ struct SubscriptionStream {
     streamed: Vec<(Option<u64>, &'static str, usize)>,
 }
 
+fn build_final_content(response: &NativeResponse) -> Vec<AssistantContent> {
+    let mut content = Vec::new();
+    for block in &response.blocks {
+        match block["type"].as_str() {
+            Some("text") => content.push(AssistantContent::Text(TextContent {
+                text: block["text"].as_str().unwrap_or_default().to_string(),
+                text_signature: None,
+            })),
+            Some("thinking") => content.push(AssistantContent::Thinking(ThinkingContent {
+                thinking: block["thinking"].as_str().unwrap_or_default().to_string(),
+                thinking_signature: block["signature"].as_str().map(str::to_string),
+                redacted: None,
+            })),
+            Some("redacted_thinking") => content.push(AssistantContent::Thinking(ThinkingContent {
+                thinking: String::new(),
+                thinking_signature: block["data"].as_str().map(str::to_string),
+                redacted: Some(true),
+            })),
+            Some("tool_use") => push_final_tool_call(&mut content, block, &response.calls),
+            _ => {}
+        }
+    }
+    content
+}
+
+fn push_final_tool_call(content: &mut Vec<AssistantContent>, block: &Value, calls: &[process::NativeCall]) {
+    let id = block["id"].as_str().unwrap_or_default();
+    if !calls.iter().any(|c| c.id == id) {
+        return;
+    }
+    let name = block["name"].as_str().unwrap_or_default();
+    let host = name.strip_prefix(history::PREFIX).unwrap_or(name);
+    content.push(AssistantContent::ToolCall(ToolCall {
+        id: id.to_string(),
+        name: host.to_string(),
+        arguments: block.get("input").cloned().unwrap_or(json!({})),
+        thought_signature: None,
+        namespace: None,
+    }));
+}
+
 impl Run<'_, '_, SubscriptionStream> {
+    fn find_or_create_streamed(&mut self, index: Option<u64>, kind: &'static str) -> usize {
+        let existing = match index {
+            Some(_) => self.state.streamed.iter().find(|(i, k, _)| *i == index && *k == kind),
+            None => self.state.streamed.last().filter(|(i, k, _)| i.is_none() && *k == kind),
+        };
+        if let Some((_, _, at)) = existing {
+            return *at;
+        }
+        let at = self.output.content.len();
+        if kind == "text" {
+            self.output.content.push(AssistantContent::Text(TextContent {
+                text: String::new(),
+                text_signature: None,
+            }));
+            self.state.streamed.push((index, kind, at));
+            self.emit(|partial| AssistantMessageEvent::TextStart {
+                content_index: at,
+                partial,
+            });
+        } else {
+            self.output.content.push(AssistantContent::Thinking(ThinkingContent {
+                thinking: String::new(),
+                thinking_signature: None,
+                redacted: None,
+            }));
+            self.state.streamed.push((index, kind, at));
+            self.emit(|partial| AssistantMessageEvent::ThinkingStart {
+                content_index: at,
+                partial,
+            });
+        }
+        at
+    }
+
     fn delta(&mut self, delta: Delta) {
         let (index, kind, text) = match delta {
             Delta::Text(index, text) => (index, "text", text),
             Delta::Thinking(index, text) => (index, "thinking", text),
         };
-        let existing = match index {
-            Some(_) => self.state.streamed.iter().find(|(i, k, _)| *i == index && *k == kind),
-            None => self.state.streamed.last().filter(|(i, k, _)| i.is_none() && *k == kind),
-        };
-        let at = match existing {
-            Some((_, _, at)) => *at,
-            None => {
-                let at = self.output.content.len();
-                self.output.content.push(if kind == "text" {
-                    AssistantContent::Text(TextContent {
-                        text: String::new(),
-                        text_signature: None,
-                    })
-                } else {
-                    AssistantContent::Thinking(ThinkingContent {
-                        thinking: String::new(),
-                        thinking_signature: None,
-                        redacted: None,
-                    })
-                });
-                self.state.streamed.push((index, kind, at));
-                if kind == "text" {
-                    self.emit(|partial| AssistantMessageEvent::TextStart {
-                        content_index: at,
-                        partial,
-                    });
-                } else {
-                    self.emit(|partial| AssistantMessageEvent::ThinkingStart {
-                        content_index: at,
-                        partial,
-                    });
-                }
-                at
-            }
-        };
+        let at = self.find_or_create_streamed(index, kind);
         match &mut self.output.content[at] {
             AssistantContent::Text(t) => t.text.push_str(&text),
             AssistantContent::Thinking(t) => t.thinking.push_str(&text),
@@ -326,6 +367,59 @@ impl Run<'_, '_, SubscriptionStream> {
         }
     }
 
+    fn emit_final_streamed(&mut self, index: usize, content: String, before: Option<String>, is_text: bool) {
+        let emit_delta = |run: &mut Self, delta: String| {
+            if is_text {
+                run.emit(|partial| AssistantMessageEvent::TextDelta {
+                    content_index: index,
+                    delta,
+                    partial,
+                });
+            } else {
+                run.emit(|partial| AssistantMessageEvent::ThinkingDelta {
+                    content_index: index,
+                    delta,
+                    partial,
+                });
+            }
+        };
+        match before {
+            Some(prefix) if content.starts_with(&prefix) => {
+                let rest = content[prefix.len()..].to_string();
+                if !rest.is_empty() {
+                    emit_delta(self, rest);
+                }
+            }
+            _ => {
+                if is_text {
+                    self.emit(|partial| AssistantMessageEvent::TextStart {
+                        content_index: index,
+                        partial,
+                    });
+                } else {
+                    self.emit(|partial| AssistantMessageEvent::ThinkingStart {
+                        content_index: index,
+                        partial,
+                    });
+                }
+                emit_delta(self, content.clone());
+            }
+        }
+        if is_text {
+            self.emit(|partial| AssistantMessageEvent::TextEnd {
+                content_index: index,
+                content,
+                partial,
+            });
+        } else {
+            self.emit(|partial| AssistantMessageEvent::ThinkingEnd {
+                content_index: index,
+                content,
+                partial,
+            });
+        }
+    }
+
     /// Replace the streamed content with the final native blocks, closing every block.
     fn finish(&mut self, response: &NativeResponse) {
         let streamed: Vec<(usize, String)> = self
@@ -339,109 +433,12 @@ impl Run<'_, '_, SubscriptionStream> {
                 AssistantContent::ToolCall(_) => (i, String::new()),
             })
             .collect();
-        let mut content = Vec::new();
-        for block in &response.blocks {
-            match block["type"].as_str() {
-                Some("text") => content.push(AssistantContent::Text(TextContent {
-                    text: block["text"].as_str().unwrap_or_default().to_string(),
-                    text_signature: None,
-                })),
-                Some("thinking") => content.push(AssistantContent::Thinking(ThinkingContent {
-                    thinking: block["thinking"].as_str().unwrap_or_default().to_string(),
-                    thinking_signature: block["signature"].as_str().map(str::to_string),
-                    redacted: None,
-                })),
-                Some("redacted_thinking") => content.push(AssistantContent::Thinking(ThinkingContent {
-                    thinking: String::new(),
-                    thinking_signature: block["data"].as_str().map(str::to_string),
-                    redacted: Some(true),
-                })),
-                Some("tool_use") => {
-                    let name = block["name"].as_str().unwrap_or_default();
-                    let host = name.strip_prefix(history::PREFIX).unwrap_or(name);
-                    if response
-                        .calls
-                        .iter()
-                        .any(|c| c.id == block["id"].as_str().unwrap_or_default())
-                    {
-                        content.push(AssistantContent::ToolCall(ToolCall {
-                            id: block["id"].as_str().unwrap_or_default().to_string(),
-                            name: host.to_string(),
-                            arguments: block.get("input").cloned().unwrap_or(json!({})),
-                            thought_signature: None,
-                            namespace: None,
-                        }));
-                    }
-                }
-                _ => {}
-            }
-        }
-        self.output.content = content;
+        self.output.content = build_final_content(response);
         for index in 0..self.output.content.len() {
             let before = streamed.iter().find(|(i, _)| *i == index).map(|(_, t)| t.clone());
             match self.output.content[index].clone() {
-                AssistantContent::Text(t) => {
-                    match before {
-                        Some(prefix) if t.text.starts_with(&prefix) => {
-                            let rest = t.text[prefix.len()..].to_string();
-                            if !rest.is_empty() {
-                                self.emit(|partial| AssistantMessageEvent::TextDelta {
-                                    content_index: index,
-                                    delta: rest,
-                                    partial,
-                                });
-                            }
-                        }
-                        _ => {
-                            self.emit(|partial| AssistantMessageEvent::TextStart {
-                                content_index: index,
-                                partial,
-                            });
-                            let delta = t.text.clone();
-                            self.emit(|partial| AssistantMessageEvent::TextDelta {
-                                content_index: index,
-                                delta,
-                                partial,
-                            });
-                        }
-                    }
-                    self.emit(|partial| AssistantMessageEvent::TextEnd {
-                        content_index: index,
-                        content: t.text,
-                        partial,
-                    });
-                }
-                AssistantContent::Thinking(t) => {
-                    match before {
-                        Some(prefix) if t.thinking.starts_with(&prefix) => {
-                            let rest = t.thinking[prefix.len()..].to_string();
-                            if !rest.is_empty() {
-                                self.emit(|partial| AssistantMessageEvent::ThinkingDelta {
-                                    content_index: index,
-                                    delta: rest,
-                                    partial,
-                                });
-                            }
-                        }
-                        _ => {
-                            self.emit(|partial| AssistantMessageEvent::ThinkingStart {
-                                content_index: index,
-                                partial,
-                            });
-                            let delta = t.thinking.clone();
-                            self.emit(|partial| AssistantMessageEvent::ThinkingDelta {
-                                content_index: index,
-                                delta,
-                                partial,
-                            });
-                        }
-                    }
-                    self.emit(|partial| AssistantMessageEvent::ThinkingEnd {
-                        content_index: index,
-                        content: t.thinking,
-                        partial,
-                    });
-                }
+                AssistantContent::Text(t) => self.emit_final_streamed(index, t.text, before, true),
+                AssistantContent::Thinking(t) => self.emit_final_streamed(index, t.thinking, before, false),
                 AssistantContent::ToolCall(call) => {
                     self.emit(|partial| AssistantMessageEvent::ToolCallStart {
                         content_index: index,
@@ -536,6 +533,107 @@ pub async fn stream_with(
     run_with(model, prepared, Ok((config, env)), options, sink).await
 }
 
+async fn execute_native_call(
+    emitter: &mut Run<'_, '_, SubscriptionStream>,
+    prepared: Prepared,
+    config: Config,
+    env: Env,
+    signal: Option<&crate::http::AbortSignal>,
+) -> (Result<NativeResponse, ClaudeError>, Option<usage::ClaudeRateLimits>) {
+    let handle = Handle::new();
+    let (deltas, mut received) = tokio::sync::mpsc::unbounded_channel::<Delta>();
+    let (done, mut finished) = tokio::sync::oneshot::channel();
+    let worker = handle.clone();
+    std::thread::spawn(move || {
+        let mut forward = |delta: Delta| {
+            let _ = deltas.send(delta);
+        };
+        let _ = done.send(process::run(&config, env, &prepared, &worker, &mut forward));
+    });
+    let mut cancelling = false;
+    let result = loop {
+        tokio::select! {
+            biased;
+            Some(delta) = received.recv() => emitter.delta(delta),
+            result = &mut finished => {
+                while let Ok(delta) = received.try_recv() {
+                    emitter.delta(delta);
+                }
+                break result.unwrap_or(Err(ClaudeError::Failed("Native response missing".into())));
+            }
+            () = crate::http::cancelled(signal), if !cancelling => {
+                cancelling = true;
+                handle.cancel();
+            }
+        }
+    };
+    let rate_limits = handle
+        .rate_limit_event()
+        .as_ref()
+        .and_then(usage::rate_limits_from_event);
+    (result, rate_limits)
+}
+
+fn finish_run_ok(
+    emitter: &mut Run<'_, '_, SubscriptionStream>,
+    response: NativeResponse,
+    usage: Option<AssistantMessageDiagnostic>,
+) {
+    emitter.finish(&response);
+    complete(&mut emitter.output, &response);
+    if let Some(usage) = usage {
+        emitter.output.diagnostics.get_or_insert_with(Vec::new).push(usage);
+    }
+    if emitter.output.stop_reason == StopReason::Error {
+        let reason = StopReason::Error;
+        emitter.emit(|error| AssistantMessageEvent::Error { reason, error });
+    } else {
+        let reason = emitter.output.stop_reason;
+        emitter.emit(|message| AssistantMessageEvent::Done { reason, message });
+    }
+}
+
+fn finish_run_err(
+    emitter: &mut Run<'_, '_, SubscriptionStream>,
+    model: &Model,
+    error: ClaudeError,
+    signal: Option<&crate::http::AbortSignal>,
+    usage: Option<AssistantMessageDiagnostic>,
+) {
+    let aborted = error == ClaudeError::Cancelled && signal.is_some_and(crate::http::AbortSignal::aborted);
+    let mut message = error.to_string();
+    if message.to_ascii_lowercase().contains("does not support this model")
+        && let Some(hint) = catalog::version_hint(&model.id)
+    {
+        message.push_str(&format!(" ({hint})"));
+    }
+    let output = &mut emitter.output;
+    output.stop_reason = if aborted {
+        StopReason::Aborted
+    } else {
+        StopReason::Error
+    };
+    output.error_message = Some(message.clone());
+    let mut details = Map::new();
+    details.insert("status".into(), error.status().map_or(Value::Null, Value::from));
+    if let ClaudeError::UsageLimit { resets_at, .. } = &error {
+        details.insert("usage_limit".into(), Value::Bool(true));
+        details.insert("resets_at".into(), resets_at.map_or(Value::Null, Value::from));
+    }
+    let mut diagnostics = vec![diagnostic(ERROR_DIAGNOSTIC, Some(details), Some(message.clone()))];
+    diagnostics.extend(usage);
+    if error.status() == Some(429) {
+        diagnostics.push(diagnostic(
+            crate::claude_code_cli::USAGE_LIMIT_DIAGNOSTIC,
+            None,
+            Some(message),
+        ));
+    }
+    output.diagnostics = Some(diagnostics);
+    let reason = output.stop_reason;
+    emitter.emit(|error| AssistantMessageEvent::Error { reason, error });
+}
+
 async fn run_with(
     model: &Model,
     prepared: Result<Prepared, ClaudeError>,
@@ -548,96 +646,19 @@ async fn run_with(
     let mut emitter = Run::new(output, sink, SubscriptionStream { streamed: Vec::new() });
     emitter.start();
     let signal = options.base.signal.clone();
-    let mut rate_limits = None;
-    let result = match (prepared, setup) {
-        (Err(error), _) | (_, Err(error)) => Err(error),
-        (Ok(_), Ok(_)) if signal.as_ref().is_some_and(crate::http::AbortSignal::aborted) => Err(ClaudeError::Cancelled),
+    let (result, rate_limits) = match (prepared, setup) {
+        (Err(error), _) | (_, Err(error)) => (Err(error), None),
+        (Ok(_), Ok(_)) if signal.as_ref().is_some_and(crate::http::AbortSignal::aborted) => {
+            (Err(ClaudeError::Cancelled), None)
+        }
         (Ok(prepared), Ok((config, env))) => {
-            let handle = Handle::new();
-            let (deltas, mut received) = tokio::sync::mpsc::unbounded_channel::<Delta>();
-            let (done, mut finished) = tokio::sync::oneshot::channel();
-            let worker = handle.clone();
-            std::thread::spawn(move || {
-                let mut forward = |delta: Delta| {
-                    let _ = deltas.send(delta);
-                };
-                let _ = done.send(process::run(&config, env, &prepared, &worker, &mut forward));
-            });
-            let mut cancelling = false;
-            let result = loop {
-                tokio::select! {
-                    biased;
-                    Some(delta) = received.recv() => emitter.delta(delta),
-                    result = &mut finished => {
-                        while let Ok(delta) = received.try_recv() {
-                            emitter.delta(delta);
-                        }
-                        break result.unwrap_or(Err(ClaudeError::Failed("Native response missing".into())));
-                    }
-                    () = crate::http::cancelled(signal.as_ref()), if !cancelling => {
-                        cancelling = true;
-                        handle.cancel();
-                    }
-                }
-            };
-            rate_limits = handle
-                .rate_limit_event()
-                .as_ref()
-                .and_then(usage::rate_limits_from_event);
-            result
+            execute_native_call(&mut emitter, prepared, config, env, signal.as_ref()).await
         }
     };
     let usage = rate_limits.map(|limits| usage::usage_diagnostic(&limits, jsrt::date::now_ms()));
     match result {
-        Ok(response) => {
-            emitter.finish(&response);
-            complete(&mut emitter.output, &response);
-            if let Some(usage) = usage {
-                emitter.output.diagnostics.get_or_insert_with(Vec::new).push(usage);
-            }
-            if emitter.output.stop_reason == StopReason::Error {
-                let reason = StopReason::Error;
-                emitter.emit(|error| AssistantMessageEvent::Error { reason, error });
-            } else {
-                let reason = emitter.output.stop_reason;
-                emitter.emit(|message| AssistantMessageEvent::Done { reason, message });
-            }
-        }
-        Err(error) => {
-            let aborted =
-                error == ClaudeError::Cancelled && signal.as_ref().is_some_and(crate::http::AbortSignal::aborted);
-            let mut message = error.to_string();
-            if message.to_ascii_lowercase().contains("does not support this model")
-                && let Some(hint) = catalog::version_hint(&model.id)
-            {
-                message.push_str(&format!(" ({hint})"));
-            }
-            let output = &mut emitter.output;
-            output.stop_reason = if aborted {
-                StopReason::Aborted
-            } else {
-                StopReason::Error
-            };
-            output.error_message = Some(message.clone());
-            let mut details = Map::new();
-            details.insert("status".into(), error.status().map_or(Value::Null, Value::from));
-            if let ClaudeError::UsageLimit { resets_at, .. } = &error {
-                details.insert("usage_limit".into(), Value::Bool(true));
-                details.insert("resets_at".into(), resets_at.map_or(Value::Null, Value::from));
-            }
-            let mut diagnostics = vec![diagnostic(ERROR_DIAGNOSTIC, Some(details), Some(message.clone()))];
-            diagnostics.extend(usage);
-            if error.status() == Some(429) {
-                diagnostics.push(diagnostic(
-                    crate::claude_code_cli::USAGE_LIMIT_DIAGNOSTIC,
-                    None,
-                    Some(message),
-                ));
-            }
-            output.diagnostics = Some(diagnostics);
-            let reason = output.stop_reason;
-            emitter.emit(|error| AssistantMessageEvent::Error { reason, error });
-        }
+        Ok(response) => finish_run_ok(&mut emitter, response, usage),
+        Err(error) => finish_run_err(&mut emitter, model, error, signal.as_ref(), usage),
     }
     emitter.output
 }

@@ -104,26 +104,8 @@ impl CellShell {
 
 impl HostHandler for Router {
     fn handle(&self, kind: &str, payload: Map<String, Value>, signal: &Signal) -> Result<Value, String> {
-        if kind == "rlm.find_models" {
-            return Ok(self.config.find_models());
-        }
-        if kind == "rlm.race_models" {
-            return Ok(self.config.race_models());
-        }
-        if let Some(swarm) = &self.swarm
-            && let Some(result) = swarm.handle(&self.lane, kind, &payload, signal)
-        {
+        if let Some(result) = self.handle_special(kind, &payload, signal) {
             return result;
-        }
-        if kind == crate::turns::CELL_OUTPUT {
-            if let Some(progress) = &self.progress {
-                crate::turns::publish_output(
-                    progress,
-                    payload.get("text").and_then(Value::as_str).unwrap_or(""),
-                    &session_mask(&self.config),
-                );
-            }
-            return Ok(Value::Null);
         }
         if Delegation::serves(kind) {
             return self.delegation.handle(kind, payload, signal);
@@ -136,22 +118,58 @@ impl HostHandler for Router {
             Some(cell) if shell => cell.run(&self.host, &self.lane, kind, payload, signal),
             _ => self.host.handle_lane(&self.lane, kind, payload, signal),
         };
-        if shell
-            && let (Some(progress), Ok(value)) = (&self.progress, &result)
-            && let Some(output) = value["output"].as_str().filter(|o| !o.is_empty())
-            && let Some(progress) = sync::lock(progress).as_ref()
-        {
-            let output = session_mask(&self.config)(output);
-            progress.output(
-                if output.ends_with('\n') {
-                    output
-                } else {
-                    format!("{output}\n")
-                }
-                .as_str(),
-            );
+        if shell {
+            self.publish_shell_result(&result);
         }
         result
+    }
+}
+
+impl Router {
+    fn handle_special(
+        &self,
+        kind: &str,
+        payload: &Map<String, Value>,
+        signal: &Signal,
+    ) -> Option<Result<Value, String>> {
+        match kind {
+            "rlm.find_models" => Some(Ok(self.config.find_models())),
+            "rlm.race_models" => Some(Ok(self.config.race_models())),
+            kind if kind == crate::turns::CELL_OUTPUT => {
+                if let Some(progress) = &self.progress {
+                    crate::turns::publish_output(
+                        progress,
+                        payload.get("text").and_then(Value::as_str).unwrap_or(""),
+                        &session_mask(&self.config),
+                    );
+                }
+                Some(Ok(Value::Null))
+            }
+            _ => self
+                .swarm
+                .as_ref()
+                .and_then(|swarm| swarm.handle(&self.lane, kind, payload, signal)),
+        }
+    }
+
+    fn publish_shell_result(&self, result: &Result<Value, String>) {
+        let (Some(progress), Ok(value)) = (&self.progress, result) else {
+            return;
+        };
+        let Some(output) = value["output"].as_str().filter(|o| !o.is_empty()) else {
+            return;
+        };
+        let progress = sync::lock(progress);
+        let Some(progress) = progress.as_ref() else {
+            return;
+        };
+        let output = session_mask(&self.config)(output);
+        let line = if output.ends_with('\n') {
+            output
+        } else {
+            format!("{output}\n")
+        };
+        progress.output(&line);
     }
 }
 

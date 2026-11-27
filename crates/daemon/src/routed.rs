@@ -249,30 +249,31 @@ impl Hub {
         crate::server::record_error(&self.log_path, label, message);
     }
 
-    /// Attach `conn` to `session_id`; `options` are the client's own session options (see
-    /// [`crate::workers::WorkerModel::session_options`]).
-    fn attach(&self, conn: &Arc<Conn>, session_id: &str, options: Option<&Value>) -> Result<(), ServiceError> {
-        if self.closing.load(Ordering::SeqCst) || conn.closed.load(Ordering::SeqCst) {
-            return Err(coded("server_draining", "Server is draining"));
-        }
-        if self.router().routes.attached(conn.id, session_id).is_some() {
-            return Ok(());
-        }
-        let handle = self.acquire(session_id, options)?;
-        let previous = self.router().routes.begin_attach(conn.id, session_id);
-        if let Some(previous) = previous {
-            self.release(conn.id, previous, false);
-        }
-        let (handle, attachment) = match self.manager.attach_client(&handle) {
-            Ok(attachment) => (handle, attachment),
+    fn attach_client_with_retry(
+        &self,
+        session_id: &str,
+        options: Option<&Value>,
+        handle: Handle,
+    ) -> Result<(Handle, String), ServiceError> {
+        match self.manager.attach_client(&handle) {
+            Ok(attachment) => Ok((handle, attachment)),
             Err(error) if error.code.as_deref() == Some(protocol::names::WORKER_RETIRING_CODE) => {
                 self.wait_worker_gone(session_id, &handle);
                 let handle = self.acquire(session_id, options)?;
                 let attachment = self.manager.attach_client(&handle)?;
-                (handle, attachment)
+                Ok((handle, attachment))
             }
-            Err(error) => return Err(error),
-        };
+            Err(error) => Err(error),
+        }
+    }
+
+    fn record_attachment(
+        &self,
+        conn: &Arc<Conn>,
+        session_id: &str,
+        handle: Handle,
+        attachment: String,
+    ) -> Result<String, ServiceError> {
         let mut router = self.router();
         match router.hosted.get_mut(session_id) {
             Some(hosted) if !conn.closed.load(Ordering::SeqCst) => {
@@ -293,7 +294,25 @@ impl Hub {
                 handle,
             },
         );
-        drop(router);
+        Ok(attachment)
+    }
+
+    /// Attach `conn` to `session_id`; `options` are the client's own session options (see
+    /// [`crate::workers::WorkerModel::session_options`]).
+    fn attach(&self, conn: &Arc<Conn>, session_id: &str, options: Option<&Value>) -> Result<(), ServiceError> {
+        if self.closing.load(Ordering::SeqCst) || conn.closed.load(Ordering::SeqCst) {
+            return Err(coded("server_draining", "Server is draining"));
+        }
+        if self.router().routes.attached(conn.id, session_id).is_some() {
+            return Ok(());
+        }
+        let handle = self.acquire(session_id, options)?;
+        let previous = self.router().routes.begin_attach(conn.id, session_id);
+        if let Some(previous) = previous {
+            self.release(conn.id, previous, false);
+        }
+        let (handle, attachment) = self.attach_client_with_retry(session_id, options, handle)?;
+        let attachment = self.record_attachment(conn, session_id, handle, attachment)?;
         conn.send(&ServerMessage::Attachment {
             attachment: Some(SessionTarget {
                 server_id: self.server_id.clone(),
@@ -578,88 +597,97 @@ impl Hub {
         })))
     }
 
-    fn server_services(&self, conn: &Arc<Conn>) -> Provider {
-        let directory = Service::new(protocol::names::SESSION_DIRECTORY).state("state", self.directory.clone());
-        let weak = self.me.clone();
-        let hub = move || weak.upgrade().ok_or_else(|| ServiceError::internal("Server is closed"));
-        let conn_weak = Arc::downgrade(conn);
-        let conn_of = move || {
-            conn_weak
-                .upgrade()
-                .ok_or_else(|| ServiceError::internal("Connection is closed"))
-        };
+    fn upgrade_hub(weak: &std::sync::Weak<Hub>) -> Result<Arc<Hub>, ServiceError> {
+        weak.upgrade().ok_or_else(|| ServiceError::internal("Server is closed"))
+    }
+
+    fn upgrade_conn(weak: &std::sync::Weak<Conn>) -> Result<Arc<Conn>, ServiceError> {
+        weak.upgrade()
+            .ok_or_else(|| ServiceError::internal("Connection is closed"))
+    }
+
+    fn remove_session_entry(&self, id: &str) -> ServiceResult {
+        self.serialized(|| {
+            self.remove_session(id);
+            let meta = self.resolve(id)?;
+            self.manager.stop_session(&meta);
+            catalog::remove(&meta)?;
+            self.refresh();
+            Ok(None)
+        })
+    }
+
+    fn rename_session_entry(&self, id: &str, name: &str) -> ServiceResult {
+        self.serialized(|| {
+            let meta = self.resolve(id)?;
+            if self.manager.worker_pids().contains_key(&meta.id) {
+                return Err(ServiceError::coded(
+                    "service_invalid_value",
+                    format!("Session {id} is open in a worker"),
+                ));
+            }
+            catalog::rename(&meta.path, name)?;
+            self.refresh();
+            Ok(None)
+        })
+    }
+
+    fn cmd_attach(hub: &std::sync::Weak<Hub>, conn: &std::sync::Weak<Conn>, args: &[Value]) -> ServiceResult {
+        let (hub, conn) = (Self::upgrade_hub(hub)?, Self::upgrade_conn(conn)?);
+        let id = args.first().and_then(Value::as_str).unwrap_or_default().to_string();
+        let options = args.get(1).filter(|o| o.is_object());
+        hub.serialized(|| hub.attach(&conn, &id, options)).map(|()| None)
+    }
+
+    fn cmd_detach(hub: &std::sync::Weak<Hub>, conn: &std::sync::Weak<Conn>) -> ServiceResult {
+        let (hub, conn) = (Self::upgrade_hub(hub)?, Self::upgrade_conn(conn)?);
+        hub.serialized(|| hub.detach(&conn));
+        Ok(None)
+    }
+
+    fn management_service(&self, conn: &Arc<Conn>) -> Service {
         let (h1, h2, h3, h4, h5, h6, h7) = (
-            hub.clone(),
-            hub.clone(),
-            hub.clone(),
-            hub.clone(),
-            hub.clone(),
-            hub.clone(),
-            hub.clone(),
+            self.me.clone(),
+            self.me.clone(),
+            self.me.clone(),
+            self.me.clone(),
+            self.me.clone(),
+            self.me.clone(),
+            self.me.clone(),
         );
-        let (c1, c2, c3, c4) = (conn_of.clone(), conn_of.clone(), conn_of.clone(), conn_of);
-        let (h8, h9) = (hub.clone(), hub);
-        let management = Service::new(protocol::names::SESSION_MANAGEMENT)
-            .method("attach", move |args| {
-                let (hub, conn) = (h1()?, c1()?);
-                let id = args.first().and_then(Value::as_str).unwrap_or_default().to_string();
-                let options = args.get(1).filter(|o| o.is_object());
-                hub.serialized(|| hub.attach(&conn, &id, options)).map(|()| None)
-            })
+        let (c1, c2) = (Arc::downgrade(conn), Arc::downgrade(conn));
+        Service::new(protocol::names::SESSION_MANAGEMENT)
+            .method("attach", move |args| Self::cmd_attach(&h1, &c1, &args))
             .method("create", move |args| {
-                let hub = h2()?;
+                let hub = Self::upgrade_hub(&h2)?;
                 hub.serialized(|| hub.create(args.first().unwrap_or(&Value::Null)))
             })
             .method("describe", move |args| {
-                let hub = h3()?;
-                hub.describe(args.first().and_then(|o| o["cwd"].as_str()))
+                Self::upgrade_hub(&h3)?.describe(args.first().and_then(|o| o["cwd"].as_str()))
             })
-            .method("detach", move |_| {
-                let (hub, conn) = (h4()?, c2()?);
-                hub.serialized(|| hub.detach(&conn));
-                Ok(None)
-            })
+            .method("detach", move |_| Self::cmd_detach(&h4, &c2))
             .method("importPi", move |args| {
-                let hub = h8()?;
-                let content = args
-                    .first()
-                    .and_then(|s| s["content"].as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                hub.serialized(|| hub.import_pi(&content))
+                let hub = Self::upgrade_hub(&h5)?;
+                let content = args.first().and_then(|s| s["content"].as_str()).unwrap_or_default();
+                hub.serialized(|| hub.import_pi(content))
             })
             .method("remove", move |args| {
-                let hub = h5()?;
-                let id = args.first().and_then(Value::as_str).unwrap_or_default().to_string();
-                hub.serialized(|| {
-                    hub.remove_session(&id);
-                    let meta = hub.resolve(&id)?;
-                    hub.manager.stop_session(&meta);
-                    catalog::remove(&meta)?;
-                    hub.refresh();
-                    Ok(None)
-                })
+                let id = args.first().and_then(Value::as_str).unwrap_or_default();
+                Self::upgrade_hub(&h6)?.remove_session_entry(id)
             })
             .method("rename", move |args| {
-                let hub = h6()?;
-                let id = args.first().and_then(Value::as_str).unwrap_or_default().to_string();
-                let name = args.get(1).and_then(Value::as_str).unwrap_or_default().to_string();
-                hub.serialized(|| {
-                    let meta = hub.resolve(&id)?;
-                    if hub.manager.worker_pids().contains_key(&meta.id) {
-                        return Err(ServiceError::coded(
-                            "service_invalid_value",
-                            format!("Session {id} is open in a worker"),
-                        ));
-                    }
-                    catalog::rename(&meta.path, &name)?;
-                    hub.refresh();
-                    Ok(None)
-                })
-            });
-        let plugins = Service::new(protocol::names::PRESENTATION_PLUGINS)
+                let id = args.first().and_then(Value::as_str).unwrap_or_default();
+                let name = args.get(1).and_then(Value::as_str).unwrap_or_default();
+                Self::upgrade_hub(&h7)?.rename_session_entry(id, name)
+            })
+    }
+
+    fn plugins_service(&self, conn: &Arc<Conn>) -> Service {
+        let (h1, h2) = (self.me.clone(), self.me.clone());
+        let (c1, c2) = (Arc::downgrade(conn), Arc::downgrade(conn));
+        Service::new(protocol::names::PRESENTATION_PLUGINS)
             .method("prepareSession", move |args| {
-                let (hub, conn) = (h7()?, c3()?);
+                let (hub, conn) = (Self::upgrade_hub(&h1)?, Self::upgrade_conn(&c1)?);
                 let request = args.first().unwrap_or(&Value::Null);
                 let id = request["sessionId"].as_str().unwrap_or_default();
                 hub.serialized(|| {
@@ -667,32 +695,28 @@ impl Hub {
                     let paths: Vec<String> = request["packagePaths"]
                         .as_array()
                         .map_or_default(|p| p.iter().filter_map(Value::as_str).map(str::to_string).collect());
-                    *conn
-                        .prepared_plugins
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(paths);
+                    *jsrt::sync::lock(&conn.prepared_plugins) = Some(paths);
                     Ok(Some(presentation_facet_data()))
                 })
             })
             .method("reload", move |_| {
-                let (hub, conn) = (h9()?, c4()?);
+                let (hub, conn) = (Self::upgrade_hub(&h2)?, Self::upgrade_conn(&c2)?);
                 hub.serialized(|| {
-                    if conn
-                        .prepared_plugins
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .is_none()
-                    {
+                    if jsrt::sync::lock(&conn.prepared_plugins).is_none() {
                         return Err(ServiceError::internal("No Session plugin selection is prepared"));
                     }
                     Ok(Some(presentation_facet_data()))
                 })
-            });
+            })
+    }
+
+    fn server_services(&self, conn: &Arc<Conn>) -> Provider {
+        let directory = Service::new(protocol::names::SESSION_DIRECTORY).state("state", self.directory.clone());
         Provider {
             services: vec![
                 directory,
-                management,
-                plugins,
+                self.management_service(conn),
+                self.plugins_service(conn),
                 crate::prompt_schedules::server_service(self.me.clone()),
                 crate::session_inbox::server_service(self.me.clone()),
             ],
@@ -777,65 +801,99 @@ impl Hub {
         conn.close();
     }
 
+    fn handle_hello(&self, conn: &Arc<Conn>, version: i64, stream: &UnixStream) -> bool {
+        if !is_supported_protocol_version(version) {
+            let message = format!("Unsupported protocol version {version}; expected {PROTOCOL_VERSION}");
+            self.fail(conn, "version", message);
+            return false;
+        }
+        let provider = Arc::new(self.server_services(conn));
+        *jsrt::sync::lock(&conn.services) = Some(Arc::new(Endpoint::new(provider)));
+        if !conn.send(&ServerMessage::Hello {
+            version: PROTOCOL_VERSION,
+            server_id: self.server_id.clone(),
+        }) {
+            return false;
+        }
+        let _ = stream.set_read_timeout(None);
+        true
+    }
+
+    fn dispatch_client_message(
+        self: &Arc<Self>,
+        conn: &Arc<Conn>,
+        ready: &mut bool,
+        stream: &UnixStream,
+        message: ClientMessage,
+    ) -> bool {
+        match (*ready, message) {
+            (false, ClientMessage::Hello { version }) => {
+                if !self.handle_hello(conn, version, stream) {
+                    return false;
+                }
+                *ready = true;
+            }
+            (false, _) => {
+                self.fail(conn, "invalid_request", "The first client message must be hello".into());
+                return false;
+            }
+            (true, ClientMessage::Hello { .. }) => {
+                self.fail(
+                    conn,
+                    "invalid_request",
+                    "hello may only be sent as the first message".into(),
+                );
+                return false;
+            }
+            (true, ClientMessage::Cancel { id, target }) => self.cancel(conn, &id, &target),
+            (true, ClientMessage::Request { id, target, call }) => self.request(conn, id, target, call),
+        }
+        true
+    }
+
+    fn read_next_messages(
+        &self,
+        conn: &Arc<Conn>,
+        stream: &mut UnixStream,
+        decoder: &mut ClientMessageDecoder,
+        ready: bool,
+        buffer: &mut [u8],
+    ) -> Option<Vec<ClientMessage>> {
+        let read = match stream.read(buffer) {
+            Ok(0) => {
+                if let Err(error) = decoder.end() {
+                    self.log("[ultron server error]", &error.0);
+                }
+                return None;
+            }
+            Ok(n) => n,
+            Err(e) if e.kind() == ErrorKind::Interrupted => return Some(Vec::new()),
+            Err(e) if !ready && matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                self.fail(conn, "invalid_request", "Handshake timeout".into());
+                return None;
+            }
+            Err(_) => return None,
+        };
+        match decoder.push(&buffer[..read]) {
+            Ok(messages) => Some(messages),
+            Err(error) => {
+                self.fail(conn, "invalid_request", error.0);
+                None
+            }
+        }
+    }
+
     fn read_loop(self: &Arc<Self>, conn: &Arc<Conn>, mut stream: UnixStream) {
         let mut decoder = ClientMessageDecoder::default();
         let mut ready = false;
         let _ = stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT));
         let mut buffer = vec![0u8; 64 * 1024];
-        loop {
-            let read = match stream.read(&mut buffer) {
-                Ok(0) => {
-                    if let Err(error) = decoder.end() {
-                        self.log("[ultron server error]", &error.0);
-                    }
-                    return;
-                }
-                Ok(n) => n,
-                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                Err(e) if !ready && matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                    return self.fail(conn, "invalid_request", "Handshake timeout".into());
-                }
-                Err(_) => return,
-            };
-            let messages = match decoder.push(&buffer[..read]) {
-                Ok(messages) => messages,
-                Err(error) => return self.fail(conn, "invalid_request", error.0),
-            };
+        while let Some(messages) = self.read_next_messages(conn, &mut stream, &mut decoder, ready, &mut buffer) {
             for message in messages {
-                if conn.closed.load(Ordering::SeqCst) {
+                if conn.closed.load(Ordering::SeqCst)
+                    || !self.dispatch_client_message(conn, &mut ready, &stream, message)
+                {
                     return;
-                }
-                match (ready, message) {
-                    (false, ClientMessage::Hello { version }) => {
-                        if !is_supported_protocol_version(version) {
-                            let message =
-                                format!("Unsupported protocol version {version}; expected {PROTOCOL_VERSION}");
-                            return self.fail(conn, "version", message);
-                        }
-                        let provider = Arc::new(self.server_services(conn));
-                        *conn.services.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-                            Some(Arc::new(Endpoint::new(provider)));
-                        if !conn.send(&ServerMessage::Hello {
-                            version: PROTOCOL_VERSION,
-                            server_id: self.server_id.clone(),
-                        }) {
-                            return;
-                        }
-                        ready = true;
-                        let _ = stream.set_read_timeout(None);
-                    }
-                    (false, _) => {
-                        return self.fail(conn, "invalid_request", "The first client message must be hello".into());
-                    }
-                    (true, ClientMessage::Hello { .. }) => {
-                        return self.fail(
-                            conn,
-                            "invalid_request",
-                            "hello may only be sent as the first message".into(),
-                        );
-                    }
-                    (true, ClientMessage::Cancel { id, target }) => self.cancel(conn, &id, &target),
-                    (true, ClientMessage::Request { id, target, call }) => self.request(conn, id, target, call),
                 }
             }
         }
@@ -860,43 +918,110 @@ impl Hub {
         }
     }
 
-    fn request(self: &Arc<Self>, conn: &Arc<Conn>, id: String, target: RpcTarget, call: protocol::Value) {
-        if conn.active().contains_key(&id) {
-            return respond(
-                conn,
-                &id,
-                None,
-                Err(coded("invalid_request", "Request ID is already active")),
-                self,
-            );
+    fn parse_request(
+        &self,
+        conn: &Arc<Conn>,
+        id: &str,
+        target: &RpcTarget,
+        call_json: &Value,
+    ) -> Result<(Call, Option<String>, Option<String>), ServiceError> {
+        if conn.active().contains_key(id) {
+            return Err(coded("invalid_request", "Request ID is already active"));
         }
-        let call_json = to_json(&call);
-        let Some(parsed) = Call::parse(&call_json) else {
-            return respond(
-                conn,
-                &id,
-                None,
-                Err(coded("invalid_request", "Invalid service call")),
-                self,
-            );
-        };
-        let subscription = subscribe_id(&call_json);
-        let unsubscribe = unsubscribe_id(&call_json);
-        let error = if target.server_id() != self.server_id {
-            Some(coded("wrong_server", "Request was addressed to another server"))
-        } else if let Some(sub) = &subscription
+        let parsed = Call::parse(call_json).ok_or_else(|| coded("invalid_request", "Invalid service call"))?;
+        let subscription = subscribe_id(call_json);
+        let unsubscribe = unsubscribe_id(call_json);
+        if target.server_id() != self.server_id {
+            return Err(coded("wrong_server", "Request was addressed to another server"));
+        }
+        if let Some(sub) = &subscription
             && conn.subscriptions().contains_key(sub)
         {
-            Some(coded(
+            return Err(coded(
                 "invalid_request",
                 &format!("Duplicate service subscription {sub}"),
-            ))
-        } else {
-            None
-        };
-        if let Some(error) = error {
-            return respond(conn, &id, None, Err(error), self);
+            ));
         }
+        Ok((parsed, subscription, unsubscribe))
+    }
+
+    fn finish_request(
+        conn: &Arc<Conn>,
+        hub: &Arc<Hub>,
+        id: &str,
+        generation: u64,
+        subscription: Option<&str>,
+        unsubscribe: Option<&str>,
+        result: ServiceResult,
+    ) {
+        let cancelled = {
+            let mut active = conn.active();
+            match active.get(id) {
+                Some(a) if a.generation == generation => active.remove(id).is_some_and(|a| a.cancelled),
+                _ => false,
+            }
+        };
+        let result = match result {
+            Err(_) if cancelled => Err(coded(crate::workers::CANCELLED_CODE, crate::workers::CANCELLED_MESSAGE)),
+            other => other,
+        };
+        if result.is_ok()
+            && let Some(sub) = unsubscribe
+        {
+            conn.subscriptions().remove(sub);
+        }
+        respond(conn, id, subscription, result, hub);
+    }
+
+    fn invoke_session_request(
+        self: &Arc<Self>,
+        conn: &Arc<Conn>,
+        (id, generation): (String, u64),
+        session: SessionTarget,
+        call_json: Value,
+        subscription: Option<&String>,
+        finish: Box<dyn FnOnce(ServiceResult) + Send>,
+    ) {
+        let attachment = self
+            .router()
+            .routes
+            .attached(conn.id, &session.session_id)
+            .filter(|a| a.id == session.attachment_id)
+            .map(|a| (a.handle.clone(), a.id.clone()));
+        let Some((handle, attachment)) = attachment else {
+            let error = if self.router().routes.reconnecting(conn.id, &session.session_id) {
+                coded(
+                    protocol::names::RECONNECTING_CODE,
+                    "The session worker is restarting; this client is re-attached when it is back",
+                )
+            } else {
+                coded("session_not_attached", "Session is not attached to this client")
+            };
+            return finish(Err(error));
+        };
+        if let Some(sub) = subscription {
+            jsrt::sync::lock(&conn.session_subscriptions).insert(sub.clone());
+        }
+        let operation = self
+            .manager
+            .invoke(&handle, &attachment, call_json, conn.publisher(), finish);
+        let cancel_now = operation.and_then(|operation| {
+            let mut active = conn.active();
+            let entry = active.get_mut(&id).filter(|a| a.generation == generation)?;
+            entry.operation = Some(operation.clone());
+            entry.cancelled.then_some(operation)
+        });
+        if let Some(operation) = cancel_now {
+            self.manager.cancel_operation(&operation);
+        }
+    }
+
+    fn request(self: &Arc<Self>, conn: &Arc<Conn>, id: String, target: RpcTarget, call: protocol::Value) {
+        let call_json = to_json(&call);
+        let (parsed, subscription, unsubscribe) = match self.parse_request(conn, &id, &target, &call_json) {
+            Ok(validated) => validated,
+            Err(error) => return respond(conn, &id, None, Err(error), self),
+        };
         if let Some(sub) = &subscription {
             conn.subscriptions()
                 .insert(sub.clone(), Subscription::Pending(Vec::new()));
@@ -915,34 +1040,20 @@ impl Hub {
             let (conn, hub, id) = (conn.clone(), self.clone(), id.clone());
             let subscription = subscription.clone();
             move |result: ServiceResult| {
-                let cancelled = {
-                    let mut active = conn.active();
-                    match active.get(&id) {
-                        Some(a) if a.generation == generation => active.remove(&id).is_some_and(|a| a.cancelled),
-                        _ => false,
-                    }
-                };
-                let result = match result {
-                    Err(_) if cancelled => {
-                        Err(coded(crate::workers::CANCELLED_CODE, crate::workers::CANCELLED_MESSAGE))
-                    }
-                    other => other,
-                };
-                if result.is_ok()
-                    && let Some(sub) = &unsubscribe
-                {
-                    conn.subscriptions().remove(sub);
-                }
-                respond(&conn, &id, subscription.as_deref(), result, &hub);
+                Self::finish_request(
+                    &conn,
+                    &hub,
+                    &id,
+                    generation,
+                    subscription.as_deref(),
+                    unsubscribe.as_deref(),
+                    result,
+                );
             }
         };
         match target {
             RpcTarget::Server { .. } => {
-                let endpoint = conn
-                    .services
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone();
+                let endpoint = jsrt::sync::lock(&conn.services).clone();
                 let result = match endpoint {
                     Some(endpoint) => endpoint.invoke(&parsed, conn.publisher()),
                     None => Err(ServiceError::internal("Server services are not attached")),
@@ -950,44 +1061,14 @@ impl Hub {
                 finish(result);
             }
             RpcTarget::Session(session) => {
-                let attachment = {
-                    let router = self.router();
-                    router
-                        .routes
-                        .attached(conn.id, &session.session_id)
-                        .filter(|a| a.id == session.attachment_id)
-                        .map(|a| (a.handle.clone(), a.id.clone()))
-                };
-                let Some((handle, attachment)) = attachment else {
-                    if self.router().routes.reconnecting(conn.id, &session.session_id) {
-                        return finish(Err(coded(
-                            protocol::names::RECONNECTING_CODE,
-                            "The session worker is restarting; this client is re-attached when it is back",
-                        )));
-                    }
-                    return finish(Err(coded(
-                        "session_not_attached",
-                        "Session is not attached to this client",
-                    )));
-                };
-                if let Some(sub) = &subscription {
-                    conn.session_subscriptions
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .insert(sub.clone());
-                }
-                let operation =
-                    self.manager
-                        .invoke(&handle, &attachment, call_json, conn.publisher(), Box::new(finish));
-                let cancel_now = operation.and_then(|operation| {
-                    let mut active = conn.active();
-                    let entry = active.get_mut(&id).filter(|a| a.generation == generation)?;
-                    entry.operation = Some(operation.clone());
-                    entry.cancelled.then_some(operation)
-                });
-                if let Some(operation) = cancel_now {
-                    self.manager.cancel_operation(&operation);
-                }
+                self.invoke_session_request(
+                    conn,
+                    (id, generation),
+                    session,
+                    call_json,
+                    subscription.as_ref(),
+                    Box::new(finish),
+                );
             }
         }
     }

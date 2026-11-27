@@ -115,103 +115,134 @@ impl MessageDecoder {
         if b.len() < 2 {
             return Ok(None);
         }
-        if b[0] & 0x70 != 0 {
-            return Err("Reserved bits must be clear".into());
-        }
-        let fin = b[0] & 0x80 != 0;
-        let opcode = b[0] & 0x0f;
-        let masked = b[1] & 0x80 != 0;
-        if masked != self.expect_masked {
-            return Err(if masked {
-                "A server must not mask frames".into()
-            } else {
-                "A client must mask frames".into()
-            });
-        }
-        let (len, mut at) = match b[1] & 0x7f {
-            126 if b.len() < 4 => return Ok(None),
-            126 => (u64::from(u16::from_be_bytes([b[2], b[3]])), 4),
-            127 if b.len() < 10 => return Ok(None),
-            127 => {
-                let mut bytes = [0u8; 8];
-                bytes.copy_from_slice(&b[2..10]);
-                (u64::from_be_bytes(bytes), 10)
-            }
-            len => (u64::from(len), 2),
+        let (fin, opcode, masked) = parse_frame_header(b, self.expect_masked)?;
+        let Some((len, mut at)) = parse_frame_len(b) else {
+            return Ok(None);
         };
-        let control = opcode >= 0x8;
-        if control && (len > 125 || !fin) {
-            return Err("Invalid control frame".into());
-        }
-        if len > self.max_message as u64 {
-            return Err("Message too large".into());
-        }
-        let key = if masked {
-            if b.len() < at + 4 {
-                return Ok(None);
-            }
-            let key = [b[at], b[at + 1], b[at + 2], b[at + 3]];
-            at += 4;
-            Some(key)
-        } else {
-            None
+        validate_frame_len(opcode, fin, len, self.max_message)?;
+        let Some(key) = read_mask_key(b, masked, &mut at) else {
+            return Ok(None);
         };
         let len = len as usize;
         if b.len() < at + len {
             return Ok(None);
         }
         let mut payload = b[at..at + len].to_vec();
-        if let Some(key) = key {
-            for (i, byte) in payload.iter_mut().enumerate() {
-                *byte ^= key[i % 4];
-            }
-        }
+        unmask_payload(&mut payload, key);
         self.buffer.drain(..at + len);
         Ok(Some((fin, opcode, payload)))
     }
 
     fn assemble(&mut self, fin: bool, opcode: u8, payload: Vec<u8>) -> Result<Option<Message>, String> {
         match opcode {
-            OPCODE_CLOSE => {
-                if payload.len() == 1 {
-                    return Err("Invalid close payload".into());
-                }
-                if payload.is_empty() {
-                    return Ok(Some(Message::Close(None, String::new())));
-                }
-                let code = u16::from_be_bytes([payload[0], payload[1]]);
-                let reason = String::from_utf8(payload[2..].to_vec()).map_err(|_| "Invalid close reason")?;
-                Ok(Some(Message::Close(Some(code), reason)))
-            }
+            OPCODE_CLOSE => assemble_close(payload),
             OPCODE_PING => Ok(Some(Message::Ping(payload))),
             OPCODE_PONG => Ok(Some(Message::Pong(payload))),
-            OPCODE_TEXT | OPCODE_BINARY => {
-                if self.fragments.is_some() {
-                    return Err("Expected a continuation frame".into());
-                }
-                if fin {
-                    return finish(opcode, payload).map(Some);
-                }
-                self.fragments = Some((opcode, payload));
-                Ok(None)
-            }
-            OPCODE_CONTINUATION => {
-                let Some((first, mut data)) = self.fragments.take() else {
-                    return Err("Unexpected continuation frame".into());
-                };
-                data.extend_from_slice(&payload);
-                if data.len() > self.max_message {
-                    return Err("Message too large".into());
-                }
-                if fin {
-                    return finish(first, data).map(Some);
-                }
-                self.fragments = Some((first, data));
-                Ok(None)
-            }
+            OPCODE_TEXT | OPCODE_BINARY => self.assemble_data(fin, opcode, payload),
+            OPCODE_CONTINUATION => self.assemble_continuation(fin, payload),
             _ => Err(format!("Unknown opcode {opcode}")),
         }
     }
+
+    fn assemble_data(&mut self, fin: bool, opcode: u8, payload: Vec<u8>) -> Result<Option<Message>, String> {
+        if self.fragments.is_some() {
+            return Err("Expected a continuation frame".into());
+        }
+        if fin {
+            return finish(opcode, payload).map(Some);
+        }
+        self.fragments = Some((opcode, payload));
+        Ok(None)
+    }
+
+    fn assemble_continuation(&mut self, fin: bool, payload: Vec<u8>) -> Result<Option<Message>, String> {
+        let Some((first, mut data)) = self.fragments.take() else {
+            return Err("Unexpected continuation frame".into());
+        };
+        data.extend_from_slice(&payload);
+        if data.len() > self.max_message {
+            return Err("Message too large".into());
+        }
+        if fin {
+            return finish(first, data).map(Some);
+        }
+        self.fragments = Some((first, data));
+        Ok(None)
+    }
+}
+
+fn parse_frame_header(b: &[u8], expect_masked: bool) -> Result<(bool, u8, bool), String> {
+    if b[0] & 0x70 != 0 {
+        return Err("Reserved bits must be clear".into());
+    }
+    let fin = b[0] & 0x80 != 0;
+    let opcode = b[0] & 0x0f;
+    let masked = b[1] & 0x80 != 0;
+    if masked != expect_masked {
+        return Err(if masked {
+            "A server must not mask frames".into()
+        } else {
+            "A client must mask frames".into()
+        });
+    }
+    Ok((fin, opcode, masked))
+}
+
+fn parse_frame_len(b: &[u8]) -> Option<(u64, usize)> {
+    match b[1] & 0x7f {
+        126 if b.len() < 4 => None,
+        126 => Some((u64::from(u16::from_be_bytes([b[2], b[3]])), 4)),
+        127 if b.len() < 10 => None,
+        127 => {
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(&b[2..10]);
+            Some((u64::from_be_bytes(bytes), 10))
+        }
+        len => Some((u64::from(len), 2)),
+    }
+}
+
+fn validate_frame_len(opcode: u8, fin: bool, len: u64, max_message: usize) -> Result<(), String> {
+    let control = opcode >= 0x8;
+    if control && (len > 125 || !fin) {
+        return Err("Invalid control frame".into());
+    }
+    if len > max_message as u64 {
+        return Err("Message too large".into());
+    }
+    Ok(())
+}
+
+fn read_mask_key(b: &[u8], masked: bool, at: &mut usize) -> Option<Option<[u8; 4]>> {
+    if !masked {
+        return Some(None);
+    }
+    if b.len() < *at + 4 {
+        return None;
+    }
+    let key = [b[*at], b[*at + 1], b[*at + 2], b[*at + 3]];
+    *at += 4;
+    Some(Some(key))
+}
+
+fn unmask_payload(payload: &mut [u8], key: Option<[u8; 4]>) {
+    if let Some(key) = key {
+        for (i, byte) in payload.iter_mut().enumerate() {
+            *byte ^= key[i % 4];
+        }
+    }
+}
+
+fn assemble_close(payload: Vec<u8>) -> Result<Option<Message>, String> {
+    if payload.len() == 1 {
+        return Err("Invalid close payload".into());
+    }
+    if payload.is_empty() {
+        return Ok(Some(Message::Close(None, String::new())));
+    }
+    let code = u16::from_be_bytes([payload[0], payload[1]]);
+    let reason = String::from_utf8(payload[2..].to_vec()).map_err(|_| "Invalid close reason")?;
+    Ok(Some(Message::Close(Some(code), reason)))
 }
 
 fn finish(opcode: u8, payload: Vec<u8>) -> Result<Message, String> {

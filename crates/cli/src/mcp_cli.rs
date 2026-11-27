@@ -140,6 +140,134 @@ fn parse_options(args: &[String], known: &[(&str, OptionKind)], io: &mut Io, max
     Some(parsed)
 }
 
+fn run_list(
+    rest: &[String],
+    loaded: &LoadedConfig,
+    untrusted_note: Option<String>,
+    env: &Env,
+    agent_dir: &Path,
+    io: &mut Io,
+) -> i32 {
+    let Some(parsed) = parse_options(rest, &[("json", OptionKind::Flag)], io, usize::MAX) else {
+        return 1;
+    };
+    if !parsed.positional.is_empty() {
+        io.error(&format!("Usage: ultron mcp list [--json]\n{HELP_HINT}"));
+        return 1;
+    }
+    list(
+        loaded,
+        parsed.values.contains_key("json"),
+        untrusted_note,
+        env,
+        agent_dir,
+        io,
+    )
+}
+
+fn find_server_entry<'a>(
+    loaded: &'a LoadedConfig,
+    name: &str,
+    untrusted_note: Option<String>,
+    io: &mut Io,
+) -> Option<&'a ServerEntry> {
+    if let Some(entry) = loaded.servers.iter().find(|s| s.name == name) {
+        return Some(entry);
+    }
+    let configured: Vec<&str> = loaded.servers.iter().map(|s| s.name.as_str()).collect();
+    io.error(&format!(
+        "No MCP server named \"{name}\".{} Configured: {}.",
+        untrusted_note.map_or(String::new(), |n| format!(" {n}")),
+        if configured.is_empty() {
+            "none".to_string()
+        } else {
+            configured.join(", ")
+        }
+    ));
+    None
+}
+
+fn run_auth(
+    command: &str,
+    rest: &[String],
+    loaded: &LoadedConfig,
+    untrusted_note: Option<String>,
+    env: &Env,
+    agent_dir: &Path,
+    io: &mut Io,
+) -> i32 {
+    let known: &[(&str, OptionKind)] = if command == "login" {
+        &[("timeout", OptionKind::Value)]
+    } else {
+        &[]
+    };
+    let Some(parsed) = parse_options(rest, known, io, usize::MAX) else {
+        return 1;
+    };
+    let (Some(name), 1) = (parsed.positional.first(), parsed.positional.len()) else {
+        io.error(&format!("Usage: ultron mcp {command} <server>\n{HELP_HINT}"));
+        return 1;
+    };
+    let Some(entry) = find_server_entry(loaded, name, untrusted_note, io) else {
+        return 1;
+    };
+    let connection = mcp::connection::Connection::new(entry.clone(), crate::mcp_login::connection_env(env, agent_dir));
+    let Some(url) = connection.oauth_url() else {
+        io.error(&format!(
+            "MCP server \"{name}\" does not use OAuth. Only HTTP servers without an Authorization header do."
+        ));
+        return 1;
+    };
+    let outcome = execute_auth(command, entry, &connection, &url, &parsed, env, agent_dir);
+    connection.close();
+    for line in &outcome.out {
+        io.log(line);
+    }
+    for line in &outcome.err {
+        io.error(line);
+    }
+    outcome.code
+}
+
+fn execute_auth(
+    command: &str,
+    entry: &ServerEntry,
+    connection: &Arc<mcp::connection::Connection>,
+    url: &str,
+    parsed: &Parsed,
+    env: &Env,
+    agent_dir: &Path,
+) -> crate::mcp_login::Outcome {
+    if command == "logout" {
+        return crate::mcp_login::logout(entry, url, agent_dir);
+    }
+    let timeout = parsed.values.get("timeout").cloned().flatten();
+    match crate::mcp_login::login_timeout(timeout.as_deref()) {
+        Ok(seconds) => crate::mcp_login::login(connection, url, seconds, env),
+        Err(message) => crate::mcp_login::Outcome {
+            err: vec![message],
+            code: 1,
+            ..Default::default()
+        },
+    }
+}
+
+fn load_mcp_config(agent_dir: &Path, cwd: &Path, project_config: &Path) -> (LoadedConfig, Option<String>) {
+    let trusted = config::trust::ProjectTrustStore::new(agent_dir).get(cwd).ok().flatten() == Some(true);
+    let loaded = load_config(agent_dir, cwd, trusted);
+    let untrusted_note = (!trusted && project_config.exists()).then(|| {
+        format!(
+            "{} is ignored because the project is not trusted. Start ultron in the project to trust it.",
+            project_config.display()
+        )
+    });
+    (loaded, untrusted_note)
+}
+
+fn is_help_request(args: &[String]) -> bool {
+    args[0] == "help" || args.iter().any(|a| a == "--help" || a == "-h")
+}
+
 /// Handle `mcp <management command>`; None when `argv` is not one.
 pub fn run(argv: &[String], env: &Env, out: &mut dyn std::io::Write, err: &mut dyn std::io::Write) -> Option<i32> {
     if argv.first().map(String::as_str) != Some("mcp") || !is_management_command(argv.get(1).map(String::as_str)) {
@@ -147,11 +275,11 @@ pub fn run(argv: &[String], env: &Env, out: &mut dyn std::io::Write, err: &mut d
     }
     let mut io = Io { out, err };
     let args = &argv[1..];
-    let command = args[0].as_str();
-    if command == "help" || args.iter().any(|a| a == "--help" || a == "-h") {
+    if is_help_request(args) {
         io.log(HELP);
         return Some(0);
     }
+    let command = args[0].as_str();
     let agent_dir = env.agent_dir();
     let project_config = mcp::config::project_path(&env.cwd);
     let rest = &args[1..];
@@ -160,92 +288,18 @@ pub fn run(argv: &[String], env: &Env, out: &mut dyn std::io::Write, err: &mut d
         "remove" => return Some(remove(rest, &project_config, env, &agent_dir, &mut io)),
         _ => {}
     }
-    let trusted = config::trust::ProjectTrustStore::new(&agent_dir)
-        .get(&env.cwd)
-        .ok()
-        .flatten()
-        == Some(true);
-    let loaded = load_config(&agent_dir, &env.cwd, trusted);
-    let untrusted_note = (!trusted && project_config.exists()).then(|| {
-        format!(
-            "{} is ignored because the project is not trusted. Start ultron in the project to trust it.",
-            project_config.display()
-        )
-    });
+    let (loaded, untrusted_note) = load_mcp_config(&agent_dir, &env.cwd, &project_config);
     match command {
-        "list" => {
-            let Some(parsed) = parse_options(rest, &[("json", OptionKind::Flag)], &mut io, usize::MAX) else {
-                return Some(1);
-            };
-            if !parsed.positional.is_empty() {
-                io.error(&format!("Usage: ultron mcp list [--json]\n{HELP_HINT}"));
-                return Some(1);
-            }
-            Some(list(
-                &loaded,
-                parsed.values.contains_key("json"),
-                untrusted_note,
-                env,
-                &agent_dir,
-                &mut io,
-            ))
-        }
-        _ => {
-            let known: &[(&str, OptionKind)] = if command == "login" {
-                &[("timeout", OptionKind::Value)]
-            } else {
-                &[]
-            };
-            let Some(parsed) = parse_options(rest, known, &mut io, usize::MAX) else {
-                return Some(1);
-            };
-            let (Some(name), 1) = (parsed.positional.first(), parsed.positional.len()) else {
-                io.error(&format!("Usage: ultron mcp {command} <server>\n{HELP_HINT}"));
-                return Some(1);
-            };
-            let Some(entry) = loaded.servers.iter().find(|s| &s.name == name) else {
-                let configured: Vec<&str> = loaded.servers.iter().map(|s| s.name.as_str()).collect();
-                io.error(&format!(
-                    "No MCP server named \"{name}\".{} Configured: {}.",
-                    untrusted_note.map_or(String::new(), |n| format!(" {n}")),
-                    if configured.is_empty() {
-                        "none".to_string()
-                    } else {
-                        configured.join(", ")
-                    }
-                ));
-                return Some(1);
-            };
-            let connection =
-                mcp::connection::Connection::new(entry.clone(), crate::mcp_login::connection_env(env, &agent_dir));
-            let Some(url) = connection.oauth_url() else {
-                io.error(&format!(
-                    "MCP server \"{name}\" does not use OAuth. Only HTTP servers without an Authorization header do."
-                ));
-                return Some(1);
-            };
-            let outcome = if command == "logout" {
-                crate::mcp_login::logout(entry, &url, &agent_dir)
-            } else {
-                let timeout = parsed.values.get("timeout").cloned().flatten();
-                match crate::mcp_login::login_timeout(timeout.as_deref()) {
-                    Ok(seconds) => crate::mcp_login::login(&connection, &url, seconds, env),
-                    Err(message) => crate::mcp_login::Outcome {
-                        err: vec![message],
-                        code: 1,
-                        ..Default::default()
-                    },
-                }
-            };
-            connection.close();
-            for line in &outcome.out {
-                io.log(line);
-            }
-            for line in &outcome.err {
-                io.error(line);
-            }
-            Some(outcome.code)
-        }
+        "list" => Some(run_list(rest, &loaded, untrusted_note, env, &agent_dir, &mut io)),
+        _ => Some(run_auth(
+            command,
+            rest,
+            &loaded,
+            untrusted_note,
+            env,
+            &agent_dir,
+            &mut io,
+        )),
     }
 }
 
@@ -270,6 +324,140 @@ fn js_number_value(text: &str) -> Value {
     jsrt::json::number(jsrt::number::parse(text))
 }
 
+fn check_misplaced_add_option(parsed: &Parsed, is_http: bool, io: &mut Io) -> bool {
+    let http_only = [
+        "header",
+        "bearer-token-env-var",
+        "oauth-client-id",
+        "oauth-client-secret",
+        "oauth-callback-port",
+        "oauth-client-name",
+    ];
+    let stdio_only = ["env", "cwd"];
+    let disallowed = if is_http { &stdio_only[..] } else { &http_only[..] };
+    let misplaced = disallowed
+        .iter()
+        .find(|o| parsed.values.contains_key(**o) || parsed.lists.contains_key(**o));
+    let Some(option) = misplaced else {
+        return true;
+    };
+    let target = if is_http {
+        "stdio servers"
+    } else {
+        "HTTP servers (--url)"
+    };
+    io.error(&format!("--{option} only applies to {target}."));
+    false
+}
+
+fn build_http_server_config(url: &str, parsed: &Parsed, io: &mut Io) -> Option<Map<String, Value>> {
+    let value = |k: &str| parsed.values.get(k).cloned().flatten();
+    let mut headers = parse_pairs("header", parsed.lists.get("header"), io)?;
+    if let Some(bearer) = value("bearer-token-env-var") {
+        headers.insert("Authorization".into(), Value::String(format!("Bearer ${{{bearer}}}")));
+    }
+    let mut oauth = Map::new();
+    for (flag, key) in [
+        ("oauth-client-id", "clientId"),
+        ("oauth-client-secret", "clientSecret"),
+        ("oauth-client-name", "clientName"),
+    ] {
+        if let Some(v) = value(flag) {
+            oauth.insert(key.into(), v.into());
+        }
+    }
+    if let Some(v) = value("oauth-callback-port") {
+        oauth.insert("callbackPort".into(), js_number_value(&v));
+    }
+    let mut config = Map::new();
+    config.insert("url".into(), Value::String(url.to_string()));
+    if !headers.is_empty() {
+        config.insert("headers".into(), Value::Object(headers));
+    }
+    if !oauth.is_empty() {
+        config.insert("oauth".into(), Value::Object(oauth));
+    }
+    Some(config)
+}
+
+fn build_stdio_server_config(command: &[String], parsed: &Parsed, io: &mut Io) -> Option<Map<String, Value>> {
+    let env_pairs = parse_pairs("env", parsed.lists.get("env"), io)?;
+    let mut config = Map::new();
+    config.insert("command".into(), Value::String(command[0].clone()));
+    if command.len() > 1 {
+        config.insert("args".into(), json!(command[1..]));
+    }
+    if !env_pairs.is_empty() {
+        config.insert("env".into(), Value::Object(env_pairs));
+    }
+    if let Some(cwd) = parsed.values.get("cwd").cloned().flatten() {
+        config.insert("cwd".into(), cwd.into());
+    }
+    Some(config)
+}
+
+struct AddSummary<'a> {
+    name: &'a str,
+    path: &'a Path,
+    project: bool,
+    replaced: bool,
+    may_need_sign_in: bool,
+}
+
+fn log_add_result(summary: &AddSummary<'_>, env: &Env, agent_dir: &Path, io: &mut Io) {
+    let scope = if summary.project { "project" } else { "global" };
+    let verb = if summary.replaced { "Replaced" } else { "Added" };
+    io.log(&format!(
+        "{verb} {scope} MCP server \"{}\" in {}.",
+        summary.name,
+        summary.path.display()
+    ));
+    if summary.project
+        && config::trust::ProjectTrustStore::new(agent_dir)
+            .get(&env.cwd)
+            .ok()
+            .flatten()
+            != Some(true)
+    {
+        io.log(&format!(
+            "The project is not trusted, so {} is ignored until you start ultron in the project and trust it.",
+            summary.path.display()
+        ));
+    }
+    let login_hint = if summary.may_need_sign_in {
+        format!(". If it requires sign-in: ultron mcp login {}", summary.name)
+    } else {
+        String::new()
+    };
+    io.log(&format!("Check it with: ultron mcp list{login_hint}"));
+}
+
+fn build_server_config(
+    url: Option<&str>,
+    command: &[String],
+    parsed: &Parsed,
+    io: &mut Io,
+) -> Option<Map<String, Value>> {
+    let mut config = match url {
+        Some(url) => build_http_server_config(url, parsed, io)?,
+        None => build_stdio_server_config(command, parsed, io)?,
+    };
+    for key in ["exposure", "description"] {
+        if let Some(val) = parsed.values.get(key).cloned().flatten() {
+            config.insert(key.into(), val.into());
+        }
+    }
+    Some(config)
+}
+
+fn server_may_need_sign_in(validated: &Map<String, Value>) -> bool {
+    validated.contains_key("url")
+        && !validated
+            .get("headers")
+            .and_then(Value::as_object)
+            .is_some_and(|h| h.keys().any(|k| k.eq_ignore_ascii_case("authorization")))
+}
+
 fn add(args: &[String], project_config: &Path, env: &Env, agent_dir: &Path, io: &mut Io) -> i32 {
     use OptionKind::{Flag, List, Value as V};
     let usage = format!("Usage: ultron mcp add <server> [options] (--url <url> | -- <command> [args...])\n{HELP_HINT}");
@@ -290,89 +478,21 @@ fn add(args: &[String], project_config: &Path, env: &Env, agent_dir: &Path, io: 
     let Some(parsed) = parse_options(args, &known, io, 2) else {
         return 1;
     };
-    let value = |k: &str| parsed.values.get(k).cloned().flatten();
-    let has = |k: &str| parsed.values.contains_key(k) || parsed.lists.contains_key(k);
     let (name, command) = match parsed.positional.split_first() {
         Some((name, command)) => (name.clone(), command.to_vec()),
         None => (String::new(), Vec::new()),
     };
-    let url = value("url");
+    let url = parsed.values.get("url").cloned().flatten();
     if name.is_empty() || url.is_none() == command.is_empty() {
         io.error(&usage);
         return 1;
     }
-    let http_only = [
-        "header",
-        "bearer-token-env-var",
-        "oauth-client-id",
-        "oauth-client-secret",
-        "oauth-callback-port",
-        "oauth-client-name",
-    ];
-    let stdio_only = ["env", "cwd"];
-    let misplaced = if url.is_none() { &http_only[..] } else { &stdio_only[..] }
-        .iter()
-        .find(|o| has(o));
-    if let Some(option) = misplaced {
-        io.error(&format!(
-            "--{option} only applies to {}.",
-            if url.is_none() {
-                "HTTP servers (--url)"
-            } else {
-                "stdio servers"
-            }
-        ));
+    if !check_misplaced_add_option(&parsed, url.is_some(), io) {
         return 1;
     }
-    let mut config = Map::new();
-    if let Some(url) = &url {
-        let Some(mut headers) = parse_pairs("header", parsed.lists.get("header"), io) else {
-            return 1;
-        };
-        if let Some(bearer) = value("bearer-token-env-var") {
-            headers.insert("Authorization".into(), Value::String(format!("Bearer ${{{bearer}}}")));
-        }
-        let mut oauth = Map::new();
-        if let Some(v) = value("oauth-client-id") {
-            oauth.insert("clientId".into(), v.into());
-        }
-        if let Some(v) = value("oauth-client-secret") {
-            oauth.insert("clientSecret".into(), v.into());
-        }
-        if let Some(v) = value("oauth-callback-port") {
-            oauth.insert("callbackPort".into(), js_number_value(&v));
-        }
-        if let Some(v) = value("oauth-client-name") {
-            oauth.insert("clientName".into(), v.into());
-        }
-        config.insert("url".into(), Value::String(url.clone()));
-        if !headers.is_empty() {
-            config.insert("headers".into(), Value::Object(headers));
-        }
-        if !oauth.is_empty() {
-            config.insert("oauth".into(), Value::Object(oauth));
-        }
-    } else {
-        let Some(env_pairs) = parse_pairs("env", parsed.lists.get("env"), io) else {
-            return 1;
-        };
-        config.insert("command".into(), Value::String(command[0].clone()));
-        if command.len() > 1 {
-            config.insert("args".into(), json!(command[1..]));
-        }
-        if !env_pairs.is_empty() {
-            config.insert("env".into(), Value::Object(env_pairs));
-        }
-        if let Some(cwd) = value("cwd") {
-            config.insert("cwd".into(), cwd.into());
-        }
-    }
-    if let Some(exposure) = value("exposure") {
-        config.insert("exposure".into(), exposure.into());
-    }
-    if let Some(description) = value("description") {
-        config.insert("description".into(), description.into());
-    }
+    let Some(config) = build_server_config(url.as_deref(), &command, &parsed, io) else {
+        return 1;
+    };
     let validated = match validate_server_config(&name, &Value::Object(config)) {
         Ok(v) => v,
         Err(message) => {
@@ -386,12 +506,7 @@ fn add(args: &[String], project_config: &Path, env: &Env, agent_dir: &Path, io: 
     } else {
         config::paths::AgentPaths::new(agent_dir).mcp()
     };
-    let scope = if project { "project" } else { "global" };
-    let may_need_sign_in = validated.contains_key("url")
-        && !validated
-            .get("headers")
-            .and_then(Value::as_object)
-            .is_some_and(|h| h.keys().any(|k| k.eq_ignore_ascii_case("authorization")));
+    let may_need_sign_in = server_may_need_sign_in(&validated);
     let replaced = match mcp::edit::add_server_config(&path, &name, validated) {
         Ok(r) => r,
         Err(message) => {
@@ -399,31 +514,18 @@ fn add(args: &[String], project_config: &Path, env: &Env, agent_dir: &Path, io: 
             return 1;
         }
     };
-    io.log(&format!(
-        "{} {scope} MCP server \"{name}\" in {}.",
-        if replaced { "Replaced" } else { "Added" },
-        path.display()
-    ));
-    if project
-        && config::trust::ProjectTrustStore::new(agent_dir)
-            .get(&env.cwd)
-            .ok()
-            .flatten()
-            != Some(true)
-    {
-        io.log(&format!(
-            "The project is not trusted, so {} is ignored until you start ultron in the project and trust it.",
-            path.display()
-        ));
-    }
-    io.log(&format!(
-        "Check it with: ultron mcp list{}",
-        if may_need_sign_in {
-            format!(". If it requires sign-in: ultron mcp login {name}")
-        } else {
-            String::new()
-        }
-    ));
+    log_add_result(
+        &AddSummary {
+            name: &name,
+            path: &path,
+            project,
+            replaced,
+            may_need_sign_in,
+        },
+        env,
+        agent_dir,
+        io,
+    );
     0
 }
 
@@ -551,6 +653,75 @@ fn connect_oauth(entry: &ServerEntry, env: &Env) -> Connection {
     report
 }
 
+fn failed_connection(error: String) -> Connection {
+    Connection {
+        state: "failed",
+        tools: Vec::new(),
+        resources: None,
+        error: Some(error),
+    }
+}
+
+fn build_transport(spec: TransportSpec, env: &Env) -> (Arc<dyn Transport>, Option<Arc<mcp::StdioTransport>>) {
+    match spec {
+        TransportSpec::Stdio(options) => {
+            let t = Arc::new(mcp::StdioTransport::new(options));
+            (t.clone(), Some(t))
+        }
+        TransportSpec::Http(options) => {
+            let options = mcp::http::HttpOptions {
+                proxy: Some(ai::net::ProxyEnv::from_lookup(&*env.var)),
+                ..options
+            };
+            (Arc::new(mcp::http::HttpTransport::new(options)), None)
+        }
+    }
+}
+
+fn inspect_connected_client(client: &Client, transport: Arc<dyn Transport>) -> Result<Connection, mcp::Error> {
+    client.connect(transport)?;
+    let capabilities = client.server_capabilities().unwrap_or(Value::Null);
+    let tools = if capabilities.get("tools").is_some_and(|t| !t.is_null()) {
+        client.list_tools(RequestOptions::default())?
+    } else {
+        Vec::new()
+    };
+    let resources = capabilities.get("resources").is_some().then(|| {
+        let resources = client.list_resources(RequestOptions::default()).unwrap_or_default();
+        let templates = client
+            .list_resource_templates(RequestOptions::default())
+            .unwrap_or_default();
+        (
+            resources.iter().filter(|r| !is_app_resource(r)).count(),
+            templates.iter().filter(|r| !is_app_resource(r)).count(),
+        )
+    });
+    if client.connection_state() != ConnState::Connected {
+        return Err(mcp::Error::Other("connection closed during setup".into()));
+    }
+    Ok(Connection {
+        state: "connected",
+        tools: tools
+            .iter()
+            .filter_map(|t| t.get("name").and_then(Value::as_str).map(str::to_string))
+            .collect(),
+        resources,
+        error: None,
+    })
+}
+
+fn format_connect_error(error: mcp::Error, stdio: Option<Arc<mcp::StdioTransport>>) -> String {
+    let tail = stdio.map(|s| s.stderr()).map(|s| {
+        let trimmed = s.trim().to_string();
+        let len = jsrt::utf16::len(&trimmed);
+        jsrt::utf16::skip(&trimmed, len.saturating_sub(STDERR_TAIL_CHARS)).to_string()
+    });
+    match tail.filter(|t| !t.is_empty()) {
+        Some(tail) => format!("{error}\n{tail}"),
+        None => error.to_string(),
+    }
+}
+
 fn connect(entry: &ServerEntry, env: &Env) -> Connection {
     if mcp::connection::Connection::new(entry.clone(), Default::default())
         .oauth_url()
@@ -558,12 +729,6 @@ fn connect(entry: &ServerEntry, env: &Env) -> Connection {
     {
         return connect_oauth(entry, env);
     }
-    let failed = |error: String| Connection {
-        state: "failed",
-        tools: Vec::new(),
-        resources: None,
-        error: Some(error),
-    };
     let timeout = entry
         .config
         .get("timeout")
@@ -581,67 +746,14 @@ fn connect(entry: &ServerEntry, env: &Env) -> Connection {
     });
     let spec = match transport_spec(&entry.name, &entry.config, &env.cwd, &env.home, &HashMap::new()) {
         Ok((spec, _)) => spec,
-        Err(message) => return failed(message),
+        Err(message) => return failed_connection(message),
     };
-    let (transport, stdio): (Arc<dyn Transport>, Option<Arc<mcp::StdioTransport>>) = match spec {
-        TransportSpec::Stdio(options) => {
-            let t = Arc::new(mcp::StdioTransport::new(options));
-            (t.clone(), Some(t))
-        }
-        TransportSpec::Http(options) => {
-            let options = mcp::http::HttpOptions {
-                proxy: Some(ai::net::ProxyEnv::from_lookup(&*env.var)),
-                ..options
-            };
-            (Arc::new(mcp::http::HttpTransport::new(options)), None)
-        }
-    };
-    let outcome = (|| -> Result<Connection, mcp::Error> {
-        client.connect(transport)?;
-        let capabilities = client.server_capabilities().unwrap_or(Value::Null);
-        let tools = if capabilities.get("tools").is_some_and(|t| !t.is_null()) {
-            client.list_tools(RequestOptions::default())?
-        } else {
-            Vec::new()
-        };
-        let has_resources = capabilities.get("resources").is_some();
-        let resources = has_resources.then(|| {
-            let resources = client.list_resources(RequestOptions::default()).unwrap_or_default();
-            let templates = client
-                .list_resource_templates(RequestOptions::default())
-                .unwrap_or_default();
-            (
-                resources.iter().filter(|r| !is_app_resource(r)).count(),
-                templates.iter().filter(|r| !is_app_resource(r)).count(),
-            )
-        });
-        if client.connection_state() != ConnState::Connected {
-            return Err(mcp::Error::Other("connection closed during setup".into()));
-        }
-        Ok(Connection {
-            state: "connected",
-            tools: tools
-                .iter()
-                .filter_map(|t| t.get("name").and_then(Value::as_str).map(str::to_string))
-                .collect(),
-            resources,
-            error: None,
-        })
-    })();
+    let (transport, stdio) = build_transport(spec, env);
+    let outcome = inspect_connected_client(&client, transport);
     client.close();
     match outcome {
         Ok(connection) => connection,
-        Err(error) => {
-            let tail = stdio.map(|s| s.stderr()).map(|s| {
-                let trimmed = s.trim().to_string();
-                let len = jsrt::utf16::len(&trimmed);
-                jsrt::utf16::skip(&trimmed, len.saturating_sub(STDERR_TAIL_CHARS)).to_string()
-            });
-            failed(match tail.filter(|t| !t.is_empty()) {
-                Some(tail) => format!("{error}\n{tail}"),
-                None => error.to_string(),
-            })
-        }
+        Err(error) => failed_connection(format_connect_error(error, stdio)),
     }
 }
 
@@ -661,52 +773,118 @@ fn describe_transport(config: &Map<String, Value>) -> String {
     parts.join(" ")
 }
 
+fn build_server_report(entry: &ServerEntry, env: &Env) -> (Map<String, Value>, bool) {
+    let exposure = if entry.config.get("exposure").and_then(Value::as_str) == Some("hidden") {
+        "hidden"
+    } else {
+        "repl"
+    };
+    let mut report = Map::new();
+    report.insert("name".into(), entry.name.clone().into());
+    report.insert("scope".into(), entry.scope.as_str().into());
+    report.insert("source".into(), entry.source.clone().into());
+    report.insert("enabled".into(), entry.enabled().into());
+    report.insert("exposure".into(), exposure.into());
+    report.insert("transport".into(), describe_transport(&entry.config).into());
+    report.insert("state".into(), "disabled".into());
+    report.insert("tools".into(), json!([]));
+    if !entry.enabled() {
+        return (report, false);
+    }
+    let connection = connect(entry, env);
+    report.insert("state".into(), connection.state.into());
+    report.insert("tools".into(), json!(connection.tools));
+    let overrides: Map<String, Value> = connection
+        .tools
+        .iter()
+        .filter_map(|tool| {
+            let e = if tool_exposure(&entry.config, tool) == "hidden" {
+                "hidden"
+            } else {
+                "repl"
+            };
+            (e != exposure).then(|| (tool.clone(), Value::String(e.into())))
+        })
+        .collect();
+    if !overrides.is_empty() {
+        report.insert("toolExposure".into(), Value::Object(overrides));
+    }
+    if let Some((resources, templates)) = connection.resources {
+        report.insert("resources".into(), json!(resources));
+        report.insert("resourceTemplates".into(), json!(templates));
+    }
+    if let Some(error) = connection.error.filter(|_| connection.state != "connected") {
+        report.insert("error".into(), error.into());
+    }
+    let failed = connection.state != "connected";
+    (report, failed)
+}
+
+fn format_tool_list(report: &Map<String, Value>, tools: &[&str]) -> String {
+    let shown: Vec<String> = tools
+        .iter()
+        .map(|t| {
+            match report
+                .get("toolExposure")
+                .and_then(|e| e.get(*t))
+                .and_then(Value::as_str)
+            {
+                Some(e) => format!("{t} [{e}]"),
+                None => t.to_string(),
+            }
+        })
+        .collect();
+    shown.join(", ")
+}
+
+fn log_server_report(report: &Map<String, Value>, io: &mut Io) {
+    let str_of = |k: &str| report.get(k).and_then(Value::as_str).unwrap_or_default();
+    let tools: Vec<&str> = report["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let state = match str_of("state") {
+        "connected" => format!(
+            "connected, {} tool{}",
+            tools.len(),
+            if tools.len() == 1 { "" } else { "s" }
+        ),
+        "needs-auth" => "needs sign-in".into(),
+        other => other.to_string(),
+    };
+    io.log(&format!(
+        "{}: {state} ({}, {})",
+        str_of("name"),
+        str_of("exposure"),
+        str_of("scope")
+    ));
+    io.log(&format!("  {}", str_of("transport")));
+    if str_of("state") == "needs-auth" {
+        io.log(&format!("  sign in with: ultron mcp login {}", str_of("name")));
+    }
+    if !tools.is_empty() {
+        io.log(&format!("  tools: {}", format_tool_list(report, &tools)));
+    }
+    if let Some(resources) = report.get("resources") {
+        io.log(&format!(
+            "  resources: {}, URI templates: {}",
+            resources,
+            report.get("resourceTemplates").cloned().unwrap_or(json!(0))
+        ));
+    }
+    if let Some(error) = report.get("error").and_then(Value::as_str).filter(|e| !e.is_empty()) {
+        io.log(&format!("  {}", error.split('\n').collect::<Vec<_>>().join("\n  ")));
+    }
+}
+
 fn list(loaded: &LoadedConfig, as_json: bool, note: Option<String>, env: &Env, agent_dir: &Path, io: &mut Io) -> i32 {
     let mut reports: Vec<Map<String, Value>> = Vec::new();
     let mut failed = !loaded.errors.is_empty();
     for entry in &loaded.servers {
-        let exposure = if entry.config.get("exposure").and_then(Value::as_str) == Some("hidden") {
-            "hidden"
-        } else {
-            "repl"
-        };
-        let mut report = Map::new();
-        report.insert("name".into(), entry.name.clone().into());
-        report.insert("scope".into(), entry.scope.as_str().into());
-        report.insert("source".into(), entry.source.clone().into());
-        report.insert("enabled".into(), entry.enabled().into());
-        report.insert("exposure".into(), exposure.into());
-        report.insert("transport".into(), describe_transport(&entry.config).into());
-        report.insert("state".into(), "disabled".into());
-        report.insert("tools".into(), json!([]));
-        if entry.enabled() {
-            let connection = connect(entry, env);
-            report.insert("state".into(), connection.state.into());
-            report.insert("tools".into(), json!(connection.tools));
-            let overrides: Map<String, Value> = connection
-                .tools
-                .iter()
-                .filter_map(|tool| {
-                    let e = if tool_exposure(&entry.config, tool) == "hidden" {
-                        "hidden"
-                    } else {
-                        "repl"
-                    };
-                    (e != exposure).then(|| (tool.clone(), Value::String(e.into())))
-                })
-                .collect();
-            if !overrides.is_empty() {
-                report.insert("toolExposure".into(), Value::Object(overrides));
-            }
-            if let Some((resources, templates)) = connection.resources {
-                report.insert("resources".into(), json!(resources));
-                report.insert("resourceTemplates".into(), json!(templates));
-            }
-            if let Some(error) = connection.error.filter(|_| connection.state != "connected") {
-                report.insert("error".into(), error.into());
-            }
-            failed |= connection.state != "connected";
-        }
+        let (report, server_failed) = build_server_report(entry, env);
+        failed |= server_failed;
         reports.push(report);
     }
     if as_json {
@@ -724,58 +902,7 @@ fn list(loaded: &LoadedConfig, as_json: bool, note: Option<String>, env: &Env, a
         ));
     }
     for report in &reports {
-        let str_of = |k: &str| report.get(k).and_then(Value::as_str).unwrap_or_default();
-        let tools: Vec<&str> = report["tools"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .collect();
-        let state = match str_of("state") {
-            "connected" => format!(
-                "connected, {} tool{}",
-                tools.len(),
-                if tools.len() == 1 { "" } else { "s" }
-            ),
-            "needs-auth" => "needs sign-in".into(),
-            other => other.to_string(),
-        };
-        io.log(&format!(
-            "{}: {state} ({}, {})",
-            str_of("name"),
-            str_of("exposure"),
-            str_of("scope")
-        ));
-        io.log(&format!("  {}", str_of("transport")));
-        if str_of("state") == "needs-auth" {
-            io.log(&format!("  sign in with: ultron mcp login {}", str_of("name")));
-        }
-        if !tools.is_empty() {
-            let shown: Vec<String> = tools
-                .iter()
-                .map(|t| {
-                    match report
-                        .get("toolExposure")
-                        .and_then(|e| e.get(*t))
-                        .and_then(Value::as_str)
-                    {
-                        Some(e) => format!("{t} [{e}]"),
-                        None => t.to_string(),
-                    }
-                })
-                .collect();
-            io.log(&format!("  tools: {}", shown.join(", ")));
-        }
-        if let Some(resources) = report.get("resources") {
-            io.log(&format!(
-                "  resources: {}, URI templates: {}",
-                resources,
-                report.get("resourceTemplates").cloned().unwrap_or(json!(0))
-            ));
-        }
-        if let Some(error) = report.get("error").and_then(Value::as_str).filter(|e| !e.is_empty()) {
-            io.log(&format!("  {}", error.split('\n').collect::<Vec<_>>().join("\n  ")));
-        }
+        log_server_report(report, io);
     }
     for error in &loaded.errors {
         io.log(&format!("config error: {error}"));

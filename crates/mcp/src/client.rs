@@ -503,6 +503,89 @@ impl Client {
         }
     }
 
+    fn attach_progress_token(params: Option<Value>, id: &Value) -> Option<Value> {
+        let mut map = match params {
+            Some(Value::Object(map)) => map,
+            _ => Map::new(),
+        };
+        let mut meta = match map.get("_meta") {
+            Some(Value::Object(meta)) => meta.clone(),
+            _ => Map::new(),
+        };
+        meta.insert("progressToken".into(), id.clone());
+        map.insert("_meta".into(), Value::Object(meta));
+        Some(Value::Object(map))
+    }
+
+    fn register_pending_request(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        options: &RequestOptions,
+        timeout: Duration,
+        tx: mpsc::Sender<Result<Value, Error>>,
+    ) -> (Value, Value) {
+        let mut state = sync::lock(&self.0.state);
+        let id = json!(state.next_id);
+        state.next_id += 1;
+        let progress_token = options.on_progress.is_some().then(|| key(&id));
+        let params = if progress_token.is_some() {
+            Self::attach_progress_token(params, &id)
+        } else {
+            params
+        };
+        let mut message = json!({ "jsonrpc": "2.0", "id": id, "method": method });
+        if let Some(params) = params {
+            message["params"] = params;
+        }
+        if let Some(token) = &progress_token {
+            state.progress.insert(token.clone(), key(&id));
+        }
+        state.pending.insert(
+            key(&id),
+            Pending {
+                id: id.clone(),
+                tx,
+                timeout,
+                deadline: deadline(timeout),
+                on_progress: options.on_progress.clone(),
+                progress_token,
+            },
+        );
+        (id, message)
+    }
+
+    fn wait_for_response(
+        &self,
+        request_key: &str,
+        rx: mpsc::Receiver<Result<Value, Error>>,
+        timeout: Duration,
+        cancellable: bool,
+    ) -> Result<Value, Error> {
+        loop {
+            let current = sync::lock(&self.0.state).pending.get(request_key).map(|p| p.deadline);
+            let received = match current {
+                Some(Some(deadline)) => rx.recv_timeout(deadline.saturating_duration_since(Instant::now())),
+                _ => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            };
+            match received {
+                Ok(outcome) => return outcome,
+                Err(RecvTimeoutError::Timeout) => {
+                    let expired = sync::lock(&self.0.state)
+                        .pending
+                        .get(request_key)
+                        .and_then(|p| p.deadline)
+                        .is_some_and(|d| d <= Instant::now());
+                    if expired {
+                        let ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+                        self.cancel_pending(request_key, Error::Timeout(ms), cancellable, Some("Request timed out"));
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => return Err(Error::closed()),
+            }
+        }
+    }
+
     fn request_internal(
         &self,
         method: &str,
@@ -520,47 +603,7 @@ impl Client {
             .unwrap_or(DEFAULT_REQUEST_TIMEOUT);
         let cancellable = method != "initialize";
         let (tx, rx) = mpsc::channel();
-        let (id, message) = {
-            let mut state = sync::lock(&self.0.state);
-            let id = json!(state.next_id);
-            state.next_id += 1;
-            let progress_token = options.on_progress.is_some().then(|| key(&id));
-            let params = match &progress_token {
-                None => params,
-                Some(_) => {
-                    let mut map = match params {
-                        Some(Value::Object(map)) => map,
-                        _ => Map::new(),
-                    };
-                    let mut meta = match map.get("_meta") {
-                        Some(Value::Object(meta)) => meta.clone(),
-                        _ => Map::new(),
-                    };
-                    meta.insert("progressToken".into(), id.clone());
-                    map.insert("_meta".into(), Value::Object(meta));
-                    Some(Value::Object(map))
-                }
-            };
-            let mut message = json!({ "jsonrpc": "2.0", "id": id, "method": method });
-            if let Some(params) = params {
-                message["params"] = params;
-            }
-            if let Some(token) = &progress_token {
-                state.progress.insert(token.clone(), key(&id));
-            }
-            state.pending.insert(
-                key(&id),
-                Pending {
-                    id: id.clone(),
-                    tx,
-                    timeout,
-                    deadline: deadline(timeout),
-                    on_progress: options.on_progress.clone(),
-                    progress_token,
-                },
-            );
-            (id, message)
-        };
+        let (id, message) = self.register_pending_request(method, params, &options, timeout, tx);
         let request_key = key(&id);
         if let Some(cancel) = &options.cancel {
             let weak = Arc::downgrade(&self.0);
@@ -574,28 +617,7 @@ impl Client {
         if let Err(error) = transport.send(&message) {
             self.cancel_pending(&request_key, error, false, None);
         }
-        loop {
-            let current = sync::lock(&self.0.state).pending.get(&request_key).map(|p| p.deadline);
-            let received = match current {
-                Some(Some(deadline)) => rx.recv_timeout(deadline.saturating_duration_since(Instant::now())),
-                _ => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
-            };
-            match received {
-                Ok(outcome) => return outcome,
-                Err(RecvTimeoutError::Timeout) => {
-                    let expired = sync::lock(&self.0.state)
-                        .pending
-                        .get(&request_key)
-                        .and_then(|p| p.deadline)
-                        .is_some_and(|d| d <= Instant::now());
-                    if expired {
-                        let ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
-                        self.cancel_pending(&request_key, Error::Timeout(ms), cancellable, Some("Request timed out"));
-                    }
-                }
-                Err(RecvTimeoutError::Disconnected) => return Err(Error::closed()),
-            }
-        }
+        self.wait_for_response(&request_key, rx, timeout, cancellable)
     }
 
     fn notify_internal(&self, method: &str, params: Option<Value>, allow_connecting: bool) -> Result<(), Error> {

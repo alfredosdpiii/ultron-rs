@@ -127,6 +127,162 @@ struct Resolved {
     sender_task: Option<Value>,
 }
 
+struct SendParams {
+    content: String,
+    role: &'static str,
+    receiver_id: Option<String>,
+    receiver_name: Option<String>,
+    key: Option<String>,
+    ttl_ms: i64,
+    steer: bool,
+}
+
+fn parse_send_role(payload: &Map<String, Value>) -> Result<&'static str, String> {
+    match optional(payload, "receiver_role") {
+        None => Ok("parent"),
+        Some(Value::String(role)) if role == "parent" => Ok("parent"),
+        Some(Value::String(role)) if role == "child" => Ok("child"),
+        Some(_) => Err("receiver_role must be parent or child".into()),
+    }
+}
+
+fn parse_send_steer(payload: &Map<String, Value>) -> Result<bool, String> {
+    match optional(payload, "steer") {
+        None => Ok(false),
+        Some(Value::Bool(steer)) => Ok(*steer),
+        Some(_) => Err("steer must be a boolean".into()),
+    }
+}
+
+fn is_pending_for(message: &Value, receiver: Option<&str>, now: i64) -> bool {
+    text(message, "receiver") == receiver && message["state"] == "pending" && !expired(message, now)
+}
+
+fn find_duplicate_send(
+    current: &[Value],
+    sender: Option<&str>,
+    key: Option<&str>,
+    hash: &str,
+    now: i64,
+) -> Result<Option<Value>, String> {
+    let Some(key) = key else {
+        return Ok(None);
+    };
+    let Some(prior) = current
+        .iter()
+        .find(|message| text(message, "sender") == sender && text(message, "key") == Some(key))
+    else {
+        return Ok(None);
+    };
+    if text(prior, "fingerprint") != Some(hash) {
+        return Err("key was already used for a different message".into());
+    }
+    let state = if expired(prior, now) {
+        json!("expired")
+    } else {
+        prior["state"].clone()
+    };
+    Ok(Some(json!({
+        "id": prior["id"],
+        "duplicate": true,
+        "state": state,
+        "steered": prior["deliveredVia"] == "steer",
+    })))
+}
+
+fn build_message_value(
+    id: &str,
+    sender: Option<&str>,
+    receiver: Option<&str>,
+    params: &SendParams,
+    hash: &str,
+    now: i64,
+) -> Value {
+    let mut message = Map::new();
+    message.insert("id".into(), id.into());
+    message.insert("sender".into(), sender.into());
+    message.insert("receiver".into(), receiver.into());
+    message.insert("role".into(), params.role.into());
+    message.insert("content".into(), params.content.clone().into());
+    if let Some(key) = &params.key {
+        message.insert("key".into(), key.clone().into());
+    }
+    message.insert("fingerprint".into(), hash.into());
+    message.insert("createdAt".into(), now.into());
+    message.insert("expiresAt".into(), (now + params.ttl_ms).into());
+    message.insert("state".into(), "pending".into());
+    Value::Object(message)
+}
+
+fn received_item(message: &Value) -> Value {
+    json!({
+        "id": message["id"],
+        "sender_id": message["sender"],
+        "sender_role": if message["role"] == "parent" { "child" } else { "parent" },
+        "trust": "untrusted",
+        "content": message["content"],
+        "sent_at": message["createdAt"],
+        "expires_at": message["expiresAt"],
+    })
+}
+
+fn resolve_parent(
+    tasks: &[Value],
+    sender_task: Option<Value>,
+    receiver_id: Option<&str>,
+    receiver_name: Option<&str>,
+) -> Result<Resolved, String> {
+    let sender_task = sender_task.ok_or("The root agent has no parent to message")?;
+    let receiver = text(&sender_task, "parentId").map(str::to_string);
+    if receiver_id.is_some() && receiver_id != receiver.as_deref() {
+        return Err("receiver_id does not match the sender's parent".into());
+    }
+    let task = receiver
+        .as_deref()
+        .and_then(|id| tasks.iter().find(|task| text(task, "id") == Some(id)).cloned());
+    if let Some(name) = receiver_name
+        && task
+            .as_ref()
+            .and_then(|task| text(task, "definition"))
+            .map(definition_id)
+            != Some(name)
+    {
+        return Err("receiver_name does not match the sender's parent".into());
+    }
+    Ok(Resolved {
+        receiver,
+        task,
+        sender_task: Some(sender_task),
+    })
+}
+
+fn resolve_child(
+    tasks: &[Value],
+    sender: Option<&str>,
+    sender_task: Option<Value>,
+    receiver_id: Option<&str>,
+    receiver_name: Option<&str>,
+) -> Result<Resolved, String> {
+    if receiver_id.is_none() && receiver_name.is_none() {
+        return Err("receiver_id is required when receiver_role is child".into());
+    }
+    let matches: Vec<&Value> = tasks
+        .iter()
+        .filter(|task| text(task, "parentId") == sender)
+        .filter(|task| receiver_id.is_none_or(|id| text(task, "id") == Some(id)))
+        .filter(|task| receiver_name.is_none_or(|name| text(task, "definition").map(definition_id) == Some(name)))
+        .collect();
+    match matches.as_slice() {
+        [] => Err("Receiver is not a direct child of the sender".into()),
+        [task] => Ok(Resolved {
+            receiver: text(task, "id").map(str::to_string),
+            task: Some((*task).clone()),
+            sender_task,
+        }),
+        _ => Err("receiver_name matches several children; pass receiver_id".into()),
+    }
+}
+
 impl FamilyModule {
     pub fn new(store: Arc<dyn DocumentStore>, options: FamilyOptions) -> Self {
         Self {
@@ -178,54 +334,17 @@ impl FamilyModule {
         receiver_name: Option<&str>,
     ) -> Result<Resolved, String> {
         let tasks = host.tasks()?;
-        let by_id = |id: &str| tasks.iter().find(|task| text(task, "id") == Some(id)).cloned();
-        let sender_task = sender.and_then(by_id);
+        let sender_task = sender.and_then(|id| tasks.iter().find(|task| text(task, "id") == Some(id)).cloned());
         if sender.is_some() && sender_task.is_none() {
             return Err("Calling task is not known to the host".into());
         }
         if role == "parent" {
-            let sender_task = sender_task.ok_or("The root agent has no parent to message")?;
-            let receiver = text(&sender_task, "parentId").map(str::to_string);
-            if receiver_id.is_some() && receiver_id != receiver.as_deref() {
-                return Err("receiver_id does not match the sender's parent".into());
-            }
-            let task = receiver.as_deref().and_then(by_id);
-            if let Some(name) = receiver_name
-                && task
-                    .as_ref()
-                    .and_then(|task| text(task, "definition"))
-                    .map(definition_id)
-                    != Some(name)
-            {
-                return Err("receiver_name does not match the sender's parent".into());
-            }
-            return Ok(Resolved {
-                receiver,
-                task,
-                sender_task: Some(sender_task),
-            });
+            return resolve_parent(&tasks, sender_task, receiver_id, receiver_name);
         }
         if self.verifier(sender_task.as_ref()) {
             return Err("Verifier tasks may only message their direct parent".into());
         }
-        let matches: Vec<&Value> = tasks
-            .iter()
-            .filter(|task| text(task, "parentId") == sender)
-            .filter(|task| receiver_id.is_none_or(|id| text(task, "id") == Some(id)))
-            .filter(|task| receiver_name.is_none_or(|name| text(task, "definition").map(definition_id) == Some(name)))
-            .collect();
-        if receiver_id.is_none() && receiver_name.is_none() {
-            return Err("receiver_id is required when receiver_role is child".into());
-        }
-        match matches.as_slice() {
-            [] => Err("Receiver is not a direct child of the sender".into()),
-            [task] => Ok(Resolved {
-                receiver: text(task, "id").map(str::to_string),
-                task: Some((*task).clone()),
-                sender_task,
-            }),
-            _ => Err("receiver_name matches several children; pass receiver_id".into()),
-        }
+        resolve_child(&tasks, sender, sender_task, receiver_id, receiver_name)
     }
 
     fn envelope(message: &Value, sender_task: Option<&Value>) -> String {
@@ -254,10 +373,7 @@ impl FamilyModule {
         .join("\n")
     }
 
-    fn send(&self, request: &Request<'_>, cached: &mut Option<Vec<Value>>) -> Result<Value, String> {
-        let payload = request.payload;
-        let sender = request.caller_task;
-        kernel::ops::fields(request.kind, payload)?;
+    fn parse_send_content(&self, payload: &Map<String, Value>) -> Result<String, String> {
         let content = match payload.get("message") {
             Some(Value::String(content)) if !jsrt::string::trim(content).is_empty() => content.clone(),
             _ => return Err("message must be a nonempty string".into()),
@@ -265,31 +381,29 @@ impl FamilyModule {
         if content.len() > self.options.max_message_bytes {
             return Err(format!("message exceeds {} bytes", self.options.max_message_bytes));
         }
-        let role = match optional(payload, "receiver_role") {
-            None => "parent",
-            Some(Value::String(role)) if role == "parent" || role == "child" => role.as_str(),
-            Some(_) => return Err("receiver_role must be parent or child".into()),
-        };
-        let receiver_id = optional_string(optional(payload, "receiver_id"), "receiver_id", 256)?;
-        let receiver_name = optional_string(optional(payload, "receiver_name"), "receiver_name", 256)?;
-        let key = optional_string(optional(payload, "key"), "key", MAX_KEY_LENGTH)?;
+        Ok(content)
+    }
+
+    fn parse_send_params(&self, payload: &Map<String, Value>) -> Result<SendParams, String> {
+        let content = self.parse_send_content(payload)?;
+        let role = parse_send_role(payload)?;
         let ttl_ms = match optional(payload, "ttl_ms") {
             None => self.options.default_ttl_ms,
             Some(value) => positive_integer(value, "ttl_ms", MAX_TTL_MS)?,
         };
-        let steer = match optional(payload, "steer") {
-            None => false,
-            Some(Value::Bool(steer)) => *steer,
-            Some(_) => return Err("steer must be a boolean".into()),
-        };
-        let resolved = self.resolve(
-            request.host,
-            sender,
+        let steer = parse_send_steer(payload)?;
+        Ok(SendParams {
+            content,
             role,
-            receiver_id.as_deref(),
-            receiver_name.as_deref(),
-        )?;
-        let receiver = resolved.receiver.as_deref();
+            receiver_id: optional_string(optional(payload, "receiver_id"), "receiver_id", 256)?,
+            receiver_name: optional_string(optional(payload, "receiver_name"), "receiver_name", 256)?,
+            key: optional_string(optional(payload, "key"), "key", MAX_KEY_LENGTH)?,
+            ttl_ms,
+            steer,
+        })
+    }
+
+    fn validate_send_target(&self, resolved: &Resolved, role: &str, steer: bool) -> Result<(), String> {
         if self.verifier(resolved.task.as_ref()) && role != "child" {
             return Err("Verifier tasks accept messages only from their direct parent".into());
         }
@@ -301,82 +415,92 @@ impl FamilyModule {
         {
             return Err("Receiver task has already finished".into());
         }
-        let hash = fingerprint(receiver, &content, ttl_ms, steer);
-        let now = self.clock(request.host);
-        let current = self.load(cached)?;
-        if let Some(key) = &key
-            && let Some(prior) = current
-                .iter()
-                .find(|message| text(message, "sender") == sender && text(message, "key") == Some(key))
-        {
-            if text(prior, "fingerprint") != Some(hash.as_str()) {
-                return Err("key was already used for a different message".into());
-            }
-            let state = if expired(prior, now) {
-                json!("expired")
-            } else {
-                prior["state"].clone()
-            };
-            return Ok(json!({"id": prior["id"], "duplicate": true, "state": state,
-                "steered": prior["deliveredVia"] == "steer"}));
-        }
-        let pending = current
-            .iter()
-            .filter(|message| {
-                text(message, "receiver") == receiver && message["state"] == "pending" && !expired(message, now)
-            })
-            .count() as i64;
-        if pending >= self.options.max_inbox {
-            return Err(format!(
-                "Receiver inbox is full ({} pending messages); retry after it receives messages",
-                self.options.max_inbox
-            ));
-        }
-        let id = jsrt::random::uuid_v4();
-        let mut message = Map::new();
-        message.insert("id".into(), id.clone().into());
-        message.insert("sender".into(), sender.into());
-        message.insert("receiver".into(), receiver.into());
-        message.insert("role".into(), role.into());
-        message.insert("content".into(), content.into());
-        if let Some(key) = key {
-            message.insert("key".into(), key.into());
-        }
-        message.insert("fingerprint".into(), hash.into());
-        message.insert("createdAt".into(), now.into());
-        message.insert("expiresAt".into(), (now + ttl_ms).into());
-        message.insert("state".into(), "pending".into());
-        let message = Value::Object(message);
-        let can_steer = steer && receiver.is_some();
-        let stored = if can_steer {
-            delivered(&message, now, "steer")
-        } else {
-            message.clone()
-        };
-        let mut next = current;
-        next.push(stored);
-        self.save(cached, prune(next, now))?;
-        let pending = json!({"id": id, "duplicate": false, "state": "pending", "steered": false});
-        let (Some(receiver), true) = (receiver, can_steer) else {
-            return Ok(pending);
-        };
-        let envelope = Self::envelope(&message, resolved.sender_task.as_ref());
+        Ok(())
+    }
+
+    fn finish_steer(
+        &self,
+        request: &Request<'_>,
+        cached: &mut Option<Vec<Value>>,
+        receiver: &str,
+        id: &str,
+        message: &Value,
+        sender_task: Option<&Value>,
+    ) -> Result<Value, String> {
+        let envelope = Self::envelope(message, sender_task);
         if request.host.steer(receiver, &envelope).unwrap_or(false) {
             return Ok(json!({"id": id, "duplicate": false, "state": "delivered", "steered": true}));
         }
         let latest = self.load(cached)?;
         let restored: Vec<Value> = latest
             .into_iter()
-            .map(|entry| {
-                if entry["id"] == id.as_str() {
-                    message.clone()
-                } else {
-                    entry
-                }
-            })
+            .map(|entry| if entry["id"] == id { message.clone() } else { entry })
             .collect();
         self.save(cached, restored)?;
-        Ok(pending)
+        Ok(json!({"id": id, "duplicate": false, "state": "pending", "steered": false}))
+    }
+
+    fn ensure_inbox_capacity(&self, current: &[Value], receiver: Option<&str>, now: i64) -> Result<(), String> {
+        let pending = current.iter().filter(|m| is_pending_for(m, receiver, now)).count() as i64;
+        if pending >= self.options.max_inbox {
+            return Err(format!(
+                "Receiver inbox is full ({} pending messages); retry after it receives messages",
+                self.options.max_inbox
+            ));
+        }
+        Ok(())
+    }
+
+    fn store_and_deliver(
+        &self,
+        request: &Request<'_>,
+        cached: &mut Option<Vec<Value>>,
+        mut current: Vec<Value>,
+        resolved: &Resolved,
+        message: Value,
+        steer: bool,
+    ) -> Result<Value, String> {
+        let now = message["createdAt"].as_i64().unwrap_or(0);
+        let receiver = resolved.receiver.as_deref();
+        let id = text(&message, "id").unwrap_or_default().to_string();
+        let can_steer = steer && receiver.is_some();
+        current.push(if can_steer {
+            delivered(&message, now, "steer")
+        } else {
+            message.clone()
+        });
+        self.save(cached, prune(current, now))?;
+        match (receiver, can_steer) {
+            (Some(receiver), true) => {
+                self.finish_steer(request, cached, receiver, &id, &message, resolved.sender_task.as_ref())
+            }
+            _ => Ok(json!({"id": id, "duplicate": false, "state": "pending", "steered": false})),
+        }
+    }
+
+    fn send(&self, request: &Request<'_>, cached: &mut Option<Vec<Value>>) -> Result<Value, String> {
+        kernel::ops::fields(request.kind, request.payload)?;
+        let sender = request.caller_task;
+        let params = self.parse_send_params(request.payload)?;
+        let resolved = self.resolve(
+            request.host,
+            sender,
+            params.role,
+            params.receiver_id.as_deref(),
+            params.receiver_name.as_deref(),
+        )?;
+        self.validate_send_target(&resolved, params.role, params.steer)?;
+        let receiver = resolved.receiver.as_deref();
+        let hash = fingerprint(receiver, &params.content, params.ttl_ms, params.steer);
+        let now = self.clock(request.host);
+        let current = self.load(cached)?;
+        if let Some(duplicate) = find_duplicate_send(&current, sender, params.key.as_deref(), &hash, now)? {
+            return Ok(duplicate);
+        }
+        self.ensure_inbox_capacity(&current, receiver, now)?;
+        let id = jsrt::random::uuid_v4();
+        let message = build_message_value(&id, sender, receiver, &params, &hash, now);
+        self.store_and_deliver(request, cached, current, &resolved, message, params.steer)
     }
 
     fn receive(&self, request: &Request<'_>, cached: &mut Option<Vec<Value>>) -> Result<Value, String> {
@@ -390,9 +514,7 @@ impl FamilyModule {
         let current = self.load(cached)?;
         let ready: Vec<Value> = current
             .iter()
-            .filter(|message| {
-                text(message, "receiver") == caller && message["state"] == "pending" && !expired(message, now)
-            })
+            .filter(|m| is_pending_for(m, caller, now))
             .take(limit as usize)
             .cloned()
             .collect();
@@ -413,27 +535,9 @@ impl FamilyModule {
         self.save(cached, marked)?;
         let remaining = current
             .iter()
-            .filter(|message| {
-                text(message, "receiver") == caller
-                    && message["state"] == "pending"
-                    && !expired(message, now)
-                    && !text(message, "id").is_some_and(|id| ids.contains(id))
-            })
+            .filter(|m| is_pending_for(m, caller, now) && !text(m, "id").is_some_and(|id| ids.contains(id)))
             .count();
-        let messages: Vec<Value> = ready
-            .iter()
-            .map(|message| {
-                json!({
-                    "id": message["id"],
-                    "sender_id": message["sender"],
-                    "sender_role": if message["role"] == "parent" { "child" } else { "parent" },
-                    "trust": "untrusted",
-                    "content": message["content"],
-                    "sent_at": message["createdAt"],
-                    "expires_at": message["expiresAt"],
-                })
-            })
-            .collect();
+        let messages: Vec<Value> = ready.iter().map(received_item).collect();
         Ok(json!({"messages": messages, "remaining": remaining}))
     }
 

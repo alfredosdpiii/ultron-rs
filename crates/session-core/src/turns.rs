@@ -525,16 +525,9 @@ impl TurnModels {
         signal: &Cancel,
         on_event: &mut (dyn FnMut(&AssistantMessageEvent) + Send),
     ) -> harness::scheduler::Result<AssistantMessage> {
-        let answer = Answer::default();
-        (self.bridge.to_actor)(Request::Generation {
-            users: trailing_users(&context.messages),
-            answer: answer.clone(),
-        });
-        let start = match answer.wait(signal) {
-            Some(Ok(start)) => start,
-            Some(Err(StartError::Request(error))) => return Ok(crate::lane::error_message(model, error)),
-            Some(Err(StartError::Checkpoint(error))) => return Err(HarnessError::Error(error)),
-            None => return Err(signal.reason().unwrap_or_else(|| HarnessError::msg("cancelled"))),
+        let start = match self.await_root_generation(model, context, signal)? {
+            Ok(start) => start,
+            Err(error_message) => return Ok(error_message),
         };
         let bridged = Bridged::new(signal);
         let mut options = request.simple_options();
@@ -545,35 +538,48 @@ impl TurnModels {
             harness::chat::gate::apply_final(note, &mut messages, &mut options, jsrt::date::now_ms());
         }
         let llm = ai::TranscriptContext { messages };
-        let bridge = self.bridge.clone();
         let mut started = false;
         let mut sink = |event: &AssistantMessageEvent| {
             on_event(event);
-            match event {
-                AssistantMessageEvent::Start { partial } => {
-                    started = true;
-                    bridge.send(AgentEvent::MessageStart {
-                        message: Message::Assistant(partial.clone()),
-                    });
-                }
-                _ => {
-                    if let Some(partial) = event.partial()
-                        && started
-                    {
-                        bridge.send(AgentEvent::MessageUpdate {
-                            message: Message::Assistant(partial.clone()),
-                            assistant_message_event: event.clone(),
-                        });
-                    }
-                }
-            }
+            forward_root_event(&self.bridge, event, &mut started);
         };
         let message = runtime()?.block_on(self.provider.stream(model, &llm, &options, &mut sink));
         drop(bridged);
-        if let Some((trace, session)) = &self.trace {
-            trace.record(session, session_journal::run::MAIN_LANE, model, &llm, &message);
+        self.finish_root_stream(model, &llm, message, started, signal)
+    }
+
+    fn await_root_generation(
+        &self,
+        model: &Model,
+        context: &ai::TranscriptContext,
+        signal: &Cancel,
+    ) -> harness::scheduler::Result<Result<GenerationStart, AssistantMessage>> {
+        let answer = Answer::default();
+        (self.bridge.to_actor)(Request::Generation {
+            users: trailing_users(&context.messages),
+            answer: answer.clone(),
+        });
+        match answer.wait(signal) {
+            Some(Ok(start)) => Ok(Ok(start)),
+            Some(Err(StartError::Request(error))) => Ok(Err(crate::lane::error_message(model, error))),
+            Some(Err(StartError::Checkpoint(error))) => Err(HarnessError::Error(error)),
+            None => Err(signal.reason().unwrap_or_else(|| HarnessError::msg("cancelled"))),
         }
-        if (!signal.is_cancelled() || *sync::lock(&self.bridge.user_abort))
+    }
+
+    fn finish_root_stream(
+        &self,
+        model: &Model,
+        llm: &ai::TranscriptContext,
+        message: AssistantMessage,
+        started: bool,
+        signal: &Cancel,
+    ) -> harness::scheduler::Result<AssistantMessage> {
+        if let Some((trace, session)) = &self.trace {
+            trace.record(session, session_journal::run::MAIN_LANE, model, llm, &message);
+        }
+        let user_abort = *sync::lock(&self.bridge.user_abort);
+        if (!signal.is_cancelled() || user_abort)
             && let Some(charge) = &self.charge
         {
             charge(ROOT_CONVERSATION_ID, &message);
@@ -584,7 +590,7 @@ impl TurnModels {
             });
         }
         if signal.is_cancelled() {
-            if *sync::lock(&self.bridge.user_abort) {
+            if user_abort {
                 self.bridge.send(AgentEvent::MessageEnd {
                     message: Message::Assistant(message),
                 });
@@ -592,6 +598,27 @@ impl TurnModels {
             return Err(signal.reason().unwrap_or_else(|| HarnessError::msg("cancelled")));
         }
         Ok(message)
+    }
+}
+
+fn forward_root_event(bridge: &Bridge, event: &AssistantMessageEvent, started: &mut bool) {
+    match event {
+        AssistantMessageEvent::Start { partial } => {
+            *started = true;
+            bridge.send(AgentEvent::MessageStart {
+                message: Message::Assistant(partial.clone()),
+            });
+        }
+        _ => {
+            if let Some(partial) = event.partial()
+                && *started
+            {
+                bridge.send(AgentEvent::MessageUpdate {
+                    message: Message::Assistant(partial.clone()),
+                    assistant_message_event: event.clone(),
+                });
+            }
+        }
     }
 }
 
@@ -673,21 +700,43 @@ impl CellExecutor for TurnCells {
 
     fn execute(&self, call: &CellCall, progress: &CellProgress, signal: &Cancel) -> Result<CellResult, String> {
         if call.conversation_id != ROOT_CONVERSATION_ID {
-            let lane = self
-                .children
-                .lane_of(call.conversation_id)
-                .ok_or("This conversation has no REPL lane")?;
-            let tool = self.stack.rlm(&lane)?;
-            let bridged = Bridged::new(signal);
-            let (result, is_error) = run_tool(&tool, call, &bridged.abort)?;
-            drop(bridged);
-            if signal.is_cancelled() {
-                return Err(signal
-                    .reason()
-                    .map_or_else(|| "cancelled".to_string(), |r| r.to_string()));
-            }
-            return Ok(cell_result(result, is_error));
+            return self.execute_child_cell(call, signal);
         }
+        let (result, is_error) = self.execute_root_tool(call, progress, signal)?;
+        sync::lock(&self.bridge.results).insert(
+            call.call_id.clone(),
+            Reported {
+                name: call.name.clone(),
+                result: result.clone(),
+                is_error,
+            },
+        );
+        check_cell_cancel(signal)?;
+        self.notify_round_complete(signal);
+        Ok(cell_result(result, is_error))
+    }
+}
+
+impl TurnCells {
+    fn execute_child_cell(&self, call: &CellCall, signal: &Cancel) -> Result<CellResult, String> {
+        let lane = self
+            .children
+            .lane_of(call.conversation_id)
+            .ok_or("This conversation has no REPL lane")?;
+        let tool = self.stack.rlm(&lane)?;
+        let bridged = Bridged::new(signal);
+        let (result, is_error) = run_tool(&tool, call, &bridged.abort)?;
+        drop(bridged);
+        check_cell_cancel(signal)?;
+        Ok(cell_result(result, is_error))
+    }
+
+    fn execute_root_tool(
+        &self,
+        call: &CellCall,
+        progress: &CellProgress,
+        signal: &Cancel,
+    ) -> Result<(AgentToolResult, bool), String> {
         let bridged = Bridged::new(signal);
         *sync::lock(&self.progress) = Some(progress.clone());
         let context = self.stack.context.get().cloned();
@@ -700,20 +749,10 @@ impl CellExecutor for TurnCells {
         }
         *sync::lock(&self.progress) = None;
         drop(bridged);
-        let (result, is_error) = executed?;
-        sync::lock(&self.bridge.results).insert(
-            call.call_id.clone(),
-            Reported {
-                name: call.name.clone(),
-                result: result.clone(),
-                is_error,
-            },
-        );
-        if signal.is_cancelled() {
-            return Err(signal
-                .reason()
-                .map_or_else(|| "cancelled".to_string(), |r| r.to_string()));
-        }
+        executed
+    }
+
+    fn notify_round_complete(&self, signal: &Cancel) {
         if let Some((calls, failed)) = self.bridge.round_complete() {
             let answer = Answer::default();
             self.bridge.request(Request::RoundEnded {
@@ -723,6 +762,14 @@ impl CellExecutor for TurnCells {
             });
             let _ = answer.wait(signal);
         }
-        Ok(cell_result(result, is_error))
     }
+}
+
+fn check_cell_cancel(signal: &Cancel) -> Result<(), String> {
+    if signal.is_cancelled() {
+        return Err(signal
+            .reason()
+            .map_or_else(|| "cancelled".to_string(), |r| r.to_string()));
+    }
+    Ok(())
 }

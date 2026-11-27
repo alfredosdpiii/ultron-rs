@@ -150,6 +150,83 @@ pub(crate) fn child_task(services: Arc<Services>) -> Task {
         .build()
 }
 
+fn create_child_conversation(tx: &mut Tx<'_>, task_id: TaskId, fork: Option<ChildFork>) -> Result<ConversationId> {
+    match fork {
+        Some(fork) => {
+            let id = tx
+                .fork_conversation(fork.conversation, fork.entry, ConversationOwnership::Task(task_id))?
+                .id;
+            create_documents(tx, id, true)?;
+            Ok(id)
+        }
+        None => {
+            let id = tx.create_conversation(ConversationOwnership::Task(task_id))?.id;
+            create_documents(tx, id, false)?;
+            Ok(id)
+        }
+    }
+}
+
+fn configure_child_agent(
+    tx: &mut Tx<'_>,
+    conversation: ConversationId,
+    model: Option<&ModelRef>,
+    thinking: Option<&str>,
+) -> Result<()> {
+    if let Some(model) = model {
+        configure(tx, conversation, &AgentChange::model(model.clone()))?;
+    }
+    if let Some(level) = thinking {
+        let change = AgentChange {
+            model: None,
+            thinking_level: Some(Some(level.to_owned())),
+        };
+        configure(tx, conversation, &change)?;
+    }
+    Ok(())
+}
+
+fn append_child_history(tx: &mut Tx<'_>, conversation: ConversationId, history: &[Value]) -> Result<()> {
+    for message in history {
+        let kind = match message["role"].as_str() {
+            Some("assistant") => super::entries::ASSISTANT,
+            Some("toolResult") => super::entries::TOOL_RESULT,
+            _ => super::entries::USER,
+        };
+        tx.append_entry(
+            conversation,
+            EntryDraft {
+                model: Some(vec![message.clone()]),
+                ..EntryDraft::new(kind)
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn register_child_in_swarm(
+    tx: &mut Tx<'_>,
+    input: &ChildInput,
+    conversation: ConversationId,
+    task_id: TaskId,
+    now: u64,
+) -> Result<()> {
+    let mut brief = input.prompt.clone();
+    if brief.chars().count() > 200 {
+        brief = brief.chars().take(200).collect::<String>() + "…";
+    }
+    let work = serde_json::Map::from_iter([("work".to_owned(), json!(brief))]);
+    super::swarm::register(
+        tx,
+        &input.name,
+        Some(conversation),
+        Some(task_id.0.to_string()),
+        &work,
+        now,
+    )?;
+    Ok(())
+}
+
 fn start_phase(_services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> Result<()> {
     let input: ChildInput = from_value(task.input.clone(), "child input")?;
     let model = match input.model.clone() {
@@ -159,58 +236,11 @@ fn start_phase(_services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -
     let task_id = runtime.task_id();
     let now = runtime.now()?;
     runtime.commit(&runtime.ctx(), |tx, _| {
-        let conversation = match input.fork {
-            Some(fork) => {
-                let id = tx
-                    .fork_conversation(fork.conversation, fork.entry, ConversationOwnership::Task(task_id))?
-                    .id;
-                create_documents(tx, id, true)?;
-                id
-            }
-            None => {
-                let id = tx.create_conversation(ConversationOwnership::Task(task_id))?.id;
-                create_documents(tx, id, false)?;
-                id
-            }
-        };
-        if let Some(model) = &model {
-            configure(tx, conversation, &AgentChange::model(model.clone()))?;
-        }
-        if let Some(level) = &input.thinking {
-            let change = AgentChange {
-                model: None,
-                thinking_level: Some(Some(level.clone())),
-            };
-            configure(tx, conversation, &change)?;
-        }
-        for message in &input.history {
-            let kind = match message["role"].as_str() {
-                Some("assistant") => super::entries::ASSISTANT,
-                Some("toolResult") => super::entries::TOOL_RESULT,
-                _ => super::entries::USER,
-            };
-            tx.append_entry(
-                conversation,
-                EntryDraft {
-                    model: Some(vec![message.clone()]),
-                    ..EntryDraft::new(kind)
-                },
-            )?;
-        }
+        let conversation = create_child_conversation(tx, task_id, input.fork)?;
+        configure_child_agent(tx, conversation, model.as_ref(), input.thinking.as_deref())?;
+        append_child_history(tx, conversation, &input.history)?;
         let submission = place_initial_input(tx, conversation, &json!(input.prompt), now)?;
-        let mut brief = input.prompt.clone();
-        if brief.chars().count() > 200 {
-            brief = brief.chars().take(200).collect::<String>() + "…";
-        }
-        let work = serde_json::Map::from_iter([("work".to_owned(), json!(brief))]);
-        super::swarm::register(
-            tx,
-            &input.name,
-            Some(conversation),
-            Some(task_id.0.to_string()),
-            &work,
-            now,
-        )?;
+        register_child_in_swarm(tx, &input, conversation, task_id, now)?;
         Ok(Some(NextState::Running {
             checkpoint: to_value(&ChildCheckpoint::Wait {
                 conversation,
@@ -240,6 +270,119 @@ fn answer_text(tx: &mut Tx<'_>, answer: durable::EntryId) -> Result<Value> {
     Ok(json!(text.join("\n")))
 }
 
+fn spawn_deadline_timer(runtime: &TaskRuntime, until: Option<u64>) -> Cancel {
+    let deadline = Cancel::new();
+    if let Some(until) = until {
+        let (timer, sleeper, done) = (deadline.clone(), runtime.clone(), runtime.signal().clone());
+        std::thread::spawn(move || {
+            if sleeper.sleep(until, &Ctx::with_signal(&done)).is_ok() {
+                timer.cancel(HarnessError::msg("deadline"));
+            }
+        });
+    }
+    deadline
+}
+
+fn next_run_input(
+    runtime: &TaskRuntime,
+    conversation: ConversationId,
+    waited: SubmissionId,
+) -> Result<Option<SubmissionId>> {
+    let live = runtime.snapshot(&super::docs::LIVE, super::util::owner(conversation))?;
+    Ok(live
+        .as_ref()
+        .and_then(|live| live["run"]["inputs"].as_array()?.last()?.as_u64())
+        .map(SubmissionId)
+        .filter(|next| *next != waited))
+}
+
+fn wait_for_child_submission(
+    runtime: &TaskRuntime,
+    submissions: &Submissions,
+    conversation: ConversationId,
+    submission: SubmissionId,
+    ctx: &Ctx,
+) -> Result<durable::SubmissionRecord> {
+    let mut settled = submissions.wait(submission, ctx);
+    let mut waited = submission;
+    while let Ok(record) = &settled
+        && record.status == SubmissionStatus::Done
+    {
+        let Some(next) = next_run_input(runtime, conversation, waited)? else {
+            break;
+        };
+        waited = next;
+        settled = submissions.wait(next, ctx);
+    }
+    settled
+}
+
+fn commit_child_timeout(runtime: &TaskRuntime, input: &ChildInput, conversation: ConversationId) -> Result<()> {
+    let timeout = input.timeout_ms.unwrap_or_default();
+    let error = format!("Subagent {} timed out after {timeout} ms", input.name);
+    runtime.commit(&runtime.ctx(), |_, _| {
+        Ok(Some(NextState::Terminal {
+            outcome: TaskOutcome::Failed {
+                error: TaskOutcomeError {
+                    message: error.clone(),
+                    detail: Some(json!({ "reason": "timeout" })),
+                },
+                result: Some(json!({
+                    "result": result("cancelled", None, Some(error.clone())),
+                    "conversation": conversation.0,
+                })),
+            },
+        }))
+    })
+}
+
+fn child_result_from_settled(
+    tx: &mut Tx<'_>,
+    input: &ChildInput,
+    settled: &durable::SubmissionRecord,
+) -> Result<Value> {
+    match (settled.status, settled.answer) {
+        (SubmissionStatus::Done, Some(answer)) => Ok(result("succeeded", Some(answer_text(tx, answer)?), None)),
+        _ => Ok(result(
+            "failed",
+            None,
+            Some(format!(
+                "Subagent {} ended without an answer: {}",
+                input.name,
+                settled
+                    .detail
+                    .as_ref()
+                    .and_then(Value::as_str)
+                    .or(settled.reason.as_deref())
+                    .unwrap_or("unanswered")
+            )),
+        )),
+    }
+}
+
+fn commit_child_settled(
+    runtime: &TaskRuntime,
+    input: &ChildInput,
+    conversation: ConversationId,
+    settled: &durable::SubmissionRecord,
+) -> Result<()> {
+    runtime.commit(&runtime.ctx(), |tx, _| {
+        let child_result = child_result_from_settled(tx, input, settled)?;
+        if input.keep {
+            return Ok(Some(NextState::Running {
+                checkpoint: to_value(&ChildCheckpoint::Idle {
+                    conversation,
+                    result: child_result,
+                }),
+            }));
+        }
+        let receipt = json!({ "result": child_result, "conversation": conversation.0 });
+        Ok(Some(NextState::Terminal {
+            outcome: TaskOutcome::Completed { result: receipt },
+        }))
+    })
+}
+
 fn wait_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> Result<()> {
     let ChildCheckpoint::Wait {
         conversation,
@@ -256,86 +399,21 @@ fn wait_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> 
         .get()
         .cloned()
         .ok_or_else(|| HarnessError::msg("Child tasks need an open ChatHarness"))?;
-    let deadline = Cancel::new();
-    if let Some(until) = until {
-        let (timer, sleeper, done) = (deadline.clone(), runtime.clone(), runtime.signal().clone());
-        std::thread::spawn(move || {
-            if sleeper.sleep(until, &Ctx::with_signal(&done)).is_ok() {
-                timer.cancel(HarnessError::msg("deadline"));
-            }
-        });
-    }
+    let deadline = spawn_deadline_timer(runtime, until);
     let linked = Cancel::any(&[runtime.signal(), &deadline]);
-    let ctx = Ctx::with_signal(linked.signal());
-    let mut settled = submissions.wait(submission, &ctx);
-    let mut waited = submission;
-    while let Ok(record) = &settled
-        && record.status == SubmissionStatus::Done
-    {
-        let live = runtime.snapshot(&super::docs::LIVE, super::util::owner(conversation))?;
-        let next = live
-            .as_ref()
-            .and_then(|live| live["run"]["inputs"].as_array()?.last()?.as_u64())
-            .map(SubmissionId)
-            .filter(|next| *next != waited);
-        let Some(next) = next else { break };
-        waited = next;
-        settled = submissions.wait(next, &ctx);
-    }
+    let settled = wait_for_child_submission(
+        runtime,
+        &submissions,
+        conversation,
+        submission,
+        &Ctx::with_signal(linked.signal()),
+    );
     runtime.signal().check()?;
-    let settled = match settled {
-        Ok(settled) => settled,
-        Err(_) if deadline.is_cancelled() => {
-            let timeout = input.timeout_ms.unwrap_or_default();
-            let error = format!("Subagent {} timed out after {timeout} ms", input.name);
-            return runtime.commit(&runtime.ctx(), |_, _| {
-                Ok(Some(NextState::Terminal {
-                    outcome: TaskOutcome::Failed {
-                        error: TaskOutcomeError {
-                            message: error.clone(),
-                            detail: Some(json!({ "reason": "timeout" })),
-                        },
-                        result: Some(json!({
-                            "result": result("cancelled", None, Some(error.clone())),
-                            "conversation": conversation.0,
-                        })),
-                    },
-                }))
-            });
-        }
-        Err(error) => return Err(error),
-    };
-    runtime.commit(&runtime.ctx(), |tx, _| {
-        let child_result = match (settled.status, settled.answer) {
-            (SubmissionStatus::Done, Some(answer)) => result("succeeded", Some(answer_text(tx, answer)?), None),
-            _ => result(
-                "failed",
-                None,
-                Some(format!(
-                    "Subagent {} ended without an answer: {}",
-                    input.name,
-                    settled
-                        .detail
-                        .as_ref()
-                        .and_then(Value::as_str)
-                        .or(settled.reason.as_deref())
-                        .unwrap_or("unanswered")
-                )),
-            ),
-        };
-        if input.keep {
-            return Ok(Some(NextState::Running {
-                checkpoint: to_value(&ChildCheckpoint::Idle {
-                    conversation,
-                    result: child_result,
-                }),
-            }));
-        }
-        let receipt = json!({ "result": child_result, "conversation": conversation.0 });
-        Ok(Some(NextState::Terminal {
-            outcome: TaskOutcome::Completed { result: receipt },
-        }))
-    })
+    match settled {
+        Ok(settled) => commit_child_settled(runtime, &input, conversation, &settled),
+        Err(_) if deadline.is_cancelled() => commit_child_timeout(runtime, &input, conversation),
+        Err(error) => Err(error),
+    }
 }
 
 /// Spawn a child in `tx`: owned by `cell` (an ordinary child) or, with `keep`, a background task of `conversation`.

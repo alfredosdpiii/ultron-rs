@@ -309,15 +309,10 @@ fn sub_hunk(hunk: &Hunk, from: usize, to: usize) -> Vec<String> {
         .collect()
 }
 
-/// The pull request diff less what the sources change the same way. `head_lines(path)` reads a file of the head
-/// (for what is missing); `None` when it is not there.
-pub fn promotion_delta(
-    pull_diff: &str,
+fn collect_carried_sources(
     sources: &[PromotionSource],
-    head_lines: &dyn Fn(&str) -> Option<Vec<String>>,
-) -> PromotionDelta {
-    let files = parse_diff(pull_diff);
-    let (pull_added, _) = changes(&files);
+    pull_added: &Counts,
+) -> (Vec<(String, Counts, Counts)>, HashSet<String>) {
     let mut carried: Vec<(String, Counts, Counts)> = Vec::new();
     let mut recontext: HashSet<String> = HashSet::new();
     for source in sources {
@@ -346,19 +341,13 @@ pub fn promotion_delta(
             carried.push((source.label.clone(), added, removed));
         }
     }
-    if carried.is_empty() {
-        return PromotionDelta {
-            diff: pull_diff.to_string(),
-            sources: Vec::new(),
-            carried_lines: 0,
-            carried_files: 0,
-            context_files: 0,
-            missing: Vec::new(),
-        };
-    }
+    (carried, recontext)
+}
+
+fn merge_carried_counts(carried: &[(String, Counts, Counts)]) -> (Vec<String>, Counts, Counts) {
     let mut labels: Vec<String> = Vec::new();
     let (mut added, mut removed) = (Counts::new(), Counts::new());
-    for (label, source_added, source_removed) in &carried {
+    for (label, source_added, source_removed) in carried {
         if !labels.contains(label) {
             labels.push(label.clone());
         }
@@ -373,72 +362,104 @@ pub fn promotion_delta(
             }
         }
     }
-    let touched: HashSet<String> = added.keys().chain(removed.keys()).cloned().collect();
-    let removed_by_sources = removed.clone();
-    let mut read: HashSet<&str> = HashSet::new();
-    let mut out: Vec<String> = Vec::new();
-    let (mut carried_lines, mut carried_files, mut context_files) = (0u64, 0u64, 0u64);
-    for file in &files {
-        if recontext.contains(&file.new_path) || recontext.contains(&file.old_path) {
-            context_files += 1;
-            read.insert(&file.new_path);
-            out.extend(file.header.iter().cloned());
-            for hunk in &file.hunks {
-                out.extend(sub_hunk(hunk, 0, hunk.lines.len()));
-            }
-            continue;
-        }
-        if file.hunks.is_empty() {
-            if touched.contains(&file.new_path) || touched.contains(&file.old_path) {
-                carried_files += 1;
-            } else {
-                out.extend(file.header.iter().cloned());
-            }
-            continue;
-        }
-        let mut kept: Vec<String> = Vec::new();
-        for hunk in &file.hunks {
-            let mut open: Vec<usize> = Vec::new();
-            for (index, line) in hunk.lines.iter().enumerate() {
-                let matched = if let Some(text) = line.strip_prefix('+') {
-                    Some(take(&mut added, &file.new_path, text))
-                } else {
-                    line.strip_prefix('-')
-                        .map(|text| take(&mut removed, &file.old_path, text))
-                };
-                match matched {
-                    Some(true) => carried_lines += 1,
-                    Some(false) => open.push(index),
-                    None => {}
-                }
-            }
-            let mut window: Option<(usize, usize)> = None;
-            for index in open {
-                let from = index.saturating_sub(PROMOTION_CONTEXT);
-                let to = (index + PROMOTION_CONTEXT + 1).min(hunk.lines.len());
-                window = match window {
-                    Some((start, end)) if from <= end => Some((start, end.max(to))),
-                    Some((start, end)) => {
-                        kept.extend(sub_hunk(hunk, start, end));
-                        Some((from, to))
-                    }
-                    None => Some((from, to)),
-                };
-            }
-            if let Some((start, end)) = window {
-                kept.extend(sub_hunk(hunk, start, end));
-            }
-        }
-        if kept.is_empty() {
-            carried_files += 1;
+    (labels, added, removed)
+}
+
+fn filter_hunk(
+    hunk: &Hunk,
+    file: &FileDiff,
+    added: &mut Counts,
+    removed: &mut Counts,
+    carried_lines: &mut u64,
+) -> Vec<String> {
+    let mut open: Vec<usize> = Vec::new();
+    for (index, line) in hunk.lines.iter().enumerate() {
+        let matched = if let Some(text) = line.strip_prefix('+') {
+            Some(take(added, &file.new_path, text))
         } else {
-            read.insert(&file.new_path);
-            out.extend(file.header.iter().cloned());
-            out.extend(kept);
+            line.strip_prefix('-').map(|text| take(removed, &file.old_path, text))
+        };
+        match matched {
+            Some(true) => *carried_lines += 1,
+            Some(false) => open.push(index),
+            None => {}
         }
     }
+    let mut kept = Vec::new();
+    let mut window: Option<(usize, usize)> = None;
+    for index in open {
+        let from = index.saturating_sub(PROMOTION_CONTEXT);
+        let to = (index + PROMOTION_CONTEXT + 1).min(hunk.lines.len());
+        window = match window {
+            Some((start, end)) if from <= end => Some((start, end.max(to))),
+            Some((start, end)) => {
+                kept.extend(sub_hunk(hunk, start, end));
+                Some((from, to))
+            }
+            None => Some((from, to)),
+        };
+    }
+    if let Some((start, end)) = window {
+        kept.extend(sub_hunk(hunk, start, end));
+    }
+    kept
+}
+
+struct DeltaCounters {
+    carried_lines: u64,
+    carried_files: u64,
+    context_files: u64,
+}
+
+#[expect(clippy::too_many_arguments, reason = "internal diff filter helper")]
+fn filter_file_diff<'a>(
+    file: &'a FileDiff,
+    recontext: &HashSet<String>,
+    touched: &HashSet<String>,
+    added: &mut Counts,
+    removed: &mut Counts,
+    read: &mut HashSet<&'a str>,
+    out: &mut Vec<String>,
+    counters: &mut DeltaCounters,
+) {
+    if recontext.contains(&file.new_path) || recontext.contains(&file.old_path) {
+        counters.context_files += 1;
+        read.insert(&file.new_path);
+        out.extend(file.header.iter().cloned());
+        for hunk in &file.hunks {
+            out.extend(sub_hunk(hunk, 0, hunk.lines.len()));
+        }
+        return;
+    }
+    if file.hunks.is_empty() {
+        if touched.contains(&file.new_path) || touched.contains(&file.old_path) {
+            counters.carried_files += 1;
+        } else {
+            out.extend(file.header.iter().cloned());
+        }
+        return;
+    }
+    let mut kept: Vec<String> = Vec::new();
+    for hunk in &file.hunks {
+        kept.extend(filter_hunk(hunk, file, added, removed, &mut counters.carried_lines));
+    }
+    if kept.is_empty() {
+        counters.carried_files += 1;
+    } else {
+        read.insert(&file.new_path);
+        out.extend(file.header.iter().cloned());
+        out.extend(kept);
+    }
+}
+
+fn collect_missing(
+    added: &Counts,
+    removed_by_sources: &Counts,
+    read: &HashSet<&str>,
+    head_lines: &dyn Fn(&str) -> Option<Vec<String>>,
+) -> Vec<Missing> {
     let mut missing: Vec<Missing> = Vec::new();
-    for (path, lines) in &added {
+    for (path, lines) in added {
         if read.contains(path.as_str()) || lines.values().all(|left| *left == 0) {
             continue;
         }
@@ -463,6 +484,52 @@ pub fn promotion_delta(
         }
     }
     missing.sort_by(|a, b| b.lines.cmp(&a.lines).then_with(|| a.path.cmp(&b.path)));
+    missing
+}
+
+/// The pull request diff less what the sources change the same way. `head_lines(path)` reads a file of the head
+/// (for what is missing); `None` when it is not there.
+pub fn promotion_delta(
+    pull_diff: &str,
+    sources: &[PromotionSource],
+    head_lines: &dyn Fn(&str) -> Option<Vec<String>>,
+) -> PromotionDelta {
+    let files = parse_diff(pull_diff);
+    let (pull_added, _) = changes(&files);
+    let (carried, recontext) = collect_carried_sources(sources, &pull_added);
+    if carried.is_empty() {
+        return PromotionDelta {
+            diff: pull_diff.to_string(),
+            sources: Vec::new(),
+            carried_lines: 0,
+            carried_files: 0,
+            context_files: 0,
+            missing: Vec::new(),
+        };
+    }
+    let (labels, mut added, mut removed) = merge_carried_counts(&carried);
+    let touched: HashSet<String> = added.keys().chain(removed.keys()).cloned().collect();
+    let removed_by_sources = removed.clone();
+    let mut read: HashSet<&str> = HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    let mut counters = DeltaCounters {
+        carried_lines: 0,
+        carried_files: 0,
+        context_files: 0,
+    };
+    for file in &files {
+        filter_file_diff(
+            file,
+            &recontext,
+            &touched,
+            &mut added,
+            &mut removed,
+            &mut read,
+            &mut out,
+            &mut counters,
+        );
+    }
+    let missing = collect_missing(&added, &removed_by_sources, &read, head_lines);
     PromotionDelta {
         diff: if out.is_empty() {
             String::new()
@@ -470,9 +537,9 @@ pub fn promotion_delta(
             format!("{}\n", out.join("\n"))
         },
         sources: labels,
-        carried_lines,
-        carried_files,
-        context_files,
+        carried_lines: counters.carried_lines,
+        carried_files: counters.carried_files,
+        context_files: counters.context_files,
         missing,
     }
 }

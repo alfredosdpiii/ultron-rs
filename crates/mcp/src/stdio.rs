@@ -129,16 +129,74 @@ impl StdioTransport {
     }
 }
 
-impl Transport for StdioTransport {
-    fn start(&self, sink: Sink) -> Result<(), Error> {
-        let mut state = sync::lock(&self.state);
-        if state.started {
-            return Err(Error::Other("MCP stdio transport already started".into()));
+fn spawn_stderr_reader(
+    mut stderr: std::process::ChildStderr,
+    buffer: Arc<Mutex<Vec<u8>>>,
+    max: usize,
+    done: std::sync::mpsc::Sender<()>,
+) {
+    std::thread::spawn(move || {
+        let _done = done;
+        let mut chunk = [0u8; 8192];
+        while let Ok(n @ 1..) = stderr.read(&mut chunk) {
+            let mut buffer = sync::lock(&buffer);
+            buffer.extend_from_slice(&chunk[..n]);
+            if buffer.len() > max {
+                let excess = buffer.len() - max;
+                buffer.drain(..excess);
+            }
         }
-        if state.closed {
-            return Err(Error::closed());
+    });
+}
+
+fn read_stdout_loop(stdout: &mut std::process::ChildStdout, buffer: &mut Vec<u8>, max: usize, sink: &Sink) {
+    let mut chunk = vec![0u8; 65536];
+    loop {
+        match stdout.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                buffer.extend_from_slice(&chunk[..n]);
+                drain_lines(buffer, max, &**sink);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => {
+                sink(Incoming::Error(e.to_string()));
+                break;
+            }
         }
-        state.started = true;
+    }
+}
+
+fn spawn_stdout_reader(
+    mut child: std::process::Child,
+    mut stdout: Option<std::process::ChildStdout>,
+    max: usize,
+    exited: Arc<(Mutex<bool>, Condvar)>,
+    stderr_ended: std::sync::mpsc::Receiver<()>,
+    sink: Sink,
+) {
+    let close_sink = sink.clone();
+    std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        if let Some(stdout) = stdout.as_mut() {
+            read_stdout_loop(stdout, &mut buffer, max, &sink);
+        }
+        let _ = child.wait();
+        let _ = stderr_ended.recv_timeout(STDERR_DRAIN_GRACE);
+        if !String::from_utf8_lossy(&buffer).trim().is_empty() {
+            sink(Incoming::Error(
+                "MCP stdio server closed with an incomplete JSON-RPC message".into(),
+            ));
+        }
+        let (done, condvar) = &*exited;
+        *sync::lock(done) = true;
+        condvar.notify_all();
+        close_sink(Incoming::Closed);
+    });
+}
+
+impl StdioTransport {
+    fn spawn_child(&self) -> Result<std::process::Child, Error> {
         let mut command = Command::new(&self.options.command);
         command
             .args(&self.options.args)
@@ -153,65 +211,35 @@ impl Transport for StdioTransport {
             command.env_clear();
         }
         command.envs(self.options.env.iter().map(|(k, v)| (k, v)));
-        let mut child = command
+        command
             .spawn()
-            .map_err(|e| Error::Other(format!("spawn {} failed: {e}", self.options.command)))?;
+            .map_err(|e| Error::Other(format!("spawn {} failed: {e}", self.options.command)))
+    }
+}
+
+impl Transport for StdioTransport {
+    fn start(&self, sink: Sink) -> Result<(), Error> {
+        let mut state = sync::lock(&self.state);
+        if state.started {
+            return Err(Error::Other("MCP stdio transport already started".into()));
+        }
+        if state.closed {
+            return Err(Error::closed());
+        }
+        state.started = true;
+        let mut child = self.spawn_child()?;
         state.pid = Some(child.id());
         state.stdin = child.stdin.take();
         drop(state);
 
         let (stderr_done, stderr_ended) = std::sync::mpsc::channel::<()>();
-        if let Some(mut stderr) = child.stderr.take() {
-            let buffer = self.stderr.clone();
+        if let Some(stderr) = child.stderr.take() {
             let max = self.options.max_stderr_bytes.unwrap_or(DEFAULT_MAX_STDERR_BYTES);
-            std::thread::spawn(move || {
-                let _done = stderr_done;
-                let mut chunk = [0u8; 8192];
-                while let Ok(n @ 1..) = stderr.read(&mut chunk) {
-                    let mut buffer = sync::lock(&buffer);
-                    buffer.extend_from_slice(&chunk[..n]);
-                    if buffer.len() > max {
-                        let excess = buffer.len() - max;
-                        buffer.drain(..excess);
-                    }
-                }
-            });
+            spawn_stderr_reader(stderr, self.stderr.clone(), max, stderr_done);
         }
-        let mut stdout = child.stdout.take();
+        let stdout = child.stdout.take();
         let max = self.options.max_message_bytes.unwrap_or(DEFAULT_MAX_MESSAGE_BYTES);
-        let exited = self.exited.clone();
-        let close_sink = sink.clone();
-        std::thread::spawn(move || {
-            let mut buffer = Vec::new();
-            let mut chunk = vec![0u8; 65536];
-            if let Some(stdout) = stdout.as_mut() {
-                loop {
-                    match stdout.read(&mut chunk) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            buffer.extend_from_slice(&chunk[..n]);
-                            drain_lines(&mut buffer, max, &*sink);
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                        Err(e) => {
-                            sink(Incoming::Error(e.to_string()));
-                            break;
-                        }
-                    }
-                }
-            }
-            let _ = child.wait();
-            let _ = stderr_ended.recv_timeout(STDERR_DRAIN_GRACE);
-            if !String::from_utf8_lossy(&buffer).trim().is_empty() {
-                sink(Incoming::Error(
-                    "MCP stdio server closed with an incomplete JSON-RPC message".into(),
-                ));
-            }
-            let (done, condvar) = &*exited;
-            *sync::lock(done) = true;
-            condvar.notify_all();
-            close_sink(Incoming::Closed);
-        });
+        spawn_stdout_reader(child, stdout, max, self.exited.clone(), stderr_ended, sink);
         Ok(())
     }
 

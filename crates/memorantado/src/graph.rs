@@ -54,54 +54,60 @@ impl Endpoint {
     }
 }
 
+fn parse_memory_item(item: &Value, default_status: &str) -> Option<(MemoryNode, Option<i64>)> {
+    let id = item["id"].as_i64()?;
+    let text = |key: &str| item[key].as_str().unwrap_or_default().to_string();
+    let node = MemoryNode {
+        id,
+        key: item["key"].as_str().map(str::to_string),
+        kind: text("kind"),
+        subject: text("subject"),
+        status: item["status"].as_str().unwrap_or(default_status).to_string(),
+        content: text("content").chars().take(CONTENT_CHARS).collect(),
+        tags: item["tags"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+    };
+    Some((node, item["supersedesId"].as_i64()))
+}
+
 impl MemorantadoBackend {
-    /// The project's memories (at most [`MAX_MEMORIES`], their content cut at [`CONTENT_CHARS`]) and the links
-    /// between them, page by page.
-    pub fn project_graph(&self, signal: &Signal) -> Result<MemoryGraph, String> {
-        let mut graph = MemoryGraph::default();
-        'statuses: for status in ["active", "superseded", "invalidated"] {
-            let mut offset = 0;
-            loop {
-                let query = [
-                    ("status", status.to_string()),
-                    ("limit", PAGE.to_string()),
-                    ("offset", offset.to_string()),
-                ];
-                let page = self
-                    .call("GET", "/semantic-memories", &query, None, false, signal)?
-                    .unwrap_or(Value::Null);
-                let items = page.as_array().ok_or("memorantado's memory list is not a list")?;
-                for item in items {
-                    let Some(id) = item["id"].as_i64() else { continue };
-                    let text = |key: &str| item[key].as_str().unwrap_or_default().to_string();
-                    if let Some(older) = item["supersedesId"].as_i64() {
-                        graph.supersedes.push((id, older));
-                    }
-                    graph.memories.push(MemoryNode {
-                        id,
-                        key: item["key"].as_str().map(str::to_string),
-                        kind: text("kind"),
-                        subject: text("subject"),
-                        status: item["status"].as_str().unwrap_or(status).to_string(),
-                        content: text("content").chars().take(CONTENT_CHARS).collect(),
-                        tags: item["tags"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(Value::as_str)
-                            .map(str::to_string)
-                            .collect(),
-                    });
-                    if graph.memories.len() == MAX_MEMORIES {
-                        break 'statuses;
-                    }
+    fn collect_status_memories(&self, status: &str, graph: &mut MemoryGraph, signal: &Signal) -> Result<bool, String> {
+        let mut offset = 0;
+        loop {
+            let query = [
+                ("status", status.to_string()),
+                ("limit", PAGE.to_string()),
+                ("offset", offset.to_string()),
+            ];
+            let page = self
+                .call("GET", "/semantic-memories", &query, None, false, signal)?
+                .unwrap_or(Value::Null);
+            let items = page.as_array().ok_or("memorantado's memory list is not a list")?;
+            for item in items {
+                let Some((node, older)) = parse_memory_item(item, status) else {
+                    continue;
+                };
+                if let Some(older) = older {
+                    graph.supersedes.push((node.id, older));
                 }
-                if items.len() < PAGE {
-                    break;
+                graph.memories.push(node);
+                if graph.memories.len() == MAX_MEMORIES {
+                    return Ok(true);
                 }
-                offset += PAGE;
             }
+            if items.len() < PAGE {
+                return Ok(false);
+            }
+            offset += PAGE;
         }
+    }
+
+    fn collect_conflicts(&self, graph: &mut MemoryGraph, signal: &Signal) -> Result<(), String> {
         let conflicts = self
             .call("GET", "/memory-conflicts", &[], None, false, signal)?
             .unwrap_or(Value::Null);
@@ -111,6 +117,19 @@ impl MemorantadoBackend {
                 graph.conflicts.push((a, b, reason));
             }
         }
+        Ok(())
+    }
+
+    /// The project's memories (at most [`MAX_MEMORIES`], their content cut at [`CONTENT_CHARS`]) and the links
+    /// between them, page by page.
+    pub fn project_graph(&self, signal: &Signal) -> Result<MemoryGraph, String> {
+        let mut graph = MemoryGraph::default();
+        for status in ["active", "superseded", "invalidated"] {
+            if self.collect_status_memories(status, &mut graph, signal)? {
+                break;
+            }
+        }
+        self.collect_conflicts(&mut graph, signal)?;
         Ok(graph)
     }
 }

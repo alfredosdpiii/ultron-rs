@@ -88,26 +88,37 @@ pub fn delta(previous: Option<(&str, &[Value])>, model: &str, current: &[Value])
             at,
         };
     }
+    Delta::Reset {
+        reason: classify_reset_reason(previous, current, at),
+        at,
+    }
+}
+
+fn classify_reset_reason(previous: &[Value], current: &[Value], at: usize) -> &'static str {
     let (p, c) = (&previous[at], &current[at]);
-    let reason = if p["role"] == "system" && c["role"] == "system" {
-        if without_tools(p) == without_tools(c) {
+    if p["role"] == "system" && c["role"] == "system" {
+        return if without_tools(p) == without_tools(c) {
             "tools"
         } else {
             "system"
-        }
-    } else if new_marker(previous, &current[at..], COMPACTION_SUMMARY_PREFIX) {
-        "compaction"
-    } else if new_marker(previous, &current[at..], BRANCH_SUMMARY_PREFIX) {
-        "branch_summary"
-    } else if (p["role"] == c["role"] && p["timestamp"] == c["timestamp"])
+        };
+    }
+    if new_marker(previous, &current[at..], COMPACTION_SUMMARY_PREFIX) {
+        return "compaction";
+    }
+    if new_marker(previous, &current[at..], BRANCH_SUMMARY_PREFIX) {
+        return "branch_summary";
+    }
+    if is_context_edit_change(previous, at, p, c) {
+        return "context_edit";
+    }
+    "prefix_changed"
+}
+
+fn is_context_edit_change(previous: &[Value], at: usize, p: &Value, c: &Value) -> bool {
+    (p["role"] == c["role"] && p["timestamp"] == c["timestamp"])
         || previous[at + 1..].contains(c)
         || mentions_omission(c)
-    {
-        "context_edit"
-    } else {
-        "prefix_changed"
-    };
-    Delta::Reset { reason, at }
 }
 
 /// Whether `tail` holds a summary message (`prefix`) that `previous` does not.

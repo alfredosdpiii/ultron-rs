@@ -41,57 +41,54 @@ impl Platform {
     }
 }
 
-/// `KEYBINDINGS` for a platform: the TUI bindings (some overridden in place), then the app bindings.
-pub fn app_keybindings(p: Platform) -> Vec<KeybindingDefinition> {
+fn pick_keys(cond: bool, yes: &'static [&'static str], no: &'static [&'static str]) -> &'static [&'static str] {
+    if cond { yes } else { no }
+}
+
+fn undo_keys(p: Platform) -> &'static [&'static str] {
+    if p.win32 {
+        &["ctrl+z"]
+    } else if p.windows_keybindings {
+        &["alt+z"]
+    } else {
+        &["ctrl+-"]
+    }
+}
+
+fn apply_tui_overrides(defs: &mut [KeybindingDefinition], p: Platform) {
     let overrides: [(&str, &[&str]); 4] = [
-        (
-            "tui.editor.undo",
-            if p.win32 {
-                &["ctrl+z"]
-            } else if p.windows_keybindings {
-                &["alt+z"]
-            } else {
-                &["ctrl+-"]
-            },
-        ),
+        ("tui.editor.undo", undo_keys(p)),
         (
             "tui.altScreen.previousPrompt",
-            if p.windows_keybindings {
-                &["ctrl+up"]
-            } else {
-                &["ctrl+shift+up", "ctrl+up"]
-            },
+            pick_keys(p.windows_keybindings, &["ctrl+up"], &["ctrl+shift+up", "ctrl+up"]),
         ),
         (
             "tui.altScreen.nextPrompt",
-            if p.windows_keybindings {
-                &["ctrl+down"]
-            } else {
-                &["ctrl+shift+down", "ctrl+down"]
-            },
+            pick_keys(p.windows_keybindings, &["ctrl+down"], &["ctrl+shift+down", "ctrl+down"]),
         ),
         (
             "tui.altScreen.search",
-            if p.windows_keybindings {
-                &["ctrl+f"]
-            } else {
-                &["ctrl+shift+f"]
-            },
+            pick_keys(p.windows_keybindings, &["ctrl+f"], &["ctrl+shift+f"]),
         ),
     ];
-    let mut defs = tui_keybindings();
     for (id, keys) in overrides {
         if let Some(d) = defs.iter_mut().find(|d| d.id == id) {
             d.default_keys = keys.iter().map(|k| (*k).to_string()).collect();
         }
     }
+}
+
+/// `KEYBINDINGS` for a platform: the TUI bindings (some overridden in place), then the app bindings.
+pub fn app_keybindings(p: Platform) -> Vec<KeybindingDefinition> {
+    let mut defs = tui_keybindings();
+    apply_tui_overrides(&mut defs, p);
     defs.extend([
         KeybindingDefinition::new("app.interrupt", &["escape"], "Cancel or abort"),
         KeybindingDefinition::new("app.clear", &["ctrl+c"], "Clear editor"),
         KeybindingDefinition::new("app.exit", &["ctrl+d"], "Exit when editor is empty"),
         KeybindingDefinition::new(
             "app.suspend",
-            if p.win32 { &[] } else { &["ctrl+z"] },
+            pick_keys(p.win32, &[], &["ctrl+z"]),
             "Suspend to background",
         ),
         KeybindingDefinition::new("app.thinking.cycle", &["shift+tab"], "Cycle thinking level"),
@@ -99,11 +96,7 @@ pub fn app_keybindings(p: Platform) -> Vec<KeybindingDefinition> {
         KeybindingDefinition::new("app.model.cycleForward", &["ctrl+p"], "Cycle to next model"),
         KeybindingDefinition::new(
             "app.model.cycleBackward",
-            if p.windows_keybindings {
-                &["alt+p"]
-            } else {
-                &["shift+ctrl+p"]
-            },
+            pick_keys(p.windows_keybindings, &["alt+p"], &["shift+ctrl+p"]),
             "Cycle to previous model",
         ),
         KeybindingDefinition::new("app.model.select", &["ctrl+l"], "Open model selector"),
@@ -180,21 +173,17 @@ pub fn app_keybindings(p: Platform) -> Vec<KeybindingDefinition> {
         ),
         KeybindingDefinition::new(
             "app.message.followUp",
-            if p.windows_keybindings {
-                &["ctrl+q"]
-            } else {
-                &["alt+enter"]
-            },
+            pick_keys(p.windows_keybindings, &["ctrl+q"], &["alt+enter"]),
             "Queue follow-up message",
         ),
         KeybindingDefinition::new(
             "app.message.dequeue",
-            if p.windows_keybindings { &["alt+q"] } else { &["alt+up"] },
+            pick_keys(p.windows_keybindings, &["alt+q"], &["alt+up"]),
             "Restore queued messages",
         ),
         KeybindingDefinition::new(
             "app.clipboard.pasteImage",
-            if p.windows_keybindings { &["alt+v"] } else { &["ctrl+v"] },
+            pick_keys(p.windows_keybindings, &["alt+v"], &["ctrl+v"]),
             "Paste image from clipboard (text fallback)",
         ),
         KeybindingDefinition::new("app.session.new", &[], "Start a new session"),
@@ -203,20 +192,12 @@ pub fn app_keybindings(p: Platform) -> Vec<KeybindingDefinition> {
         KeybindingDefinition::new("app.session.resume", &[], "Resume a session"),
         KeybindingDefinition::new(
             "app.tree.foldOrUp",
-            if p.darwin {
-                &["alt+left", "ctrl+left"]
-            } else {
-                &["ctrl+left", "alt+left"]
-            },
+            pick_keys(p.darwin, &["alt+left", "ctrl+left"], &["ctrl+left", "alt+left"]),
             "Fold tree branch or move up",
         ),
         KeybindingDefinition::new(
             "app.tree.unfoldOrDown",
-            if p.darwin {
-                &["alt+right", "ctrl+right"]
-            } else {
-                &["ctrl+right", "alt+right"]
-            },
+            pick_keys(p.darwin, &["alt+right", "ctrl+right"], &["ctrl+right", "alt+right"]),
             "Unfold tree branch or move down",
         ),
         KeybindingDefinition::new("app.tree.editLabel", &["shift+l"], "Edit tree label"),

@@ -458,32 +458,8 @@ impl ToolCalls {
             let Some(index) = state.records.iter().position(|r| id_of(r) == id) else {
                 return;
             };
-            {
-                let record = state.records[index].as_object_mut().expect("records are objects");
-                record.insert("endedAt".into(), now.into());
-                if live.cancel.is_aborted() {
-                    record.insert("status".into(), "cancelled".into());
-                    record.shift_remove("preview");
-                } else if let Err(error) = &result {
-                    record.insert("status".into(), "failed".into());
-                    let shown = if error.chars().count() > 2000 {
-                        format!("{}…", error.chars().take(1999).collect::<String>())
-                    } else {
-                        error.clone()
-                    };
-                    record.insert("error".into(), shown.into());
-                    record.insert(
-                        "preview".into(),
-                        jsrt::json::preview(&Value::from(error.as_str()), PREVIEW_CHARS).into(),
-                    );
-                } else if let Some(outcome) = &outcome {
-                    record.insert("status".into(), "completed".into());
-                    record.insert(
-                        "preview".into(),
-                        jsrt::json::preview(&Value::from(outcome.text.as_str()), PREVIEW_CHARS).into(),
-                    );
-                }
-            }
+            let record = state.records[index].as_object_mut().expect("records are objects");
+            apply_finish_record(record, now, live.cancel.is_aborted(), &result, outcome.as_ref());
             if let Some(outcome) = outcome {
                 state.outcomes.insert(id.to_string(), outcome);
             }
@@ -702,107 +678,148 @@ impl ToolCalls {
         state.records.retain(|r| !drop.iter().any(|id| id == id_of(r)));
     }
 
+    fn handle_list(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        kernel::ops::fields("tools.list", payload)?;
+        Ok(Value::Array(
+            self.runner()?
+                .tools()
+                .into_iter()
+                .map(|tool| {
+                    let mut item = Map::new();
+                    item.insert("name".into(), tool.name.into());
+                    if let Some(label) = tool.label {
+                        item.insert("label".into(), label.into());
+                    }
+                    item.insert("description".into(), first_paragraph(&tool.description, 400).into());
+                    Value::Object(item)
+                })
+                .collect(),
+        ))
+    }
+
+    fn handle_describe(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        kernel::ops::fields("tools.describe", payload)?;
+        let tool = self.tool(payload.get("name"))?;
+        let mut item = Map::new();
+        item.insert("name".into(), tool.name.into());
+        if let Some(label) = tool.label {
+            item.insert("label".into(), label.into());
+        }
+        item.insert("description".into(), tool.description.into());
+        item.insert("parameters".into(), tool.parameters);
+        Ok(Value::Object(item))
+    }
+
+    fn cancel_if_aborted(&self, id: &str, request: &Request<'_>) {
+        if self.is_live(id) && request.signal.is_aborted() && request.payload.get("detach") != Some(&Value::Bool(true))
+        {
+            {
+                let mut state = jsrt::sync::lock(&self.inner.state);
+                if let Some(live) = state.live.get_mut(id) {
+                    live.waiters += 1;
+                }
+            }
+            self.cancel(id, "cancelled");
+        }
+    }
+
+    fn handle_call(&self, request: &Request<'_>) -> Result<Value, String> {
+        let payload = request.payload;
+        kernel::ops::fields("tools.call", payload)?;
+        let tool = self.tool(payload.get("name"))?;
+        let params = parse_tool_params(payload.get("params"))?;
+        let yield_after = wait_seconds(payload.get("yield_after"), "yield_after")?;
+        let root = jsrt::sync::lock(&self.inner.roots)
+            .clone()
+            .and_then(|roots| roots(request.lane));
+        let id = self.start(request.lane, root, &tool.name, params)?;
+        self.wait(&id, yield_after, request.signal);
+        self.cancel_if_aborted(&id, request);
+        self.snapshot_of(&id)
+    }
+
+    fn handle_result(&self, request: &Request<'_>) -> Result<Value, String> {
+        kernel::ops::fields("tools.result", request.payload)?;
+        let id = self.visible(request.payload.get("id"), request.lane)?;
+        if self.is_live(&id) {
+            let wait = wait_seconds(request.payload.get("wait"), "wait")?;
+            self.wait(&id, wait, request.signal);
+        }
+        self.snapshot_of(&id)
+    }
+
+    fn handle_get_or_cancel(&self, request: &Request<'_>) -> Result<Value, String> {
+        kernel::ops::fields(request.kind, request.payload)?;
+        let id = self.visible(request.payload.get("id"), request.lane)?;
+        if request.kind == "tools.cancel" {
+            self.cancel(&id, "cancelled");
+        }
+        self.snapshot_of(&id)
+    }
+
+    fn handle_calls(&self, request: &Request<'_>) -> Result<Value, String> {
+        kernel::ops::fields("tools.calls", request.payload)?;
+        let state = jsrt::sync::lock(&self.inner.state);
+        Ok(Value::Array(
+            state
+                .records
+                .iter()
+                .rev()
+                .filter(|r| kernel::sees(request.lane, r["lane"].as_str().unwrap_or_default()))
+                .map(|r| {
+                    let mut snapshot = self.snapshot(&state, r);
+                    snapshot["text"] = Value::Null;
+                    snapshot["details"] = Value::Null;
+                    snapshot["source"] = r["source"].clone();
+                    snapshot
+                })
+                .collect(),
+        ))
+    }
+
     fn handle_request(&self, request: &Request<'_>) -> Result<Value, String> {
         self.load()?;
-        let payload = request.payload;
         match request.kind {
-            "tools.list" => {
-                kernel::ops::fields("tools.list", payload)?;
-                Ok(Value::Array(
-                    self.runner()?
-                        .tools()
-                        .into_iter()
-                        .map(|tool| {
-                            let mut item = Map::new();
-                            item.insert("name".into(), tool.name.into());
-                            if let Some(label) = tool.label {
-                                item.insert("label".into(), label.into());
-                            }
-                            item.insert("description".into(), first_paragraph(&tool.description, 400).into());
-                            Value::Object(item)
-                        })
-                        .collect(),
-                ))
-            }
-            "tools.describe" => {
-                kernel::ops::fields("tools.describe", payload)?;
-                let tool = self.tool(payload.get("name"))?;
-                let mut item = Map::new();
-                item.insert("name".into(), tool.name.into());
-                if let Some(label) = tool.label {
-                    item.insert("label".into(), label.into());
-                }
-                item.insert("description".into(), tool.description.into());
-                item.insert("parameters".into(), tool.parameters);
-                Ok(Value::Object(item))
-            }
-            "tools.call" => {
-                kernel::ops::fields("tools.call", payload)?;
-                let tool = self.tool(payload.get("name"))?;
-                let params = match payload.get("params") {
-                    None | Some(Value::Null) => Map::new(),
-                    Some(Value::Object(params)) => params.clone(),
-                    Some(_) => return Err("tool params must be a dict (a JSON object)".into()),
-                };
-                let yield_after = wait_seconds(payload.get("yield_after"), "yield_after")?;
-                let root = jsrt::sync::lock(&self.inner.roots)
-                    .clone()
-                    .and_then(|roots| roots(request.lane));
-                let id = self.start(request.lane, root, &tool.name, params)?;
-                self.wait(&id, yield_after, request.signal);
-                if self.is_live(&id) && request.signal.is_aborted() && payload.get("detach") != Some(&Value::Bool(true))
-                {
-                    {
-                        let mut state = jsrt::sync::lock(&self.inner.state);
-                        if let Some(live) = state.live.get_mut(&id) {
-                            live.waiters += 1;
-                        }
-                    }
-                    self.cancel(&id, "cancelled");
-                }
-                self.snapshot_of(&id)
-            }
-            "tools.result" => {
-                kernel::ops::fields("tools.result", payload)?;
-                let id = self.visible(payload.get("id"), request.lane)?;
-                if self.is_live(&id) {
-                    let wait = wait_seconds(payload.get("wait"), "wait")?;
-                    self.wait(&id, wait, request.signal);
-                }
-                self.snapshot_of(&id)
-            }
-            "tools.get" => {
-                kernel::ops::fields("tools.get", payload)?;
-                let id = self.visible(payload.get("id"), request.lane)?;
-                self.snapshot_of(&id)
-            }
-            "tools.cancel" => {
-                kernel::ops::fields("tools.cancel", payload)?;
-                let id = self.visible(payload.get("id"), request.lane)?;
-                self.cancel(&id, "cancelled");
-                self.snapshot_of(&id)
-            }
-            "tools.calls" => {
-                kernel::ops::fields("tools.calls", payload)?;
-                let state = jsrt::sync::lock(&self.inner.state);
-                Ok(Value::Array(
-                    state
-                        .records
-                        .iter()
-                        .rev()
-                        .filter(|r| kernel::sees(request.lane, r["lane"].as_str().unwrap_or_default()))
-                        .map(|r| {
-                            let mut snapshot = self.snapshot(&state, r);
-                            snapshot["text"] = Value::Null;
-                            snapshot["details"] = Value::Null;
-                            snapshot["source"] = r["source"].clone();
-                            snapshot
-                        })
-                        .collect(),
-                ))
-            }
+            "tools.list" => self.handle_list(request.payload),
+            "tools.describe" => self.handle_describe(request.payload),
+            "tools.call" => self.handle_call(request),
+            "tools.result" => self.handle_result(request),
+            "tools.get" | "tools.cancel" => self.handle_get_or_cancel(request),
+            "tools.calls" => self.handle_calls(request),
             other => Err(kernel::ops::not_wired(other)),
         }
+    }
+}
+
+fn apply_finish_record(
+    record: &mut Map<String, Value>,
+    now: i64,
+    aborted: bool,
+    result: &Result<Value, String>,
+    outcome: Option<&Outcome>,
+) {
+    record.insert("endedAt".into(), now.into());
+    if aborted {
+        record.insert("status".into(), "cancelled".into());
+        record.shift_remove("preview");
+    } else if let Err(error) = result {
+        record.insert("status".into(), "failed".into());
+        let shown = if error.chars().count() > 2000 {
+            format!("{}…", error.chars().take(1999).collect::<String>())
+        } else {
+            error.clone()
+        };
+        record.insert("error".into(), shown.into());
+        record.insert(
+            "preview".into(),
+            jsrt::json::preview(&Value::from(error.as_str()), PREVIEW_CHARS).into(),
+        );
+    } else if let Some(outcome) = outcome {
+        record.insert("status".into(), "completed".into());
+        record.insert(
+            "preview".into(),
+            jsrt::json::preview(&Value::from(outcome.text.as_str()), PREVIEW_CHARS).into(),
+        );
     }
 }
 
@@ -817,6 +834,14 @@ impl ApiModule for ToolCalls {
 
     fn handle(&self, request: &Request<'_>) -> Result<Value, String> {
         self.handle_request(request)
+    }
+}
+
+fn parse_tool_params(value: Option<&Value>) -> Result<Map<String, Value>, String> {
+    match value {
+        None | Some(Value::Null) => Ok(Map::new()),
+        Some(Value::Object(params)) => Ok(params.clone()),
+        Some(_) => Err("tool params must be a dict (a JSON object)".into()),
     }
 }
 
@@ -868,49 +893,61 @@ pub fn result_text(result: &Value) -> String {
         .join("\n")
 }
 
-/// A short label for the graph; the `mcp` gateway is labelled by its mode (`toolCallLabel`).
-pub fn tool_call_label(name: &str, params: &Map<String, Value>) -> String {
-    if name != "mcp" {
-        return name.to_string();
+fn mcp_text<'a>(params: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
+    params.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
+}
+
+fn mcp_direct_label(params: &Map<String, Value>) -> Option<String> {
+    if let Some(tool) = mcp_text(params, "tool") {
+        return Some(format!("mcp {tool}"));
     }
-    let text = |key: &str| params.get(key).and_then(Value::as_str).filter(|s| !s.is_empty());
-    if let Some(tool) = text("tool") {
-        return format!("mcp {tool}");
-    }
-    if let Some(action) = text("action") {
-        return match text("server") {
+    if let Some(action) = mcp_text(params, "action") {
+        return Some(match mcp_text(params, "server") {
             Some(server) => format!("mcp {action} {server}"),
             None => format!("mcp {action}"),
-        };
+        });
     }
-    if let Some(server) = text("connect") {
-        return format!("mcp connect {server}");
+    for (key, prefix) in [
+        ("connect", "mcp connect"),
+        ("describe", "mcp describe"),
+        ("instructions", "mcp instructions"),
+    ] {
+        if let Some(value) = mcp_text(params, key) {
+            return Some(format!("{prefix} {value}"));
+        }
     }
-    if let Some(name) = text("describe") {
-        return format!("mcp describe {name}");
-    }
-    if let Some(server) = text("instructions") {
-        return format!("mcp instructions {server}");
-    }
+    None
+}
+
+fn mcp_secondary_label(params: &Map<String, Value>) -> Option<String> {
     if let Some(search) = params.get("search") {
-        return format!("mcp search {}", jsrt::json::stringify(search));
+        return Some(format!("mcp search {}", jsrt::json::stringify(search)));
     }
-    if let Some(uri) = text("read") {
-        return format!("mcp read {uri}");
+    if let Some(uri) = mcp_text(params, "read") {
+        return Some(format!("mcp read {uri}"));
     }
     if params
         .get("resources")
         .is_some_and(|r| !matches!(r, Value::Null | Value::Bool(false)) && r != "")
     {
-        return match text("resources").or(text("server")) {
-            Some(server) => format!("mcp resources {server}"),
-            None => "mcp resources".into(),
-        };
+        return Some(
+            match mcp_text(params, "resources").or_else(|| mcp_text(params, "server")) {
+                Some(server) => format!("mcp resources {server}"),
+                None => "mcp resources".into(),
+            },
+        );
     }
-    if let Some(server) = text("server") {
-        return format!("mcp list {server}");
+    mcp_text(params, "server").map(|server| format!("mcp list {server}"))
+}
+
+/// A short label for the graph; the `mcp` gateway is labelled by its mode (`toolCallLabel`).
+pub fn tool_call_label(name: &str, params: &Map<String, Value>) -> String {
+    if name != "mcp" {
+        return name.to_string();
     }
-    "mcp status".into()
+    mcp_direct_label(params)
+        .or_else(|| mcp_secondary_label(params))
+        .unwrap_or_else(|| "mcp status".into())
 }
 
 /// One-line completion summary for a runtime event (`toolCallSummary`).

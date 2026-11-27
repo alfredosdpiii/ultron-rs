@@ -25,6 +25,62 @@ pub struct UserMessage {
     pub images: Vec<Value>,
 }
 
+fn append_image_block(block: &Value, message: &mut UserMessage) -> Result<(), String> {
+    match (block["data"].as_str(), block["mimeType"].as_str()) {
+        (Some(data), Some(mime)) => {
+            message
+                .images
+                .push(json!({"type": "image", "data": data, "mimeType": mime}));
+            Ok(())
+        }
+        _ => Err("An image content block needs data and mimeType".into()),
+    }
+}
+
+fn append_resource_block(resource: &Value, message: &mut UserMessage, contexts: &mut Vec<String>) {
+    let uri = resource["uri"].as_str().unwrap_or_default();
+    let mime = resource["mimeType"].as_str().unwrap_or_default();
+    if let Some(text) = resource["text"].as_str() {
+        contexts.push(format!("<context ref=\"{uri}\">\n{text}\n</context>"));
+    } else if let (Some(blob), true) = (resource["blob"].as_str(), mime.starts_with("image/")) {
+        message
+            .images
+            .push(json!({"type": "image", "data": blob, "mimeType": mime}));
+    } else {
+        contexts.push(format!("[binary resource {uri} omitted]"));
+    }
+}
+
+fn append_content_block(
+    block: &Value,
+    message: &mut UserMessage,
+    contexts: &mut Vec<String>,
+    last_was_text: &mut bool,
+) -> Result<(), String> {
+    match block["type"].as_str().unwrap_or_default() {
+        "text" => {
+            let text = block["text"].as_str().unwrap_or_default();
+            if *last_was_text && !message.text.is_empty() {
+                message.text.push_str("\n\n");
+            }
+            message.text.push_str(text);
+            *last_was_text = true;
+            return Ok(());
+        }
+        "resource_link" => {
+            let uri = block["uri"].as_str().unwrap_or_default();
+            let name = block["name"].as_str().filter(|n| !n.is_empty()).unwrap_or(uri);
+            message.text.push_str(&format!("[@{name}]({uri})"));
+        }
+        "image" => append_image_block(block, message)?,
+        "resource" => append_resource_block(&block["resource"], message, contexts),
+        "audio" => contexts.push("[audio omitted: not supported]".into()),
+        other => return Err(format!("Unsupported content block type: {other}")),
+    }
+    *last_was_text = false;
+    Ok(())
+}
+
 /// `ContentBlock[]` -> the user message. Text and resource links run on inline (Zed splits a line around a mention);
 /// consecutive text blocks (CodeCompanion and avante send one block per message part) are separated by a blank line;
 /// embedded text resources follow as `<context ref="uri">` sections; images become Pi image blocks.
@@ -33,46 +89,7 @@ pub fn user_message(blocks: &[Value]) -> Result<UserMessage, String> {
     let mut contexts = Vec::new();
     let mut last_was_text = false;
     for block in blocks {
-        let kind = block["type"].as_str().unwrap_or_default();
-        match kind {
-            "text" => {
-                let text = block["text"].as_str().unwrap_or_default();
-                if last_was_text && !message.text.is_empty() {
-                    message.text.push_str("\n\n");
-                }
-                message.text.push_str(text);
-                last_was_text = true;
-                continue;
-            }
-            "resource_link" => {
-                let uri = block["uri"].as_str().unwrap_or_default();
-                let name = block["name"].as_str().filter(|n| !n.is_empty()).unwrap_or(uri);
-                message.text.push_str(&format!("[@{name}]({uri})"));
-            }
-            "image" => match (block["data"].as_str(), block["mimeType"].as_str()) {
-                (Some(data), Some(mime)) => message
-                    .images
-                    .push(json!({"type": "image", "data": data, "mimeType": mime})),
-                _ => return Err("An image content block needs data and mimeType".into()),
-            },
-            "resource" => {
-                let resource = &block["resource"];
-                let uri = resource["uri"].as_str().unwrap_or_default();
-                let mime = resource["mimeType"].as_str().unwrap_or_default();
-                if let Some(text) = resource["text"].as_str() {
-                    contexts.push(format!("<context ref=\"{uri}\">\n{text}\n</context>"));
-                } else if let (Some(blob), true) = (resource["blob"].as_str(), mime.starts_with("image/")) {
-                    message
-                        .images
-                        .push(json!({"type": "image", "data": blob, "mimeType": mime}));
-                } else {
-                    contexts.push(format!("[binary resource {uri} omitted]"));
-                }
-            }
-            "audio" => contexts.push("[audio omitted: not supported]".into()),
-            other => return Err(format!("Unsupported content block type: {other}")),
-        }
-        last_was_text = false;
+        append_content_block(block, &mut message, &mut contexts, &mut last_was_text)?;
     }
     for context in contexts {
         if !message.text.is_empty() {
@@ -273,21 +290,23 @@ pub struct Translator {
     args: HashMap<String, Value>,
 }
 
+fn translate_message_update(line: &Value) -> Vec<Action> {
+    let event = &line["assistantMessageEvent"];
+    let kind = match event["type"].as_str() {
+        Some("text_delta") => "agent_message_chunk",
+        Some("thinking_delta") => "agent_thought_chunk",
+        _ => return Vec::new(),
+    };
+    match event["delta"].as_str().filter(|d| !d.is_empty()) {
+        Some(delta) => vec![Action::Update(chunk(kind, delta))],
+        None => Vec::new(),
+    }
+}
+
 impl Translator {
     pub fn translate(&mut self, line: &Value) -> Vec<Action> {
         match line["type"].as_str().unwrap_or_default() {
-            "message_update" => {
-                let event = &line["assistantMessageEvent"];
-                let kind = match event["type"].as_str() {
-                    Some("text_delta") => "agent_message_chunk",
-                    Some("thinking_delta") => "agent_thought_chunk",
-                    _ => return Vec::new(),
-                };
-                match event["delta"].as_str().filter(|d| !d.is_empty()) {
-                    Some(delta) => vec![Action::Update(chunk(kind, delta))],
-                    None => Vec::new(),
-                }
-            }
+            "message_update" => translate_message_update(line),
             "tool_execution_start" => {
                 let id = line["toolCallId"].as_str().unwrap_or_default().to_string();
                 let name = line["toolName"].as_str().unwrap_or_default();
@@ -317,15 +336,73 @@ impl Translator {
                     line["messages"].as_array().cloned().unwrap_or_default(),
                 )]
             }
-            "session_info_changed" => {
-                vec![Action::Update(
-                    json!({"sessionUpdate": "session_info_update", "title": line.get("name").cloned().unwrap_or(Value::Null)}),
-                )]
-            }
+            "session_info_changed" => vec![Action::Update(
+                json!({"sessionUpdate": "session_info_update", "title": line.get("name").cloned().unwrap_or(Value::Null)}),
+            )],
             "extension_ui_request" => vec![Action::ExtensionUi(line.clone())],
             _ => Vec::new(),
         }
     }
+}
+
+fn replay_user_message(content: &Value, updates: &mut Vec<Value>) {
+    match content {
+        Value::String(text) => updates.push(chunk("user_message_chunk", text)),
+        Value::Array(blocks) => {
+            for block in blocks {
+                match block["type"].as_str() {
+                    Some("text") => {
+                        updates.push(chunk("user_message_chunk", block["text"].as_str().unwrap_or_default()));
+                    }
+                    Some("image") => updates.push(json!({"sessionUpdate": "user_message_chunk",
+                        "content": {"type": "image", "data": block["data"], "mimeType": block["mimeType"]}})),
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn replay_assistant_message(content: &Value, updates: &mut Vec<Value>, open: &mut Vec<(String, String, Value)>) {
+    for block in content.as_array().into_iter().flatten() {
+        match block["type"].as_str() {
+            Some("text") => {
+                let text = block["text"].as_str().unwrap_or_default();
+                if !text.is_empty() {
+                    updates.push(chunk("agent_message_chunk", text));
+                }
+            }
+            Some("thinking") => {
+                let text = block["thinking"].as_str().unwrap_or_default();
+                if !text.is_empty() {
+                    updates.push(chunk("agent_thought_chunk", text));
+                }
+            }
+            Some("toolCall") => {
+                let id = block["id"].as_str().unwrap_or_default().to_string();
+                let name = block["name"].as_str().unwrap_or_default().to_string();
+                updates.push(tool_call(&id, &name, &block["arguments"]));
+                open.push((id, name, block["arguments"].clone()));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn replay_tool_result(message: &Value, updates: &mut Vec<Value>, open: &mut Vec<(String, String, Value)>) {
+    let id = message["toolCallId"].as_str().unwrap_or_default();
+    let Some(index) = open.iter().position(|(known, _, _)| known == id) else {
+        return;
+    };
+    let args = open.remove(index).2;
+    let is_error = message["isError"] == true;
+    updates.push(tool_update(
+        id,
+        &args,
+        message,
+        Some((is_error, &FileChanges::default())),
+    ));
 }
 
 /// `session/load`'s replay of a stored conversation (Pi messages): user and agent text, thinking, and each cell as a
@@ -335,61 +412,9 @@ pub fn replay(messages: &[Value]) -> Vec<Value> {
     let mut open: Vec<(String, String, Value)> = Vec::new();
     for message in messages {
         match message["role"].as_str().unwrap_or_default() {
-            "user" => match &message["content"] {
-                Value::String(text) => updates.push(chunk("user_message_chunk", text)),
-                Value::Array(blocks) => {
-                    for block in blocks {
-                        match block["type"].as_str() {
-                            Some("text") => {
-                                updates.push(chunk("user_message_chunk", block["text"].as_str().unwrap_or_default()));
-                            }
-                            Some("image") => updates.push(json!({"sessionUpdate": "user_message_chunk",
-                                "content": {"type": "image", "data": block["data"], "mimeType": block["mimeType"]}})),
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
-            },
-            "assistant" => {
-                for block in message["content"].as_array().into_iter().flatten() {
-                    match block["type"].as_str() {
-                        Some("text") => {
-                            let text = block["text"].as_str().unwrap_or_default();
-                            if !text.is_empty() {
-                                updates.push(chunk("agent_message_chunk", text));
-                            }
-                        }
-                        Some("thinking") => {
-                            let text = block["thinking"].as_str().unwrap_or_default();
-                            if !text.is_empty() {
-                                updates.push(chunk("agent_thought_chunk", text));
-                            }
-                        }
-                        Some("toolCall") => {
-                            let id = block["id"].as_str().unwrap_or_default().to_string();
-                            let name = block["name"].as_str().unwrap_or_default().to_string();
-                            updates.push(tool_call(&id, &name, &block["arguments"]));
-                            open.push((id, name, block["arguments"].clone()));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            "toolResult" => {
-                let id = message["toolCallId"].as_str().unwrap_or_default();
-                let args = match open.iter().position(|(known, _, _)| known == id) {
-                    Some(index) => open.remove(index).2,
-                    None => continue,
-                };
-                let is_error = message["isError"] == true;
-                updates.push(tool_update(
-                    id,
-                    &args,
-                    message,
-                    Some((is_error, &FileChanges::default())),
-                ));
-            }
+            "user" => replay_user_message(&message["content"], &mut updates),
+            "assistant" => replay_assistant_message(&message["content"], &mut updates, &mut open),
+            "toolResult" => replay_tool_result(message, &mut updates, &mut open),
             _ => {}
         }
     }

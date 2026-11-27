@@ -179,35 +179,42 @@ impl Core {
     /// The run ended (`aborted`, `failed`) and the persona's nudges had their turn.
     pub(super) fn turn_guard_run_ended(&mut self, aborted: bool, failed: bool) {
         let empty = std::mem::take(&mut self.turn_guard.last_empty);
-        let pending =
-            !sync::lock(&self.queues).items.is_empty() || !self.deferred.is_empty() || !self.after_run.is_empty();
-        if aborted || failed || pending || self.run.is_some() {
+        if aborted || failed || self.has_pending_turn_work() || self.run.is_some() {
             return;
         }
-        if self.runtime.config.turn_guards {
-            if !empty {
-                self.turn_guard.empty = 0;
-            } else if self.turn_guard.empty < MAX_EMPTY {
-                self.turn_guard.empty += 1;
-                let message = nudge(
-                    "empty reply",
-                    Some((self.turn_guard.empty, MAX_EMPTY)),
-                    EMPTY_TEXT.into(),
-                );
-                let _ = self.prompt_with(message, None, true);
-                return;
-            }
-            let mut left = self.lane.stack.delegation.left_items(MAIN_LANE);
-            left.retain(|(id, _, _)| self.turn_guard.left_seen.insert(id.clone()));
-            if !left.is_empty() {
-                self.turn_guard_save();
-                let _ = self.prompt_with(nudge("work left by subagents", None, left_text(&left)), None, true);
-                return;
-            }
+        if self.runtime.config.turn_guards && self.continue_for_turn_guards(empty) {
+            return;
         }
         if self.persona.tool_calls > 0 && self.turn_guard.check_continues < MAX_CHECK_CONTINUES {
             self.turn_guard_check();
         }
+    }
+
+    fn has_pending_turn_work(&self) -> bool {
+        !sync::lock(&self.queues).items.is_empty() || !self.deferred.is_empty() || !self.after_run.is_empty()
+    }
+
+    fn continue_for_turn_guards(&mut self, empty: bool) -> bool {
+        if !empty {
+            self.turn_guard.empty = 0;
+        } else if self.turn_guard.empty < MAX_EMPTY {
+            self.turn_guard.empty += 1;
+            let message = nudge(
+                "empty reply",
+                Some((self.turn_guard.empty, MAX_EMPTY)),
+                EMPTY_TEXT.into(),
+            );
+            let _ = self.prompt_with(message, None, true);
+            return true;
+        }
+        let mut left = self.lane.stack.delegation.left_items(MAIN_LANE);
+        left.retain(|(id, _, _)| self.turn_guard.left_seen.insert(id.clone()));
+        if !left.is_empty() {
+            self.turn_guard_save();
+            let _ = self.prompt_with(nudge("work left by subagents", None, left_text(&left)), None, true);
+            return true;
+        }
+        false
     }
 
     /// Runs the settings' turn-end checks off the actor; [`Input::TurnChecked`] brings what failed.

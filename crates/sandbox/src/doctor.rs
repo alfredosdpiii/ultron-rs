@@ -43,32 +43,65 @@ pub fn self_check(policy: &Policy, mechanism: Option<Mechanism>, scratch_parent:
     let name = format!(".ultron-sandbox-probe-{}", jsrt::random::random_hex(6));
     let parent = scratch_parent.map_or_else(std::env::temp_dir, Path::to_path_buf);
     let scratch = Scratch(parent.join(format!("ultron-sandbox-doctor-{}", jsrt::random::random_hex(6))));
-    let project = scratch.0.join("project");
-    let outside = scratch.0.join("outside");
-    for dir in [&project, &outside] {
-        if let Err(error) = std::fs::create_dir_all(dir) {
-            return json!({ "ok": false, "error": format!("could not create {}: {error}", dir.display()) });
-        }
-    }
-    let project = std::fs::canonicalize(&project).unwrap_or(project);
-    let outside = std::fs::canonicalize(&outside).unwrap_or(outside);
+    let (project, outside) = match create_probe_dirs(&scratch.0) {
+        Ok(dirs) => dirs,
+        Err(report) => return report,
+    };
     let host_tmp = std::env::temp_dir().join(format!("ultron-sandbox-host-{}", jsrt::random::random_hex(6)));
     let _ = std::fs::write(&host_tmp, "host\n");
     let listener = std::net::TcpListener::bind("127.0.0.1:0");
     let port = listener.as_ref().map_or(0, |l| l.local_addr().map_or(0, |a| a.port()));
 
-    let mut policy = policy.clone();
-    policy.cwd = project.clone();
-    match policy.writable.first_mut() {
-        Some(first) => *first = project.clone(),
-        None => policy.writable.push(project.clone()),
+    let mut command = build_probe_command(policy, mechanism, &name, &project, &outside, &host_tmp, port);
+    let output = command.output();
+    drop(listener);
+    let _ = std::fs::remove_file(&host_tmp);
+    let landed = probe_landed(&name, &project, &policy.home, &outside);
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => return json!({ "ok": false, "error": format!("the probe did not start: {error}") }),
+    };
+    let seen = match parse_probe_output(&output) {
+        Ok(seen) => seen,
+        Err(report) => return report,
+    };
+    build_self_check_report(policy.network, landed, &seen)
+}
+
+fn create_probe_dirs(root: &Path) -> Result<(PathBuf, PathBuf), Value> {
+    let project = root.join("project");
+    let outside = root.join("outside");
+    for dir in [&project, &outside] {
+        if let Err(error) = std::fs::create_dir_all(dir) {
+            return Err(json!({ "ok": false, "error": format!("could not create {}: {error}", dir.display()) }));
+        }
     }
-    let mut argv: Vec<String> = vec!["bash".into(), "-c".into(), PROBE.into(), "probe".into(), name.clone()];
-    argv.extend([&project, &policy.home, &outside, &host_tmp].map(|p| p.to_string_lossy().into_owned()));
+    let project = std::fs::canonicalize(&project).unwrap_or(project);
+    let outside = std::fs::canonicalize(&outside).unwrap_or(outside);
+    Ok((project, outside))
+}
+
+fn build_probe_command(
+    policy: &Policy,
+    mechanism: Option<Mechanism>,
+    name: &str,
+    project: &Path,
+    outside: &Path,
+    host_tmp: &Path,
+    port: u16,
+) -> Command {
+    let mut probe_policy = policy.clone();
+    probe_policy.cwd = project.to_path_buf();
+    match probe_policy.writable.first_mut() {
+        Some(first) => *first = project.to_path_buf(),
+        None => probe_policy.writable.push(project.to_path_buf()),
+    }
+    let mut argv: Vec<String> = vec!["bash".into(), "-c".into(), PROBE.into(), "probe".into(), name.into()];
+    argv.extend([project, &probe_policy.home, outside, host_tmp].map(|p| p.to_string_lossy().into_owned()));
     argv.push(port.to_string());
-    argv.extend(policy.hidden.iter().map(|p| p.to_string_lossy().into_owned()));
+    argv.extend(probe_policy.hidden.iter().map(|p| p.to_string_lossy().into_owned()));
     let mut command = match mechanism {
-        Some(mechanism) => policy.command(mechanism, &argv, &project),
+        Some(mechanism) => probe_policy.command(mechanism, &argv, project),
         None => {
             let mut command = Command::new(&argv[0]);
             command.args(&argv[1..]);
@@ -77,23 +110,34 @@ pub fn self_check(policy: &Policy, mechanism: Option<Mechanism>, scratch_parent:
     };
     command
         .env(SANDBOX_CANARY_TOKEN_ENV, "not-a-real-token")
-        .current_dir(&project)
+        .current_dir(project)
         .stdin(Stdio::null());
-    let output = command.output();
-    drop(listener);
-    let _ = std::fs::remove_file(&host_tmp);
+    command
+}
+
+struct ProbeLanded {
+    project: bool,
+    home: bool,
+    outside: bool,
+    system: bool,
+}
+
+fn probe_landed(name: &str, project: &Path, home: &Path, outside: &Path) -> ProbeLanded {
     let landed = |dir: &Path| {
-        let path = dir.join(&name);
+        let path = dir.join(name);
         let exists = path.exists();
         let _ = std::fs::remove_file(&path);
         exists
     };
-    let (project_landed, home_landed, outside_landed) = (landed(&project), landed(&policy.home), landed(&outside));
-    let system_landed = landed(Path::new("/usr"));
-    let output = match output {
-        Ok(output) => output,
-        Err(error) => return json!({ "ok": false, "error": format!("the probe did not start: {error}") }),
-    };
+    ProbeLanded {
+        project: landed(project),
+        home: landed(home),
+        outside: landed(outside),
+        system: landed(Path::new("/usr")),
+    }
+}
+
+fn parse_probe_output(output: &std::process::Output) -> Result<Map<String, Value>, Value> {
     let text = String::from_utf8_lossy(&output.stdout).into_owned() + &String::from_utf8_lossy(&output.stderr);
     let mut seen = Map::new();
     for line in text.lines() {
@@ -110,28 +154,37 @@ pub fn self_check(policy: &Policy, mechanism: Option<Mechanism>, scratch_parent:
             .into_iter()
             .rev()
             .collect();
-        return json!({ "ok": false, "error": format!("the probe did not run (exit {:?}): {tail}", output.status.code()) });
+        return Err(
+            json!({ "ok": false, "error": format!("the probe did not run (exit {:?}): {tail}", output.status.code()) }),
+        );
     }
+    Ok(seen)
+}
+
+fn probe_isolation_ok(network: bool, landed: &ProbeLanded, seen: &Map<String, Value>, exposed: &[String]) -> bool {
+    let field = |key: &str| seen.get(key).and_then(Value::as_str).unwrap_or_default();
+    let files_ok = landed.project && !landed.home && !landed.outside && !landed.system;
+    let network_ok = network || field("network") == "unreachable";
+    files_ok && field("hostTmp") == "hidden" && field("token") == "absent" && exposed.is_empty() && network_ok
+}
+
+fn writability(landed: bool, blocked: &'static str) -> &'static str {
+    if landed { "writable" } else { blocked }
+}
+
+fn build_self_check_report(network: bool, landed: ProbeLanded, seen: &Map<String, Value>) -> Value {
     let field = |key: &str| seen.get(key).and_then(Value::as_str).unwrap_or_default().to_owned();
     let exposed: Vec<String> = field("exposed").split_whitespace().map(str::to_owned).collect();
-    let network_ok = policy.network || field("network") == "unreachable";
-    let ok = project_landed
-        && !home_landed
-        && !outside_landed
-        && !system_landed
-        && field("hostTmp") == "hidden"
-        && field("token") == "absent"
-        && exposed.is_empty()
-        && network_ok;
+    let ok = probe_isolation_ok(network, &landed, seen, &exposed);
     json!({
         "ok": ok,
-        "project": if project_landed { "writable" } else { "not writable" },
-        "home": if home_landed { "writable" } else { "read-only" },
-        "outside": if outside_landed { "writable" } else { "read-only" },
-        "system": if system_landed { "writable" } else { "read-only" },
+        "project": writability(landed.project, "not writable"),
+        "home": writability(landed.home, "read-only"),
+        "outside": writability(landed.outside, "read-only"),
+        "system": writability(landed.system, "read-only"),
         "hostTmp": field("hostTmp"),
         "network": field("network"),
-        "networkExpected": if policy.network { "on" } else { "off" },
+        "networkExpected": if network { "on" } else { "off" },
         "token": field("token"),
         "exposed": exposed,
     })

@@ -53,10 +53,13 @@ use protocol::watch::QueueKind;
 mod events;
 mod input;
 mod login;
+mod mouse;
 mod panels;
 mod render;
 mod rlm;
 mod services;
+
+use mouse::{AppMouse, MouseLayout};
 
 pub const RLM_PANE_AUTO_ENV: &str = "ULTRON_RLM_PANE_AUTO";
 
@@ -271,139 +274,6 @@ struct Selection {
     title: String,
     list: SelectList,
     purpose: Purpose,
-}
-
-/// The mouse-aware parts of a fullscreen frame (`currentLayout`): the dock slot holding the editor or the selector
-/// in its place, and the transcript with the rows of each item.
-#[derive(Clone, Debug, Default)]
-struct MouseLayout {
-    slot: Option<tui::Rect>,
-    transcript: Option<tui::Rect>,
-    /// Header rows above the first transcript item.
-    header_rows: usize,
-    item_heights: Vec<usize>,
-}
-
-/// The dock slot's [`tui::MouseTarget`] id; transcript item `i` is `i + 1`.
-const SLOT_TARGET: usize = 0;
-
-/// The app's components for [`tui::FullscreenViewport::handle_input_with`]: they change themselves;
-/// what the app does about a selection or a settings change is collected and done after the gesture.
-struct AppMouse<'a> {
-    layout: &'a MouseLayout,
-    theme: &'a Rc<Theme>,
-    now: Instant,
-    rows: usize,
-    /// The transcript's first shown row.
-    top: usize,
-    editor: &'a mut Editor,
-    chat: &'a mut ChatView,
-    selection: &'a mut Option<Selection>,
-    panel: &'a mut Option<Panel>,
-    select_events: Vec<SelectEvent>,
-    settings_events: Vec<SettingsEvent>,
-}
-
-impl AppMouse<'_> {
-    /// The dock slot's component (`event` in the slot's rows).
-    fn slot_mouse(&mut self, event: &tui::MouseEvent) -> Option<tui::MouseResult> {
-        match (self.selection.as_mut(), self.panel.as_mut()) {
-            (Some(selection), _) => {
-                let title = Text::new(&bold(&selection.title), 1, 1, None).render(event.width).len() as i64;
-                let local = tui::MouseEvent {
-                    y: event.y - title,
-                    ..*event
-                };
-                let mut events = Vec::new();
-                let result = selection.list.handle_mouse(&local, &mut events);
-                self.select_events.extend(events);
-                result
-            }
-            (None, Some(Panel::Settings(selector))) => {
-                let (result, event) = selector.handle_mouse(event)?;
-                self.settings_events.extend(event);
-                Some(result)
-            }
-            (None, None) => self.editor.handle_mouse(event),
-            (None, Some(Panel::OAuthLogin(dialog, _))) => dialog.handle_mouse(self.theme, event),
-            (
-                None,
-                Some(Panel::LoginPrompt {
-                    provider,
-                    method,
-                    input,
-                }),
-            ) => {
-                let text = |s: &str| Text::new(s, 1, 0, None).render(event.width).len() as i64;
-                let title = text(&self.theme.fg(Fg::Accent, &bold(&format!("Login to {}", provider.name))));
-                let top = 1 + title + 1 + text(&self.theme.fg(Fg::Text, &format!("Enter {method}")));
-                let rows = input.render(event.width).len() as i64;
-                if event.y < top || event.y >= top + rows {
-                    return None;
-                }
-                let local = tui::MouseEvent {
-                    y: event.y - top,
-                    ..*event
-                };
-                input.handle_mouse(&local)
-            }
-            (None, Some(Panel::ExtensionInput { dialog, .. })) => dialog.handle_mouse(event, self.now),
-            (None, Some(Panel::TextEditor { dialog, .. })) => dialog.handle_mouse(event, self.rows),
-            (None, Some(Panel::Sessions(selector) | Panel::PiSessions(selector))) => selector.handle_mouse(event),
-            (None, Some(Panel::Login(selector, ..) | Panel::Logout(selector))) => selector.handle_mouse(event),
-            (None, Some(Panel::ScopedModels { selector, .. })) => selector.handle_mouse(event),
-            (None, Some(Panel::BugReport(flow))) => flow.handle_mouse(event, self.rows),
-            (None, Some(_)) => None,
-        }
-    }
-
-    fn dispatch(&mut self, target: tui::MouseTarget, event: &tui::MouseEvent) -> Option<tui::MouseDispatch> {
-        let result = if target.id == SLOT_TARGET {
-            self.slot_mouse(event)?
-        } else {
-            self.chat.handle_item_mouse(target.id - 1, event)?
-        };
-        Some(tui::MouseDispatch { result, target })
-    }
-}
-
-impl tui::MouseTargets for AppMouse<'_> {
-    fn dispatch_at(&mut self, event: &tui::MouseEvent) -> Option<tui::MouseDispatch> {
-        use tui::{MouseTarget, retarget_mouse_event};
-        let (x, y) = (event.screen_x, event.screen_y);
-        if let Some(rect) = self.layout.slot.filter(|r| r.contains(x, y)) {
-            let target = MouseTarget {
-                id: SLOT_TARGET,
-                origin_x: rect.x as i64,
-                origin_y: rect.y as i64,
-                width: rect.width,
-                height: rect.height,
-            };
-            return self.dispatch(target, &retarget_mouse_event(event, &target));
-        }
-        let rect = self.layout.transcript.filter(|r| r.contains(x, y))?;
-        let row = (self.top as i64 + y - rect.y as i64).checked_sub(self.layout.header_rows as i64)?;
-        let mut start = 0i64;
-        for (i, &height) in self.layout.item_heights.iter().enumerate() {
-            let end = start + height as i64;
-            if row >= start && row < end {
-                let target = MouseTarget {
-                    id: i + 1,
-                    origin_x: rect.x as i64,
-                    origin_y: rect.y as i64 + self.layout.header_rows as i64 + start - self.top as i64,
-                    width: rect.width,
-                    height,
-                };
-                return self.dispatch(target, &retarget_mouse_event(event, &target));
-            }
-            start = end;
-        }
-        None
-    }
-
-    fn dispatch_to(&mut self, target: &tui::MouseTarget, event: &tui::MouseEvent) -> Option<tui::MouseDispatch> {
-        self.dispatch(*target, event)
-    }
 }
 
 pub struct App {

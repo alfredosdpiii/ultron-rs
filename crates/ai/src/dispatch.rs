@@ -73,6 +73,17 @@ pub async fn stream_simple_routed(
     } else {
         model
     };
+    dispatch_api(router, model, context, options, transport, sink).await
+}
+
+async fn dispatch_api(
+    router: &Router,
+    model: &Model,
+    context: &TranscriptContext,
+    options: &SimpleStreamOptions,
+    transport: &dyn Transport,
+    sink: &mut EventSink<'_>,
+) -> Result<AssistantMessage, String> {
     match model.api.as_str() {
         "anthropic-messages" => anthropic::stream_simple(model, context, options, transport, sink).await,
         "openai-completions" => openai_completions::stream_simple(model, context, options, transport, sink).await,
@@ -85,23 +96,44 @@ pub async fn stream_simple_routed(
         }
         "google-generative-ai" => google::stream_simple(model, context, options, transport, sink).await,
         "google-vertex" => google_vertex::stream_simple(model, context, options, transport, sink).await,
+        _ => dispatch_extended_api(router, model, context, options, transport, sink).await,
+    }
+}
+
+async fn dispatch_extended_api(
+    router: &Router,
+    model: &Model,
+    context: &TranscriptContext,
+    options: &SimpleStreamOptions,
+    transport: &dyn Transport,
+    sink: &mut EventSink<'_>,
+) -> Result<AssistantMessage, String> {
+    match model.api.as_str() {
         "mistral-conversations" => mistral::stream_simple(model, context, options, transport, sink).await,
         "bedrock-converse-stream" => Ok(bedrock::stream_simple(model, context, options, transport, sink).await),
         "pi-messages" => Ok(pi_messages::stream_simple(model, context, options, transport, sink).await),
         crate::models::ANTIGRAVITY_API => crate::antigravity::stream_simple(model, context, options, sink).await,
-        crate::claude_code::API => {
-            if let Some(message) = router.stream_claude_code(model, context, options, sink).await {
-                return Ok(message);
-            }
-            let options = ClaudeCodeOptions {
-                base: options.clone(),
-                json_schema: None,
-            };
-            Ok(claude_code_cli::stream_simple(model, context, &options, sink).await)
-        }
+        crate::claude_code::API => stream_claude_code(router, model, context, options, sink).await,
         "claude-subscription" => Ok(router.stream(model, context, options, transport, sink).await),
         other => Err(format!("No API implementation for \"{other}\"")),
     }
+}
+
+async fn stream_claude_code(
+    router: &Router,
+    model: &Model,
+    context: &TranscriptContext,
+    options: &SimpleStreamOptions,
+    sink: &mut EventSink<'_>,
+) -> Result<AssistantMessage, String> {
+    if let Some(message) = router.stream_claude_code(model, context, options, sink).await {
+        return Ok(message);
+    }
+    let options = ClaudeCodeOptions {
+        base: options.clone(),
+        json_schema: None,
+    };
+    Ok(claude_code_cli::stream_simple(model, context, &options, sink).await)
 }
 
 /// OpenCode's per-conversation routing header (`providers/opencode-headers.ts`).
@@ -130,4 +162,20 @@ fn opencode_session_options(model: &Model, options: &SimpleStreamOptions) -> Opt
         .get_or_insert_default()
         .insert(OPENCODE_SESSION_HEADER.into(), Some(session.clone()));
     Some(options)
+}
+
+#[cfg(test)]
+#[test]
+fn stream_simple_routed_is_send() {
+    fn check<'a>(
+        router: &'a Router,
+        model: &'a Model,
+        context: &'a TranscriptContext,
+        options: &'a SimpleStreamOptions,
+        transport: &'a dyn Transport,
+        sink: &'a mut EventSink<'a>,
+    ) -> impl std::future::Future<Output = Result<AssistantMessage, String>> + Send + 'a {
+        stream_simple_routed(router, model, context, options, transport, sink)
+    }
+    let _ = check;
 }

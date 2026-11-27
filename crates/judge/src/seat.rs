@@ -373,6 +373,33 @@ impl Seat {
         receipts.push(receipt);
     }
 
+    fn reserve_ledger(&self, id: &str) -> Result<Option<Value>, Stop> {
+        match &self.ledger {
+            Some(ledger) => Ok(Some(ledger.reserve(id).map_err(Stop::Refused)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn settle_ledger(&self, reservation: Option<&Value>, receipt: &Receipt) {
+        if let (Some(ledger), Some(reservation)) = (&self.ledger, reservation) {
+            let status = match receipt.status {
+                "succeeded" => "succeeded",
+                "failed" => "failed",
+                _ => "cancelled",
+            };
+            ledger.settle(reservation, status, &receipt.spend, receipt.ms);
+        }
+    }
+
+    fn record_spend(&self, backend: &dyn Backend, receipt: &Receipt) {
+        let mut spent = self.spent();
+        spent.calls += 1;
+        spent.usd += receipt.spend.cost.unwrap_or(0.0);
+        if backend.name() == "jev" && receipt.spend.cost.is_none() && self.settings.budget_usd.is_some() {
+            spent.jev_unmetered = true;
+        }
+    }
+
     /// One backend, with the one retry a `retry-after` allows; every call has a receipt.
     fn attempt(
         &self,
@@ -381,87 +408,28 @@ impl Seat {
         escalation: bool,
         receipts: &mut Vec<Receipt>,
     ) -> Result<Option<Reply>, Stop> {
-        let Ask {
-            state,
-            questions,
-            kind,
-            signal,
-        } = *ask;
         let mut attempt = 0;
         loop {
             attempt += 1;
             let id = format!("judge:{}", jsrt::random::uuid_v7(jsrt::date::now_ms()));
-            let mut receipt = Receipt {
-                id: id.clone(),
-                backend: backend.name().into(),
-                model: backend.model(),
-                status: "skipped",
-                escalation,
-                kind: kind.map(str::to_string),
-                ms: 0.0,
-                spend: Spend::default(),
-                error: None,
-            };
+            let mut receipt = initial_receipt(&id, backend, escalation, ask.kind);
             if let Err(reason) = self.admit(backend)?.and_then(|()| backend.ready()) {
                 receipt.error = Some(reason);
                 self.receipt(receipt, receipts);
                 return Ok(None);
             }
-            let reservation = match &self.ledger {
-                Some(ledger) => Some(ledger.reserve(&id).map_err(Stop::Refused)?),
-                None => None,
-            };
+            let reservation = self.reserve_ledger(&id)?;
             let started = Instant::now();
-            let outcome = backend.call(state, questions, signal);
+            let outcome = backend.call(ask.state, ask.questions, ask.signal);
             receipt.ms = started.elapsed().as_secs_f64() * 1000.0;
-            let sent = match &outcome {
-                Ok(_) => true,
-                Err(failure) => failure.sent(),
-            };
-            receipt.status = match &outcome {
-                Ok(_) => "succeeded",
-                Err(Failure::Aborted) => "aborted",
-                Err(failure) if failure.sent() => "failed",
-                Err(_) => "skipped",
-            };
-            if let Ok(reply) = &outcome {
-                receipt.model = reply.model.clone();
-                receipt.spend = reply.spend.clone();
-            }
-            if let Err(failure) = &outcome {
-                receipt.error = Some(failure.message());
-            }
-            if sent && !backend.paid() {
-                receipt.spend.cost.get_or_insert(0.0);
-            }
-            if let (Some(ledger), Some(reservation)) = (&self.ledger, &reservation) {
-                let status = match receipt.status {
-                    "succeeded" => "succeeded",
-                    "failed" => "failed",
-                    _ => "cancelled",
-                };
-                ledger.settle(reservation, status, &receipt.spend, receipt.ms);
-            }
+            let sent = apply_attempt_outcome(&mut receipt, &outcome, backend.paid());
+            self.settle_ledger(reservation.as_ref(), &receipt);
             if sent {
-                let mut spent = self.spent();
-                spent.calls += 1;
-                spent.usd += receipt.spend.cost.unwrap_or(0.0);
-                if backend.name() == "jev" && receipt.spend.cost.is_none() && self.settings.budget_usd.is_some() {
-                    spent.jev_unmetered = true;
-                }
+                self.record_spend(backend, &receipt);
             }
             self.receipt(receipt, receipts);
-            match outcome {
-                Ok(reply) => return Ok(Some(reply)),
-                Err(Failure::Aborted) => return Err(Stop::Aborted),
-                Err(Failure::Retry { after, .. })
-                    if attempt < RETRY.max_attempts() && after.as_millis() as u64 <= RETRY.max_delay_ms =>
-                {
-                    if signal.wait(after) {
-                        return Err(Stop::Aborted);
-                    }
-                }
-                Err(_) => return Ok(None),
+            if let Some(done) = finish_attempt(outcome, attempt, ask.signal)? {
+                return Ok(done);
             }
         }
     }
@@ -506,6 +474,75 @@ impl Seat {
         self.decide_expecting(state, questions, kind, &[], signal)
     }
 
+    fn first_reply<'a>(&'a self, ask: &Ask<'_>, receipts: &mut Vec<Receipt>) -> Result<Option<(&'a str, Reply)>, Stop> {
+        for backend in self.backends.iter().chain(self.fallback.iter()) {
+            if let Some(reply) = self.attempt(&**backend, ask, false, receipts)? {
+                return Ok(Some((backend.name(), reply)));
+            }
+        }
+        Ok(None)
+    }
+
+    fn escalation_reason(
+        &self,
+        backend_name: &str,
+        reply: &Reply,
+        questions: &[Question],
+        kind: Option<&str>,
+        expect: &[(String, Value)],
+    ) -> Option<String> {
+        let disputed = expect.iter().find_map(|(name, held)| {
+            let answer = reply.answers.get(questions.iter().position(|q| &q.name == name)?)?;
+            (answer.value != *held).then(|| format!("disputed: {name} is {}, the caller holds {held}", answer.value))
+        });
+        let unsure = self
+            .threshold(kind, backend_name)
+            .filter(|t| reply.answers.iter().any(|a| a.confidence < *t))
+            .map(|t| format!("confidence under {t} ({backend_name})"));
+        disputed.or(unsure)
+    }
+
+    fn escalate_verdict(
+        &self,
+        ask: &Ask<'_>,
+        backend_name: &str,
+        reply: Reply,
+        below: String,
+        mut receipts: Vec<Receipt>,
+    ) -> Verdict {
+        let Some(escalate) = &self.escalate else {
+            return review_verdict(
+                ask.questions,
+                backend_name,
+                reply,
+                format!("{below}; no escalation model (judge.escalateModel)"),
+                receipts,
+            );
+        };
+        if family(&escalate.model()) == family(&reply.model) {
+            let reason = format!("{below}; the escalation model is of the same family as {}", reply.model);
+            return review_verdict(ask.questions, backend_name, reply, reason, receipts);
+        }
+        match self.attempt(&**escalate, ask, true, &mut receipts) {
+            Ok(Some(escalated)) => Verdict {
+                answers: name_answers(ask.questions, escalated.answers),
+                backend: Some("escalate".into()),
+                model: Some(escalated.model),
+                rung: Rung::Escalated,
+                reason: Some(below),
+                receipts,
+            },
+            Ok(None) | Err(Stop::Refused(_)) => review_verdict(
+                ask.questions,
+                backend_name,
+                reply,
+                format!("{below}; the escalation model gave no answer"),
+                receipts,
+            ),
+            Err(Stop::Aborted) => abstain_verdict("aborted".into(), receipts),
+        }
+    }
+
     /// [`Seat::decide`] by a caller that already holds an answer (`expect`: question name and value, such as a
     /// verifier's): a first answer that differs is a dispute, escalated like an unsure one. Every backend (Jev, d1,
     /// the fallback and escalation models) sees `state` with its secrets redacted (host::secrets, the rules cell
@@ -519,98 +556,127 @@ impl Seat {
         signal: &Signal,
     ) -> Verdict {
         let (state, _) = host::secrets::SecretDetector::shipped().redact_counted(state);
-        let state = state.as_str();
-        let mut receipts = Vec::new();
-        let abstain = |reason: String, receipts: Vec<Receipt>| Verdict {
-            answers: Vec::new(),
-            backend: None,
-            model: None,
-            rung: Rung::Abstained,
-            reason: Some(reason),
-            receipts,
-        };
         let ask = Ask {
-            state,
+            state: state.as_str(),
             questions,
             kind,
             signal,
         };
-        let mut first: Option<(&Arc<dyn Backend>, Reply)> = None;
-        for backend in self.backends.iter().chain(self.fallback.iter()) {
-            match self.attempt(&**backend, &ask, false, &mut receipts) {
-                Ok(Some(reply)) => {
-                    first = Some((backend, reply));
-                    break;
-                }
-                Ok(None) => continue,
-                Err(Stop::Aborted) => return abstain("aborted".into(), receipts),
-                Err(Stop::Refused(reason)) => return abstain(reason, receipts),
-            }
-        }
-        let Some((backend, reply)) = first else {
+        let mut receipts = Vec::new();
+        let first = match self.first_reply(&ask, &mut receipts) {
+            Ok(first) => first,
+            Err(Stop::Aborted) => return abstain_verdict("aborted".into(), receipts),
+            Err(Stop::Refused(reason)) => return abstain_verdict(reason, receipts),
+        };
+        let Some((backend_name, reply)) = first else {
             let reason = if receipts.is_empty() {
-                "no judge backend is configured (judge.provider, judge.fallbackModel)".to_string()
+                "no judge backend is configured (judge.provider, judge.fallbackModel)"
             } else {
-                "no judge backend answered".to_string()
+                "no judge backend answered"
             };
-            return abstain(reason, receipts);
+            return abstain_verdict(reason.to_string(), receipts);
         };
-        let named = |answers: Vec<Answer>| -> Vec<(String, Answer)> {
-            questions.iter().map(|q| q.name.clone()).zip(answers).collect()
-        };
-        let disputed = expect.iter().find_map(|(name, held)| {
-            let answer = reply.answers.get(questions.iter().position(|q| &q.name == name)?)?;
-            (answer.value != *held).then(|| format!("disputed: {name} is {}, the caller holds {held}", answer.value))
-        });
-        let threshold = self.threshold(kind, backend.name());
-        let unsure = threshold
-            .filter(|t| reply.answers.iter().any(|a| a.confidence < *t))
-            .map(|t| format!("confidence under {t} ({})", backend.name()));
-        let Some(below) = disputed.or(unsure) else {
+        let Some(below) = self.escalation_reason(backend_name, &reply, questions, kind, expect) else {
             return Verdict {
-                answers: named(reply.answers),
-                backend: Some(backend.name().into()),
+                answers: name_answers(questions, reply.answers),
+                backend: Some(backend_name.into()),
                 model: Some(reply.model),
                 rung: Rung::First,
                 reason: None,
                 receipts,
             };
         };
-        let review = |reason: String, receipts: Vec<Receipt>, reply: Reply| Verdict {
-            answers: named(reply.answers),
-            backend: Some(backend.name().into()),
-            model: Some(reply.model),
-            rung: Rung::Review,
-            reason: Some(reason),
-            receipts,
-        };
-        let Some(escalate) = &self.escalate else {
-            return review(
-                format!("{below}; no escalation model (judge.escalateModel)"),
-                receipts,
-                reply,
-            );
-        };
-        if family(&escalate.model()) == family(&reply.model) {
-            return review(
-                format!("{below}; the escalation model is of the same family as {}", reply.model),
-                receipts,
-                reply,
-            );
+        self.escalate_verdict(&ask, backend_name, reply, below, receipts)
+    }
+}
+
+fn initial_receipt(id: &str, backend: &dyn Backend, escalation: bool, kind: Option<&str>) -> Receipt {
+    Receipt {
+        id: id.to_string(),
+        backend: backend.name().into(),
+        model: backend.model(),
+        status: "skipped",
+        escalation,
+        kind: kind.map(str::to_string),
+        ms: 0.0,
+        spend: Spend::default(),
+        error: None,
+    }
+}
+
+fn apply_attempt_outcome(receipt: &mut Receipt, outcome: &Result<Reply, Failure>, paid: bool) -> bool {
+    let sent = match outcome {
+        Ok(reply) => {
+            receipt.status = "succeeded";
+            receipt.model = reply.model.clone();
+            receipt.spend = reply.spend.clone();
+            true
         }
-        match self.attempt(&**escalate, &ask, true, &mut receipts) {
-            Ok(Some(escalated)) => Verdict {
-                answers: named(escalated.answers),
-                backend: Some("escalate".into()),
-                model: Some(escalated.model),
-                rung: Rung::Escalated,
-                reason: Some(below),
-                receipts,
-            },
-            Ok(None) | Err(Stop::Refused(_)) => {
-                review(format!("{below}; the escalation model gave no answer"), receipts, reply)
+        Err(failure) => {
+            let sent = failure.sent();
+            receipt.status = match failure {
+                Failure::Aborted => "aborted",
+                _ if sent => "failed",
+                _ => "skipped",
+            };
+            receipt.error = Some(failure.message());
+            sent
+        }
+    };
+    if sent && !paid {
+        receipt.spend.cost.get_or_insert(0.0);
+    }
+    sent
+}
+
+fn finish_attempt(
+    outcome: Result<Reply, Failure>,
+    attempt: u64,
+    signal: &Signal,
+) -> Result<Option<Option<Reply>>, Stop> {
+    match outcome {
+        Ok(reply) => Ok(Some(Some(reply))),
+        Err(Failure::Aborted) => Err(Stop::Aborted),
+        Err(Failure::Retry { after, .. })
+            if attempt < RETRY.max_attempts() && after.as_millis() as u64 <= RETRY.max_delay_ms =>
+        {
+            if signal.wait(after) {
+                return Err(Stop::Aborted);
             }
-            Err(Stop::Aborted) => abstain("aborted".into(), receipts),
+            Ok(None)
         }
+        Err(_) => Ok(Some(None)),
+    }
+}
+
+fn name_answers(questions: &[Question], answers: Vec<Answer>) -> Vec<(String, Answer)> {
+    questions.iter().map(|q| q.name.clone()).zip(answers).collect()
+}
+
+fn abstain_verdict(reason: String, receipts: Vec<Receipt>) -> Verdict {
+    Verdict {
+        answers: Vec::new(),
+        backend: None,
+        model: None,
+        rung: Rung::Abstained,
+        reason: Some(reason),
+        receipts,
+    }
+}
+
+fn review_verdict(
+    questions: &[Question],
+    backend_name: &str,
+    reply: Reply,
+    reason: String,
+    receipts: Vec<Receipt>,
+) -> Verdict {
+    Verdict {
+        answers: name_answers(questions, reply.answers),
+        backend: Some(backend_name.into()),
+        model: Some(reply.model),
+        rung: Rung::Review,
+        reason: Some(reason),
+        receipts,
     }
 }

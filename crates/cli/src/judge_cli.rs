@@ -82,6 +82,47 @@ struct Options {
     max_calls: Option<u64>,
 }
 
+fn next_arg(args: &mut std::slice::Iter<'_, String>, name: &str) -> Result<String, String> {
+    args.next().cloned().ok_or_else(|| format!("{name} needs a value"))
+}
+
+fn parse_positive_count(args: &mut std::slice::Iter<'_, String>, name: &str) -> Result<u64, String> {
+    next_arg(args, name)?
+        .parse::<u64>()
+        .ok()
+        .filter(|n| *n > 0)
+        .ok_or_else(|| format!("{name} must be a positive whole number"))
+}
+
+fn parse_backend(args: &mut std::slice::Iter<'_, String>) -> Result<String, String> {
+    let name = next_arg(args, "--backend")?;
+    if !matches!(name.as_str(), "jev" | "d1" | "fallback" | "escalate") {
+        return Err(format!("unknown backend {name}"));
+    }
+    Ok(name)
+}
+
+fn apply_bench_flag(options: &mut Options, flag: &str, args: &mut std::slice::Iter<'_, String>) -> Result<(), String> {
+    match flag {
+        "--backend" => options.backends.push(parse_backend(args)?),
+        "--limit" => options.limit = Some(parse_positive_count(args, "--limit")? as usize),
+        "--max-calls" => options.max_calls = Some(parse_positive_count(args, "--max-calls")?),
+        _ => return Err(format!("unknown option {flag}")),
+    }
+    Ok(())
+}
+
+fn apply_bench_arg(options: &mut Options, arg: &str, args: &mut std::slice::Iter<'_, String>) -> Result<(), String> {
+    if arg.starts_with('-') {
+        return apply_bench_flag(options, arg, args);
+    }
+    if options.file.is_empty() {
+        options.file = arg.to_string();
+        return Ok(());
+    }
+    Err(format!("unexpected argument {arg}"))
+}
+
 fn parse(args: &[String]) -> Result<Options, String> {
     let mut options = Options {
         file: String::new(),
@@ -89,29 +130,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
         limit: None,
         max_calls: None,
     };
-    let mut args = args.iter();
-    while let Some(arg) = args.next() {
-        let mut value = |name: &str| args.next().cloned().ok_or_else(|| format!("{name} needs a value"));
-        let count = |name: &str, text: String| {
-            text.parse::<u64>()
-                .ok()
-                .filter(|n| *n > 0)
-                .ok_or_else(|| format!("{name} must be a positive whole number"))
-        };
-        match arg.as_str() {
-            "--backend" => {
-                let name = value("--backend")?;
-                if !matches!(name.as_str(), "jev" | "d1" | "fallback" | "escalate") {
-                    return Err(format!("unknown backend {name}"));
-                }
-                options.backends.push(name);
-            }
-            "--limit" => options.limit = Some(count("--limit", value("--limit")?)? as usize),
-            "--max-calls" => options.max_calls = Some(count("--max-calls", value("--max-calls")?)?),
-            flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
-            file if options.file.is_empty() => options.file = file.to_string(),
-            extra => return Err(format!("unexpected argument {extra}")),
-        }
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        apply_bench_arg(&mut options, arg, &mut iter)?;
     }
     if options.file.is_empty() {
         return Err("a cases file is required".into());

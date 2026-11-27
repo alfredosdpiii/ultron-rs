@@ -152,6 +152,60 @@ impl SelectList {
         }
     }
 
+    fn handle_wheel(&mut self, delta: i64, len: usize, events: &mut Vec<SelectEvent>) -> MouseResult {
+        let previous = self.selected;
+        self.selected = if delta < 0 {
+            self.selected.saturating_sub(1)
+        } else {
+            (self.selected + 1).min(len - 1)
+        };
+        let changed = self.selected != previous;
+        if changed {
+            events.extend(self.selected_item().cloned().map(SelectEvent::SelectionChanged));
+        }
+        MouseResult {
+            handled: Some(true),
+            render: Some(changed),
+            ..MouseResult::default()
+        }
+    }
+
+    fn visible_row_at(&self, y: i64, len: usize) -> Option<usize> {
+        let (start, end) = visible_range(self.selected, len, self.max_visible);
+        let index = start as i64 + y;
+        if index < start as i64 || index >= end as i64 {
+            return None;
+        }
+        Some(index as usize)
+    }
+
+    fn handle_left_press(&mut self, index: usize, events: &mut Vec<SelectEvent>) -> MouseResult {
+        self.pressed = Some(index);
+        if self.selected != index {
+            self.selected = index;
+            events.extend(self.selected_item().cloned().map(SelectEvent::SelectionChanged));
+        }
+        MouseResult {
+            handled: Some(true),
+            focus: Some(true),
+            ..MouseResult::default()
+        }
+    }
+
+    fn handle_left_click(&mut self, index: usize, events: &mut Vec<SelectEvent>) -> MouseResult {
+        let clicked = self.pressed.take().unwrap_or(index);
+        let changed = self.selected != clicked;
+        self.selected = clicked;
+        if changed {
+            events.extend(self.selected_item().cloned().map(SelectEvent::SelectionChanged));
+        }
+        events.extend(self.selected_item().cloned().map(SelectEvent::Selected));
+        MouseResult {
+            handled: Some(true),
+            ..MouseResult::default()
+        }
+    }
+
     /// `handleMouse`: the wheel moves the selection, a left press selects the row under it and the click that
     /// follows confirms the pressed row. Selection events go to `events`.
     pub fn handle_mouse(&mut self, event: &MouseEvent, events: &mut Vec<SelectEvent>) -> Option<MouseResult> {
@@ -162,54 +216,17 @@ impl SelectList {
         if event.kind == MouseEventType::Wheel
             && let Some(delta) = event.wheel_delta.filter(|d| *d != 0)
         {
-            let previous = self.selected;
-            self.selected = if delta < 0 {
-                self.selected.saturating_sub(1)
-            } else {
-                (self.selected + 1).min(len - 1)
-            };
-            let changed = self.selected != previous;
-            if changed {
-                events.extend(self.selected_item().cloned().map(SelectEvent::SelectionChanged));
-            }
-            return Some(MouseResult {
-                handled: Some(true),
-                render: Some(changed),
-                ..MouseResult::default()
-            });
+            return Some(self.handle_wheel(delta, len, events));
         }
         if event.button != MouseButton::Left || !matches!(event.kind, MouseEventType::Press | MouseEventType::Click) {
             return None;
         }
-        let (start, end) = visible_range(self.selected, len, self.max_visible);
-        let index = start as i64 + event.y;
-        if index < start as i64 || index >= end as i64 {
-            return None;
-        }
-        let index = index as usize;
+        let index = self.visible_row_at(event.y, len)?;
         if event.kind == MouseEventType::Press {
-            self.pressed = Some(index);
-            if self.selected != index {
-                self.selected = index;
-                events.extend(self.selected_item().cloned().map(SelectEvent::SelectionChanged));
-            }
-            return Some(MouseResult {
-                handled: Some(true),
-                focus: Some(true),
-                ..MouseResult::default()
-            });
+            Some(self.handle_left_press(index, events))
+        } else {
+            Some(self.handle_left_click(index, events))
         }
-        let clicked = self.pressed.take().unwrap_or(index);
-        let changed = self.selected != clicked;
-        self.selected = clicked;
-        if changed {
-            events.extend(self.selected_item().cloned().map(SelectEvent::SelectionChanged));
-        }
-        events.extend(self.selected_item().cloned().map(SelectEvent::Selected));
-        Some(MouseResult {
-            handled: Some(true),
-            ..MouseResult::default()
-        })
     }
 
     fn truncate_primary(&self, item: &SelectItem, is_selected: bool, max_width: usize, column_width: usize) -> String {
@@ -353,36 +370,48 @@ impl SettingsList {
         }
     }
 
-    pub fn handle_input(&mut self, data: &str) -> Option<SettingsEvent> {
+    fn move_selection(&mut self, up: bool) {
         let len = self.items.len();
+        if len == 0 {
+            return;
+        }
+        self.selected = if up {
+            if self.selected == 0 { len - 1 } else { self.selected - 1 }
+        } else if self.selected + 1 == len {
+            0
+        } else {
+            self.selected + 1
+        };
+    }
+
+    fn cycle_selected_value(&mut self) -> Option<SettingsEvent> {
+        let item = self.items.get_mut(self.selected)?;
+        if item.values.is_empty() {
+            return None;
+        }
+        let next = item
+            .values
+            .iter()
+            .position(|v| *v == item.current_value)
+            .map_or(0, |i| (i + 1) % item.values.len());
+        item.current_value = item.values[next].clone();
+        Some(SettingsEvent::Changed {
+            id: item.id.clone(),
+            value: item.current_value.clone(),
+        })
+    }
+
+    pub fn handle_input(&mut self, data: &str) -> Option<SettingsEvent> {
         let action = if data == " " {
             Some(SelectAction::Confirm)
         } else {
             select_action(data)
         };
         match action? {
-            SelectAction::Up if len > 0 => self.selected = if self.selected == 0 { len - 1 } else { self.selected - 1 },
-            SelectAction::Down if len > 0 => {
-                self.selected = if self.selected + 1 == len { 0 } else { self.selected + 1 }
-            }
-            SelectAction::Confirm => {
-                let item = self.items.get_mut(self.selected)?;
-                if item.values.is_empty() {
-                    return None;
-                }
-                let next = item
-                    .values
-                    .iter()
-                    .position(|v| *v == item.current_value)
-                    .map_or(0, |i| (i + 1) % item.values.len());
-                item.current_value = item.values[next].clone();
-                return Some(SettingsEvent::Changed {
-                    id: item.id.clone(),
-                    value: item.current_value.clone(),
-                });
-            }
+            SelectAction::Up => self.move_selection(true),
+            SelectAction::Down => self.move_selection(false),
+            SelectAction::Confirm => return self.cycle_selected_value(),
             SelectAction::Cancel => return Some(SettingsEvent::Cancelled),
-            _ => {}
         }
         None
     }

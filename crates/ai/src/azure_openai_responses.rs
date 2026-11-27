@@ -4,16 +4,15 @@
 
 use crate::constrained::grammar_tool_input_properties;
 use crate::env::provider_env_value;
-use crate::http::{Failure, HeaderBuilder, HttpRequest, Sdk, Transport, format_provider_error, send_with_retry};
-use crate::models::clamp_thinking_level;
+use crate::http::{Failure, HeaderBuilder, Transport, format_provider_error};
 use crate::openai_responses::{
-    ConvertOptions, ResponsesRun, ResponsesStream, TierPricing, ToolOptions, convert_responses_messages,
-    convert_responses_tools,
+    ConvertOptions, ResponsesRun, TierPricing, ToolOptions, apply_reasoning_params, convert_responses_messages,
+    convert_responses_tools, prepare_responses_run, send_and_read_responses_stream,
 };
-use crate::options::{SimpleStreamOptions, StreamOptions, build_base_options, pi_user_agent};
-use crate::sse::read_openai_stream;
-use crate::transcript::{declared_tools, resolve_transcript, resolve_transcript_tools};
-use crate::types::{AssistantMessage, EventSink, Mapped, Model, TranscriptContext};
+use crate::options::{SimpleStreamOptions, StreamOptions, pi_user_agent};
+use crate::provider::{compat_flag, prepare_simple_options};
+use crate::transcript::{declared_tools, resolve_transcript_tools};
+use crate::types::{AssistantMessage, EventSink, Model, Tool, TranscriptContext};
 use indexmap::IndexMap;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -92,37 +91,41 @@ pub fn normalize_azure_base_url(base_url: &str) -> Result<String, String> {
     Ok(trim_trailing_slashes(url.as_str()).to_string())
 }
 
-/// `resolveAzureConfig`: `(baseUrl, apiVersion)`.
-pub fn resolve_azure_config(model: &Model, options: &AzureOpenAIResponsesOptions) -> Result<(String, String), String> {
+fn non_empty_trimmed(value: Option<&str>) -> Option<String> {
+    value.map(str::trim).filter(|text| !text.is_empty()).map(str::to_string)
+}
+
+fn resolve_azure_api_version(options: &AzureOpenAIResponsesOptions) -> String {
     let env = options.base.env.as_ref();
-    let api_version = options
+    options
         .azure_api_version
         .clone()
         .filter(|v| !v.is_empty())
         .or_else(|| provider_env_value("AZURE_OPENAI_API_VERSION", env))
-        .unwrap_or_else(|| DEFAULT_AZURE_API_VERSION.into());
-    let base_url = options
-        .azure_base_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|u| !u.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            provider_env_value("AZURE_OPENAI_BASE_URL", env)
-                .map(|u| u.trim().to_string())
-                .filter(|u| !u.is_empty())
-        });
+        .unwrap_or_else(|| DEFAULT_AZURE_API_VERSION.into())
+}
+
+fn resolve_azure_base_url(model: &Model, options: &AzureOpenAIResponsesOptions) -> Result<String, String> {
+    let env = options.base.env.as_ref();
+    let base_url = non_empty_trimmed(options.azure_base_url.as_deref())
+        .or_else(|| non_empty_trimmed(provider_env_value("AZURE_OPENAI_BASE_URL", env).as_deref()));
     let resource = options
         .azure_resource_name
         .clone()
         .filter(|r| !r.is_empty())
         .or_else(|| provider_env_value("AZURE_OPENAI_RESOURCE_NAME", env));
-    let resolved = base_url
+    base_url
         .or_else(|| resource.map(|r| format!("https://{r}.openai.azure.com/openai/v1")))
         .or_else(|| (!model.base_url.is_empty()).then(|| model.base_url.clone()))
         .ok_or_else(|| {
             "Azure OpenAI base URL is required. Set AZURE_OPENAI_BASE_URL or AZURE_OPENAI_RESOURCE_NAME, or pass azureBaseUrl, azureResourceName, or model.baseUrl.".to_string()
-        })?;
+        })
+}
+
+/// `resolveAzureConfig`: `(baseUrl, apiVersion)`.
+pub fn resolve_azure_config(model: &Model, options: &AzureOpenAIResponsesOptions) -> Result<(String, String), String> {
+    let api_version = resolve_azure_api_version(options);
+    let resolved = resolve_azure_base_url(model, options)?;
     Ok((normalize_azure_base_url(&resolved)?, api_version))
 }
 
@@ -134,43 +137,13 @@ fn request_url(base_url: &str, api_version: &str) -> Result<String, String> {
     Ok(url.to_string())
 }
 
-fn build_params(
-    model: &Model,
-    context: &TranscriptContext,
+fn insert_optional_params(
+    params: &mut Map<String, Value>,
     options: &AzureOpenAIResponsesOptions,
-    deployment: &str,
-    grammar: &IndexMap<String, String>,
-    now: i64,
-) -> Result<Map<String, Value>, String> {
-    let flag = |key: &str, default: bool| model.compat_bool(key).unwrap_or(default);
-    let supports_additional_tools = flag("supportsAdditionalTools", false);
-    let supports_tool_search = flag("supportsToolSearch", false);
-    let tool_options = ToolOptions {
-        null_strict: false,
-        supports_strict_mode: flag("supportsStrictMode", true),
-        supports_openai_grammar_tools: flag("supportsOpenAIGrammarTools", false),
-        tool_search_result: false,
-    };
-    let tools = resolve_transcript_tools(&context.messages, supports_additional_tools || supports_tool_search);
-    let input = convert_responses_messages(
-        model,
-        context,
-        &ConvertOptions {
-            tool_call_providers: AZURE_TOOL_CALL_PROVIDERS,
-            include_system_prompt: true,
-            grammar,
-            supports_mid_convo_system_messages: flag("supportsMidConvoSystemMessages", false),
-            supports_additional_tools,
-            supports_tool_search,
-            tool_options,
-        },
-        now,
-    )?;
+    request_tools: &[Tool],
+    tool_options: ToolOptions,
+) -> Result<(), String> {
     let base = &options.base;
-    let mut params = Map::new();
-    params.insert("model".into(), json!(deployment));
-    params.insert("input".into(), Value::Array(input));
-    params.insert("stream".into(), json!(true));
     if let Some(session) = &base.session_id {
         params.insert(
             "prompt_cache_key".into(),
@@ -184,37 +157,77 @@ fn build_params(
     if let Some(temperature) = base.temperature {
         params.insert("temperature".into(), json!(temperature));
     }
-    if !tools.request_tools.is_empty() {
+    if !request_tools.is_empty() {
         params.insert(
             "tools".into(),
-            Value::Array(convert_responses_tools(&tools.request_tools, tool_options)?),
+            Value::Array(convert_responses_tools(request_tools, tool_options)?),
         );
     }
     if let Some(choice) = &options.tool_choice {
         params.insert("tool_choice".into(), choice.clone());
     }
-    if model.reasoning {
-        let effort = options.reasoning_effort.as_deref().filter(|e| !e.is_empty());
-        let summary = options.reasoning_summary.as_deref().filter(|s| !s.is_empty());
-        if effort.is_some() || summary.is_some() {
-            let effort = effort.map_or("medium", |e| model.mapped_or(e));
-            params.insert(
-                "reasoning".into(),
-                json!({"effort": effort, "summary": summary.unwrap_or("auto")}),
-            );
-            params.insert("include".into(), json!(["reasoning.encrypted_content"]));
-        } else if model.thinking_level("off") != Mapped::Unsupported {
-            let off = match model.thinking_level("off") {
-                Mapped::Value(v) => v,
-                _ => "none",
-            };
-            params.insert("reasoning".into(), json!({"effort": off}));
-        }
-    }
-    if let Some(sampling) = &base.sampling_params {
+    Ok(())
+}
+
+fn build_params(
+    model: &Model,
+    context: &TranscriptContext,
+    options: &AzureOpenAIResponsesOptions,
+    deployment: &str,
+    grammar: &IndexMap<String, String>,
+    now: i64,
+) -> Result<Map<String, Value>, String> {
+    let supports_additional_tools = compat_flag(model, "supportsAdditionalTools", false);
+    let supports_tool_search = compat_flag(model, "supportsToolSearch", false);
+    let tool_options = ToolOptions {
+        null_strict: false,
+        supports_strict_mode: compat_flag(model, "supportsStrictMode", true),
+        supports_openai_grammar_tools: compat_flag(model, "supportsOpenAIGrammarTools", false),
+        tool_search_result: false,
+    };
+    let tools = resolve_transcript_tools(&context.messages, supports_additional_tools || supports_tool_search);
+    let input = convert_responses_messages(
+        model,
+        context,
+        &ConvertOptions {
+            tool_call_providers: AZURE_TOOL_CALL_PROVIDERS,
+            include_system_prompt: true,
+            grammar,
+            supports_mid_convo_system_messages: compat_flag(model, "supportsMidConvoSystemMessages", false),
+            supports_additional_tools,
+            supports_tool_search,
+            tool_options,
+        },
+        now,
+    )?;
+    let mut params = Map::new();
+    params.insert("model".into(), json!(deployment));
+    params.insert("input".into(), Value::Array(input));
+    params.insert("stream".into(), json!(true));
+    insert_optional_params(&mut params, options, &tools.request_tools, tool_options)?;
+    apply_reasoning_params(
+        &mut params,
+        model,
+        options.reasoning_effort.as_deref(),
+        options.reasoning_summary.as_deref(),
+        true,
+    );
+    if let Some(sampling) = &options.base.sampling_params {
         params.extend(sampling.clone());
     }
     Ok(params)
+}
+
+fn azure_headers(model: &Model, base: &StreamOptions, api_key: String) -> HeaderBuilder {
+    let mut headers = HeaderBuilder::default();
+    headers.set("Accept", "application/json").set("api-key", api_key);
+    headers
+        .set("User-Agent", pi_user_agent())
+        .openai_sdk_identity()
+        .extend_set(model.headers.iter().flatten());
+    headers.extend(base.headers.iter().flatten());
+    headers.set("Content-Type", "application/json");
+    headers
 }
 
 /// Stream one Azure OpenAI Responses response; failures end with an `error` event.
@@ -225,14 +238,7 @@ pub async fn stream(
     transport: &dyn Transport,
     sink: &mut EventSink<'_>,
 ) -> AssistantMessage {
-    let context = resolve_transcript(
-        context,
-        model.compat_bool("supportsMidConvoSystemMessages").unwrap_or(false),
-    );
-    let now = jsrt::date::now_ms();
-    let mut output = AssistantMessage::pending(model, now);
-    output.api = "azure-openai-responses".into();
-    let mut run = ResponsesRun::new(output, sink, ResponsesStream::default());
+    let (context, now, mut run) = prepare_responses_run(model, context, "azure-openai-responses", sink);
     let result = drive(&mut run, model, &context, options, transport, now).await;
     run.end(
         result.map_err(|failure| format_provider_error(&failure, Some("Azure OpenAI API error"))),
@@ -250,7 +256,6 @@ async fn drive(
 ) -> Result<(), Failure> {
     let deployment = resolve_deployment_name(model, options);
     let base = &options.base;
-    let signal = base.signal();
     let api_key = base
         .api_key
         .clone()
@@ -259,38 +264,25 @@ async fn drive(
     let (base_url, api_version) = resolve_azure_config(model, options).map_err(Failure::plain)?;
     let grammar = grammar_tool_input_properties(
         &declared_tools(&context.messages),
-        model.compat_bool("supportsOpenAIGrammarTools").unwrap_or(false),
+        compat_flag(model, "supportsOpenAIGrammarTools", false),
     )
     .map_err(Failure::plain)?;
-    let mut params =
-        Value::Object(build_params(model, context, options, &deployment, &grammar, now).map_err(Failure::plain)?);
-    if let Some(next) = base.on_payload.as_ref().and_then(|hook| hook(&params, model)) {
-        params = next;
-    }
-    let mut headers = HeaderBuilder::default();
-    headers.set("Accept", "application/json").set("api-key", api_key);
-    headers
-        .set("User-Agent", pi_user_agent())
-        .openai_sdk_identity()
-        .extend_set(model.headers.iter().flatten());
-    headers.extend(base.headers.iter().flatten());
-    headers.set("Content-Type", "application/json");
-    let request = HttpRequest {
-        method: "POST".into(),
-        url: request_url(&base_url, &api_version).map_err(Failure::plain)?,
-        headers: headers.build(),
-        body: serde_json::to_string(&params).unwrap_or_default(),
-    };
-    let mut response = send_with_retry(transport, &request, Sdk::OpenAi, base.retry(), signal).await?;
-    run.start();
-    read_openai_stream(&mut response, signal, |event| {
-        run.handle(event, model, &grammar, TierPricing::None)
-            .map_err(Failure::plain)
-    })
-    .await?;
-    run.terminated().map_err(Failure::plain)?;
-    run.stopped(signal, "Azure OpenAI Responses stream ended without a stop reason")
-        .map_err(Failure::plain)
+    let params = build_params(model, context, options, &deployment, &grammar, now).map_err(Failure::plain)?;
+    let headers = azure_headers(model, base, api_key);
+    let url = request_url(&base_url, &api_version).map_err(Failure::plain)?;
+    send_and_read_responses_stream(
+        run,
+        model,
+        base,
+        transport,
+        url,
+        headers,
+        params,
+        &grammar,
+        TierPricing::None,
+        "Azure OpenAI Responses stream ended without a stop reason",
+    )
+    .await
 }
 
 /// `streamSimple`: reasoning clamped to the model's levels and sent as `reasoningEffort`.
@@ -301,18 +293,10 @@ pub async fn stream_simple(
     transport: &dyn Transport,
     sink: &mut EventSink<'_>,
 ) -> Result<AssistantMessage, String> {
-    if options.base.api_key.as_deref().is_none_or(str::is_empty) {
-        return Err(format!("No API key for provider: {}", model.provider));
-    }
-    let base = build_base_options(model, context, options);
-    let effort = options
-        .reasoning
-        .as_deref()
-        .map(|r| clamp_thinking_level(model, r))
-        .filter(|e| *e != "off");
+    let (base, reasoning_effort) = prepare_simple_options(model, context, options)?;
     let azure = AzureOpenAIResponsesOptions {
         base,
-        reasoning_effort: effort.map(str::to_string),
+        reasoning_effort,
         tool_choice: options.tool_choice.clone().map(Value::String),
         ..Default::default()
     };

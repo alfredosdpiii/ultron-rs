@@ -211,6 +211,32 @@ fn is_lower_id(text: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+fn has_nonempty_str(map: &Map<String, Value>, key: &str) -> bool {
+    map.get(key)
+        .and_then(Value::as_str)
+        .is_some_and(|t| jsonschema::grapheme_count(t) >= 1)
+}
+
+fn has_valid_identity_fields(map: &Map<String, Value>) -> bool {
+    let text = |key: &str| map.get(key).and_then(Value::as_str);
+    text("id").is_some_and(is_lower_id)
+        && text("version").is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+        && text("strategy").is_some_and(|s| ["deterministic", "predict", "rlm"].contains(&s))
+}
+
+fn has_valid_body_fields(map: &Map<String, Value>) -> bool {
+    has_nonempty_str(map, "instructions")
+        && map.contains_key("inputSchema")
+        && map.contains_key("outputSchema")
+        && map
+            .get("maxRepairs")
+            .and_then(Value::as_f64)
+            .is_some_and(|n| n.fract() == 0.0 && (0.0..=2.0).contains(&n))
+        && map.get("model").is_none_or(|_| has_nonempty_str(map, "model"))
+        && has_nonempty_str(map, "inputDescription")
+        && has_nonempty_str(map, "outputDescription")
+}
+
 /// The typebox `definitionSchema` check: the exact descriptor shape.
 fn descriptor_shape(value: &Value) -> bool {
     let Some(map) = value.as_object() else {
@@ -231,21 +257,7 @@ fn descriptor_shape(value: &Value) -> bool {
     if map.keys().any(|key| !KEYS.contains(&key.as_str())) {
         return false;
     }
-    let text = |key: &str| map.get(key).and_then(Value::as_str);
-    let nonempty = |key: &str| text(key).is_some_and(|t| jsonschema::grapheme_count(t) >= 1);
-    text("id").is_some_and(is_lower_id)
-        && text("version").is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
-        && text("strategy").is_some_and(|s| ["deterministic", "predict", "rlm"].contains(&s))
-        && nonempty("instructions")
-        && map.contains_key("inputSchema")
-        && map.contains_key("outputSchema")
-        && map
-            .get("maxRepairs")
-            .and_then(Value::as_f64)
-            .is_some_and(|n| n.fract() == 0.0 && (0.0..=2.0).contains(&n))
-        && map.get("model").is_none_or(|_| nonempty("model"))
-        && nonempty("inputDescription")
-        && nonempty("outputDescription")
+    has_valid_identity_fields(map) && has_valid_body_fields(map)
 }
 
 /// `validateDefinition`: the descriptor shape, both schemas, and the model form.
@@ -339,27 +351,8 @@ impl DefinitionRegistry {
         };
         let saved = kernel_apis::store::read_versioned("ultron.definitions/root", Some(saved), "version")?
             .unwrap_or(Value::Null);
-        let valid = saved.as_object().is_some_and(|map| {
-            map.keys().all(|k| k == "version" || k == "definitions")
-                && map.get("version").and_then(Value::as_f64) == Some(1.0)
-                && map.get("definitions").is_some_and(Value::is_array)
-        });
-        if !valid {
-            return Err("Invalid native definition document".into());
-        }
-        let mut loaded = self.definitions.clone();
-        for value in saved["definitions"].as_array().into_iter().flatten() {
-            let definition = validate_stored(value)?;
-            let key = definition.key();
-            match loaded.iter_mut().find(|existing| existing.key() == key) {
-                Some(existing) if existing.hash != definition.hash => {
-                    return Err(format!("Definition hash conflict for {key}"));
-                }
-                Some(existing) => *existing = definition,
-                None => loaded.push(definition),
-            }
-        }
-        self.definitions = loaded;
+        let values = extract_stored_definitions(&saved)?;
+        self.definitions = merge_stored_definitions(&self.definitions, values)?;
         Ok(())
     }
 
@@ -468,6 +461,34 @@ impl DefinitionRegistry {
             format!("{message}: {detail}")
         }
     }
+}
+
+fn extract_stored_definitions(saved: &Value) -> Result<&[Value], String> {
+    let valid = saved.as_object().is_some_and(|map| {
+        map.keys().all(|k| k == "version" || k == "definitions")
+            && map.get("version").and_then(Value::as_f64) == Some(1.0)
+            && map.get("definitions").is_some_and(Value::is_array)
+    });
+    if !valid {
+        return Err("Invalid native definition document".into());
+    }
+    Ok(saved["definitions"].as_array().map_or(&[], Vec::as_slice))
+}
+
+fn merge_stored_definitions(base: &[Definition], values: &[Value]) -> Result<Vec<Definition>, String> {
+    let mut loaded = base.to_vec();
+    for value in values {
+        let definition = validate_stored(value)?;
+        let key = definition.key();
+        match loaded.iter_mut().find(|existing| existing.key() == key) {
+            Some(existing) if existing.hash != definition.hash => {
+                return Err(format!("Definition hash conflict for {key}"));
+            }
+            Some(existing) => *existing = definition,
+            None => loaded.push(definition),
+        }
+    }
+    Ok(loaded)
 }
 
 /// `schemaErrorDetail`: up to three distinct `"$.path message (allowed)"` lines, at most 600 UTF-16 units.

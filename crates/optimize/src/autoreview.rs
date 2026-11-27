@@ -138,6 +138,41 @@ pub fn parse_report(text: &str, fallback_name: &str) -> Result<Report, String> {
     })
 }
 
+fn collect_failures(rows: &[Row], scored: &[(Case, CaseScore)]) -> Vec<Value> {
+    let mut failures = Vec::new();
+    for row in rows {
+        if let Some(error) = &row.error {
+            failures.push(json!({"sha": row.case.sha, "failure": "review failed", "error": error}));
+        }
+    }
+    for (case, got) in scored {
+        let short: String = case.sha.chars().take(8).collect();
+        match (case.kind, got.blocked) {
+            (CaseKind::Control, true) => failures.push(json!({
+                "sha": short, "failure": "control blocked", "subject": case.subject, "findings": got.findings.len(),
+            })),
+            (CaseKind::Reverted | CaseKind::FixInducing, false) => {
+                failures.push(json!({"sha": short, "failure": "bug not blocked", "subject": case.subject}));
+            }
+            _ => {}
+        }
+        if !got.complete {
+            failures.push(json!({"sha": short, "failure": "incomplete review", "why": got.incomplete}));
+        }
+    }
+    failures
+}
+
+fn classify_outcome(bugs: f64, controls: f64, quality: f64, penalty: f64, incomplete: bool) -> Outcome {
+    if bugs > 0.0 && controls > 0.0 && penalty >= quality {
+        Outcome::Failed
+    } else if incomplete {
+        Outcome::Incomplete
+    } else {
+        Outcome::Passed
+    }
+}
+
 /// The report scored as if it had been reviewed with `block_at`.
 pub fn point(report: &Report, block_at: &str) -> Point {
     let scored: Vec<(Case, CaseScore)> = report
@@ -156,27 +191,7 @@ pub fn point(report: &Report, block_at: &str) -> Point {
     } else {
         0.0
     };
-    let mut failures: Vec<Value> = Vec::new();
-    for row in &report.rows {
-        if let Some(error) = &row.error {
-            failures.push(json!({"sha": row.case.sha, "failure": "review failed", "error": error}));
-        }
-    }
-    for (case, got) in &scored {
-        let short: String = case.sha.chars().take(8).collect();
-        match (case.kind, got.blocked) {
-            (CaseKind::Control, true) => failures.push(json!({
-                "sha": short, "failure": "control blocked", "subject": case.subject, "findings": got.findings.len(),
-            })),
-            (CaseKind::Reverted | CaseKind::FixInducing, false) => {
-                failures.push(json!({"sha": short, "failure": "bug not blocked", "subject": case.subject}));
-            }
-            _ => {}
-        }
-        if !got.complete {
-            failures.push(json!({"sha": short, "failure": "incomplete review", "why": got.incomplete}));
-        }
-    }
+    let failures = collect_failures(&report.rows, &scored);
     let incomplete = report.rows.iter().any(|r| r.error.is_some()) || scored.iter().any(|(_, s)| !s.complete);
     let mut metrics = totals.clone();
     metrics["quality"] = json!("bugs blocked");
@@ -189,13 +204,7 @@ pub fn point(report: &Report, block_at: &str) -> Point {
         version: 0,
         set_hash: report.hash.clone(),
         mode: "offline",
-        outcome: if bugs > 0.0 && controls > 0.0 && penalty >= quality {
-            Outcome::Failed
-        } else if incomplete {
-            Outcome::Incomplete
-        } else {
-            Outcome::Passed
-        },
+        outcome: classify_outcome(bugs, controls, quality, penalty, incomplete),
         quality,
         penalty,
         cost_usd: totals["costUsd"].as_f64(),

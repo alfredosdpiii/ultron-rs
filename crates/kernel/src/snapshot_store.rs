@@ -180,68 +180,73 @@ fn mark_keyring(marker: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-/// `loadSnapshotKey`: the per-profile key from the store `store` selects. In auto mode a reachable keyring takes over
-/// the key (an existing key file is copied in, read back, and deleted, and a marker records it); once the marker
-/// exists an unreachable keyring gives a key for this process only, with a warning, so no second persistent key is
-/// ever made.
-pub fn load_snapshot_key(
-    agent_dir: &Path,
-    store: KeyStore,
-    keyring: &dyn SnapshotKeyring,
-) -> Result<LoadedSnapshotKey, String> {
-    let file = |key: Vec<u8>| LoadedSnapshotKey {
+fn file_snapshot_key(key: Vec<u8>) -> LoadedSnapshotKey {
+    LoadedSnapshotKey {
         key,
         source: KeySource::File,
         warning: None,
-    };
-    if store == KeyStore::File {
-        return Ok(file(load_or_create_snapshot_key(agent_dir)?));
     }
-    let path = agent_dir.join(SNAPSHOT_KEY_FILE);
-    let shown = path.display().to_string();
-    let marker = agent_dir.join(SNAPSHOT_KEYRING_MARKER);
-    let unreachable = |reason: &str| -> Result<LoadedSnapshotKey, String> {
-        if store == KeyStore::Auto && !marker.exists() {
-            return Ok(file(load_or_create_snapshot_key(agent_dir)?));
-        }
-        Ok(LoadedSnapshotKey {
-            key: random_key()?,
-            source: KeySource::Process,
-            warning: Some(format!(
-                "RLM snapshot key: {reason}; using a key for this process only, so its snapshots will not restore in later sessions"
-            )),
-        })
-    };
-    let Some(found) = keyring.lookup() else {
-        return unreachable("the OS keyring holding the key is unreachable");
-    };
-    if let Some(value) = found.filter(|v| !v.trim().is_empty()) {
-        let key = parse_key(&value, "in the OS keyring")?;
-        mark_keyring(&marker)?;
-        if path.exists() {
-            let file_key = std::fs::read_to_string(&path)
-                .ok()
-                .and_then(|text| parse_key(&text, &shown).ok());
-            if file_key.as_deref() == Some(key.as_slice()) {
-                let _ = std::fs::remove_file(&path);
-            } else {
-                return Ok(LoadedSnapshotKey {
-                    key,
-                    source: KeySource::Keyring,
-                    warning: Some(format!(
-                        "RLM snapshot key: {shown} differs from the key in the OS keyring; the keyring key is used and the file was left in place"
-                    )),
-                });
-            }
-        }
-        return Ok(LoadedSnapshotKey {
-            key,
-            source: KeySource::Keyring,
-            warning: None,
-        });
+}
+
+fn fallback_unreachable_key(
+    agent_dir: &Path,
+    store: KeyStore,
+    marker: &Path,
+    reason: &str,
+) -> Result<LoadedSnapshotKey, String> {
+    if store == KeyStore::Auto && !marker.exists() {
+        return Ok(file_snapshot_key(load_or_create_snapshot_key(agent_dir)?));
     }
+    Ok(LoadedSnapshotKey {
+        key: random_key()?,
+        source: KeySource::Process,
+        warning: Some(format!(
+            "RLM snapshot key: {reason}; using a key for this process only, so its snapshots will not restore in later sessions"
+        )),
+    })
+}
+
+fn load_existing_keyring_key(
+    value: &str,
+    path: &Path,
+    shown: &str,
+    marker: &Path,
+) -> Result<LoadedSnapshotKey, String> {
+    let key = parse_key(value, "in the OS keyring")?;
+    mark_keyring(marker)?;
+    if path.exists() {
+        let file_key = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| parse_key(&text, shown).ok());
+        if file_key.as_deref() == Some(key.as_slice()) {
+            let _ = std::fs::remove_file(path);
+        } else {
+            return Ok(LoadedSnapshotKey {
+                key,
+                source: KeySource::Keyring,
+                warning: Some(format!(
+                    "RLM snapshot key: {shown} differs from the key in the OS keyring; the keyring key is used and the file was left in place"
+                )),
+            });
+        }
+    }
+    Ok(LoadedSnapshotKey {
+        key,
+        source: KeySource::Keyring,
+        warning: None,
+    })
+}
+
+fn migrate_or_create_keyring_key(
+    agent_dir: &Path,
+    path: &Path,
+    shown: &str,
+    marker: &Path,
+    store: KeyStore,
+    keyring: &dyn SnapshotKeyring,
+) -> Result<LoadedSnapshotKey, String> {
     let key = if path.exists() {
-        parse_key(&std::fs::read_to_string(&path).map_err(|e| e.to_string())?, &shown)?
+        parse_key(&std::fs::read_to_string(path).map_err(|e| e.to_string())?, shown)?
     } else {
         random_key()?
     };
@@ -253,17 +258,46 @@ pub fn load_snapshot_key(
     };
     if read_back.flatten().map(|v| v.trim().to_string()).as_deref() != Some(encoded.as_str()) {
         if store == KeyStore::Keyring {
-            return unreachable("the OS keyring did not store the key");
+            return fallback_unreachable_key(agent_dir, store, marker, "the OS keyring did not store the key");
         }
-        return Ok(file(load_or_create_snapshot_key(agent_dir)?));
+        return Ok(file_snapshot_key(load_or_create_snapshot_key(agent_dir)?));
     }
-    mark_keyring(&marker)?;
-    let _ = std::fs::remove_file(&path);
+    mark_keyring(marker)?;
+    let _ = std::fs::remove_file(path);
     Ok(LoadedSnapshotKey {
         key,
         source: KeySource::Keyring,
         warning: None,
     })
+}
+
+/// `loadSnapshotKey`: the per-profile key from the store `store` selects. In auto mode a reachable keyring takes over
+/// the key (an existing key file is copied in, read back, and deleted, and a marker records it); once the marker
+/// exists an unreachable keyring gives a key for this process only, with a warning, so no second persistent key is
+/// ever made.
+pub fn load_snapshot_key(
+    agent_dir: &Path,
+    store: KeyStore,
+    keyring: &dyn SnapshotKeyring,
+) -> Result<LoadedSnapshotKey, String> {
+    if store == KeyStore::File {
+        return Ok(file_snapshot_key(load_or_create_snapshot_key(agent_dir)?));
+    }
+    let path = agent_dir.join(SNAPSHOT_KEY_FILE);
+    let shown = path.display().to_string();
+    let marker = agent_dir.join(SNAPSHOT_KEYRING_MARKER);
+    let Some(found) = keyring.lookup() else {
+        return fallback_unreachable_key(
+            agent_dir,
+            store,
+            &marker,
+            "the OS keyring holding the key is unreachable",
+        );
+    };
+    if let Some(value) = found.filter(|v| !v.trim().is_empty()) {
+        return load_existing_keyring_key(&value, &path, &shown, &marker);
+    }
+    migrate_or_create_keyring_key(agent_dir, &path, &shown, &marker, store, keyring)
 }
 
 /// The key a session's kernels sign snapshots with (session-worker.ts: `loadSnapshotKey(getAgentDir())`, its

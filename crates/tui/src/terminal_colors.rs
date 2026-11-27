@@ -35,31 +35,44 @@ fn hex_channel(channel: &str) -> Option<u8> {
     Some((value / max * 255.0).round() as u8)
 }
 
+fn parse_hash_color(hex: &str) -> Option<(u8, u8, u8)> {
+    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let width = match hex.len() {
+        6 => 2,
+        12 => 4,
+        _ => return None,
+    };
+    let r = hex_channel(&hex[..width])?;
+    let g = hex_channel(&hex[width..2 * width])?;
+    let b = hex_channel(&hex[2 * width..3 * width])?;
+    Some((r, g, b))
+}
+
+fn strip_prefix_ignore_ascii_case<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    value
+        .get(..prefix.len())
+        .filter(|head| head.eq_ignore_ascii_case(prefix))
+        .map(|_| &value[prefix.len()..])
+}
+
+fn parse_rgb_slash_color(value: &str) -> Option<(u8, u8, u8)> {
+    let rgb = strip_prefix_ignore_ascii_case(value, "rgba:")
+        .or_else(|| strip_prefix_ignore_ascii_case(value, "rgb:"))
+        .unwrap_or(value);
+    let mut parts = rgb.split('/');
+    let (red, green, blue) = (parts.next()?, parts.next()?, parts.next()?);
+    Some((hex_channel(red)?, hex_channel(green)?, hex_channel(blue)?))
+}
+
 /// `parseOsc11BackgroundColor`: the reported background as `(r, g, b)`.
 pub fn parse_osc11_background_color(data: &str) -> Option<(u8, u8, u8)> {
     let value = response_body(data)?.trim();
     if let Some(hex) = value.strip_prefix('#') {
-        if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return None;
-        }
-        let width = match hex.len() {
-            6 => 2,
-            12 => 4,
-            _ => return None,
-        };
-        let channel = |i: usize| hex_channel(&hex[i * width..(i + 1) * width]);
-        return Some((channel(0)?, channel(1)?, channel(2)?));
+        return parse_hash_color(hex);
     }
-    let strip = |prefix: &str| {
-        value
-            .get(..prefix.len())
-            .filter(|head| head.eq_ignore_ascii_case(prefix))
-            .map(|_| &value[prefix.len()..])
-    };
-    let rgb = strip("rgba:").or_else(|| strip("rgb:")).unwrap_or(value);
-    let mut parts = rgb.split('/');
-    let (red, green, blue) = (parts.next()?, parts.next()?, parts.next()?);
-    Some((hex_channel(red)?, hex_channel(green)?, hex_channel(blue)?))
+    parse_rgb_slash_color(value)
 }
 
 /// Whether `data` can still grow into a reply: a prefix of `ESC ] 11 ;` from `ESC ]` on, or that prefix and a color

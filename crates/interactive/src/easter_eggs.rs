@@ -177,112 +177,144 @@ impl Armin {
             return;
         }
         self.done = match &mut self.state {
-            State::Position(pos) => {
-                let mut done = false;
-                for _ in 0..3 {
-                    let (row, x) = (*pos / WIDTH, *pos % WIDTH);
-                    if row >= DISPLAY_HEIGHT {
-                        done = true;
-                        break;
-                    }
-                    self.current[row][x] = self.target[row][x];
-                    *pos += 1;
-                }
-                done
-            }
-            State::Row(row) => {
-                if *row >= DISPLAY_HEIGHT {
-                    true
-                } else {
-                    self.current[*row] = self.target[*row].clone();
-                    *row += 1;
-                    false
-                }
-            }
-            State::Rain(drops) => {
-                let mut settled_all = true;
-                let mut falling_through = true;
-                self.current = empty_grid();
-                for (x, drop) in drops.iter_mut().enumerate() {
-                    for row in (DISPLAY_HEIGHT - drop.settled.min(DISPLAY_HEIGHT))..DISPLAY_HEIGHT {
-                        self.current[row][x] = self.target[row][x];
-                    }
-                    if drop.settled >= DISPLAY_HEIGHT {
-                        continue;
-                    }
-                    settled_all = false;
-                    let target = (0..DISPLAY_HEIGHT - drop.settled)
-                        .rev()
-                        .find(|row| self.target[*row][x] != ' ');
-                    drop.y += 1;
-                    if (0..DISPLAY_HEIGHT as i64).contains(&drop.y) {
-                        let y = drop.y as usize;
-                        match target {
-                            Some(target) if y >= target => {
-                                drop.settled = DISPLAY_HEIGHT - target;
-                                drop.y = -((self.random)() * 5.0).floor() as i64 - 1;
-                            }
-                            _ => self.current[y][x] = '▓',
-                        }
-                    }
-                    if target.is_some() || drop.y < DISPLAY_HEIGHT as i64 {
-                        falling_through = false;
-                    }
-                }
-                settled_all || falling_through
-            }
+            State::Position(pos) => tick_position(pos, &mut self.current, &self.target),
+            State::Row(row) => tick_row(row, &mut self.current, &self.target),
+            State::Rain(drops) => tick_rain(drops, &mut self.current, &self.target, &mut *self.random),
             State::Reveal(positions, shown) => {
                 let per_frame = if self.effect == Effect::Fade { 15 } else { 20 };
-                let mut done = false;
-                for _ in 0..per_frame {
-                    let Some(&(row, x)) = positions.get(*shown) else {
-                        done = true;
-                        break;
-                    };
-                    self.current[row][x] = self.target[row][x];
-                    *shown += 1;
-                }
-                done
+                tick_reveal(positions, shown, per_frame, &mut self.current, &self.target)
             }
-            State::Expansion(expansion) => {
-                let mid = (DISPLAY_HEIGHT / 2) as i64;
-                self.current = empty_grid();
-                let (top, bottom) = (
-                    (mid - *expansion).max(0),
-                    (mid + *expansion).min(DISPLAY_HEIGHT as i64 - 1),
-                );
-                for row in top..=bottom {
-                    self.current[row as usize] = self.target[row as usize].clone();
-                }
-                *expansion += 1;
-                *expansion > DISPLAY_HEIGHT as i64
-            }
+            State::Expansion(expansion) => tick_expansion(expansion, &mut self.current, &self.target),
             State::Glitch { phase, frames } => {
-                if *phase < *frames {
-                    let mut next = Vec::with_capacity(DISPLAY_HEIGHT);
-                    for row in &self.target {
-                        let offset = below(&mut *self.random, 7) as i64 - 3;
-                        if (self.random)() < 0.3 {
-                            let at = offset.rem_euclid(WIDTH as i64) as usize;
-                            let mut shifted = row[at..].to_vec();
-                            shifted.extend_from_slice(&row[..at]);
-                            next.push(shifted);
-                        } else if (self.random)() < 0.2 {
-                            next.push(self.target[below(&mut *self.random, DISPLAY_HEIGHT)].clone());
-                        } else {
-                            next.push(row.clone());
-                        }
-                    }
-                    self.current = next;
-                    *phase += 1;
-                    false
-                } else {
-                    self.current = self.target.clone();
-                    true
-                }
+                tick_glitch(phase, *frames, &mut self.current, &self.target, &mut *self.random)
             }
         };
     }
+}
+
+fn tick_position(pos: &mut usize, current: &mut Grid, target: &Grid) -> bool {
+    for _ in 0..3 {
+        let (row, x) = (*pos / WIDTH, *pos % WIDTH);
+        if row >= DISPLAY_HEIGHT {
+            return true;
+        }
+        current[row][x] = target[row][x];
+        *pos += 1;
+    }
+    false
+}
+
+fn tick_row(row: &mut usize, current: &mut Grid, target: &Grid) -> bool {
+    if *row >= DISPLAY_HEIGHT {
+        return true;
+    }
+    current[*row] = target[*row].clone();
+    *row += 1;
+    false
+}
+
+fn tick_rain_column(
+    x: usize,
+    drop: &mut Drop,
+    current: &mut Grid,
+    target: &Grid,
+    random: &mut dyn FnMut() -> f64,
+) -> (bool, bool) {
+    for row in (DISPLAY_HEIGHT - drop.settled.min(DISPLAY_HEIGHT))..DISPLAY_HEIGHT {
+        current[row][x] = target[row][x];
+    }
+    if drop.settled >= DISPLAY_HEIGHT {
+        return (true, true);
+    }
+    let next_target = (0..DISPLAY_HEIGHT - drop.settled)
+        .rev()
+        .find(|row| target[*row][x] != ' ');
+    drop.y += 1;
+    if (0..DISPLAY_HEIGHT as i64).contains(&drop.y) {
+        let y = drop.y as usize;
+        match next_target {
+            Some(row) if y >= row => {
+                drop.settled = DISPLAY_HEIGHT - row;
+                drop.y = -(random() * 5.0).floor() as i64 - 1;
+            }
+            _ => current[y][x] = '▓',
+        }
+    }
+    let falling_through = next_target.is_none() && drop.y >= DISPLAY_HEIGHT as i64;
+    (false, falling_through)
+}
+
+fn tick_rain(drops: &mut [Drop], current: &mut Grid, target: &Grid, random: &mut dyn FnMut() -> f64) -> bool {
+    let mut settled_all = true;
+    let mut falling_through = true;
+    *current = empty_grid();
+    for (x, drop) in drops.iter_mut().enumerate() {
+        let (settled, fell_through) = tick_rain_column(x, drop, current, target, random);
+        settled_all &= settled;
+        falling_through &= fell_through;
+    }
+    settled_all || falling_through
+}
+
+fn tick_reveal(
+    positions: &[(usize, usize)],
+    shown: &mut usize,
+    per_frame: usize,
+    current: &mut Grid,
+    target: &Grid,
+) -> bool {
+    for _ in 0..per_frame {
+        let Some(&(row, x)) = positions.get(*shown) else {
+            return true;
+        };
+        current[row][x] = target[row][x];
+        *shown += 1;
+    }
+    false
+}
+
+fn tick_expansion(expansion: &mut i64, current: &mut Grid, target: &Grid) -> bool {
+    let mid = (DISPLAY_HEIGHT / 2) as i64;
+    *current = empty_grid();
+    let (top, bottom) = (
+        (mid - *expansion).max(0),
+        (mid + *expansion).min(DISPLAY_HEIGHT as i64 - 1),
+    );
+    for row in top..=bottom {
+        current[row as usize] = target[row as usize].clone();
+    }
+    *expansion += 1;
+    *expansion > DISPLAY_HEIGHT as i64
+}
+
+fn glitch_row(row: &[char], target: &Grid, random: &mut dyn FnMut() -> f64) -> Vec<char> {
+    let offset = below(random, 7) as i64 - 3;
+    if random() < 0.3 {
+        let at = offset.rem_euclid(WIDTH as i64) as usize;
+        let mut shifted = row[at..].to_vec();
+        shifted.extend_from_slice(&row[..at]);
+        shifted
+    } else if random() < 0.2 {
+        target[below(random, DISPLAY_HEIGHT)].clone()
+    } else {
+        row.to_vec()
+    }
+}
+
+fn tick_glitch(
+    phase: &mut u32,
+    frames: u32,
+    current: &mut Grid,
+    target: &Grid,
+    random: &mut dyn FnMut() -> f64,
+) -> bool {
+    if *phase >= frames {
+        *current = target.clone();
+        return true;
+    }
+    *current = target.iter().map(|row| glitch_row(row, target, random)).collect();
+    *phase += 1;
+    false
 }
 
 impl Component for Armin {

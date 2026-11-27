@@ -285,6 +285,26 @@ fn unique(base: &Path, prefix: &str) -> PathBuf {
     ))
 }
 
+fn write_file_synced(path: &Path, mode: u32, bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+fn write_asset(dir: &Path, asset: &Asset) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    let path = dir.join(asset.path);
+    if let Some(parent) = path.parent() {
+        std::fs::DirBuilder::new().recursive(true).mode(0o755).create(parent)?;
+    }
+    write_file_synced(&path, asset.mode, asset.bytes)
+}
+
 /// Create `dir` with its lock file held exclusively (so no prune takes it), write every embedded file, then the
 /// marker. Returns the held lock.
 fn write_tree(dir: &Path) -> std::io::Result<File> {
@@ -298,25 +318,9 @@ fn write_tree(dir: &Path) -> std::io::Result<File> {
         .open(dir.join(LOCK))?;
     lock.lock()?;
     for asset in FILES {
-        let path = dir.join(asset.path);
-        if let Some(parent) = path.parent() {
-            std::fs::DirBuilder::new().recursive(true).mode(0o755).create(parent)?;
-        }
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(asset.mode)
-            .open(&path)?;
-        file.write_all(asset.bytes)?;
-        file.sync_all()?;
+        write_asset(dir, asset)?;
     }
-    let mut marker = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o644)
-        .open(dir.join(MARKER))?;
-    marker.write_all(format!("{HASH}\n").as_bytes())?;
-    marker.sync_all()?;
+    write_file_synced(&dir.join(MARKER), 0o644, format!("{HASH}\n").as_bytes())?;
     File::open(dir)?.sync_all()?;
     Ok(lock)
 }

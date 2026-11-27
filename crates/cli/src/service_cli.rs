@@ -172,6 +172,95 @@ pub fn run(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
     Some(manage(action, env, out, err))
 }
 
+struct ServiceTarget {
+    binary: PathBuf,
+    instance: daemon::instance::Instance,
+    name: String,
+    unit: PathBuf,
+}
+
+fn install_service(target: &ServiceTarget, env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
+    let exe = std::env::current_exe().map_err(io)?;
+    let vars: Vec<(String, String)> = KEPT_VARS
+        .iter()
+        .filter_map(|key| (env.var)(key).filter(|v| !v.is_empty()).map(|v| (key.to_string(), v)))
+        .collect();
+    let body = unit_text(&exe, &env.home, &target.instance.dir, &env.agent_dir(), &vars);
+    std::fs::create_dir_all(unit_dir(env)).map_err(io)?;
+    std::fs::write(&target.unit, &body).map_err(io)?;
+    let enabled = run_systemctl(&target.binary, env, &["daemon-reload"])
+        .and_then(|_| run_systemctl(&target.binary, env, &["enable", "--now", &target.name]));
+    if let Err(error) = enabled {
+        let _ = run_systemctl(&target.binary, env, &["disable", &target.name]);
+        let _ = std::fs::remove_file(&target.unit);
+        let _ = run_systemctl(&target.binary, env, &["daemon-reload"]);
+        writeln!(err, "{error}").map_err(io)?;
+        writeln!(err, "The unit was not installed.").map_err(io)?;
+        return Ok(1);
+    }
+    writeln!(out, "Wrote {}:\n{body}", target.unit.display()).map_err(io)?;
+    writeln!(
+        out,
+        "Enabled and started {}: it serves {}.",
+        target.name,
+        target.instance.dir.display()
+    )
+    .map_err(io)?;
+    Ok(0)
+}
+
+fn uninstall_service(
+    target: &ServiceTarget,
+    env: &Env,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, String> {
+    if !target.unit.exists() {
+        writeln!(out, "Not installed ({}).", target.name).map_err(io)?;
+        return Ok(0);
+    }
+    if let Err(error) = run_systemctl(&target.binary, env, &["disable", "--now", &target.name]) {
+        writeln!(err, "Warning: {error}").map_err(io)?;
+    }
+    std::fs::remove_file(&target.unit).map_err(io)?;
+    writeln!(out, "Removed {}", target.unit.display()).map_err(io)?;
+    if let Err(error) = run_systemctl(&target.binary, env, &["daemon-reload"]) {
+        writeln!(err, "Warning: {error}").map_err(io)?;
+    }
+    Ok(0)
+}
+
+fn restart_service(target: &ServiceTarget, env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
+    if !target.unit.exists() {
+        writeln!(err, "Not installed ({}).", target.name).map_err(io)?;
+        return Ok(1);
+    }
+    match run_systemctl(&target.binary, env, &["restart", &target.name]) {
+        Ok(_) => {
+            writeln!(out, "Restarted {}.", target.name).map_err(io)?;
+            Ok(0)
+        }
+        Err(error) => {
+            writeln!(err, "{error}").map_err(io)?;
+            Ok(1)
+        }
+    }
+}
+
+fn service_status(target: &ServiceTarget, env: &Env, out: &mut dyn Write) -> Result<i32, String> {
+    let installed = target.unit.exists();
+    let state = if installed { "installed" } else { "missing" };
+    writeln!(out, "Unit: {} ({state})", target.unit.display()).map_err(io)?;
+    let query = |verb: &str| {
+        run_systemctl(&target.binary, env, &[verb, &target.name])
+            .unwrap_or_else(|error| error.rsplit_once(": ").map_or(error.clone(), |(_, s)| s.to_string()))
+    };
+    writeln!(out, "Enabled: {}", query("is-enabled")).map_err(io)?;
+    writeln!(out, "Active: {}", query("is-active")).map_err(io)?;
+    servers(env, &target.instance, out)?;
+    Ok(i32::from(!installed))
+}
+
 fn manage(action: &str, env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
     let Some(binary) = systemctl(env) else {
         writeln!(
@@ -184,74 +273,17 @@ fn manage(action: &str, env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> 
     let instance = crate::instance(env, true);
     let name = unit_name(&instance.dir);
     let unit = unit_dir(env).join(&name);
+    let target = ServiceTarget {
+        binary,
+        instance,
+        name,
+        unit,
+    };
     match action {
-        "install" => {
-            let exe = std::env::current_exe().map_err(io)?;
-            let vars: Vec<(String, String)> = KEPT_VARS
-                .iter()
-                .filter_map(|key| (env.var)(key).filter(|v| !v.is_empty()).map(|v| (key.to_string(), v)))
-                .collect();
-            let body = unit_text(&exe, &env.home, &instance.dir, &env.agent_dir(), &vars);
-            std::fs::create_dir_all(unit_dir(env)).map_err(io)?;
-            std::fs::write(&unit, &body).map_err(io)?;
-            let enabled = run_systemctl(&binary, env, &["daemon-reload"])
-                .and_then(|_| run_systemctl(&binary, env, &["enable", "--now", &name]));
-            if let Err(error) = enabled {
-                let _ = run_systemctl(&binary, env, &["disable", &name]);
-                let _ = std::fs::remove_file(&unit);
-                let _ = run_systemctl(&binary, env, &["daemon-reload"]);
-                writeln!(err, "{error}").map_err(io)?;
-                writeln!(err, "The unit was not installed.").map_err(io)?;
-                return Ok(1);
-            }
-            writeln!(out, "Wrote {}:\n{body}", unit.display()).map_err(io)?;
-            writeln!(out, "Enabled and started {name}: it serves {}.", instance.dir.display()).map_err(io)?;
-            Ok(0)
-        }
-        "uninstall" => {
-            if !unit.exists() {
-                writeln!(out, "Not installed ({name}).").map_err(io)?;
-                return Ok(0);
-            }
-            if let Err(error) = run_systemctl(&binary, env, &["disable", "--now", &name]) {
-                writeln!(err, "Warning: {error}").map_err(io)?;
-            }
-            std::fs::remove_file(&unit).map_err(io)?;
-            writeln!(out, "Removed {}", unit.display()).map_err(io)?;
-            if let Err(error) = run_systemctl(&binary, env, &["daemon-reload"]) {
-                writeln!(err, "Warning: {error}").map_err(io)?;
-            }
-            Ok(0)
-        }
-        "restart" => {
-            if !unit.exists() {
-                writeln!(err, "Not installed ({name}).").map_err(io)?;
-                return Ok(1);
-            }
-            match run_systemctl(&binary, env, &["restart", &name]) {
-                Ok(_) => {
-                    writeln!(out, "Restarted {name}.").map_err(io)?;
-                    Ok(0)
-                }
-                Err(error) => {
-                    writeln!(err, "{error}").map_err(io)?;
-                    Ok(1)
-                }
-            }
-        }
-        _ => {
-            let installed = unit.exists();
-            let state = if installed { "installed" } else { "missing" };
-            writeln!(out, "Unit: {} ({state})", unit.display()).map_err(io)?;
-            let query = |verb: &str| {
-                run_systemctl(&binary, env, &[verb, &name])
-                    .unwrap_or_else(|error| error.rsplit_once(": ").map_or(error.clone(), |(_, s)| s.to_string()))
-            };
-            writeln!(out, "Enabled: {}", query("is-enabled")).map_err(io)?;
-            writeln!(out, "Active: {}", query("is-active")).map_err(io)?;
-            servers(env, &instance, out)?;
-            Ok(i32::from(!installed))
-        }
+        "install" => install_service(&target, env, out, err),
+        "uninstall" => uninstall_service(&target, env, out, err),
+        "restart" => restart_service(&target, env, out, err),
+        _ => service_status(&target, env, out),
     }
 }
 

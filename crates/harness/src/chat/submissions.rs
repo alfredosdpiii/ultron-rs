@@ -124,6 +124,165 @@ fn raw(
     }
 }
 
+fn lookup_existing_submission(
+    tx: &mut Tx<'_>,
+    conversation_id: ConversationId,
+    draft: &SubmissionDraft,
+) -> Result<Option<SubmissionId>> {
+    let Some(request_id) = draft.request() else {
+        return Ok(None);
+    };
+    let Some(existing) = tx.submission_by_request(conversation_id, request_id)? else {
+        return Ok(None);
+    };
+    if existing.kind != draft.kind() {
+        return Err(HarnessError::Error(format!(
+            "Request {request_id} already identifies a submission of type {}",
+            type_name(existing.kind)
+        )));
+    }
+    Ok(Some(existing.id))
+}
+
+fn inbox_item_for_draft(id: SubmissionId, draft: &SubmissionDraft) -> Value {
+    match draft {
+        SubmissionDraft::Write { entry, .. } => {
+            json!({ "id": id.0, "mode": "write", "entry": strict(entry.clone()) })
+        }
+        SubmissionDraft::Input { content, when_busy, .. } => {
+            let mode = if *when_busy == WhenBusy::Steer {
+                "steer"
+            } else {
+                "followUp"
+            };
+            json!({ "id": id.0, "mode": mode, "content": strict(content.clone()) })
+        }
+    }
+}
+
+fn queue_submission(
+    tx: &mut Tx<'_>,
+    conversation_id: ConversationId,
+    draft: &SubmissionDraft,
+    live: &chord_delta::Draft,
+    mut boundary: Option<super::inbox::Boundary>,
+    now: u64,
+) -> Result<SubmissionId> {
+    let record = tx.create_submission(raw(
+        conversation_id,
+        draft.request(),
+        draft.kind(),
+        SubmissionStatus::Queued,
+    ))?;
+    let item = inbox_item_for_draft(record.id, draft);
+    let inbox = match &boundary {
+        Some(boundary) => boundary.inbox.clone(),
+        None => tx.doc(&super::docs::INBOX, super::util::owner(conversation_id))?,
+    };
+    d(inbox.push(&[chord_delta::Seg::from("items")], vec![item]))?;
+    let Some(boundary) = boundary.as_mut() else {
+        return Ok(record.id);
+    };
+    let result = apply_boundary(tx, boundary, At::Final, now)?;
+    if !result.users.is_empty() {
+        start_run(tx, conversation_id, live, result.users)?;
+    }
+    Ok(record.id)
+}
+
+fn admit_idle_write(
+    tx: &mut Tx<'_>,
+    conversation_id: ConversationId,
+    boundary: &super::inbox::Boundary,
+    entry: &Value,
+    request_id: Option<&str>,
+) -> Result<SubmissionId> {
+    let entry = entry_draft(&strict(entry.clone()))?;
+    if is_stale(boundary, &entry) {
+        let mut stale = raw(
+            conversation_id,
+            request_id,
+            SubmissionType::Write,
+            SubmissionStatus::Unanswered,
+        );
+        stale.reason = Some("stale".into());
+        return Ok(tx.create_submission(stale)?.id);
+    }
+    let appended = tx.append_entry(conversation_id, entry)?;
+    let mut done = raw(
+        conversation_id,
+        request_id,
+        SubmissionType::Write,
+        SubmissionStatus::Done,
+    );
+    done.entry = Some(appended.id);
+    Ok(tx.create_submission(done)?.id)
+}
+
+fn place_input_submission(
+    tx: &mut Tx<'_>,
+    conversation_id: ConversationId,
+    content: &Value,
+    request_id: Option<&str>,
+    now: u64,
+) -> Result<SubmissionId> {
+    let entry = tx.append_entry(conversation_id, super::inbox::user_entry(&strict(content.clone()), now))?;
+    let mut placed = raw(
+        conversation_id,
+        request_id,
+        SubmissionType::Input,
+        SubmissionStatus::Placed,
+    );
+    placed.entry = Some(entry.id);
+    Ok(tx.create_submission(placed)?.id)
+}
+
+fn is_reject_when_busy(draft: &SubmissionDraft) -> bool {
+    matches!(
+        draft,
+        SubmissionDraft::Input {
+            when_busy: WhenBusy::Reject,
+            ..
+        }
+    )
+}
+
+fn admit_idle_submission(
+    tx: &mut Tx<'_>,
+    conversation_id: ConversationId,
+    boundary: &super::inbox::Boundary,
+    live: &chord_delta::Draft,
+    draft: &SubmissionDraft,
+    now: u64,
+) -> Result<SubmissionId> {
+    match draft {
+        SubmissionDraft::Write { entry, request_id } => {
+            admit_idle_write(tx, conversation_id, boundary, entry, request_id.as_deref())
+        }
+        SubmissionDraft::Input {
+            content, request_id, ..
+        } => {
+            let id = place_input_submission(tx, conversation_id, content, request_id.as_deref(), now)?;
+            start_run(tx, conversation_id, live, vec![id])?;
+            Ok(id)
+        }
+    }
+}
+
+fn prepare_admission_boundary(
+    tx: &mut Tx<'_>,
+    conversation_id: ConversationId,
+    busy: bool,
+    modes: QueueModes,
+) -> Result<(Option<super::inbox::Boundary>, bool)> {
+    if busy {
+        return Ok((None, true));
+    }
+    let boundary = prepare_boundary(tx, conversation_id, modes)?;
+    let waiting = !items(&boundary.inbox)?.is_empty();
+    Ok((Some(boundary), waiting))
+}
+
 /// Admit a submission inside a commit (spec §6). A known request ID returns its existing submission without writing.
 /// A busy conversation queues it in `ultron.inbox`, or rejects `WhenBusy::Reject` input with `ConversationBusy`. An idle
 /// conversation with queued items queues it behind them and runs a final boundary. Otherwise idle input places a user
@@ -136,113 +295,46 @@ pub fn admit_submission(
     now: u64,
     modes: QueueModes,
 ) -> Result<SubmissionId> {
-    if let Some(request_id) = draft.request()
-        && let Some(existing) = tx.submission_by_request(conversation_id, request_id)?
-    {
-        if existing.kind != draft.kind() {
-            return Err(HarnessError::Error(format!(
-                "Request {request_id} already identifies a submission of type {}",
-                type_name(existing.kind)
-            )));
-        }
-        return Ok(existing.id);
+    if let Some(existing_id) = lookup_existing_submission(tx, conversation_id, draft)? {
+        return Ok(existing_id);
     }
     let live = live(tx, conversation_id)?;
     let busy = super::util::get(&live, &["run"])?.is_some();
-    if busy
-        && matches!(
-            draft,
-            SubmissionDraft::Input {
-                when_busy: WhenBusy::Reject,
-                ..
-            }
-        )
-    {
+    if busy && is_reject_when_busy(draft) {
         return Err(HarnessError::Session(SessionError::Busy(conversation_id)));
     }
-    let mut boundary = if busy {
-        None
-    } else {
-        Some(prepare_boundary(tx, conversation_id, modes)?)
-    };
-    let waiting = match &boundary {
-        Some(boundary) => !items(&boundary.inbox)?.is_empty(),
-        None => true,
-    };
+    let (boundary, waiting) = prepare_admission_boundary(tx, conversation_id, busy, modes)?;
     if waiting {
-        let record = tx.create_submission(raw(
-            conversation_id,
-            draft.request(),
-            draft.kind(),
-            SubmissionStatus::Queued,
-        ))?;
-        let item = match draft {
-            SubmissionDraft::Write { entry, .. } => {
-                json!({ "id": record.id.0, "mode": "write", "entry": strict(entry.clone()) })
-            }
-            SubmissionDraft::Input { content, when_busy, .. } => {
-                let mode = if *when_busy == WhenBusy::Steer {
-                    "steer"
-                } else {
-                    "followUp"
-                };
-                json!({ "id": record.id.0, "mode": mode, "content": strict(content.clone()) })
-            }
-        };
-        let inbox = match &boundary {
-            Some(boundary) => boundary.inbox.clone(),
-            None => tx.doc(&super::docs::INBOX, super::util::owner(conversation_id))?,
-        };
-        d(inbox.push(&[chord_delta::Seg::from("items")], vec![item]))?;
-        let Some(boundary) = boundary.as_mut() else {
-            return Ok(record.id);
-        };
-        let result = apply_boundary(tx, boundary, At::Final, now)?;
-        if !result.users.is_empty() {
-            start_run(tx, conversation_id, &live, result.users)?;
-        }
-        return Ok(record.id);
+        return queue_submission(tx, conversation_id, draft, &live, boundary, now);
     }
-    let boundary = boundary.expect("idle");
-    match draft {
-        SubmissionDraft::Write { entry, request_id } => {
-            let entry = entry_draft(&strict(entry.clone()))?;
-            if is_stale(&boundary, &entry) {
-                let mut stale = raw(
-                    conversation_id,
-                    request_id.as_deref(),
-                    SubmissionType::Write,
-                    SubmissionStatus::Unanswered,
-                );
-                stale.reason = Some("stale".into());
-                return Ok(tx.create_submission(stale)?.id);
-            }
-            let appended = tx.append_entry(conversation_id, entry)?;
-            let mut done = raw(
-                conversation_id,
-                request_id.as_deref(),
-                SubmissionType::Write,
-                SubmissionStatus::Done,
-            );
-            done.entry = Some(appended.id);
-            Ok(tx.create_submission(done)?.id)
-        }
-        SubmissionDraft::Input {
-            content, request_id, ..
-        } => {
-            let entry = tx.append_entry(conversation_id, super::inbox::user_entry(&strict(content.clone()), now))?;
-            let mut placed = raw(
-                conversation_id,
-                request_id.as_deref(),
-                SubmissionType::Input,
-                SubmissionStatus::Placed,
-            );
-            placed.entry = Some(entry.id);
-            let id = tx.create_submission(placed)?.id;
-            start_run(tx, conversation_id, &live, vec![id])?;
-            Ok(id)
+    admit_idle_submission(tx, conversation_id, &boundary.expect("idle"), &live, draft, now)
+}
+
+fn can_admit_with_steering(
+    tx: &mut Tx<'_>,
+    conversation_id: ConversationId,
+    drafts: &[&SubmissionDraft],
+    live: &chord_delta::Draft,
+    modes: QueueModes,
+) -> Result<bool> {
+    if drafts
+        .iter()
+        .any(|draft| !matches!(draft, SubmissionDraft::Input { .. }))
+    {
+        return Ok(false);
+    }
+    for draft in drafts {
+        if let Some(request_id) = draft.request()
+            && tx.submission_by_request(conversation_id, request_id)?.is_some()
+        {
+            return Ok(false);
         }
     }
+    if super::util::get(live, &["run"])?.is_some() {
+        return Ok(false);
+    }
+    let boundary = prepare_boundary(tx, conversation_id, modes)?;
+    Ok(items(&boundary.inbox)?.is_empty())
 }
 
 /// Admit input that starts a run together with the steering it takes before its first request, in one commit: the
@@ -260,25 +352,8 @@ pub(crate) fn admit_run_with_steering(
     modes: QueueModes,
 ) -> Result<Option<Vec<SubmissionId>>> {
     let drafts: Vec<&SubmissionDraft> = std::iter::once(first).chain(steering).collect();
-    if drafts
-        .iter()
-        .any(|draft| !matches!(draft, SubmissionDraft::Input { .. }))
-    {
-        return Ok(None);
-    }
-    for draft in &drafts {
-        if let Some(request_id) = draft.request()
-            && tx.submission_by_request(conversation_id, request_id)?.is_some()
-        {
-            return Ok(None);
-        }
-    }
     let live = live(tx, conversation_id)?;
-    if super::util::get(&live, &["run"])?.is_some() {
-        return Ok(None);
-    }
-    let boundary = prepare_boundary(tx, conversation_id, modes)?;
-    if !items(&boundary.inbox)?.is_empty() {
+    if !can_admit_with_steering(tx, conversation_id, &drafts, &live, modes)? {
         return Ok(None);
     }
     let mut ids = Vec::new();
@@ -289,15 +364,13 @@ pub(crate) fn admit_run_with_steering(
         else {
             unreachable!("checked above")
         };
-        let entry = tx.append_entry(conversation_id, super::inbox::user_entry(&strict(content.clone()), now))?;
-        let mut placed = raw(
+        ids.push(place_input_submission(
+            tx,
             conversation_id,
+            content,
             request_id.as_deref(),
-            SubmissionType::Input,
-            SubmissionStatus::Placed,
-        );
-        placed.entry = Some(entry.id);
-        ids.push(tx.create_submission(placed)?.id);
+            now,
+        )?);
     }
     start_run(tx, conversation_id, &live, ids.clone())?;
     Ok(Some(ids))

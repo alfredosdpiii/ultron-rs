@@ -389,24 +389,32 @@ fn handler_below(below: &[&str]) -> Option<String> {
         .map(|found| found[1].to_string())
 }
 
-fn serves_route(line: &str, below: &[&str], found: &mut Vec<(Kind, String, String, bool)>) {
-    let route = |method: &str, path: &str| {
-        let method = match method.to_ascii_uppercase().as_str() {
-            "ROUTE" | "API_ROUTE" | "ALL" => "ANY".to_string(),
-            other => other.to_string(),
-        };
-        format!("{method} {path}")
+fn format_route(method: &str, path: &str) -> String {
+    let method = match method.to_ascii_uppercase().as_str() {
+        "ROUTE" | "API_ROUTE" | "ALL" => "ANY".to_string(),
+        other => other.to_string(),
     };
+    format!("{method} {path}")
+}
+
+fn is_known_router(receiver: &str) -> bool {
+    let lower = receiver.to_ascii_lowercase();
+    ROUTERS.iter().any(|name| lower == *name || lower.ends_with(name))
+}
+
+fn py_route(line: &str, below: &[&str], found: &mut Vec<(Kind, String, String, bool)>) {
     if let Some(captures) = PY_ROUTE.captures(line)
         && let Some(handler) = handler_below(below)
     {
         let method = PY_METHODS
             .captures(line)
             .map_or_else(|| captures[2].to_string(), |m| m[1].to_string());
-        let receiver = captures[1].to_ascii_lowercase();
-        let known = ROUTERS.iter().any(|name| receiver == *name || receiver.ends_with(name));
-        found.push((Kind::ServesRoute, handler, route(&method, &captures[3]), known));
+        let known = is_known_router(&captures[1]);
+        found.push((Kind::ServesRoute, handler, format_route(&method, &captures[3]), known));
     }
+}
+
+fn nest_route(line: &str, below: &[&str], found: &mut Vec<(Kind, String, String, bool)>) {
     if let Some(captures) = NEST_ROUTE.captures(line)
         && let Some(handler) = handler_below(below)
     {
@@ -414,26 +422,72 @@ fn serves_route(line: &str, below: &[&str], found: &mut Vec<(Kind, String, Strin
         found.push((
             Kind::ServesRoute,
             handler,
-            route(&captures[1], &format!("/{path}")),
+            format_route(&captures[1], &format!("/{path}")),
             true,
         ));
     }
+}
+
+fn rust_route(line: &str, below: &[&str], found: &mut Vec<(Kind, String, String, bool)>) {
     if let Some(captures) = RUST_ROUTE.captures(line)
         && let Some(handler) = handler_below(below)
     {
-        found.push((Kind::ServesRoute, handler, route(&captures[1], &captures[2]), true));
+        found.push((
+            Kind::ServesRoute,
+            handler,
+            format_route(&captures[1], &captures[2]),
+            true,
+        ));
     }
+}
+
+fn inline_routes(line: &str, found: &mut Vec<(Kind, String, String, bool)>) {
     for captures in AXUM_ROUTE.captures_iter(line) {
         let handler = captures[3].rsplit("::").next().unwrap_or(&captures[3]).to_string();
-        found.push((Kind::ServesRoute, handler, route(&captures[2], &captures[1]), true));
+        found.push((
+            Kind::ServesRoute,
+            handler,
+            format_route(&captures[2], &captures[1]),
+            true,
+        ));
     }
     if let Some(captures) = EXPRESS_ROUTE.captures(line)
         && let Some(handler) = LAST_HANDLER.captures(&captures[4])
     {
         let handler = handler[1].rsplit('.').next().unwrap_or(&handler[1]).to_string();
-        let receiver = captures[1].to_ascii_lowercase();
-        let known = ROUTERS.iter().any(|name| receiver == *name || receiver.ends_with(name));
-        found.push((Kind::ServesRoute, handler, route(&captures[2], &captures[3]), known));
+        let known = is_known_router(&captures[1]);
+        found.push((
+            Kind::ServesRoute,
+            handler,
+            format_route(&captures[2], &captures[3]),
+            known,
+        ));
+    }
+}
+
+fn serves_route(line: &str, below: &[&str], found: &mut Vec<(Kind, String, String, bool)>) {
+    py_route(line, below, found);
+    nest_route(line, below, found);
+    rust_route(line, below, found);
+    inline_routes(line, found);
+}
+
+fn table_certainty(line: &str, keyword: regex::Match<'_>, from: Source, sql_line: bool) -> Option<bool> {
+    if from == Source::Sql {
+        return Some(true);
+    }
+    let upper = keyword.as_str() == keyword.as_str().to_ascii_uppercase();
+    let quotes = line[..keyword.start()]
+        .chars()
+        .filter(|c| matches!(c, '"' | '\'' | '`'))
+        .count();
+    let quoted = quotes % 2 == 1;
+    if upper && (quoted || sql_line) {
+        Some(true)
+    } else if quoted {
+        Some(false)
+    } else {
+        None
     }
 }
 
@@ -449,56 +503,53 @@ fn touches_table(line: &str, from: Source, current: &str, found: &mut Vec<(Kind,
             if NOT_TABLES.contains(&table.to_ascii_lowercase().as_str()) || !seen.insert(table.clone()) {
                 continue;
             }
-            let upper = keyword.as_str() == keyword.as_str().to_ascii_uppercase();
-            let quotes = line[..keyword.start()]
-                .chars()
-                .filter(|c| matches!(c, '"' | '\'' | '`'))
-                .count();
-            let certain = match (from == Source::Sql, quotes % 2 == 1) {
-                (true, _) => true,
-                (false, quoted) if upper && (quoted || sql_line) => true,
-                (false, true) => false,
-                (false, false) => continue,
-            };
-            found.push((Kind::TouchesTable, current.to_string(), table, certain));
+            if let Some(certain) = table_certainty(line, keyword, from, sql_line) {
+                found.push((Kind::TouchesTable, current.to_string(), table, certain));
+            }
         }
     }
 }
 
+fn python_imports(line: &str, found: &mut Vec<(Kind, String, String, bool)>) {
+    if let Some(captures) = PY_FROM.captures(line) {
+        let module = &captures[1];
+        for raw_name in captures[2].split(',') {
+            let name = raw_name
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_matches(|c| c == '(' || c == ')');
+            if name.is_empty() || name == "*" {
+                continue;
+            }
+            let joined = if module.ends_with('.') {
+                format!("{module}{name}")
+            } else {
+                format!("{module}.{name}")
+            };
+            found.push((Kind::Tests, String::new(), joined, true));
+        }
+    } else if let Some(captures) = PY_IMPORT.captures(line) {
+        found.push((Kind::Tests, String::new(), captures[1].to_string(), true));
+    }
+}
+
 fn imports(line: &str, from: Source, found: &mut Vec<(Kind, String, String, bool)>) {
-    let mut push = |module: String| found.push((Kind::Tests, String::new(), module, true));
     match from {
         Source::Rust => {
             if let Some(captures) = RUST_USE.captures(line) {
-                push(captures[1].trim_start_matches("::").to_string());
+                found.push((
+                    Kind::Tests,
+                    String::new(),
+                    captures[1].trim_start_matches("::").to_string(),
+                    true,
+                ));
             }
         }
-        Source::Python => {
-            if let Some(captures) = PY_FROM.captures(line) {
-                let module = captures[1].to_string();
-                for name in captures[2].split(',') {
-                    let name = name
-                        .split_whitespace()
-                        .next()
-                        .unwrap_or("")
-                        .trim_matches(|c| c == '(' || c == ')');
-                    if name.is_empty() || name == "*" {
-                        continue;
-                    }
-                    let joined = if module.ends_with('.') {
-                        format!("{module}{name}")
-                    } else {
-                        format!("{module}.{name}")
-                    };
-                    push(joined);
-                }
-            } else if let Some(captures) = PY_IMPORT.captures(line) {
-                push(captures[1].to_string());
-            }
-        }
+        Source::Python => python_imports(line, found),
         Source::Script => {
             for captures in SCRIPT_IMPORT.captures_iter(line) {
-                push(captures[1].to_string());
+                found.push((Kind::Tests, String::new(), captures[1].to_string(), true));
             }
         }
         Source::Sql => {}

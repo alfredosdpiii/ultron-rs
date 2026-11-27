@@ -3,26 +3,30 @@
 //! context overflow, classify the response, and run the tool round of REPL cells. Port of upstream
 //! `harness/generation.ts`; the tool list is exactly the cell executor's REPL tool.
 
+mod tools;
+
+pub use tools::Control;
+use tools::{read_calls, start_tool_round, tools_phase};
+
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use ai::{AssistantContent, AssistantMessage, AssistantMessageEvent, Message, StopReason, ToolCall};
 use durable::{
-    ConversationId, EntryDraft, EntryHead, EntryId, EntryQuery, JoinPolicy, SubmissionId, SubmissionSettlement,
-    TaskDefinition, TaskId, TaskOptions, TaskOutcome, TaskOutcomeError, TaskOwnership, TaskRecord, TaskState, Tx,
+    ConversationId, EntryDraft, EntryId, EntryQuery, JoinPolicy, SubmissionId, SubmissionSettlement, TaskDefinition,
+    TaskId, TaskOptions, TaskOutcome, TaskOutcomeError, TaskOwnership, TaskRecord, TaskState, Tx,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use super::Services;
-use super::cell::{CellResult, append_tool_result, cell_definition};
+use super::cell::{CellResult, append_tool_result};
 use super::compaction::{Threshold, create_compaction, estimate_planned, select_cut, threshold_compaction};
 use super::context::read_context;
-use super::docs::{AGENT, LIVE, PROVIDER};
-use super::entries;
+use super::docs::{AGENT, PROVIDER};
 use super::gate::{FINAL_TOOL_CHOICE, RequestGate, gate_run};
 use super::inbox::{At, apply_boundary, prepare_boundary, user_entry};
-use super::live::{GENERATION_KIND, append_assistant, convert_partial, end_run, hand_over, live, run_task};
+use super::live::{GENERATION_KIND, append_assistant, convert_partial, end_run, hand_over, live};
 use super::models::{ModelRef, StreamRequest, is_context_overflow};
 use super::prompt::{plan_system_entries, replay_sections};
 use super::throttle::Throttle;
@@ -272,80 +276,87 @@ fn fail_no_model(runtime: &TaskRuntime, model: Option<&ModelRef>) -> Result<()> 
     })
 }
 
-fn prepare_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> Result<()> {
-    let GenerationCheckpoint::Prepare {
-        attempt,
-        compacted,
-        overflow,
-    } = current_checkpoint(task)?
-    else {
-        return Err(HarnessError::msg("prepare phase without a prepare checkpoint"));
+fn overflow_compaction_succeeded(runtime: &TaskRuntime, compacted: TaskId) -> Result<bool> {
+    let outcomes = runtime.outcomes(&[compacted])?;
+    Ok(matches!(
+        outcomes.first(),
+        Some(TaskOutcome::Completed { result }) if result.get("entryId").is_some()
+    ))
+}
+
+fn resolve_desired_sections(
+    services: &Services,
+    runtime: &TaskRuntime,
+    conversation_id: ConversationId,
+    shown: indexmap::IndexMap<String, String>,
+) -> Result<indexmap::IndexMap<String, String>> {
+    let Some(sections) = &services.sections else {
+        return Ok(Default::default());
     };
-    let conversation_id = runtime.conversation_id();
-    let agent = read_agent(runtime)?;
-    let settings = (services.settings)();
-    let Some(model_ref) = agent.model.clone() else {
-        return fail_no_model(runtime, None);
-    };
-    let Some(model) = services.models.get_model(&model_ref.provider, &model_ref.model_id) else {
-        return fail_no_model(runtime, Some(&model_ref));
-    };
-    if let (Some(compacted), Some(overflow)) = (compacted, overflow.as_deref()) {
-        let outcomes = runtime.outcomes(&[compacted])?;
-        let summarized =
-            matches!(outcomes.first(), Some(TaskOutcome::Completed { result }) if result.get("entryId").is_some());
-        if !summarized {
-            return fail_model_error(runtime, overflow);
+    match sections(conversation_id, runtime.signal()) {
+        Ok(desired) => Ok(desired),
+        Err(error) => {
+            runtime.signal().check()?;
+            runtime.report(&error)?;
+            Ok(shown)
         }
     }
-    let view = runtime.read(|tx| read_context(tx, conversation_id, None))?;
-    let shown = replay_sections(&view.messages);
-    let desired = match &services.sections {
-        None => Default::default(),
-        Some(sections) => match sections(conversation_id, runtime.signal()) {
-            Ok(desired) => desired,
-            Err(error) => {
-                runtime.signal().check()?;
-                runtime.report(&error)?;
-                shown
-            }
-        },
-    };
-    let tools = vec![services.cells.tool()];
-    let planned = plan_system_entries(&view, &desired, &tools, runtime.now()?);
-    let policy = services.compaction_policy(conversation_id, &settings);
-    let mut threshold = match compacted {
-        Some(_) => None,
-        None => threshold_compaction(&view, &planned, model.context_window, &policy)?,
-    };
-    let mut declined: Vec<EntryDraft> = Vec::new();
-    if threshold == Some(Threshold::Blocking)
-        && let Some(hook) = &services.hooks.before_compaction
-    {
-        let tokens = estimate_planned(&view, &planned)?;
-        let limit = model.context_window.saturating_sub(policy.reserve_tokens);
-        for entry in hook(conversation_id, tokens, limit) {
-            declined.push(super::inbox::entry_draft(&entry)?);
-        }
-        if !declined.is_empty() {
-            threshold = None;
-        }
+}
+
+fn apply_before_compaction(
+    services: &Services,
+    conversation_id: ConversationId,
+    view: &super::context::ContextView,
+    planned: &[EntryDraft],
+    context_window: u64,
+    policy: &super::models::CompactionPolicy,
+    threshold: Option<Threshold>,
+) -> Result<(Option<Threshold>, Vec<EntryDraft>)> {
+    if threshold != Some(Threshold::Blocking) {
+        return Ok((threshold, Vec::new()));
     }
+    let Some(hook) = &services.hooks.before_compaction else {
+        return Ok((threshold, Vec::new()));
+    };
+    let tokens = estimate_planned(view, planned)?;
+    let limit = context_window.saturating_sub(policy.reserve_tokens);
+    let mut declined = Vec::new();
+    for entry in hook(conversation_id, tokens, limit) {
+        declined.push(super::inbox::entry_draft(&entry)?);
+    }
+    let next_threshold = if declined.is_empty() { threshold } else { None };
+    Ok((next_threshold, declined))
+}
+
+fn commit_blocking_compaction(runtime: &TaskRuntime, conversation_id: ConversationId, attempt: u64) -> Result<()> {
     let task_id = runtime.task_id();
-    if threshold == Some(Threshold::Blocking) {
-        return runtime.commit(&runtime.ctx(), |tx, _| {
-            let child = create_compaction(tx, conversation_id, "threshold", None, Some(task_id))?;
-            Ok(Some(NextState::Waiting {
-                checkpoint: checkpoint(GenerationCheckpoint::Prepare {
-                    attempt,
-                    compacted: Some(child),
-                    overflow: None,
-                }),
-                on: vec![child],
-                policy: JoinPolicy::AllSettled,
-            }))
-        });
-    }
+    runtime.commit(&runtime.ctx(), |tx, _| {
+        let child = create_compaction(tx, conversation_id, "threshold", None, Some(task_id))?;
+        Ok(Some(NextState::Waiting {
+            checkpoint: checkpoint(GenerationCheckpoint::Prepare {
+                attempt,
+                compacted: Some(child),
+                overflow: None,
+            }),
+            on: vec![child],
+            policy: JoinPolicy::AllSettled,
+        }))
+    })
+}
+
+#[allow(clippy::too_many_arguments, reason = "commit prepared generation checkpoint")]
+fn commit_prepared_request(
+    runtime: &TaskRuntime,
+    conversation_id: ConversationId,
+    declined: Vec<EntryDraft>,
+    planned: Vec<EntryDraft>,
+    threshold: Option<Threshold>,
+    attempt: u64,
+    compacted: Option<TaskId>,
+    model_ref: ModelRef,
+    thinking_level: String,
+    stream_options: Map<String, Value>,
+) -> Result<()> {
     runtime.commit(&runtime.ctx(), |tx, _| {
         let query = EntryQuery {
             conversation_id,
@@ -354,10 +365,7 @@ fn prepare_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) 
             order: None,
         };
         let mut cutoff = tx.scan_entries(&query, 1, None)?.items.first().map(|entry| entry.id);
-        for entry in declined {
-            cutoff = Some(tx.append_entry(conversation_id, entry)?.id);
-        }
-        for entry in planned {
+        for entry in declined.into_iter().chain(planned) {
             cutoff = Some(tx.append_entry(conversation_id, entry)?.id);
         }
         let Some(cutoff) = cutoff else {
@@ -373,11 +381,96 @@ fn prepare_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) 
             attempt,
             compacted,
             model: model_ref.clone(),
-            thinking_level: agent.thinking_level.clone(),
-            stream_options: settings.stream.clone(),
+            thinking_level: thinking_level.clone(),
+            stream_options: stream_options.clone(),
             cutoff,
         }))
     })
+}
+
+fn resolve_prepare_model(services: &Services, runtime: &TaskRuntime) -> Result<Option<(ModelRef, ai::Model, String)>> {
+    let agent = read_agent(runtime)?;
+    let Some(model_ref) = agent.model.clone() else {
+        fail_no_model(runtime, None)?;
+        return Ok(None);
+    };
+    let Some(model) = services.models.get_model(&model_ref.provider, &model_ref.model_id) else {
+        fail_no_model(runtime, Some(&model_ref))?;
+        return Ok(None);
+    };
+    Ok(Some((model_ref, model, agent.thinking_level)))
+}
+
+fn plan_prepare_entries(
+    services: &Services,
+    runtime: &TaskRuntime,
+    conversation_id: ConversationId,
+    context_window: u64,
+    compacted: Option<TaskId>,
+    settings: &super::models::Settings,
+) -> Result<(Option<Threshold>, Vec<EntryDraft>, Vec<EntryDraft>)> {
+    let view = runtime.read(|tx| read_context(tx, conversation_id, None))?;
+    let desired = resolve_desired_sections(services, runtime, conversation_id, replay_sections(&view.messages))?;
+    let planned = plan_system_entries(&view, &desired, &[services.cells.tool()], runtime.now()?);
+    let policy = services.compaction_policy(conversation_id, settings);
+    let threshold = match compacted {
+        Some(_) => None,
+        None => threshold_compaction(&view, &planned, context_window, &policy)?,
+    };
+    let (threshold, declined) = apply_before_compaction(
+        services,
+        conversation_id,
+        &view,
+        &planned,
+        context_window,
+        &policy,
+        threshold,
+    )?;
+    Ok((threshold, declined, planned))
+}
+
+fn prepare_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> Result<()> {
+    let GenerationCheckpoint::Prepare {
+        attempt,
+        compacted,
+        overflow,
+    } = current_checkpoint(task)?
+    else {
+        return Err(HarnessError::msg("prepare phase without a prepare checkpoint"));
+    };
+    let conversation_id = runtime.conversation_id();
+    let Some((model_ref, model, thinking_level)) = resolve_prepare_model(services, runtime)? else {
+        return Ok(());
+    };
+    if let (Some(compacted), Some(overflow)) = (compacted, overflow.as_deref())
+        && !overflow_compaction_succeeded(runtime, compacted)?
+    {
+        return fail_model_error(runtime, overflow);
+    }
+    let settings = (services.settings)();
+    let (threshold, declined, planned) = plan_prepare_entries(
+        services,
+        runtime,
+        conversation_id,
+        model.context_window,
+        compacted,
+        &settings,
+    )?;
+    if threshold == Some(Threshold::Blocking) {
+        return commit_blocking_compaction(runtime, conversation_id, attempt);
+    }
+    commit_prepared_request(
+        runtime,
+        conversation_id,
+        declined,
+        planned,
+        threshold,
+        attempt,
+        compacted,
+        model_ref,
+        thinking_level,
+        settings.stream,
+    )
 }
 
 /// What classification needs from the request that produced a message.
@@ -392,46 +485,63 @@ struct Request {
     poll_at: Option<u64>,
 }
 
+fn begin_request_attempt(runtime: &TaskRuntime, conversation_id: ConversationId, attempt: u64) -> Result<()> {
+    runtime.commit(&runtime.ctx(), |tx, _| {
+        let live = live(tx, conversation_id)?;
+        convert_partial(tx, &live, conversation_id)?;
+        set(&live, &["generation"], json!({ "attempt": attempt }))?;
+        Ok(None)
+    })
+}
+
+fn apply_request_gate(
+    services: &Services,
+    runtime: &TaskRuntime,
+    conversation_id: ConversationId,
+    stream_options: &mut Map<String, Value>,
+) -> Result<Option<Option<String>>> {
+    let Some(gate) = &services.hooks.gate_request else {
+        return Ok(Some(None));
+    };
+    let run = runtime.read(|tx| gate_run(tx, conversation_id))?;
+    match gate(&run) {
+        RequestGate::Allow => Ok(Some(None)),
+        RequestGate::Final { note } => {
+            stream_options.insert("toolChoice".into(), json!(FINAL_TOOL_CHOICE));
+            Ok(Some(Some(note)))
+        }
+        RequestGate::Block { reason } => {
+            fail_blocked(runtime, &reason)?;
+            Ok(None)
+        }
+    }
+}
+
 fn request_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> Result<()> {
     let GenerationCheckpoint::Request {
         attempt,
         compacted,
         model: model_ref,
         thinking_level,
-        stream_options,
+        mut stream_options,
         cutoff,
     } = current_checkpoint(task)?
     else {
         return Err(HarnessError::msg("request phase without a request checkpoint"));
     };
     let conversation_id = runtime.conversation_id();
-    runtime.commit(&runtime.ctx(), |tx, _| {
-        let live = live(tx, conversation_id)?;
-        convert_partial(tx, &live, conversation_id)?;
-        set(&live, &["generation"], json!({ "attempt": attempt }))?;
-        Ok(None)
-    })?;
+    begin_request_attempt(runtime, conversation_id, attempt)?;
     let Some(model) = services.models.get_model(&model_ref.provider, &model_ref.model_id) else {
         return fail_no_model(runtime, Some(&model_ref));
     };
     let view = runtime.read(|tx| read_context(tx, conversation_id, Some(cutoff)))?;
-    let mut messages = view.messages.clone();
-    if let Some(hook) = &services.hooks.before_request {
-        messages = hook(messages);
-    }
-    let mut stream_options = stream_options;
-    let mut final_note = None;
-    if let Some(gate) = &services.hooks.gate_request {
-        let run = runtime.read(|tx| gate_run(tx, conversation_id))?;
-        match gate(&run) {
-            RequestGate::Allow => {}
-            RequestGate::Final { note } => {
-                stream_options.insert("toolChoice".into(), json!(FINAL_TOOL_CHOICE));
-                final_note = Some(note);
-            }
-            RequestGate::Block { reason } => return fail_blocked(runtime, &reason),
-        }
-    }
+    let messages = match &services.hooks.before_request {
+        Some(hook) => hook(view.messages.clone()),
+        None => view.messages.clone(),
+    };
+    let Some(final_note) = apply_request_gate(services, runtime, conversation_id, &mut stream_options)? else {
+        return Ok(());
+    };
     let request = StreamRequest {
         options: stream_options,
         session_id: Some(ensure_provider_session_id(runtime)?),
@@ -451,6 +561,23 @@ fn request_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) 
     classify(services, runtime, request, message)
 }
 
+fn commit_stream_partial(committer: &TaskRuntime, attempt: u64, partial: Value) {
+    let conversation_id = committer.conversation_id();
+    let result = committer.commit(&committer.ctx(), |tx, _| {
+        let live = live(tx, conversation_id)?;
+        if get(&live, &["generation"])?.is_none() {
+            set(&live, &["generation"], json!({ "attempt": attempt }))?;
+        }
+        set(&live, &["generation", "message"], partial)?;
+        Ok(None)
+    });
+    if let Err(error) = result
+        && !committer.signal().is_cancelled()
+    {
+        let _ = committer.report(&error);
+    }
+}
+
 /// Stream one request and return the terminal message. Partials commit as throttled writes with one commit in
 /// flight; the throttle stops and awaits that commit before returning, so no stale partial lands after the outcome.
 fn stream_response(
@@ -464,20 +591,7 @@ fn stream_response(
     let interval = Duration::from_millis((services.settings)().partial_interval_ms);
     let committer = runtime.clone();
     let throttle = Throttle::new(interval, move |partial: Value| {
-        let conversation_id = committer.conversation_id();
-        let result = committer.commit(&committer.ctx(), |tx, _| {
-            let live = live(tx, conversation_id)?;
-            if get(&live, &["generation"])?.is_none() {
-                set(&live, &["generation"], json!({ "attempt": attempt }))?;
-            }
-            set(&live, &["generation", "message"], partial)?;
-            Ok(None)
-        });
-        if let Err(error) = result
-            && !committer.signal().is_cancelled()
-        {
-            let _ = committer.report(&error);
-        }
+        commit_stream_partial(&committer, attempt, partial);
     });
     let context = ai::TranscriptContext { messages };
     let mut on_event = |event: &AssistantMessageEvent| {
@@ -510,98 +624,98 @@ fn stop_reason_name(reason: StopReason) -> String {
     to_value(&reason).as_str().unwrap_or_default().to_owned()
 }
 
-/// Classify a terminal provider message in one commit that also clears the partial.
-fn classify(services: &Services, runtime: &TaskRuntime, request: Request, message: AssistantMessage) -> Result<()> {
-    runtime.signal().check()?;
+fn schedule_deferred_poll(runtime: &TaskRuntime, request: Request, handle: ai::DeferredHandle) -> Result<()> {
     let conversation_id = runtime.conversation_id();
-    let task_id = runtime.task_id();
-    let Request {
-        attempt,
-        compacted,
-        cutoff,
-        ..
-    } = request;
-    if message.stop_reason == StopReason::Deferred
-        && let Some(handle) = message.deferred.clone()
-    {
-        let after = handle
-            .poll_after_ms
-            .and_then(|ms| u64::try_from(ms).ok())
-            .unwrap_or(DEFAULT_POLL_AFTER_MS);
-        let poll_at = (runtime.now()? + after).max(request.poll_at.map_or(0, |previous| previous + 1));
-        let model = request.model;
-        return runtime.commit(&runtime.ctx(), |tx, _| {
-            let live = live(tx, conversation_id)?;
-            set(
-                &live,
-                &["generation"],
-                json!({ "attempt": attempt, "deferred": { "pollAt": poll_at } }),
-            )?;
-            Ok(running(GenerationCheckpoint::Poll {
-                attempt,
-                compacted,
-                model,
-                cutoff,
-                handle,
-                poll_at,
-            }))
-        });
-    }
-    if let Some(hook) = &services.hooks.after_response {
-        hook(&message);
-    }
-    let calls = tool_calls(&message);
-    if message.stop_reason == StopReason::ToolUse && !calls.is_empty() {
-        return start_tool_round(services, runtime, request, message, calls);
-    }
-    if matches!(
-        message.stop_reason,
-        StopReason::Stop | StopReason::Length | StopReason::ToolUse
-    ) {
-        return answer(services, runtime, message);
-    }
-    let settings = (services.settings)();
-    let overflow = message.stop_reason == StopReason::Error && is_context_overflow(&message);
-    let stored = strict(to_value(&message));
-    let policy = services.compaction_policy(conversation_id, &settings);
-    if overflow && compacted.is_none() && policy.enabled {
-        let view = runtime.read(|tx| read_context(tx, conversation_id, Some(cutoff)))?;
-        if select_cut(&view, policy.keep_recent_tokens).is_some() {
-            let text = message.error_message.unwrap_or_else(|| "Context overflow".into());
-            return runtime.commit(&runtime.ctx(), |tx, _| {
-                let live = live(tx, conversation_id)?;
-                append_assistant(tx, conversation_id, &stored)?;
-                delete(&live, &["generation"])?;
-                let child = create_compaction(tx, conversation_id, "overflow", None, Some(task_id))?;
-                Ok(Some(NextState::Waiting {
-                    checkpoint: checkpoint(GenerationCheckpoint::Prepare {
-                        attempt,
-                        compacted: Some(child),
-                        overflow: Some(text.clone()),
-                    }),
-                    on: vec![child],
-                    policy: JoinPolicy::AllSettled,
-                }))
-            });
-        }
-    }
-    let retry = match settings.retry.retry_delay(attempt, &message).filter(|_| !overflow) {
-        Some(delay) => Some(runtime.now()? + delay),
-        None => None,
-    };
+    let after = handle
+        .poll_after_ms
+        .and_then(|ms| u64::try_from(ms).ok())
+        .unwrap_or(DEFAULT_POLL_AFTER_MS);
+    let poll_at = (runtime.now()? + after).max(request.poll_at.map_or(0, |previous| previous + 1));
     runtime.commit(&runtime.ctx(), |tx, _| {
         let live = live(tx, conversation_id)?;
-        append_assistant(tx, conversation_id, &stored)?;
+        set(
+            &live,
+            &["generation"],
+            json!({ "attempt": request.attempt, "deferred": { "pollAt": poll_at } }),
+        )?;
+        Ok(running(GenerationCheckpoint::Poll {
+            attempt: request.attempt,
+            compacted: request.compacted,
+            model: request.model.clone(),
+            cutoff: request.cutoff,
+            handle: handle.clone(),
+            poll_at,
+        }))
+    })
+}
+
+fn commit_overflow_compaction(runtime: &TaskRuntime, attempt: u64, stored: &Value, text: String) -> Result<()> {
+    let conversation_id = runtime.conversation_id();
+    let task_id = runtime.task_id();
+    runtime.commit(&runtime.ctx(), |tx, _| {
+        let live = live(tx, conversation_id)?;
+        append_assistant(tx, conversation_id, stored)?;
+        delete(&live, &["generation"])?;
+        let child = create_compaction(tx, conversation_id, "overflow", None, Some(task_id))?;
+        Ok(Some(NextState::Waiting {
+            checkpoint: checkpoint(GenerationCheckpoint::Prepare {
+                attempt,
+                compacted: Some(child),
+                overflow: Some(text.clone()),
+            }),
+            on: vec![child],
+            policy: JoinPolicy::AllSettled,
+        }))
+    })
+}
+
+fn try_overflow_compaction(
+    services: &Services,
+    runtime: &TaskRuntime,
+    request: &Request,
+    message: &AssistantMessage,
+    stored: &Value,
+    settings: &super::models::Settings,
+) -> Result<bool> {
+    let conversation_id = runtime.conversation_id();
+    let policy = services.compaction_policy(conversation_id, settings);
+    if request.compacted.is_some() || !policy.enabled {
+        return Ok(false);
+    }
+    let view = runtime.read(|tx| read_context(tx, conversation_id, Some(request.cutoff)))?;
+    if select_cut(&view, policy.keep_recent_tokens).is_none() {
+        return Ok(false);
+    }
+    let text = message
+        .error_message
+        .clone()
+        .unwrap_or_else(|| "Context overflow".into());
+    commit_overflow_compaction(runtime, request.attempt, stored, text)?;
+    Ok(true)
+}
+
+fn commit_error_or_retry(
+    runtime: &TaskRuntime,
+    request: &Request,
+    message: &AssistantMessage,
+    stored: &Value,
+    retry: Option<u64>,
+) -> Result<()> {
+    let conversation_id = runtime.conversation_id();
+    let task_id = runtime.task_id();
+    runtime.commit(&runtime.ctx(), |tx, _| {
+        let live = live(tx, conversation_id)?;
+        append_assistant(tx, conversation_id, stored)?;
         if let Some(until) = retry {
             let error = message.error_message.clone().unwrap_or_default();
             set(
                 &live,
                 &["generation"],
-                json!({ "attempt": attempt, "retry": { "at": until, "error": error } }),
+                json!({ "attempt": request.attempt, "retry": { "at": until, "error": error } }),
             )?;
             return Ok(running(GenerationCheckpoint::Retry {
-                attempt,
-                compacted,
+                attempt: request.attempt,
+                compacted: request.compacted,
                 until,
             }));
         }
@@ -624,6 +738,102 @@ fn classify(services: &Services, runtime: &TaskRuntime, request: Request, messag
     })
 }
 
+fn classify_error_response(
+    services: &Services,
+    runtime: &TaskRuntime,
+    request: &Request,
+    message: &AssistantMessage,
+) -> Result<()> {
+    let settings = (services.settings)();
+    let overflow = message.stop_reason == StopReason::Error && is_context_overflow(message);
+    let stored = strict(to_value(message));
+    if overflow && try_overflow_compaction(services, runtime, request, message, &stored, &settings)? {
+        return Ok(());
+    }
+    let retry = settings
+        .retry
+        .retry_delay(request.attempt, message)
+        .filter(|_| !overflow)
+        .map(|delay| runtime.now().map(|now| now + delay))
+        .transpose()?;
+    commit_error_or_retry(runtime, request, message, &stored, retry)
+}
+
+/// Classify a terminal provider message in one commit that also clears the partial.
+fn classify(services: &Services, runtime: &TaskRuntime, request: Request, message: AssistantMessage) -> Result<()> {
+    runtime.signal().check()?;
+    if message.stop_reason == StopReason::Deferred
+        && let Some(handle) = message.deferred.clone()
+    {
+        return schedule_deferred_poll(runtime, request, handle);
+    }
+    if let Some(hook) = &services.hooks.after_response {
+        hook(&message);
+    }
+    let calls = tool_calls(&message);
+    if message.stop_reason == StopReason::ToolUse && !calls.is_empty() {
+        return start_tool_round(services, runtime, request, message, calls);
+    }
+    if matches!(
+        message.stop_reason,
+        StopReason::Stop | StopReason::Length | StopReason::ToolUse
+    ) {
+        return answer(services, runtime, message);
+    }
+    classify_error_response(services, runtime, &request, &message)
+}
+
+fn continue_yield_run(
+    tx: &mut Tx<'_>,
+    live: &chord_delta::Draft,
+    conversation_id: ConversationId,
+    task_id: TaskId,
+    content: &Value,
+    now: u64,
+) -> Result<()> {
+    tx.append_entry(conversation_id, user_entry(content, now))?;
+    let successor = create_generation(tx, conversation_id)?;
+    hand_over(live, task_id, successor)?;
+    delete(live, &["generation"])
+}
+
+fn finish_answer_run(
+    tx: &mut Tx<'_>,
+    live: &chord_delta::Draft,
+    conversation_id: ConversationId,
+    task_id: TaskId,
+    answer: EntryId,
+    users: Vec<SubmissionId>,
+) -> Result<()> {
+    end_run(tx, live, task_id, SubmissionSettlement::Done { answer })?;
+    if !users.is_empty() {
+        start_run(tx, conversation_id, live, users)?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments, reason = "answer boundary settlement")]
+fn settle_answer_boundary(
+    tx: &mut Tx<'_>,
+    boundary: &mut super::inbox::Boundary,
+    live: &chord_delta::Draft,
+    conversation_id: ConversationId,
+    task_id: TaskId,
+    answer: EntryId,
+    continuation: Option<&Value>,
+    now: u64,
+) -> Result<()> {
+    let placed = apply_boundary(tx, boundary, At::Final, now)?;
+    if let Some(content) = continuation
+        && placed.users.is_empty()
+        && !placed.reset
+    {
+        continue_yield_run(tx, live, conversation_id, task_id, content, now)
+    } else {
+        finish_answer_run(tx, live, conversation_id, task_id, answer, placed.users)
+    }
+}
+
 /// A final answer; the final boundary places queued items (spec §6). The first `on_yield` continuation appends a
 /// user message and hands the run to a successor generation, but only when the boundary selected no user item and no
 /// reset. Otherwise the run's inputs settle `done`, and selected user items start the next run.
@@ -636,247 +846,18 @@ fn answer(services: &Services, runtime: &TaskRuntime, message: AssistantMessage)
         let mut boundary = prepare_boundary(tx, conversation_id, (services.settings)().queue_modes())?;
         let live = live(tx, conversation_id)?;
         let entry = append_assistant(tx, conversation_id, &stored)?;
-        let result = completed(json!({ "entryId": entry.id.0 }));
         let now = runtime.now()?;
-        let placed = apply_boundary(tx, &mut boundary, At::Final, now)?;
-        if let Some(content) = continuation.as_ref()
-            && placed.users.is_empty()
-            && !placed.reset
-        {
-            tx.append_entry(conversation_id, user_entry(content, now))?;
-            let successor = create_generation(tx, conversation_id)?;
-            hand_over(&live, task_id, successor)?;
-            delete(&live, &["generation"])?;
-            return Ok(Some(result));
-        }
-        end_run(tx, &live, task_id, SubmissionSettlement::Done { answer: entry.id })?;
-        if !placed.users.is_empty() {
-            start_run(tx, conversation_id, &live, placed.users)?;
-        }
-        Ok(Some(result))
-    })
-}
-
-/// A cell task for call `call_id`, owned by the generation.
-fn create_cell_task(tx: &mut Tx<'_>, generation: TaskId, assistant: EntryId, call_id: &str) -> Result<TaskId> {
-    Ok(tx.create_task(
-        cell_definition(),
-        json!({ "kind": "model", "assistant": assistant.0, "callId": call_id }),
-        TaskOptions {
-            ownership: TaskOwnership::Task(generation),
-            ..TaskOptions::default()
-        },
-    )?)
-}
-
-/// Append the tool-calling answer and start its tool round in one commit (spec §8.3). A call to a tool the request did
-/// not offer gets its `tool_unavailable` result here; every other call gets a cell task owned by the generation, only
-/// the first one now when the round is sequential. The generation then waits for them in its `tools` phase.
-fn start_tool_round(
-    services: &Services,
-    runtime: &TaskRuntime,
-    request: Request,
-    message: AssistantMessage,
-    calls: Vec<ToolCall>,
-) -> Result<()> {
-    let conversation_id = runtime.conversation_id();
-    let task_id = runtime.task_id();
-    let messages = match request.messages {
-        Some(messages) => messages,
-        None => {
-            runtime
-                .read(|tx| read_context(tx, conversation_id, Some(request.cutoff)))?
-                .messages
-        }
-    };
-    let offered: Vec<String> = ai::transcript::current_tools(&messages)
-        .into_iter()
-        .map(|tool| tool.name)
-        .collect();
-    let sequential = (services.settings)().tool_execution == super::models::ToolExecution::Sequential;
-    let stored = strict(to_value(&message));
-    runtime.commit(&runtime.ctx(), |tx, _| {
-        let live = live(tx, conversation_id)?;
-        let entry = append_assistant(tx, conversation_id, &stored)?;
-        let mut slots = Vec::new();
-        let mut tools = Vec::new();
-        let mut pending = Vec::new();
-        for call in &calls {
-            if !offered.contains(&call.name) {
-                let unavailable =
-                    CellResult::error("tool_unavailable", &format!("Tool {} is not available", call.name));
-                let result = append_tool_result(
-                    tx,
-                    conversation_id,
-                    &call.id,
-                    &call.name,
-                    &unavailable,
-                    runtime.now()?,
-                    None,
-                )?;
-                slots.push(json!({ "callId": call.id, "name": call.name, "status": "done", "entry": result.id.0 }));
-                continue;
-            }
-            if sequential && !tools.is_empty() {
-                pending.push(call.id.clone());
-                slots.push(json!({ "callId": call.id, "name": call.name, "status": "pending" }));
-                continue;
-            }
-            let cell = create_cell_task(tx, task_id, entry.id, &call.id)?;
-            tools.push(cell);
-            slots.push(json!({ "callId": call.id, "name": call.name, "taskId": cell.0, "status": "pending" }));
-        }
-        delete(&live, &["generation"])?;
-        set(&live, &["tools"], Value::Array(slots))?;
-        Ok(Some(NextState::Waiting {
-            checkpoint: checkpoint(GenerationCheckpoint::Tools {
-                assistant: entry.id,
-                tools: tools.clone(),
-                pending,
-            }),
-            on: tools,
-            policy: JoinPolicy::AllSettled,
-        }))
-    })
-}
-
-fn tools_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> Result<()> {
-    let GenerationCheckpoint::Tools {
-        assistant,
-        tools,
-        pending,
-    } = current_checkpoint(task)?
-    else {
-        return Err(HarnessError::msg("tools phase without a tools checkpoint"));
-    };
-    let Some((next, rest)) = pending.split_first() else {
-        return finish_tool_round(services, runtime, assistant, tools);
-    };
-    let conversation_id = runtime.conversation_id();
-    let task_id = runtime.task_id();
-    runtime.commit(&runtime.ctx(), |tx, _| {
-        let live = live(tx, conversation_id)?;
-        let cell = create_cell_task(tx, task_id, assistant, next)?;
-        let slots = get(&live, &["tools"])?.unwrap_or(json!([]));
-        if let Some(index) = slots.as_array().and_then(|slots| {
-            slots
-                .iter()
-                .position(|slot| slot["callId"] == json!(next) && slot.get("taskId").is_none())
-        }) {
-            super::util::d(live.set(&super::live::slot_path(index, Some("taskId")), json!(cell.0)))?;
-        }
-        let mut started = tools.clone();
-        started.push(cell);
-        Ok(Some(NextState::Waiting {
-            checkpoint: checkpoint(GenerationCheckpoint::Tools {
-                assistant,
-                tools: started,
-                pending: rest.to_vec(),
-            }),
-            on: vec![cell],
-            policy: JoinPolicy::AllSettled,
-        }))
-    })
-}
-
-/// The control a cell asked for: end the run (`terminate`), or start a fresh context with `handoff` text.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Control {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub terminate: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub handoff: Option<String>,
-}
-
-/// The round's cells are terminal: apply their controls and either end the run at the final boundary (`terminate`,
-/// `handoff`, or a queued reset) or hand it to the next generation at the `postTools` boundary (spec §8.5).
-fn finish_tool_round(services: &Services, runtime: &TaskRuntime, assistant: EntryId, tools: Vec<TaskId>) -> Result<()> {
-    let conversation_id = runtime.conversation_id();
-    let task_id = runtime.task_id();
-    let outcomes = runtime.outcomes(&tools)?;
-    let controls: Vec<(TaskId, Option<Control>)> = tools
-        .iter()
-        .zip(outcomes)
-        .map(|(id, outcome)| {
-            let control = match outcome {
-                TaskOutcome::Completed { result } if result["kind"] != "nested" => result
-                    .get("control")
-                    .and_then(|control| serde_json::from_value(control.clone()).ok()),
-                _ => None,
-            };
-            (*id, control)
-        })
-        .collect();
-    let slots = runtime
-        .snapshot(&LIVE, owner(conversation_id))?
-        .and_then(|live| live.get("tools").cloned())
-        .unwrap_or(json!([]));
-    let slots = slots.as_array().cloned().unwrap_or_default();
-    let control_of = |id: TaskId| {
-        controls
-            .iter()
-            .find(|(each, _)| *each == id)
-            .and_then(|(_, control)| control.clone())
-    };
-    let terminate = !slots.is_empty()
-        && slots.iter().all(|slot| {
-            slot["taskId"]
-                .as_u64()
-                .is_some_and(|id| control_of(TaskId(id)).is_some_and(|control| control.terminate == Some(true)))
-        });
-    let handoff = controls
-        .iter()
-        .rev()
-        .find_map(|(_, control)| control.as_ref().and_then(|control| control.handoff.clone()));
-    runtime.commit(&runtime.ctx(), |tx, _| {
-        let mut boundary = prepare_boundary(tx, conversation_id, (services.settings)().queue_modes())?;
-        let live = live(tx, conversation_id)?;
-        let now = runtime.now()?;
-        if terminate || handoff.is_some() {
-            if let Some(text) = &handoff {
-                let entry = tx.append_entry(
-                    conversation_id,
-                    EntryDraft {
-                        head: Some(EntryHead::SelfId),
-                        model: Some(vec![json!({ "role": "user", "content": text, "timestamp": now })]),
-                        ..EntryDraft::new(entries::RESET)
-                    },
-                )?;
-                boundary.head = Some(entry.id);
-            }
-            let placed = apply_boundary(tx, &mut boundary, At::Final, now)?;
-            end_run(tx, &live, task_id, SubmissionSettlement::Done { answer: assistant })?;
-            if !placed.users.is_empty() {
-                start_run(tx, conversation_id, &live, placed.users)?;
-            }
-        } else {
-            let placed = apply_boundary(tx, &mut boundary, At::PostTools, now)?;
-            if placed.reset {
-                end_run(
-                    tx,
-                    &live,
-                    task_id,
-                    SubmissionSettlement::Unanswered {
-                        reason: "reset".into(),
-                        detail: None,
-                    },
-                )?;
-                if !placed.users.is_empty() {
-                    start_run(tx, conversation_id, &live, placed.users)?;
-                }
-            } else {
-                delete(&live, &["tools"])?;
-                delete(&live, &["nestedTools"])?;
-                if run_task(&live)? == Some(task_id) {
-                    for user in &placed.users {
-                        super::util::d(live.push(&super::util::keys(&["run", "inputs"]), vec![json!(user.0)]))?;
-                    }
-                }
-                let successor = create_generation(tx, conversation_id)?;
-                hand_over(&live, task_id, successor)?;
-            }
-        }
-        Ok(Some(completed(json!({ "entryId": assistant.0 }))))
+        settle_answer_boundary(
+            tx,
+            &mut boundary,
+            &live,
+            conversation_id,
+            task_id,
+            entry.id,
+            continuation.as_ref(),
+            now,
+        )?;
+        Ok(Some(completed(json!({ "entryId": entry.id.0 }))))
     })
 }
 
@@ -930,35 +911,46 @@ fn poll_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> 
     classify(services, runtime, request, message)
 }
 
-/// The calls `call_ids` of the assistant entry, in the given order.
-fn read_calls(runtime: &TaskRuntime, assistant: EntryId, call_ids: &[String]) -> Result<Vec<ToolCall>> {
-    let entry = runtime.read(|tx| Ok(tx.entry_of(entries::ASSISTANT, assistant)?))?;
-    let calls = match entry
-        .and_then(|entry| entry.model)
-        .and_then(|model| model.into_iter().next())
+fn cancel_pending_deferred(
+    services: &Services,
+    runtime: &TaskRuntime,
+    checkpoint: &GenerationCheckpoint,
+) -> Result<()> {
+    if let GenerationCheckpoint::Poll { model, handle, .. } = checkpoint
+        && let Some(model) = services.models.get_model(&model.provider, &model.model_id)
+        && let Err(error) = services.models.cancel_deferred(&model, handle, runtime.signal())
     {
-        Some(message) => match super::context::message_of(message)? {
-            Message::Assistant(message) => tool_calls(&message),
-            _ => Vec::new(),
-        },
-        None => Vec::new(),
-    };
-    Ok(call_ids
-        .iter()
-        .filter_map(|id| calls.iter().find(|call| &call.id == id).cloned())
-        .collect())
+        runtime.report(&error)?;
+    }
+    Ok(())
+}
+
+fn append_aborted_calls(
+    tx: &mut Tx<'_>,
+    runtime: &TaskRuntime,
+    conversation_id: ConversationId,
+    unstarted: &[ToolCall],
+) -> Result<()> {
+    for call in unstarted {
+        let aborted = CellResult::error("aborted", &format!("Tool {} was aborted", call.name));
+        append_tool_result(
+            tx,
+            conversation_id,
+            &call.id,
+            &call.name,
+            &aborted,
+            runtime.now()?,
+            None,
+        )?;
+    }
+    Ok(())
 }
 
 /// Runs after the round's cells are terminal: calls never started get `aborted` results; the run's inputs settle
 /// `unanswered` with `aborted`.
 fn abort_handler(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> Result<()> {
     let checkpoint = current_checkpoint(task)?;
-    if let GenerationCheckpoint::Poll { model, handle, .. } = &checkpoint
-        && let Some(model) = services.models.get_model(&model.provider, &model.model_id)
-        && let Err(error) = services.models.cancel_deferred(&model, handle, runtime.signal())
-    {
-        runtime.report(&error)?;
-    }
+    cancel_pending_deferred(services, runtime, &checkpoint)?;
     let unstarted = match &checkpoint {
         GenerationCheckpoint::Tools { assistant, pending, .. } => read_calls(runtime, *assistant, pending)?,
         _ => Vec::new(),
@@ -968,18 +960,7 @@ fn abort_handler(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) 
     runtime.commit(&runtime.ctx(), |tx, _| {
         let live = live(tx, conversation_id)?;
         convert_partial(tx, &live, conversation_id)?;
-        for call in &unstarted {
-            let aborted = CellResult::error("aborted", &format!("Tool {} was aborted", call.name));
-            append_tool_result(
-                tx,
-                conversation_id,
-                &call.id,
-                &call.name,
-                &aborted,
-                runtime.now()?,
-                None,
-            )?;
-        }
+        append_aborted_calls(tx, runtime, conversation_id, &unstarted)?;
         end_run(
             tx,
             &live,

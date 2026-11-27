@@ -68,6 +68,37 @@ pub fn reference<M: ScopeModel>(model: &M) -> String {
     format!("{}/{}", model.provider(), model.id())
 }
 
+enum ExactLookup<'a, M> {
+    Found(&'a M),
+    Ambiguous,
+    None,
+}
+
+fn unique_model<'a, M>(models: &'a [M], pred: impl Fn(&M) -> bool) -> ExactLookup<'a, M> {
+    let mut found = None;
+    for model in models.iter().filter(|m| pred(m)) {
+        if found.is_some() {
+            return ExactLookup::Ambiguous;
+        }
+        found = Some(model);
+    }
+    found.map_or(ExactLookup::None, ExactLookup::Found)
+}
+
+fn find_split_reference<'a, M: ScopeModel>(trimmed: &str, models: &'a [M]) -> ExactLookup<'a, M> {
+    let Some((provider, id)) = trimmed.split_once('/') else {
+        return ExactLookup::None;
+    };
+    let (provider, id) = (jsrt::string::trim(provider), jsrt::string::trim(id));
+    if provider.is_empty() || id.is_empty() {
+        return ExactLookup::None;
+    }
+    let (provider, id) = (provider.to_lowercase(), id.to_lowercase());
+    unique_model(models, |m| {
+        m.provider().to_lowercase() == provider && m.id().to_lowercase() == id
+    })
+}
+
 /// `findExactModelReferenceMatch`: `provider/id` (case-insensitive) or a bare id that only one model has.
 pub fn find_exact_model_reference_match<'a, M: ScopeModel>(reference_: &str, models: &'a [M]) -> Option<&'a M> {
     let trimmed = jsrt::string::trim(reference_);
@@ -75,36 +106,22 @@ pub fn find_exact_model_reference_match<'a, M: ScopeModel>(reference_: &str, mod
         return None;
     }
     let normalized = trimmed.to_lowercase();
-    let canonical: Vec<&M> = models
-        .iter()
-        .filter(|m| reference(*m).to_lowercase() == normalized)
-        .collect();
-    match canonical.len() {
-        1 => return Some(canonical[0]),
-        0 => {}
-        _ => return None,
+    match unique_model(models, |m| reference(m).to_lowercase() == normalized) {
+        ExactLookup::Found(m) => return Some(m),
+        ExactLookup::Ambiguous => return None,
+        ExactLookup::None => {}
     }
-    if let Some((provider, id)) = trimmed.split_once('/') {
-        let (provider, id) = (jsrt::string::trim(provider), jsrt::string::trim(id));
-        if !provider.is_empty() && !id.is_empty() {
-            let matches: Vec<&M> = models
-                .iter()
-                .filter(|m| {
-                    m.provider().to_lowercase() == provider.to_lowercase() && m.id().to_lowercase() == id.to_lowercase()
-                })
-                .collect();
-            match matches.len() {
-                1 => return Some(matches[0]),
-                0 => {}
-                _ => return None,
-            }
-        }
+    match find_split_reference(trimmed, models) {
+        ExactLookup::Found(m) => return Some(m),
+        ExactLookup::Ambiguous => return None,
+        ExactLookup::None => {}
     }
-    let ids: Vec<&M> = models
-        .iter()
-        .filter(|m| m.id().to_lowercase() == normalized && !m.full_reference_only())
-        .collect();
-    (ids.len() == 1).then(|| ids[0])
+    match unique_model(models, |m| {
+        m.id().to_lowercase() == normalized && !m.full_reference_only()
+    }) {
+        ExactLookup::Found(m) => Some(m),
+        _ => None,
+    }
 }
 
 /// `isAlias`: no `-YYYYMMDD` date suffix (or a `-latest` one).
@@ -219,6 +236,72 @@ pub struct ScopeDiagnostic {
     pub pattern: String,
 }
 
+fn push_scoped<'a, M: ScopeModel>(scoped: &mut Vec<Scoped<'a, M>>, model: &'a M, thinking: Option<String>) {
+    if !scoped.iter().any(|s| same(s.model, model)) {
+        scoped.push(Scoped {
+            model,
+            thinking_level: thinking,
+        });
+    }
+}
+
+fn no_match_diagnostic(pattern: &str) -> ScopeDiagnostic {
+    ScopeDiagnostic {
+        code: "no-match",
+        message: format!("No models match pattern \"{pattern}\""),
+        pattern: pattern.to_string(),
+    }
+}
+
+fn resolve_glob_pattern<'a, M: ScopeModel>(
+    pattern: &str,
+    models: &'a [M],
+    scoped: &mut Vec<Scoped<'a, M>>,
+    diagnostics: &mut Vec<ScopeDiagnostic>,
+) {
+    let (glob, thinking) = match pattern.rsplit_once(':') {
+        Some((head, suffix)) if is_valid_thinking_level(suffix) => (head, Some(suffix.to_string())),
+        _ => (pattern, None),
+    };
+    if let Some(exact) = find_exact_model_reference_match(glob, models) {
+        push_scoped(scoped, exact, thinking);
+        return;
+    }
+    let matching: Vec<&M> = models
+        .iter()
+        .filter(|m| {
+            minimatch(&reference(*m), glob, true) || (!m.full_reference_only() && minimatch(m.id(), glob, true))
+        })
+        .collect();
+    if matching.is_empty() {
+        diagnostics.push(no_match_diagnostic(pattern));
+        return;
+    }
+    for model in matching {
+        push_scoped(scoped, model, thinking.clone());
+    }
+}
+
+fn resolve_fuzzy_pattern<'a, M: ScopeModel>(
+    pattern: &str,
+    models: &'a [M],
+    scoped: &mut Vec<Scoped<'a, M>>,
+    diagnostics: &mut Vec<ScopeDiagnostic>,
+) {
+    let parsed = parse_model_pattern(pattern, models, true);
+    if let Some(warning) = parsed.warning {
+        diagnostics.push(ScopeDiagnostic {
+            code: "invalid-thinking-level",
+            message: warning,
+            pattern: pattern.to_string(),
+        });
+    }
+    match parsed.model {
+        Some(model) => push_scoped(scoped, model, parsed.thinking_level),
+        None => diagnostics.push(no_match_diagnostic(pattern)),
+    }
+}
+
 /// `resolveModelScopeFromModels`: the models `patterns` select, in pattern order without duplicates, and the
 /// warnings for patterns that select nothing or name an invalid thinking level.
 pub fn resolve_model_scope<'a, M: ScopeModel>(
@@ -227,55 +310,11 @@ pub fn resolve_model_scope<'a, M: ScopeModel>(
 ) -> (Vec<Scoped<'a, M>>, Vec<ScopeDiagnostic>) {
     let mut scoped: Vec<Scoped<'a, M>> = Vec::new();
     let mut diagnostics = Vec::new();
-    let push = |scoped: &mut Vec<Scoped<'a, M>>, model: &'a M, thinking: Option<String>| {
-        if !scoped.iter().any(|s| same(s.model, model)) {
-            scoped.push(Scoped {
-                model,
-                thinking_level: thinking,
-            });
-        }
-    };
-    let no_match = |pattern: &str| ScopeDiagnostic {
-        code: "no-match",
-        message: format!("No models match pattern \"{pattern}\""),
-        pattern: pattern.to_string(),
-    };
     for pattern in patterns {
         if pattern.contains(['*', '?', '[']) {
-            let (glob, thinking) = match pattern.rsplit_once(':') {
-                Some((head, suffix)) if is_valid_thinking_level(suffix) => (head, Some(suffix.to_string())),
-                _ => (pattern.as_str(), None),
-            };
-            if let Some(exact) = find_exact_model_reference_match(glob, models) {
-                push(&mut scoped, exact, thinking);
-                continue;
-            }
-            let matching: Vec<&M> = models
-                .iter()
-                .filter(|m| {
-                    minimatch(&reference(*m), glob, true) || (!m.full_reference_only() && minimatch(m.id(), glob, true))
-                })
-                .collect();
-            if matching.is_empty() {
-                diagnostics.push(no_match(pattern));
-                continue;
-            }
-            for model in matching {
-                push(&mut scoped, model, thinking.clone());
-            }
-            continue;
-        }
-        let parsed = parse_model_pattern(pattern, models, true);
-        if let Some(warning) = parsed.warning {
-            diagnostics.push(ScopeDiagnostic {
-                code: "invalid-thinking-level",
-                message: warning,
-                pattern: pattern.clone(),
-            });
-        }
-        match parsed.model {
-            Some(model) => push(&mut scoped, model, parsed.thinking_level),
-            None => diagnostics.push(no_match(pattern)),
+            resolve_glob_pattern(pattern, models, &mut scoped, &mut diagnostics);
+        } else {
+            resolve_fuzzy_pattern(pattern, models, &mut scoped, &mut diagnostics);
         }
     }
     (scoped, diagnostics)

@@ -46,17 +46,26 @@ fn io(e: std::io::Error) -> String {
 
 /// `ultron schedule ...`; `None` when `args` is not a schedule command (a prompt that starts with "schedule").
 pub fn run(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Option<Result<i32, String>> {
-    match args {
-        [help] if matches!(help.as_str(), "--help" | "-h" | "help") => {
-            Some(out.write_all(HELP.as_bytes()).map(|()| 0).map_err(io))
-        }
-        [list] if list == "list" => Some(list_schedules(env, out, err)),
-        [wake] if wake == "wake" => Some(wake_schedules(env, out)),
-        [cancel, target] if cancel == "cancel" => Some(cancel_schedule(env, target, out)),
-        [verb, ..] if matches!(verb.as_str(), "list" | "wake" | "cancel") => {
-            Some(writeln!(err, "{USAGE}").map(|()| 2).map_err(io))
-        }
+    let verb = args.first().map(String::as_str)?;
+    match verb {
+        "--help" | "-h" | "help" if args.len() == 1 => Some(out.write_all(HELP.as_bytes()).map(|()| 0).map_err(io)),
+        "list" | "wake" | "cancel" => Some(dispatch_verb(verb, &args[1..], env, out, err)),
         _ => None,
+    }
+}
+
+fn dispatch_verb(
+    verb: &str,
+    rest: &[String],
+    env: &Env,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, String> {
+    match (verb, rest) {
+        ("list", []) => list_schedules(env, out, err),
+        ("wake", []) => wake_schedules(env, out),
+        ("cancel", [target]) => cancel_schedule(env, target, out),
+        _ => writeln!(err, "{USAGE}").map(|()| 2).map_err(io),
     }
 }
 
@@ -112,20 +121,7 @@ fn list_schedules(env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result
     }
     let (instance, dir) = session_dir(env);
     let errors = read_errors(&instance.dir.join(ERRORS_FILE));
-    let mut rows: Vec<(bool, i64, String)> = Vec::new();
-    for (meta, schedules) in scan_sessions(&dir) {
-        for s in schedules {
-            let error = errors
-                .get(&(meta.id.clone(), s.id.clone()))
-                .filter(|(_, _, due)| s.active() && s.next_due == Some(*due))
-                .map(|(error, _, _)| error.replace(['\t', '\n', '\r'], " "));
-            rows.push((
-                !s.active(),
-                s.next_due.unwrap_or(i64::MAX),
-                format!("{}\t{}", row(&s, &meta.id, &meta.cwd), error.as_deref().unwrap_or("-")),
-            ));
-        }
-    }
+    let mut rows = collect_schedule_rows(&dir, &errors);
     if rows.is_empty() {
         writeln!(out, "No schedules.").map_err(io)?;
         return Ok(0);
@@ -136,6 +132,35 @@ fn list_schedules(env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result
         writeln!(out, "{line}").map_err(io)?;
     }
     Ok(0)
+}
+
+fn collect_schedule_rows(
+    dir: &std::path::Path,
+    errors: &std::collections::HashMap<(String, String), (String, i64, i64)>,
+) -> Vec<(bool, i64, String)> {
+    let mut rows = Vec::new();
+    for (meta, schedules) in scan_sessions(dir) {
+        for s in schedules {
+            let error = schedule_error(&s, &meta.id, errors);
+            rows.push((
+                !s.active(),
+                s.next_due.unwrap_or(i64::MAX),
+                format!("{}\t{}", row(&s, &meta.id, &meta.cwd), error.as_deref().unwrap_or("-")),
+            ));
+        }
+    }
+    rows
+}
+
+fn schedule_error(
+    schedule: &Schedule,
+    session_id: &str,
+    errors: &std::collections::HashMap<(String, String), (String, i64, i64)>,
+) -> Option<String> {
+    errors
+        .get(&(session_id.to_string(), schedule.id.clone()))
+        .filter(|(_, _, due)| schedule.active() && schedule.next_due == Some(*due))
+        .map(|(error, _, _)| error.replace(['\t', '\n', '\r'], " "))
 }
 
 fn row(s: &Schedule, session: &str, cwd: &str) -> String {
@@ -157,40 +182,50 @@ fn row(s: &Schedule, session: &str, cwd: &str) -> String {
     )
 }
 
-fn cancel_schedule(env: &Env, target: &str, out: &mut dyn Write) -> Result<i32, String> {
-    let (instance, dir) = session_dir(env);
-    let mut matches: Vec<(daemon::catalog::Meta, Schedule)> = Vec::new();
-    for (meta, schedules) in scan_sessions(&dir) {
-        for s in schedules.into_iter().filter(Schedule::active) {
-            if s.id == target || s.name == target {
-                matches.push((meta.clone(), s));
-            }
-        }
-    }
+fn find_active_schedule(dir: &std::path::Path, target: &str) -> Result<(daemon::catalog::Meta, Schedule), String> {
+    let mut matches: Vec<(daemon::catalog::Meta, Schedule)> = scan_sessions(dir)
+        .into_iter()
+        .flat_map(|(meta, schedules)| {
+            schedules
+                .into_iter()
+                .filter(Schedule::active)
+                .filter(|s| s.id == target || s.name == target)
+                .map(move |s| (meta.clone(), s))
+        })
+        .collect();
     if let Some(i) = matches.iter().position(|(_, s)| s.id == target) {
         matches = vec![matches.swap_remove(i)];
     }
-    let (meta, schedule) = match matches.len() {
-        0 => return Err(format!("No active schedule {target}")),
-        1 => matches.remove(0),
-        n => return Err(format!("{n} active schedules are named {target}; cancel one by its id")),
-    };
+    match matches.len() {
+        0 => Err(format!("No active schedule {target}")),
+        1 => Ok(matches.remove(0)),
+        n => Err(format!("{n} active schedules are named {target}; cancel one by its id")),
+    }
+}
+
+fn cancel_on_server(server: &instance::Running, session_id: &str, schedule_id: &str) -> Result<(), String> {
+    let socket = instance::socket_path(&server.dir, &server.server_id);
+    let connection = client::runtime::Connection::connect(&socket, &server.server_id).map_err(|e| e.to_string())?;
+    connection
+        .call(
+            RpcTarget::Server {
+                server_id: server.server_id.clone(),
+            },
+            protocol::names::SCHEDULES,
+            "cancel",
+            json!([session_id, schedule_id]),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn cancel_schedule(env: &Env, target: &str, out: &mut dyn Write) -> Result<i32, String> {
+    let (instance, dir) = session_dir(env);
+    let (meta, schedule) = find_active_schedule(&dir, target)?;
     let servers = servers(env, &instance);
     let cancelled = match servers.first() {
         Some(server) => {
-            let socket = instance::socket_path(&server.dir, &server.server_id);
-            let connection =
-                client::runtime::Connection::connect(&socket, &server.server_id).map_err(|e| e.to_string())?;
-            connection
-                .call(
-                    RpcTarget::Server {
-                        server_id: server.server_id.clone(),
-                    },
-                    protocol::names::SCHEDULES,
-                    "cancel",
-                    json!([meta.id, schedule.id]),
-                )
-                .map_err(|e| e.to_string())?;
+            cancel_on_server(server, &meta.id, &schedule.id)?;
             schedule
         }
         None => cancel_in_journal(&meta.path, &schedule.id, clock_for(&*env.var))?,

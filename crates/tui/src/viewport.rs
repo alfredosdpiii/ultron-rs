@@ -190,6 +190,14 @@ fn write_rows(out: &mut String, rows: &[String], height: usize, trailing: bool) 
     }
 }
 
+#[derive(Clone, Copy)]
+struct RenderFlags {
+    width_changed: bool,
+    height_changed: bool,
+    shrunk: bool,
+    full: bool,
+}
+
 impl ViewportRenderer {
     pub fn new() -> Self {
         Self::default()
@@ -249,6 +257,220 @@ impl ViewportRenderer {
         self.cursor_row = row;
     }
 
+    fn compute_geometry_flags(&self, width: usize, height: usize, rows_len: usize) -> (bool, bool, bool) {
+        let width_changed = self.painted && width != self.width;
+        let height_changed = self.painted && height != self.height && !self.termux;
+        let shrunk = self.painted && self.clear_on_shrink && rows_len < self.max_rows;
+        (width_changed, height_changed, shrunk)
+    }
+
+    fn compute_render_flags(&self, width: usize, height: usize, rows_len: usize, has_history: bool) -> RenderFlags {
+        let (width_changed, height_changed, shrunk) = self.compute_geometry_flags(width, height, rows_len);
+        let full = !self.painted || has_history || width_changed || height_changed || self.force_repaint || shrunk;
+        RenderFlags {
+            width_changed,
+            height_changed,
+            shrunk,
+            full,
+        }
+    }
+
+    fn full_render_reason(&self, width: usize, height: usize, flags: RenderFlags) -> Option<String> {
+        if !self.painted {
+            Some("first render".to_string())
+        } else if self.force_repaint {
+            Some(format!("terminal width changed (-1 -> {width})"))
+        } else if flags.width_changed {
+            Some(format!("terminal width changed ({} -> {width})", self.width))
+        } else if flags.height_changed {
+            Some(format!("terminal height changed ({} -> {height})", self.height))
+        } else if flags.shrunk {
+            Some(format!("clearOnShrink (maxLinesRendered={})", self.max_rows))
+        } else {
+            None
+        }
+    }
+
+    fn log_full_render(&mut self, width: usize, height: usize, rows_len: usize, flags: RenderFlags) {
+        if !self.trace {
+            return;
+        }
+        if let Some(reason) = self.full_render_reason(width, height, flags) {
+            self.redraws.push(format!(
+                "fullRender: {reason} (prev={}, new={}, height={height})",
+                self.prev.len(),
+                rows_len
+            ));
+        }
+    }
+
+    fn clear_painted(&self, out: &mut String, height: usize) {
+        if !self.painted {
+            return;
+        }
+        let up = self.cursor_row.min(height - 1);
+        if up > 0 {
+            out.push_str(&format!("\x1b[{up}A"));
+        }
+        out.push_str("\r\x1b[J");
+    }
+
+    fn write_history(&mut self, out: &mut String, history: &HistoryBatch, width: usize, height: usize) {
+        let prepared: Vec<String> = history.rows.iter().map(|row| Self::prepare(row, width)).collect();
+        write_rows(out, &prepared, height, true);
+        self.history_images.extend(prepared.iter().flat_map(|l| kitty_ids(l)));
+        self.history_rows_written += history.rows.len();
+        self.accepted_history = history.id;
+    }
+
+    fn render_full(
+        &mut self,
+        out: &mut String,
+        rows: &[String],
+        width: usize,
+        height: usize,
+        history: Option<&HistoryBatch>,
+        replay: bool,
+    ) {
+        let mut deleted: BTreeSet<u32> = self.prev.iter().flat_map(|l| kitty_ids(l)).collect();
+        if replay {
+            deleted.append(&mut self.history_images);
+        }
+        for id in deleted {
+            out.push_str(&delete_kitty_image(id));
+        }
+        if replay {
+            out.push_str("\x1b[H\x1b[2J\x1b[3J");
+        } else {
+            self.clear_painted(out, height);
+        }
+        if let Some(h) = history {
+            self.write_history(out, h, width, height);
+        }
+        write_rows(out, rows, height, false);
+        self.rows_written += rows.len();
+        self.cursor_row = rows.len().saturating_sub(1);
+        self.drawn = rows.len().max(1);
+        self.max_rows = rows.len();
+    }
+
+    fn build_diff_dump(
+        &self,
+        changed: &[bool],
+        rows: &[String],
+        skip: usize,
+        height: usize,
+        cursor: Option<(usize, usize)>,
+    ) -> Option<crate::render_debug::RenderDump> {
+        if !self.trace {
+            return None;
+        }
+        let first = changed.iter().position(|c| *c)?;
+        let last = changed.iter().rposition(|c| *c).unwrap_or(first);
+        let before = self.cursor_row;
+        Some(crate::render_debug::RenderDump {
+            first_changed: first,
+            viewport_top: skip,
+            cursor_row: before,
+            height,
+            line_diff: first as i64 - before as i64,
+            hardware_cursor_row: before,
+            render_end: last,
+            final_cursor_row: 0,
+            cursor_pos: cursor,
+            new_lines: rows.to_vec(),
+            previous_lines: self.prev.clone(),
+            written: 0,
+        })
+    }
+
+    fn row_reserved(rows: &[String], i: usize) -> usize {
+        if is_image_line(&rows[i]) {
+            reserved_rows(rows, i, rows.len() - 1)
+        } else {
+            1
+        }
+    }
+
+    fn write_reserved_diff_row(&mut self, out: &mut String, i: usize, reserved: usize, row: &str) {
+        let up = reserved - 1;
+        out.push_str("\r\x1b[2K");
+        for k in 1..reserved {
+            self.goto(out, i + k);
+            out.push_str("\r\x1b[2K");
+        }
+        out.push_str(&format!("\x1b[{up}A{row}\x1b[{up}B"));
+        self.rows_written += reserved;
+    }
+
+    fn write_diff_rows(&mut self, out: &mut String, rows: &[String], changed: &[bool]) {
+        let mut i = 0;
+        while i < rows.len() {
+            if !changed[i] {
+                i += 1;
+                continue;
+            }
+            let reserved = Self::row_reserved(rows, i);
+            self.goto(out, i);
+            if reserved > 1 {
+                self.write_reserved_diff_row(out, i, reserved, &rows[i]);
+                i += reserved;
+                continue;
+            }
+            out.push_str("\r\x1b[2K");
+            out.push_str(&rows[i]);
+            self.rows_written += 1;
+            i += 1;
+        }
+    }
+
+    fn render_diff(
+        &mut self,
+        out: &mut String,
+        rows: &[String],
+        skip: usize,
+        height: usize,
+        cursor: Option<(usize, usize)>,
+    ) -> Option<crate::render_debug::RenderDump> {
+        self.max_rows = self.max_rows.max(rows.len());
+        let changed = changed_rows(&self.prev, rows);
+        let deleted: BTreeSet<u32> = self
+            .prev
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| changed.get(*i).is_none_or(|c| *c))
+            .flat_map(|(_, l)| kitty_ids(l))
+            .collect();
+        for id in deleted {
+            out.push_str(&delete_kitty_image(id));
+        }
+        let mut dump = self.build_diff_dump(&changed, rows, skip, height, cursor);
+        self.write_diff_rows(out, rows, &changed);
+        if rows.len() < self.prev.len() {
+            self.goto(out, rows.len());
+            out.push_str("\r\x1b[J");
+        }
+        if let Some(dump) = &mut dump {
+            dump.final_cursor_row = self.cursor_row;
+        }
+        dump
+    }
+
+    fn finish_cursor(&mut self, out: &mut String, cursor: Option<(usize, usize)>, row_count: usize) {
+        match cursor.filter(|_| row_count > 0) {
+            Some((row, col)) => {
+                self.goto(out, row.min(row_count - 1));
+                out.push_str(&format!("\x1b[{}G", col + 1));
+                out.push_str(if self.show_hardware_cursor {
+                    "\x1b[?25h"
+                } else {
+                    "\x1b[?25l"
+                });
+            }
+            None => out.push_str("\x1b[?25l"),
+        }
+    }
+
     /// Paint `plan` on a `width` x `height` terminal.
     pub fn render(&mut self, plan: &FramePlan, width: usize, height: usize) -> Frame {
         let height = height.max(1);
@@ -264,148 +486,18 @@ impl ViewportRenderer {
             .as_ref()
             .filter(|h| h.id <= self.accepted_history)
             .map(|h| h.id);
-        let width_changed = self.painted && width != self.width;
-        let height_changed = self.painted && height != self.height && !self.termux;
-        let geometry_changed = width_changed || height_changed;
         let replay = history.is_some_and(|h| h.kind == HistoryKind::Replay);
+        let flags = self.compute_render_flags(width, height, rows.len(), history.is_some());
+        self.log_full_render(width, height, rows.len(), flags);
 
-        let shrunk = self.painted && self.clear_on_shrink && rows.len() < self.max_rows;
-        if self.trace {
-            let reason = if !self.painted {
-                Some("first render".to_string())
-            } else if self.force_repaint {
-                Some(format!("terminal width changed (-1 -> {width})"))
-            } else if width_changed {
-                Some(format!("terminal width changed ({} -> {width})", self.width))
-            } else if height_changed {
-                Some(format!("terminal height changed ({} -> {height})", self.height))
-            } else if shrunk {
-                Some(format!("clearOnShrink (maxLinesRendered={})", self.max_rows))
-            } else {
-                None
-            };
-            if let Some(reason) = reason {
-                self.redraws.push(format!(
-                    "fullRender: {reason} (prev={}, new={}, height={height})",
-                    self.prev.len(),
-                    rows.len()
-                ));
-            }
-        }
         let mut out = String::from(SYNC_BEGIN);
-        let mut dump = None;
-        if !self.painted || history.is_some() || geometry_changed || self.force_repaint || shrunk {
-            let mut deleted: BTreeSet<u32> = self.prev.iter().flat_map(|l| kitty_ids(l)).collect();
-            if replay {
-                deleted.append(&mut self.history_images);
-            }
-            for id in deleted {
-                out.push_str(&delete_kitty_image(id));
-            }
-            if replay {
-                out.push_str("\x1b[H\x1b[2J\x1b[3J");
-            } else if self.painted {
-                let up = self.cursor_row.min(height - 1);
-                if up > 0 {
-                    out.push_str(&format!("\x1b[{up}A"));
-                }
-                out.push_str("\r\x1b[J");
-            }
-            if let Some(h) = history {
-                let prepared: Vec<String> = h.rows.iter().map(|row| Self::prepare(row, width)).collect();
-                write_rows(&mut out, &prepared, height, true);
-                self.history_images.extend(prepared.iter().flat_map(|l| kitty_ids(l)));
-                self.history_rows_written += h.rows.len();
-                self.accepted_history = h.id;
-            }
-            write_rows(&mut out, &rows, height, false);
-            self.rows_written += rows.len();
-            self.cursor_row = rows.len().saturating_sub(1);
-            self.drawn = rows.len().max(1);
-            self.max_rows = rows.len();
+        let dump = if flags.full {
+            self.render_full(&mut out, &rows, width, height, history, replay);
+            None
         } else {
-            self.max_rows = self.max_rows.max(rows.len());
-            let changed = changed_rows(&self.prev, &rows);
-            let deleted: BTreeSet<u32> = self
-                .prev
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| changed.get(*i).is_none_or(|c| *c))
-                .flat_map(|(_, l)| kitty_ids(l))
-                .collect();
-            for id in deleted {
-                out.push_str(&delete_kitty_image(id));
-            }
-            let before = self.cursor_row;
-            if self.trace
-                && let Some(first) = changed.iter().position(|c| *c)
-            {
-                let last = changed.iter().rposition(|c| *c).unwrap_or(first);
-                dump = Some(crate::render_debug::RenderDump {
-                    first_changed: first,
-                    viewport_top: skip,
-                    cursor_row: before,
-                    height,
-                    line_diff: first as i64 - before as i64,
-                    hardware_cursor_row: before,
-                    render_end: last,
-                    final_cursor_row: 0,
-                    cursor_pos: cursor,
-                    new_lines: rows.clone(),
-                    previous_lines: self.prev.clone(),
-                    written: 0,
-                });
-            }
-            let mut i = 0;
-            while i < rows.len() {
-                if !changed[i] {
-                    i += 1;
-                    continue;
-                }
-                let row = &rows[i];
-                let reserved = if is_image_line(row) {
-                    reserved_rows(&rows, i, rows.len() - 1)
-                } else {
-                    1
-                };
-                self.goto(&mut out, i);
-                if reserved > 1 {
-                    let up = reserved - 1;
-                    out.push_str("\r\x1b[2K");
-                    for k in 1..reserved {
-                        self.goto(&mut out, i + k);
-                        out.push_str("\r\x1b[2K");
-                    }
-                    out.push_str(&format!("\x1b[{up}A{row}\x1b[{up}B"));
-                    self.rows_written += reserved;
-                    i += reserved;
-                    continue;
-                }
-                out.push_str("\r\x1b[2K");
-                out.push_str(row);
-                self.rows_written += 1;
-                i += 1;
-            }
-            if rows.len() < self.prev.len() {
-                self.goto(&mut out, rows.len());
-                out.push_str("\r\x1b[J");
-            }
-            if let Some(dump) = &mut dump {
-                dump.final_cursor_row = self.cursor_row;
-            }
-        }
-        match cursor.filter(|_| !rows.is_empty()) {
-            Some((row, col)) => {
-                self.goto(&mut out, row.min(rows.len() - 1));
-                out.push_str(&format!("\x1b[{}G", col + 1));
-                out.push_str(if self.show_hardware_cursor {
-                    "\x1b[?25h"
-                } else {
-                    "\x1b[?25l"
-                });
-            }
-            None => out.push_str("\x1b[?25l"),
-        }
+            self.render_diff(&mut out, &rows, skip, height, cursor)
+        };
+        self.finish_cursor(&mut out, cursor, rows.len());
         out.push_str(SYNC_END);
         if let Some(mut dump) = dump {
             dump.written = out.encode_utf16().count();

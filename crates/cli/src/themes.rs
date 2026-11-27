@@ -59,47 +59,62 @@ pub fn load(env: &crate::Env, mode: ColorMode) -> LoadedThemes {
     load_paths(&paths, mode)
 }
 
-/// `loadThemes(paths, false)` then `dedupeThemes`.
-pub fn load_paths(paths: &[String], mode: ColorMode) -> LoadedThemes {
-    let mut loaded = LoadedThemes::default();
-    let load_file = |path: &Path, loaded: &mut LoadedThemes| match load_theme_from_path(path, mode) {
+fn is_json_file(path: &Path) -> bool {
+    path.is_file() && path.extension().is_some_and(|e| e == "json")
+}
+
+fn load_theme_file(path: &Path, mode: ColorMode, loaded: &mut LoadedThemes) {
+    match load_theme_from_path(path, mode) {
         Ok(theme) => loaded.themes.push(theme),
         Err(_) => loaded.diagnostics.push(("warning".into(), path.display().to_string())),
-    };
-    for path in paths.iter().map(Path::new) {
-        if !path.exists() {
-            loaded.diagnostics.push(("warning".into(), path.display().to_string()));
-        } else if path.is_dir() {
-            let mut files: Vec<std::path::PathBuf> =
-                std::fs::read_dir(path).map_or_default(|dir| dir.flatten().map(|e| e.path()).collect());
-            files.sort();
-            for file in files {
-                if file.is_file() && file.extension().is_some_and(|e| e == "json") {
-                    load_file(&file, &mut loaded);
-                }
-            }
-        } else if path.is_file() && path.extension().is_some_and(|e| e == "json") {
-            load_file(path, &mut loaded);
-        } else {
-            loaded.diagnostics.push(("warning".into(), path.display().to_string()));
-        }
     }
+}
+
+fn load_theme_path(path: &Path, mode: ColorMode, loaded: &mut LoadedThemes) {
+    if !path.exists() {
+        loaded.diagnostics.push(("warning".into(), path.display().to_string()));
+        return;
+    }
+    if path.is_dir() {
+        let mut files: Vec<std::path::PathBuf> =
+            std::fs::read_dir(path).map_or_default(|dir| dir.flatten().map(|e| e.path()).collect());
+        files.sort();
+        for file in files {
+            if is_json_file(&file) {
+                load_theme_file(&file, mode, loaded);
+            }
+        }
+        return;
+    }
+    if is_json_file(path) {
+        load_theme_file(path, mode, loaded);
+    } else {
+        loaded.diagnostics.push(("warning".into(), path.display().to_string()));
+    }
+}
+
+fn dedupe_themes(loaded: LoadedThemes) -> LoadedThemes {
     let mut kept: Vec<Theme> = Vec::new();
+    let mut diagnostics = loaded.diagnostics;
     for theme in loaded.themes {
-        let name = theme.name.clone().unwrap_or_else(|| "unnamed".into());
-        if kept
-            .iter()
-            .any(|k| k.name.clone().unwrap_or_else(|| "unnamed".into()) == name)
-        {
-            loaded
-                .diagnostics
-                .push(("collision".into(), theme.source_path.unwrap_or_default()));
+        let name = theme.name.as_deref().unwrap_or("unnamed");
+        if kept.iter().any(|k| k.name.as_deref().unwrap_or("unnamed") == name) {
+            diagnostics.push(("collision".into(), theme.source_path.unwrap_or_default()));
         } else {
             kept.push(theme);
         }
     }
     LoadedThemes {
         themes: kept,
-        diagnostics: loaded.diagnostics,
+        diagnostics,
     }
+}
+
+/// `loadThemes(paths, false)` then `dedupeThemes`.
+pub fn load_paths(paths: &[String], mode: ColorMode) -> LoadedThemes {
+    let mut loaded = LoadedThemes::default();
+    for path in paths.iter().map(Path::new) {
+        load_theme_path(path, mode, &mut loaded);
+    }
+    dedupe_themes(loaded)
 }

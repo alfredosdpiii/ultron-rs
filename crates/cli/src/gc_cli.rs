@@ -128,7 +128,7 @@ fn collect(agent_dir: &Path, max_age: Duration, orphan_grace: Duration, dry_run:
     summary
 }
 
-fn sweep_orphans(root: &Path, cutoff: Option<SystemTime>, dry_run: bool, summary: &mut GcSummary) {
+fn orphan_scan_dirs(root: &Path) -> Vec<std::path::PathBuf> {
     let mut dirs = vec![root.to_path_buf()];
     if let Ok(entries) = std::fs::read_dir(root) {
         for entry in entries.flatten() {
@@ -137,33 +137,41 @@ fn sweep_orphans(root: &Path, cutoff: Option<SystemTime>, dry_run: bool, summary
             }
         }
     }
-    for dir in dirs {
+    dirs
+}
+
+fn sweep_orphan_entry(entry: &std::fs::DirEntry, cutoff: Option<SystemTime>, dry_run: bool, summary: &mut GcSummary) {
+    let name = entry.file_name();
+    let Some(name) = name.to_str() else {
+        return;
+    };
+    if !kernel::is_orphan_snapshot_temp(name) {
+        return;
+    }
+    let Ok(meta) = entry.metadata() else {
+        return;
+    };
+    if !meta.is_file() {
+        return;
+    }
+    if let (Some(cutoff), Ok(modified)) = (cutoff, meta.modified())
+        && modified > cutoff
+    {
+        return;
+    }
+    if dry_run || std::fs::remove_file(entry.path()).is_ok() {
+        summary.orphan_files += 1;
+        summary.orphan_bytes = summary.orphan_bytes.saturating_add(meta.len());
+    }
+}
+
+fn sweep_orphans(root: &Path, cutoff: Option<SystemTime>, dry_run: bool, summary: &mut GcSummary) {
+    for dir in orphan_scan_dirs(root) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             continue;
         };
         for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else {
-                continue;
-            };
-            if !kernel::is_orphan_snapshot_temp(name) {
-                continue;
-            }
-            let Ok(meta) = entry.metadata() else {
-                continue;
-            };
-            if !meta.is_file() {
-                continue;
-            }
-            if let (Some(cutoff), Ok(modified)) = (cutoff, meta.modified())
-                && modified > cutoff
-            {
-                continue;
-            }
-            if dry_run || std::fs::remove_file(entry.path()).is_ok() {
-                summary.orphan_files += 1;
-                summary.orphan_bytes = summary.orphan_bytes.saturating_add(meta.len());
-            }
+            sweep_orphan_entry(&entry, cutoff, dry_run, summary);
         }
     }
 }

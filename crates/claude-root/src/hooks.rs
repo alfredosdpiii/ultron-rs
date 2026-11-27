@@ -89,47 +89,57 @@ pub fn run_hook(event: &str, socket: Option<PathBuf>, input: &str, var: &dyn Fn(
     run_hook_inner(event, socket, input, var).unwrap_or_default()
 }
 
-fn run_hook_inner(
-    event: HookEvent,
-    mut socket: Option<PathBuf>,
-    raw: &str,
+fn parse_hook_input(raw: &str) -> Option<Map<String, Value>> {
+    if raw.trim().is_empty() {
+        return Some(Map::new());
+    }
+    match serde_json::from_str::<Value>(raw).ok()? {
+        Value::Object(input) => Some(input),
+        _ => Some(Map::new()),
+    }
+}
+
+fn discover_hook_socket(
+    input: &Map<String, Value>,
     var: &dyn Fn(&str) -> Option<String>,
-) -> Option<String> {
-    let input: Map<String, Value> = if raw.trim().is_empty() {
-        Map::new()
-    } else {
-        match serde_json::from_str::<Value>(raw).ok()? {
-            Value::Object(input) => input,
-            _ => Map::new(),
-        }
-    };
+    deadline: Instant,
+) -> Option<PathBuf> {
+    let dir = control_dir(var).ok()?;
     let claude_session_id = input
         .get("session_id")
         .and_then(Value::as_str)
         .map(str::to_string)
         .or_else(|| var("CLAUDE_CODE_SESSION_ID"));
-    let deadline = Instant::now()
-        + if event == HookEvent::SessionStart {
-            SESSION_START_WAIT
-        } else {
-            CONNECT_WAIT
-        };
-    if socket.is_none() {
-        let dir = control_dir(var).ok()?;
-        let query = ServerQuery {
-            claude_session_id,
-            cwd: input.get("cwd").and_then(Value::as_str).map(str::to_string),
-            name: None,
-        };
-        loop {
-            socket = find_server(&query, &dir).map(|s| PathBuf::from(s.socket));
-            if socket.is_some() || Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(200));
+    let query = ServerQuery {
+        claude_session_id,
+        cwd: input.get("cwd").and_then(Value::as_str).map(str::to_string),
+        name: None,
+    };
+    loop {
+        if let Some(server) = find_server(&query, &dir) {
+            return Some(PathBuf::from(server.socket));
         }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(200));
     }
-    let socket = socket?;
+}
+
+fn run_hook_inner(
+    event: HookEvent,
+    socket: Option<PathBuf>,
+    raw: &str,
+    var: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let input = parse_hook_input(raw)?;
+    let wait = if event == HookEvent::SessionStart {
+        SESSION_START_WAIT
+    } else {
+        CONNECT_WAIT
+    };
+    let deadline = Instant::now() + wait;
+    let socket = socket.or_else(|| discover_hook_socket(&input, var, deadline))?;
     let mut client = ControlClient::connect(&socket, deadline.saturating_duration_since(Instant::now())).ok()?;
     let mut fields = Map::new();
     fields.insert("event".into(), event.command().into());

@@ -64,37 +64,45 @@ pub fn reduce_frames(frames: &[Value]) -> Option<Value> {
     let mut message: Option<Value> = None;
     let mut blocks: BTreeMap<u64, Value> = BTreeMap::new();
     for frame in frames {
-        let index = frame["contentIndex"].as_u64().unwrap_or(0);
-        match frame["type"].as_str() {
-            Some("start") => message = Some(frame["partial"].clone()),
-            Some("text_start" | "thinking_start") => {
-                blocks.insert(index, frame["content"].clone());
-            }
-            Some(kind @ ("text_delta" | "thinking_delta")) => {
-                let key = if kind == "text_delta" { "text" } else { "thinking" };
-                if let Some(block) = blocks.get_mut(&index) {
-                    let text = format!(
-                        "{}{}",
-                        block[key].as_str().unwrap_or(""),
-                        frame["delta"].as_str().unwrap_or("")
-                    );
-                    block[key] = json!(text);
-                }
-            }
-            Some(kind @ ("text_end" | "thinking_end")) => {
-                let key = if kind == "text_end" { "text" } else { "thinking" };
-                if let Some(block) = blocks.get_mut(&index)
-                    && let Some(content) = frame["content"].as_str()
-                {
-                    block[key] = json!(content);
-                }
-            }
-            _ => {}
-        }
+        apply_frame(frame, &mut message, &mut blocks);
     }
     let mut message = message?;
     message["content"] = Value::Array(blocks.into_values().filter(|b| b["type"] != "toolCall").collect());
     Some(message)
+}
+
+fn apply_frame(frame: &Value, message: &mut Option<Value>, blocks: &mut BTreeMap<u64, Value>) {
+    let index = frame["contentIndex"].as_u64().unwrap_or(0);
+    match frame["type"].as_str() {
+        Some("start") => *message = Some(frame["partial"].clone()),
+        Some("text_start" | "thinking_start") => {
+            blocks.insert(index, frame["content"].clone());
+        }
+        Some("text_delta") => append_block_delta(blocks, index, "text", frame),
+        Some("thinking_delta") => append_block_delta(blocks, index, "thinking", frame),
+        Some("text_end") => set_block_end(blocks, index, "text", frame),
+        Some("thinking_end") => set_block_end(blocks, index, "thinking", frame),
+        _ => {}
+    }
+}
+
+fn append_block_delta(blocks: &mut BTreeMap<u64, Value>, index: u64, key: &str, frame: &Value) {
+    if let Some(block) = blocks.get_mut(&index) {
+        let text = format!(
+            "{}{}",
+            block[key].as_str().unwrap_or(""),
+            frame["delta"].as_str().unwrap_or("")
+        );
+        block[key] = json!(text);
+    }
+}
+
+fn set_block_end(blocks: &mut BTreeMap<u64, Value>, index: u64, key: &str, frame: &Value) {
+    if let Some(block) = blocks.get_mut(&index)
+        && let Some(content) = frame["content"].as_str()
+    {
+        block[key] = json!(content);
+    }
 }
 
 /// `interruptedAssistantMessage`: the partial (or an empty message of `model`) as a settled error.
@@ -166,81 +174,49 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
     let mut tip = session.branch_tip(MAIN_LANE).flatten();
     let mut interrupted_calls = 0;
     let stored_at = state["at"].as_str().unwrap_or_default().to_string();
-    let ending = match OpAt::of(&state) {
-        Some(OpAt::AssistantEffectPending) => {
-            let response = state["responseEntryId"].as_str().unwrap_or_default().to_string();
-            let key = format!("{operation}:{response}");
-            let frames: Vec<Value> = session
-                .state()
-                .read_list(PENDING_FRAMES, &key)
-                .into_iter()
-                .map(|e| e.value.clone())
-                .collect();
-            let model = &state["generationContext"]["configuration"]["model"];
-            let message = interrupted_assistant(model, reduce_frames(&frames));
-            writes.push(Write::message_entry(&response, tip.as_deref(), message));
-            writes.push(Write::delete_list(PENDING_FRAMES, &key));
-            tip = Some(response);
-            Ending::Interrupted
-        }
-        Some(OpAt::Tools) => {
-            let batch = &state["batch"];
-            let assistant = batch["assistantEntryId"].as_str().unwrap_or_default();
-            let content = session
-                .state()
-                .entry(assistant)
-                .map_or(Value::Null, |e| e["message"]["content"].clone());
-            for call in batch["calls"].as_array().into_iter().flatten() {
-                let result_id = call["resultEntryId"].as_str().unwrap_or_default().to_string();
-                let block = &content[call["sourceIndex"].as_u64().unwrap_or(0) as usize];
-                let result = match session.value(PENDING_ENTRY, &result_id) {
-                    Some(pending) => {
-                        let payload = pending["payload"].clone();
-                        writes.push(Write::delete(PENDING_ENTRY, &result_id));
-                        payload
-                    }
-                    None => {
-                        interrupted_calls += 1;
-                        json!({"role": "toolResult", "toolCallId": block["id"], "toolName": block["name"],
-                            "content": [{"type": "text", "text": INTERRUPTED_CELL}], "isError": true,
-                            "timestamp": jsrt::date::now_ms()})
-                    }
-                };
-                writes.push(Write::message_entry(&result_id, tip.as_deref(), result));
-                let args_key = format!(
-                    "{operation}:{}:{}",
-                    batch["turnId"].as_str().unwrap_or_default(),
-                    call["sourceIndex"]
-                );
-                if session.value(OP_TOOL_ARGS, &args_key).is_some() {
-                    writes.push(Write::delete(OP_TOOL_ARGS, &args_key));
-                }
-                tip = Some(result_id);
-            }
-            Ending::Interrupted
-        }
-        Some(OpAt::NavigationReadyToCommit) => {
-            if !cancelled {
-                tip = state["targetId"].as_str().map(str::to_string);
-                let labelled = state["labelEntryId"]
-                    .as_str()
-                    .map(str::to_string)
-                    .or_else(|| tip.clone());
-                if let (Some(entry), Some(label)) = (labelled, state["label"].as_str()) {
-                    writes.push(Write::set(session_journal::ns::ENTRY_LABEL, &entry, json!(label)));
-                }
-                if tip.is_none() {
-                    writes.push(Write::set(BRANCH_TIP, MAIN_LANE, Value::Null));
-                }
-            }
-            Ending::Completed
-        }
-        Some(OpAt::Checkpoint) if state["continuation"]["kind"] == "may_finish" => Ending::Completed,
-        Some(at)
-            if at.is_summary() && state["task"]["boundary"]["resumeAfter"]["continuation"]["kind"] == "may_finish" =>
-        {
-            Ending::Completed
-        }
+    let ending = settle_op_state(
+        session,
+        &operation,
+        &state,
+        cancelled,
+        &mut writes,
+        &mut tip,
+        &mut interrupted_calls,
+    );
+    if let Some(tip) = &tip {
+        writes.push(Write::set(BRANCH_TIP, MAIN_LANE, json!(tip)));
+    }
+    let status = settlement_status(&ending, cancelled);
+    let result = build_op_result(&operation, &meta, status, &ending, &stored_at, tip);
+    let queued = inbox(session);
+    append_terminal_writes(session, &operation, result, &queued, &mut writes);
+    session.commit(&writes)?;
+    let depth = depth(session, &meta);
+    let run = meta["intent"]["kind"].as_str().is_none_or(|k| k == "run");
+    Ok(Recovered {
+        operation_id: Some(operation),
+        status: Some(status.to_string()),
+        resume: run && status == "failed" && matches!(ending, Ending::Interrupted) && depth < MAX_RECOVERY_DEPTH,
+        depth,
+        interrupted_calls,
+        queued,
+    })
+}
+
+fn settle_op_state(
+    session: &Session,
+    operation: &str,
+    state: &Value,
+    cancelled: bool,
+    writes: &mut Vec<Write>,
+    tip: &mut Option<String>,
+    interrupted_calls: &mut usize,
+) -> Ending {
+    match OpAt::of(state) {
+        Some(OpAt::AssistantEffectPending) => settle_assistant_pending(session, operation, state, writes, tip),
+        Some(OpAt::Tools) => settle_tools_batch(session, operation, state, writes, tip, interrupted_calls),
+        Some(OpAt::NavigationReadyToCommit) => settle_navigation(state, cancelled, writes, tip),
+        Some(at) if is_may_finish(at, state) => Ending::Completed,
         Some(OpAt::AssistantFailed) => Ending::Failed {
             code: "assistant_error",
             message: state["errorMessage"].as_str().unwrap_or_default().to_string(),
@@ -256,21 +232,142 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
             | OpAt::SummaryRetryWait,
         ) => Ending::Interrupted,
         None => Ending::Unknown,
-    };
-    if let Some(tip) = &tip {
-        writes.push(Write::set(BRANCH_TIP, MAIN_LANE, json!(tip)));
     }
-    let status = match (&ending, cancelled) {
+}
+
+fn is_may_finish(at: OpAt, state: &Value) -> bool {
+    (at == OpAt::Checkpoint && state["continuation"]["kind"] == "may_finish")
+        || (at.is_summary() && state["task"]["boundary"]["resumeAfter"]["continuation"]["kind"] == "may_finish")
+}
+
+fn settle_assistant_pending(
+    session: &Session,
+    operation: &str,
+    state: &Value,
+    writes: &mut Vec<Write>,
+    tip: &mut Option<String>,
+) -> Ending {
+    let response = state["responseEntryId"].as_str().unwrap_or_default().to_string();
+    let key = format!("{operation}:{response}");
+    let frames: Vec<Value> = session
+        .state()
+        .read_list(PENDING_FRAMES, &key)
+        .into_iter()
+        .map(|e| e.value.clone())
+        .collect();
+    let model = &state["generationContext"]["configuration"]["model"];
+    let message = interrupted_assistant(model, reduce_frames(&frames));
+    writes.push(Write::message_entry(&response, tip.as_deref(), message));
+    writes.push(Write::delete_list(PENDING_FRAMES, &key));
+    *tip = Some(response);
+    Ending::Interrupted
+}
+
+fn settle_tools_batch(
+    session: &Session,
+    operation: &str,
+    state: &Value,
+    writes: &mut Vec<Write>,
+    tip: &mut Option<String>,
+    interrupted_calls: &mut usize,
+) -> Ending {
+    let batch = &state["batch"];
+    let assistant = batch["assistantEntryId"].as_str().unwrap_or_default();
+    let content = session
+        .state()
+        .entry(assistant)
+        .map_or(Value::Null, |e| e["message"]["content"].clone());
+    for call in batch["calls"].as_array().into_iter().flatten() {
+        settle_tool_call(
+            session,
+            operation,
+            batch,
+            &content,
+            call,
+            writes,
+            tip,
+            interrupted_calls,
+        );
+    }
+    Ending::Interrupted
+}
+
+#[expect(clippy::too_many_arguments, reason = "internal recovery helper")]
+fn settle_tool_call(
+    session: &Session,
+    operation: &str,
+    batch: &Value,
+    content: &Value,
+    call: &Value,
+    writes: &mut Vec<Write>,
+    tip: &mut Option<String>,
+    interrupted_calls: &mut usize,
+) {
+    let result_id = call["resultEntryId"].as_str().unwrap_or_default().to_string();
+    let block = &content[call["sourceIndex"].as_u64().unwrap_or(0) as usize];
+    let result = match session.value(PENDING_ENTRY, &result_id) {
+        Some(pending) => {
+            writes.push(Write::delete(PENDING_ENTRY, &result_id));
+            pending["payload"].clone()
+        }
+        None => {
+            *interrupted_calls += 1;
+            json!({"role": "toolResult", "toolCallId": block["id"], "toolName": block["name"],
+                "content": [{"type": "text", "text": INTERRUPTED_CELL}], "isError": true,
+                "timestamp": jsrt::date::now_ms()})
+        }
+    };
+    writes.push(Write::message_entry(&result_id, tip.as_deref(), result));
+    let args_key = format!(
+        "{operation}:{}:{}",
+        batch["turnId"].as_str().unwrap_or_default(),
+        call["sourceIndex"]
+    );
+    if session.value(OP_TOOL_ARGS, &args_key).is_some() {
+        writes.push(Write::delete(OP_TOOL_ARGS, &args_key));
+    }
+    *tip = Some(result_id);
+}
+
+fn settle_navigation(state: &Value, cancelled: bool, writes: &mut Vec<Write>, tip: &mut Option<String>) -> Ending {
+    if !cancelled {
+        *tip = state["targetId"].as_str().map(str::to_string);
+        let labelled = state["labelEntryId"]
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| tip.clone());
+        if let (Some(entry), Some(label)) = (labelled, state["label"].as_str()) {
+            writes.push(Write::set(session_journal::ns::ENTRY_LABEL, &entry, json!(label)));
+        }
+        if tip.is_none() {
+            writes.push(Write::set(BRANCH_TIP, MAIN_LANE, Value::Null));
+        }
+    }
+    Ending::Completed
+}
+
+fn settlement_status(ending: &Ending, cancelled: bool) -> &'static str {
+    match (ending, cancelled) {
         (_, true) => "aborted",
         (Ending::Completed, false) => "completed",
         _ => "failed",
-    };
+    }
+}
+
+fn build_op_result(
+    operation: &str,
+    meta: &Value,
+    status: &str,
+    ending: &Ending,
+    stored_at: &str,
+    tip: Option<String>,
+) -> Value {
     let mut result = Map::new();
-    result.insert("operationId".into(), operation.clone().into());
+    result.insert("operationId".into(), operation.into());
     result.insert("kind".into(), meta["intent"]["kind"].as_str().unwrap_or("run").into());
     result.insert("status".into(), status.into());
     if status == "failed" {
-        let error = match &ending {
+        let error = match ending {
             Ending::Failed { code, message } => json!({"code": code, "message": message}),
             Ending::Unknown => json!({"code": "interrupted", "message": format!(
                 "The session worker stopped during this run, in a state this build does not know ({stored_at:?})"
@@ -283,7 +380,16 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
     result.insert("tipId".into(), tip.map_or(Value::Null, Value::from));
     result.insert("startedAt".into(), meta["startedAt"].clone());
     result.insert("endedAt".into(), json!(jsrt::date::now_ms()));
-    let queued = inbox(session);
+    Value::Object(result)
+}
+
+fn append_terminal_writes(
+    session: &Session,
+    operation: &str,
+    result: Value,
+    queued: &[Inboxed],
+    writes: &mut Vec<Write>,
+) {
     let kept: Vec<Value> = queued
         .iter()
         .map(|q| json!({"entryId": q.entry_id, "kind": q.kind}))
@@ -300,24 +406,13 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
             .map(|key| Write::delete(session_journal::ns::OP_PREPARATION, key)),
     );
     writes.extend([
-        Write::delete(OP_META, &operation),
-        Write::delete(OP_STATE, &operation),
-        Write::set(OP_RESULT, &operation, Value::Object(result)),
+        Write::delete(OP_META, operation),
+        Write::delete(OP_STATE, operation),
+        Write::set(OP_RESULT, operation, result),
         Write::set(
             LANE_STATE,
             MAIN_LANE,
             json!({"currentOperationId": null, "lastOperationId": operation, "inbox": kept}),
         ),
     ]);
-    session.commit(&writes)?;
-    let depth = depth(session, &meta);
-    let run = meta["intent"]["kind"].as_str().is_none_or(|k| k == "run");
-    Ok(Recovered {
-        operation_id: Some(operation),
-        status: Some(status.to_string()),
-        resume: run && status == "failed" && matches!(ending, Ending::Interrupted) && depth < MAX_RECOVERY_DEPTH,
-        depth,
-        interrupted_calls,
-        queued,
-    })
 }

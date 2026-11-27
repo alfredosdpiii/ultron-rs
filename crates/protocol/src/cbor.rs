@@ -57,6 +57,17 @@ impl Value {
     }
 }
 
+fn map_eq(a: &[(String, Value)], b: &[(String, Value)]) -> bool {
+    a.len() == b.len() && a.iter().all(|(k, v)| b.iter().any(|(bk, bv)| bk == k && bv == v))
+}
+
+fn number_eq(a: &Value, b: &Value) -> bool {
+    match (a.number(), b.number()) {
+        (Some(a), Some(b)) => a == b && a.is_sign_negative() == b.is_sign_negative(),
+        _ => false,
+    }
+}
+
 impl PartialEq for Value {
     /// JavaScript equality of decoded values: `1` and `1.0` are the same number, `-0` is not `0`.
     fn eq(&self, other: &Self) -> bool {
@@ -66,13 +77,8 @@ impl PartialEq for Value {
             (Value::Text(a), Value::Text(b)) => a == b,
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::Array(a), Value::Array(b)) => a == b,
-            (Value::Map(a), Value::Map(b)) => {
-                a.len() == b.len() && a.iter().all(|(k, v)| b.iter().any(|(bk, bv)| bk == k && bv == v))
-            }
-            _ => match (self.number(), other.number()) {
-                (Some(a), Some(b)) => a == b && a.is_sign_negative() == b.is_sign_negative(),
-                _ => false,
-            },
+            (Value::Map(a), Value::Map(b)) => map_eq(a, b),
+            _ => number_eq(self, other),
         }
     }
 }
@@ -185,67 +191,79 @@ impl Writer<'_> {
         }
     }
 
-    fn value(&mut self, value: &Value, depth: usize) -> Result<(), CborError> {
-        let options = self.options;
-        if depth > options.max_depth {
+    fn float(&mut self, f: f64) -> Result<(), CborError> {
+        if !f.is_finite() {
+            return err("CBOR numbers must be finite");
+        }
+        if f.fract() == 0.0 && !(f == 0.0 && f.is_sign_negative()) {
+            if f.abs() > jsrt::number::MAX_SAFE_INTEGER as f64 {
+                return err("CBOR integers must be safe JavaScript integers");
+            }
+            return self.integer(f as i64);
+        }
+        self.bytes(&[0xfb])?;
+        self.bytes(&f.to_be_bytes())
+    }
+
+    fn byte_string(&mut self, bytes: &[u8]) -> Result<(), CborError> {
+        if bytes.len() > self.options.max_byte_length {
             return err(format!(
-                "CBOR nesting depth exceeds configured limit of {}",
-                options.max_depth
+                "CBOR byte string length exceeds configured limit of {}",
+                self.options.max_byte_length
             ));
         }
+        self.argument(2, bytes.len() as u64)?;
+        self.bytes(bytes)
+    }
+
+    fn array(&mut self, items: &[Value], depth: usize) -> Result<(), CborError> {
+        if items.len() > self.options.max_container_length {
+            return err(format!(
+                "CBOR array length exceeds configured limit of {}",
+                self.options.max_container_length
+            ));
+        }
+        self.argument(4, items.len() as u64)?;
+        items.iter().try_for_each(|item| self.value(item, depth + 1))
+    }
+
+    fn map(&mut self, entries: &[(String, Value)], depth: usize) -> Result<(), CborError> {
+        if entries.len() > self.options.max_container_length {
+            return err(format!(
+                "CBOR map length exceeds configured limit of {}",
+                self.options.max_container_length
+            ));
+        }
+        self.argument(5, entries.len() as u64)?;
+        for (key, entry) in entries {
+            self.text(key)?;
+            self.value(entry, depth + 1)?;
+        }
+        Ok(())
+    }
+
+    fn dispatch_value(&mut self, value: &Value, depth: usize) -> Result<(), CborError> {
         match value {
             Value::Null => self.bytes(&[0xf6]),
-            Value::Bool(b) => self.bytes(&[if *b { 0xf5 } else { 0xf4 }]),
+            Value::Bool(false) => self.bytes(&[0xf4]),
+            Value::Bool(true) => self.bytes(&[0xf5]),
             Value::Int(n) => self.integer(*n),
-            Value::Float(f) => {
-                if !f.is_finite() {
-                    return err("CBOR numbers must be finite");
-                }
-                if f.fract() == 0.0 && !(*f == 0.0 && f.is_sign_negative()) {
-                    if f.abs() > jsrt::number::MAX_SAFE_INTEGER as f64 {
-                        return err("CBOR integers must be safe JavaScript integers");
-                    }
-                    return self.integer(*f as i64);
-                }
-                self.bytes(&[0xfb])?;
-                self.bytes(&f.to_be_bytes())
-            }
+            Value::Float(f) => self.float(*f),
             Value::Text(text) => self.text(text),
-            Value::Bytes(bytes) => {
-                if bytes.len() > options.max_byte_length {
-                    return err(format!(
-                        "CBOR byte string length exceeds configured limit of {}",
-                        options.max_byte_length
-                    ));
-                }
-                self.argument(2, bytes.len() as u64)?;
-                self.bytes(bytes)
-            }
-            Value::Array(items) => {
-                if items.len() > options.max_container_length {
-                    return err(format!(
-                        "CBOR array length exceeds configured limit of {}",
-                        options.max_container_length
-                    ));
-                }
-                self.argument(4, items.len() as u64)?;
-                items.iter().try_for_each(|item| self.value(item, depth + 1))
-            }
-            Value::Map(entries) => {
-                if entries.len() > options.max_container_length {
-                    return err(format!(
-                        "CBOR map length exceeds configured limit of {}",
-                        options.max_container_length
-                    ));
-                }
-                self.argument(5, entries.len() as u64)?;
-                for (key, entry) in entries {
-                    self.text(key)?;
-                    self.value(entry, depth + 1)?;
-                }
-                Ok(())
-            }
+            Value::Bytes(bytes) => self.byte_string(bytes),
+            Value::Array(items) => self.array(items, depth),
+            Value::Map(entries) => self.map(entries, depth),
         }
+    }
+
+    fn value(&mut self, value: &Value, depth: usize) -> Result<(), CborError> {
+        if depth > self.options.max_depth {
+            return err(format!(
+                "CBOR nesting depth exceeds configured limit of {}",
+                self.options.max_depth
+            ));
+        }
+        self.dispatch_value(value, depth)
     }
 }
 
@@ -283,24 +301,40 @@ impl Reader<'_> {
         Ok(&self.bytes[start..self.offset])
     }
 
+    fn read_u16(&mut self) -> Result<u64, CborError> {
+        Ok(u64::from(u16::from_be_bytes(
+            self.take(2)?.try_into().unwrap_or_default(),
+        )))
+    }
+
+    fn read_u32(&mut self) -> Result<u64, CborError> {
+        Ok(u64::from(u32::from_be_bytes(
+            self.take(4)?.try_into().unwrap_or_default(),
+        )))
+    }
+
+    fn read_u64_safe(&mut self) -> Result<u64, CborError> {
+        let high = self.read_u32()?;
+        let low = self.read_u32()?;
+        if high > 0x1f_ffff {
+            return err("Decoded CBOR integer or length is outside the safe range");
+        }
+        Ok((high << 32) | low)
+    }
+
+    fn extended_argument(&mut self, info: u8) -> Result<u64, CborError> {
+        match info {
+            24 => self.byte().map(u64::from),
+            25 => self.read_u16(),
+            26 => self.read_u32(),
+            _ => self.read_u64_safe(),
+        }
+    }
+
     fn argument(&mut self, info: u8) -> Result<u64, CborError> {
         match info {
             0..=23 => Ok(u64::from(info)),
-            24 => Ok(u64::from(self.byte()?)),
-            25 => Ok(u64::from(u16::from_be_bytes(
-                self.take(2)?.try_into().unwrap_or_default(),
-            ))),
-            26 => Ok(u64::from(u32::from_be_bytes(
-                self.take(4)?.try_into().unwrap_or_default(),
-            ))),
-            27 => {
-                let high = self.argument(26)?;
-                let low = self.argument(26)?;
-                if high > 0x1f_ffff {
-                    return err("Decoded CBOR integer or length is outside the safe range");
-                }
-                Ok((high << 32) | low)
-            }
+            24..=27 => self.extended_argument(info),
             31 => err("Indefinite-length CBOR items are not supported"),
             _ => err("Malformed CBOR additional information"),
         }
@@ -317,62 +351,88 @@ impl Reader<'_> {
         Ok(length)
     }
 
-    fn item(&mut self, depth: usize) -> Result<Value, CborError> {
-        let options = self.options;
-        if depth > options.max_depth {
-            return err(format!(
-                "CBOR nesting depth exceeds configured limit of {}",
-                options.max_depth
-            ));
+    fn negative_int(&mut self, info: u8) -> Result<Value, CborError> {
+        let value = -1 - self.argument(info)? as i64;
+        if value < -jsrt::number::MAX_SAFE_INTEGER {
+            return err("Decoded CBOR integer is outside the safe range");
         }
-        let initial = self.byte()?;
-        let info = initial & 0x1f;
-        match initial >> 5 {
-            0 => Ok(Value::Int(self.argument(info)? as i64)),
-            1 => {
-                let value = -1 - self.argument(info)? as i64;
-                if value < -jsrt::number::MAX_SAFE_INTEGER {
-                    return err("Decoded CBOR integer is outside the safe range");
-                }
-                Ok(Value::Int(value))
+        Ok(Value::Int(value))
+    }
+
+    fn byte_string(&mut self, info: u8) -> Result<Value, CborError> {
+        let length = self.length(info, "byte string", self.options.max_byte_length)?;
+        Ok(Value::Bytes(self.take(length)?.to_vec()))
+    }
+
+    fn text_string(&mut self, info: u8) -> Result<Value, CborError> {
+        let length = self.length(info, "text string", self.options.max_byte_length)?;
+        match std::str::from_utf8(self.take(length)?) {
+            Ok(text) => Ok(Value::text(text)),
+            Err(_) => err("CBOR text string contains invalid UTF-8"),
+        }
+    }
+
+    fn array(&mut self, info: u8, depth: usize) -> Result<Value, CborError> {
+        let length = self.length(info, "array", self.options.max_container_length)?;
+        let mut items = Vec::new();
+        for _ in 0..length {
+            items.push(self.item(depth + 1)?);
+        }
+        Ok(Value::Array(items))
+    }
+
+    fn map(&mut self, info: u8, depth: usize) -> Result<Value, CborError> {
+        let length = self.length(info, "map", self.options.max_container_length)?;
+        let mut entries: Vec<(String, Value)> = Vec::new();
+        for _ in 0..length {
+            let Value::Text(key) = self.item(depth + 1)? else {
+                return err("CBOR map keys must be strings");
+            };
+            if entries.iter().any(|(k, _)| *k == key) {
+                return err("CBOR map contains a duplicate key");
             }
-            2 => {
-                let length = self.length(info, "byte string", options.max_byte_length)?;
-                Ok(Value::Bytes(self.take(length)?.to_vec()))
-            }
-            3 => {
-                let length = self.length(info, "text string", options.max_byte_length)?;
-                match std::str::from_utf8(self.take(length)?) {
-                    Ok(text) => Ok(Value::text(text)),
-                    Err(_) => err("CBOR text string contains invalid UTF-8"),
-                }
-            }
-            4 => {
-                let length = self.length(info, "array", options.max_container_length)?;
-                let mut items = Vec::new();
-                for _ in 0..length {
-                    items.push(self.item(depth + 1)?);
-                }
-                Ok(Value::Array(items))
-            }
-            5 => {
-                let length = self.length(info, "map", options.max_container_length)?;
-                let mut entries: Vec<(String, Value)> = Vec::new();
-                for _ in 0..length {
-                    let Value::Text(key) = self.item(depth + 1)? else {
-                        return err("CBOR map keys must be strings");
-                    };
-                    if entries.iter().any(|(k, _)| *k == key) {
-                        return err("CBOR map contains a duplicate key");
-                    }
-                    let value = self.item(depth + 1)?;
-                    entries.push((key, value));
-                }
-                Ok(Value::Map(entries))
-            }
+            let value = self.item(depth + 1)?;
+            entries.push((key, value));
+        }
+        Ok(Value::Map(entries))
+    }
+
+    fn dispatch_item(&mut self, major: u8, info: u8, depth: usize) -> Result<Value, CborError> {
+        match major {
+            0 => self.argument(info).map(|n| Value::Int(n as i64)),
+            1 => self.negative_int(info),
+            2 => self.byte_string(info),
+            3 => self.text_string(info),
+            4 => self.array(info, depth),
+            5 => self.map(info, depth),
             6 => err("CBOR tags are not supported"),
             _ => self.simple(info),
         }
+    }
+
+    fn item(&mut self, depth: usize) -> Result<Value, CborError> {
+        if depth > self.options.max_depth {
+            return err(format!(
+                "CBOR nesting depth exceeds configured limit of {}",
+                self.options.max_depth
+            ));
+        }
+        let initial = self.byte()?;
+        self.dispatch_item(initial >> 5, initial & 0x1f, depth)
+    }
+
+    fn float64(&mut self) -> Result<Value, CborError> {
+        let value = f64::from_be_bytes(self.take(8)?.try_into().unwrap_or_default());
+        if !value.is_finite() {
+            return err("Decoded CBOR number must be finite");
+        }
+        if value.fract() == 0.0 && value.abs() > jsrt::number::MAX_SAFE_INTEGER as f64 {
+            return err("Decoded CBOR integer is outside the safe range");
+        }
+        if value.fract() == 0.0 && !(value == 0.0 && value.is_sign_negative()) {
+            return Ok(Value::Int(value as i64));
+        }
+        Ok(Value::Float(value))
     }
 
     fn simple(&mut self, info: u8) -> Result<Value, CborError> {
@@ -380,19 +440,7 @@ impl Reader<'_> {
             20 => Ok(Value::Bool(false)),
             21 => Ok(Value::Bool(true)),
             22 => Ok(Value::Null),
-            27 => {
-                let value = f64::from_be_bytes(self.take(8)?.try_into().unwrap_or_default());
-                if !value.is_finite() {
-                    return err("Decoded CBOR number must be finite");
-                }
-                if value.fract() == 0.0 && value.abs() > jsrt::number::MAX_SAFE_INTEGER as f64 {
-                    return err("Decoded CBOR integer is outside the safe range");
-                }
-                if value.fract() == 0.0 && !(value == 0.0 && value.is_sign_negative()) {
-                    return Ok(Value::Int(value as i64));
-                }
-                Ok(Value::Float(value))
-            }
+            27 => self.float64(),
             31 => err("CBOR break marker is not supported"),
             _ => err("Unsupported CBOR simple value or floating-point width"),
         }

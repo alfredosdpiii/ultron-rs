@@ -199,6 +199,45 @@ fn universe_of(json: &Value) -> String {
     optional_string(json, "universe_domain").unwrap_or_else(|| DEFAULT_UNIVERSE.into())
 }
 
+fn missing_field(field: &str) -> Fail {
+    Fail::new(format!("The incoming JSON object does not contain a {field} field"))
+}
+
+fn authorized_user_from_json(json: &Value) -> Result<Credential, Fail> {
+    for field in ["client_id", "client_secret", "refresh_token"] {
+        if !jsrt::value::truthy(json.get(field)) {
+            return Err(missing_field(field));
+        }
+    }
+    Ok(Credential::User {
+        client_id: jsrt::value::string(json.get("client_id")),
+        client_secret: jsrt::value::string(json.get("client_secret")),
+        refresh_token: jsrt::value::string(json.get("refresh_token")),
+        universe: universe_of(json),
+        quota: optional_string(json, "quota_project_id"),
+    })
+}
+
+fn service_account_from_json(json: &Value) -> Result<Credential, Fail> {
+    if !jsrt::value::truthy(Some(json)) {
+        return Err(Fail::new(
+            "Must pass in a JSON object containing the service account auth settings.",
+        ));
+    }
+    for field in ["client_email", "private_key"] {
+        if !jsrt::value::truthy(json.get(field)) {
+            return Err(missing_field(field));
+        }
+    }
+    Ok(Credential::ServiceAccount {
+        email: jsrt::value::string(json.get("client_email")),
+        key: jsrt::value::string(json.get("private_key")),
+        key_id: optional_string(json, "private_key_id"),
+        universe: universe_of(json),
+        quota: optional_string(json, "quota_project_id"),
+    })
+}
+
 /// `GoogleAuth.fromJSON`.
 fn from_json(json: &Value) -> Result<Credential, (Fail, Branch)> {
     let kind = match json {
@@ -211,22 +250,8 @@ fn from_json(json: &Value) -> Result<Credential, (Fail, Branch)> {
         Value::Object(map) => map.get("type").and_then(Value::as_str).unwrap_or_default(),
         _ => "",
     };
-    let missing = |field: &str| Fail::new(format!("The incoming JSON object does not contain a {field} field"));
     match kind {
-        "authorized_user" => {
-            for field in ["client_id", "client_secret", "refresh_token"] {
-                if !jsrt::value::truthy(json.get(field)) {
-                    return Err((missing(field), Branch::Known));
-                }
-            }
-            Ok(Credential::User {
-                client_id: jsrt::value::string(json.get("client_id")),
-                client_secret: jsrt::value::string(json.get("client_secret")),
-                refresh_token: jsrt::value::string(json.get("refresh_token")),
-                universe: universe_of(json),
-                quota: optional_string(json, "quota_project_id"),
-            })
-        }
+        "authorized_user" => authorized_user_from_json(json).map_err(|fail| (fail, Branch::Known)),
         "impersonated_service_account" => impersonated(json).map_err(|fail| (fail, Branch::Known)),
         "external_account" => external::External::from_json(json)
             .map(|client| Credential::External(Box::new(client)))
@@ -234,26 +259,7 @@ fn from_json(json: &Value) -> Result<Credential, (Fail, Branch)> {
         "external_account_authorized_user" => Ok(Credential::ExternalUser(Box::new(
             external::ExternalUser::from_json(json),
         ))),
-        _ => {
-            if !jsrt::value::truthy(Some(json)) {
-                return Err((
-                    Fail::new("Must pass in a JSON object containing the service account auth settings."),
-                    Branch::Jwt,
-                ));
-            }
-            for field in ["client_email", "private_key"] {
-                if !jsrt::value::truthy(json.get(field)) {
-                    return Err((missing(field), Branch::Jwt));
-                }
-            }
-            Ok(Credential::ServiceAccount {
-                email: jsrt::value::string(json.get("client_email")),
-                key: jsrt::value::string(json.get("private_key")),
-                key_id: optional_string(json, "private_key_id"),
-                universe: universe_of(json),
-                quota: optional_string(json, "quota_project_id"),
-            })
-        }
+        _ => service_account_from_json(json).map_err(|fail| (fail, Branch::Jwt)),
     }
 }
 
@@ -362,11 +368,8 @@ fn realpath(path: &Path) -> Result<PathBuf, std::io::Error> {
     std::fs::canonicalize(path)
 }
 
-/// `_getApplicationCredentialsFromFilePath`: the ADC chain's file reader, which throws instead of falling back.
-fn file_path_credential(file_path: &str) -> Result<Credential, Fail> {
-    if file_path.is_empty() {
-        return Err(Fail::new("The file path is invalid."));
-    }
+/// Resolves `file_path` via `realpath`, verifies it is a regular file, and returns its UTF-8 lossy contents.
+fn read_checked_file(file_path: &str) -> Result<String, Fail> {
     let not_a_file = |shown: &str, inner: &str| {
         Fail::new(format!(
             "The file at {shown} does not exist, or it is not a file. {inner}"
@@ -379,8 +382,16 @@ fn file_path_credential(file_path: &str) -> Result<Credential, Fail> {
         Ok(_) => return Err(not_a_file(&shown, "")),
         Err(e) => return Err(not_a_file(&shown, &jsrt::fs::error_message(&e, "lstat", &real))),
     }
-    let text = std::fs::read(&real).map_err(|e| Fail::new(jsrt::fs::error_message(&e, "open", &real)))?;
-    let text = String::from_utf8_lossy(&text);
+    let bytes = std::fs::read(&real).map_err(|e| Fail::new(jsrt::fs::error_message(&e, "open", &real)))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// `_getApplicationCredentialsFromFilePath`: the ADC chain's file reader, which throws instead of falling back.
+fn file_path_credential(file_path: &str) -> Result<Credential, Fail> {
+    if file_path.is_empty() {
+        return Err(Fail::new("The file path is invalid."));
+    }
+    let text = read_checked_file(file_path)?;
     if let Some(message) = jsrt::json::parse(&text).err() {
         return Err(Fail::typed("SyntaxError", message));
     }

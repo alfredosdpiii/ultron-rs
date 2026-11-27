@@ -56,39 +56,50 @@ fn allows_null(schema: &Value) -> bool {
             .is_some_and(|v| v.iter().any(allows_null))
 }
 
-fn make_strict(schema: &mut Value) -> Result<(), String> {
-    let Some(object) = schema.as_object_mut() else {
-        return Err("boolean schemas are unsupported".into());
-    };
+fn reject_unsupported_keys(object: &serde_json::Map<String, Value>) -> Result<(), String> {
     for key in UNSUPPORTED_STRICT_SCHEMA_KEYS {
         if object.get(*key).is_some() {
             return Err(format!("{key} schemas are unsupported"));
         }
     }
-    if let Some(any_of) = object.get_mut("anyOf") {
-        let Some(variants) = any_of.as_array_mut().filter(|v| !v.is_empty()) else {
-            return Err("anyOf must contain at least one schema".into());
-        };
-        for variant in variants {
-            if is_structured(variant) {
-                return Err("object and array unions are unsupported".into());
-            }
-            make_strict(variant)?;
+    Ok(())
+}
+
+fn make_any_of_strict(any_of: &mut Value) -> Result<(), String> {
+    let Some(variants) = any_of.as_array_mut().filter(|v| !v.is_empty()) else {
+        return Err("anyOf must contain at least one schema".into());
+    };
+    for variant in variants {
+        if is_structured(variant) {
+            return Err("object and array unions are unsupported".into());
         }
+        make_strict(variant)?;
     }
-    if let Some(items) = object.get_mut("items") {
-        if items.is_array() {
-            return Err("tuple schemas are unsupported".into());
+    Ok(())
+}
+
+fn make_items_strict(items: &mut Value) -> Result<(), String> {
+    if items.is_array() {
+        return Err("tuple schemas are unsupported".into());
+    }
+    make_strict(items)
+}
+
+fn parse_required_keys(object: &serde_json::Map<String, Value>, names: &[String]) -> Result<Vec<String>, String> {
+    let required = match object.get("required") {
+        None => Vec::new(),
+        Some(Value::Array(items)) if items.iter().all(Value::is_string) => {
+            items.iter().filter_map(Value::as_str).map(str::to_string).collect()
         }
-        make_strict(items)?;
+        Some(_) => return Err("object required must be a string array".into()),
+    };
+    if required.iter().any(|key| !names.contains(key)) {
+        return Err("required contains an unknown property".into());
     }
-    let is_object = object.get("type").and_then(Value::as_str) == Some("object");
-    if object.contains_key("properties") && !is_object {
-        return Err("properties require type object".into());
-    }
-    if !is_object {
-        return Ok(());
-    }
+    Ok(required)
+}
+
+fn make_object_strict(object: &mut serde_json::Map<String, Value>) -> Result<(), String> {
     if object
         .get("additionalProperties")
         .is_some_and(|v| *v != Value::Bool(false))
@@ -98,21 +109,11 @@ fn make_strict(schema: &mut Value) -> Result<(), String> {
     if object.get("properties").is_some_and(|p| !p.is_object()) {
         return Err("object properties must be a schema map".into());
     }
-    let required: Option<Vec<String>> = match object.get("required") {
-        None => None,
-        Some(Value::Array(items)) if items.iter().all(Value::is_string) => {
-            Some(items.iter().filter_map(Value::as_str).map(str::to_string).collect())
-        }
-        Some(_) => return Err("object required must be a string array".into()),
-    };
     let names: Vec<String> = object
         .get("properties")
         .and_then(Value::as_object)
         .map_or_default(|p| p.keys().cloned().collect());
-    let required = required.unwrap_or_default();
-    if required.iter().any(|key| !names.contains(key)) {
-        return Err("required contains an unknown property".into());
-    }
+    let required = parse_required_keys(object, &names)?;
     if let Some(Value::Object(properties)) = object.get_mut("properties") {
         for (key, property) in properties.iter_mut() {
             make_strict(property)?;
@@ -127,6 +128,27 @@ fn make_strict(schema: &mut Value) -> Result<(), String> {
     );
     object.insert("additionalProperties".into(), Value::Bool(false));
     Ok(())
+}
+
+fn make_strict(schema: &mut Value) -> Result<(), String> {
+    let Some(object) = schema.as_object_mut() else {
+        return Err("boolean schemas are unsupported".into());
+    };
+    reject_unsupported_keys(object)?;
+    if let Some(any_of) = object.get_mut("anyOf") {
+        make_any_of_strict(any_of)?;
+    }
+    if let Some(items) = object.get_mut("items") {
+        make_items_strict(items)?;
+    }
+    let is_object = object.get("type").and_then(Value::as_str) == Some("object");
+    if object.contains_key("properties") && !is_object {
+        return Err("properties require type object".into());
+    }
+    if !is_object {
+        return Ok(());
+    }
+    make_object_strict(object)
 }
 
 /// Convert a tool schema to the strict subset used by provider constrained sampling.

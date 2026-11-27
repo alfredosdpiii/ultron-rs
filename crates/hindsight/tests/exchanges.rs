@@ -183,7 +183,7 @@ fn hindsight_transport_sends_only_client_headers_plus_host() {
         ])
     );
     assert_eq!(raw[1]["body"], r#"{"query":"q","tags":["ultron:session:s1"]}"#);
-    assert!(transport.contains(&"host".to_string()) && !transport.contains(&"accept".to_string()));
+    assert!(transport.iter().any(|i| i == "host") && !transport.iter().any(|i| i == "accept"));
 }
 
 #[test]

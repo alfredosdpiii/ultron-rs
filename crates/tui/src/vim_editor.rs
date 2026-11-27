@@ -111,6 +111,52 @@ impl VimEditor {
         }
     }
 
+    fn decode_printable(data: &str) -> Option<String> {
+        decode_printable_key(data)
+            .or_else(|| (!data.is_empty() && !data.chars().any(char::is_control)).then(|| data.to_string()))
+    }
+
+    fn handle_replace_input(&mut self, ed: &mut Editor, canonical: Option<&str>, printable: Option<&str>) -> bool {
+        if matches!(canonical, Some("backspace" | "shift+backspace")) {
+            self.replace_backspace(ed);
+            return true;
+        }
+        if let Some(p) = printable {
+            for g in p.graphemes(true) {
+                self.overwrite(ed, g);
+            }
+            return true;
+        }
+        false
+    }
+
+    fn handle_mapped_or_pending(&mut self, ed: &mut Editor, data: &str, canonical: Option<&str>) -> Option<bool> {
+        let pending = self.state.pending_text();
+        let awaiting = pending.ends_with(['f', 'F', 't', 'T', 'r']);
+        if awaiting && (canonical == Some("space") || data == " ") {
+            return Some(self.run(ed, " "));
+        }
+        let mapped = canonical.and_then(nav_key);
+        if awaiting && mapped.is_some() {
+            return Some(self.run(ed, "escape"));
+        }
+        mapped.map(|m| self.run(ed, m))
+    }
+
+    fn feed_printable(&mut self, ed: &mut Editor, printable: &str) {
+        for (i, g) in printable.grapheme_indices(true) {
+            if self.state.mode == VimMode::Replace {
+                self.overwrite(ed, g);
+                continue;
+            }
+            if self.run(ed, g) {
+                continue;
+            }
+            ed.handle_input(&printable[i..]);
+            return;
+        }
+    }
+
     /// Route one input chunk. True when Vim consumed it; otherwise pass it to [`Editor::handle_input`].
     /// An open autocomplete popup gets the first Escape.
     pub fn handle_input(&mut self, ed: &mut Editor, data: &str) -> bool {
@@ -121,31 +167,14 @@ impl VimEditor {
         if self.state.mode == VimMode::Insert {
             return false;
         }
-        let printable = decode_printable_key(data)
-            .or_else(|| (!data.is_empty() && !data.chars().any(char::is_control)).then(|| data.to_string()));
-        if self.state.mode == VimMode::Replace {
-            if matches!(canonical.as_deref(), Some("backspace" | "shift+backspace")) {
-                self.replace_backspace(ed);
-                return true;
-            }
-            if let Some(p) = &printable {
-                for g in p.graphemes(true) {
-                    self.overwrite(ed, g);
-                }
-                return true;
-            }
+        let printable = Self::decode_printable(data);
+        if self.state.mode == VimMode::Replace
+            && self.handle_replace_input(ed, canonical.as_deref(), printable.as_deref())
+        {
+            return true;
         }
-        let pending = self.state.pending_text();
-        let awaiting = pending.ends_with(['f', 'F', 't', 'T', 'r']);
-        if awaiting && (canonical.as_deref() == Some("space") || data == " ") {
-            return self.run(ed, " ");
-        }
-        let mapped = canonical.as_deref().and_then(nav_key);
-        if awaiting && mapped.is_some() {
-            return self.run(ed, "escape");
-        }
-        if let Some(m) = mapped {
-            return self.run(ed, m);
+        if let Some(handled) = self.handle_mapped_or_pending(ed, data, canonical.as_deref()) {
+            return handled;
         }
         let Some(printable) = printable else {
             if self.state.pending() {
@@ -153,17 +182,7 @@ impl VimEditor {
             }
             return false;
         };
-        for (i, g) in printable.grapheme_indices(true) {
-            if self.state.mode == VimMode::Replace {
-                self.overwrite(ed, g);
-                continue;
-            }
-            if self.run(ed, g) {
-                continue;
-            }
-            ed.handle_input(&printable[i..]);
-            return true;
-        }
+        self.feed_printable(ed, &printable);
         true
     }
 
@@ -202,6 +221,67 @@ impl VimEditor {
             .find(|(s, e)| *s <= col && col < *e)
     }
 
+    fn apply_yank(&mut self, ed: &mut Editor, from: Pos, to: Pos, linewise: bool) {
+        let body = slice_range(ed.lines(), from, to, linewise);
+        let text = if linewise { format!("{body}\n") } else { body };
+        if text.is_empty() {
+            return;
+        }
+        self.register = Some(text.clone());
+        let expanded = ed.expand_markers(&text);
+        if let Some(cb) = &mut self.on_yank {
+            cb(&expanded);
+        }
+    }
+
+    fn apply_open_line(ed: &mut Editor, below: bool) {
+        let mut lines = ed.lines().to_vec();
+        let at = ed.cursor().0 + usize::from(below);
+        lines.insert(at, String::new());
+        ed.apply_edit(lines, (at, 0), true);
+    }
+
+    fn apply_replace(ed: &mut Editor, from: Pos, to: Pos, text: &str) {
+        let line = &ed.lines()[from.line];
+        let cuts = Self::atomic_tokens(ed, from.line)
+            .iter()
+            .any(|(s, e)| *s < to.col && *e > from.col);
+        if cuts {
+            return;
+        }
+        let new = format!("{}{text}{}", &line[..from.col], &line[to.col..]);
+        let last = text.grapheme_indices(true).next_back().map_or(0, |(i, _)| i);
+        let mut lines = ed.lines().to_vec();
+        lines[from.line] = new;
+        ed.apply_edit(lines, (from.line, from.col + last), true);
+    }
+
+    fn apply_edit_command(&mut self, ed: &mut Editor, cmd: &VimCommand) {
+        match cmd {
+            VimCommand::OpenLine { below } => Self::apply_open_line(ed, *below),
+            VimCommand::Paste { after, count } => self.paste(ed, *after, *count),
+            VimCommand::Replace { from, to, text } => Self::apply_replace(ed, *from, *to, text),
+            VimCommand::Join { from_line, lines } => self.join(ed, *from_line, *lines),
+            VimCommand::Indent {
+                from_line,
+                to_line,
+                out,
+            } => indent(ed, *from_line, *to_line, *out),
+            _ => {}
+        }
+    }
+
+    fn apply_command(&mut self, ed: &mut Editor, cmd: &VimCommand) {
+        match cmd {
+            VimCommand::Move { to } => ed.set_cursor(to.line, to.col),
+            VimCommand::Mode { .. } => self.replacing = false,
+            VimCommand::Yank { from, to, linewise } => self.apply_yank(ed, *from, *to, *linewise),
+            VimCommand::Delete { from, to, linewise, .. } => self.delete_range(ed, *from, *to, *linewise),
+            VimCommand::Undo => ed.undo_edit(),
+            _ => self.apply_edit_command(ed, cmd),
+        }
+    }
+
     fn apply(&mut self, ed: &mut Editor, cmds: &[VimCommand]) {
         for c in cmds {
             if self.state.mode == VimMode::Replace
@@ -212,50 +292,7 @@ impl VimEditor {
             {
                 self.replace_log.clear();
             }
-            match c {
-                VimCommand::Move { to } => ed.set_cursor(to.line, to.col),
-                VimCommand::Mode { .. } => self.replacing = false,
-                VimCommand::Yank { from, to, linewise } => {
-                    let body = slice_range(ed.lines(), *from, *to, *linewise);
-                    let text = if *linewise { format!("{body}\n") } else { body };
-                    if !text.is_empty() {
-                        self.register = Some(text.clone());
-                        let expanded = ed.expand_markers(&text);
-                        if let Some(cb) = &mut self.on_yank {
-                            cb(&expanded);
-                        }
-                    }
-                }
-                VimCommand::Delete { from, to, linewise, .. } => self.delete_range(ed, *from, *to, *linewise),
-                VimCommand::OpenLine { below } => {
-                    let mut lines = ed.lines().to_vec();
-                    let at = ed.cursor().0 + usize::from(*below);
-                    lines.insert(at, String::new());
-                    ed.apply_edit(lines, (at, 0), true);
-                }
-                VimCommand::Paste { after, count } => self.paste(ed, *after, *count),
-                VimCommand::Undo => ed.undo_edit(),
-                VimCommand::Replace { from, to, text } => {
-                    let line = &ed.lines()[from.line];
-                    let cuts = Self::atomic_tokens(ed, from.line)
-                        .iter()
-                        .any(|(s, e)| *s < to.col && *e > from.col);
-                    if cuts {
-                        continue;
-                    }
-                    let new = format!("{}{text}{}", &line[..from.col], &line[to.col..]);
-                    let last = text.grapheme_indices(true).next_back().map_or(0, |(i, _)| i);
-                    let mut lines = ed.lines().to_vec();
-                    lines[from.line] = new;
-                    ed.apply_edit(lines, (from.line, from.col + last), true);
-                }
-                VimCommand::Join { from_line, lines } => self.join(ed, *from_line, *lines),
-                VimCommand::Indent {
-                    from_line,
-                    to_line,
-                    out,
-                } => indent(ed, *from_line, *to_line, *out),
-            }
+            self.apply_command(ed, c);
         }
         if self.state.mode == VimMode::Normal {
             let (line, col) = ed.cursor();
@@ -266,23 +303,22 @@ impl VimEditor {
         }
     }
 
-    fn delete_range(&mut self, ed: &mut Editor, from: Pos, to: Pos, linewise: bool) {
-        let mut lines = ed.lines().to_vec();
-        if linewise {
-            let last = to.line.min(lines.len() - 1);
-            let removed = slice_range(&lines, from, to, true);
-            if removed.is_empty() && from.line == last && lines.len() == 1 {
-                return;
-            }
-            self.register = Some(format!("{removed}\n"));
-            lines.drain(from.line..=last);
-            if lines.is_empty() {
-                lines.push(String::new());
-            }
-            let line = from.line.min(lines.len() - 1);
-            ed.apply_edit(lines, (line, 0), true);
+    fn delete_linewise(&mut self, ed: &mut Editor, mut lines: Vec<String>, from: Pos, to: Pos) {
+        let last = to.line.min(lines.len() - 1);
+        let removed = slice_range(&lines, from, to, true);
+        if removed.is_empty() && from.line == last && lines.len() == 1 {
             return;
         }
+        self.register = Some(format!("{removed}\n"));
+        lines.drain(from.line..=last);
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        let line = from.line.min(lines.len() - 1);
+        ed.apply_edit(lines, (line, 0), true);
+    }
+
+    fn expand_atomic_bounds(ed: &Editor, from: Pos, to: Pos) -> (Pos, Pos) {
         let (mut start, mut end) = (from, to);
         if let Some((s, _)) = Self::token_at(ed, start.line, start.col).filter(|(s, _)| *s < start.col) {
             start.col = s;
@@ -293,6 +329,16 @@ impl VimEditor {
         {
             end.col = e;
         }
+        (start, end)
+    }
+
+    fn delete_range(&mut self, ed: &mut Editor, from: Pos, to: Pos, linewise: bool) {
+        let mut lines = ed.lines().to_vec();
+        if linewise {
+            self.delete_linewise(ed, lines, from, to);
+            return;
+        }
+        let (start, end) = Self::expand_atomic_bounds(ed, from, to);
         let removed = slice_range(&lines, start, end, false);
         if removed.is_empty() {
             return;
@@ -411,25 +457,32 @@ impl VimEditor {
     }
 }
 
+fn line_at(lines: &[String], i: usize) -> &str {
+    lines.get(i).map_or("", String::as_str)
+}
+
+fn clamp_col(s: &str, c: usize) -> usize {
+    c.min(s.len())
+}
+
 /// Text in `[from, to)`; linewise ranges take whole lines.
 fn slice_range(lines: &[String], from: Pos, to: Pos, linewise: bool) -> String {
-    let get = |i: usize| lines.get(i).map_or("", String::as_str);
     if linewise {
         let last = to.line.min(lines.len().saturating_sub(1));
         return lines[from.line..=last].join("\n");
     }
-    let clamp = |s: &str, c: usize| c.min(s.len());
     if from.line == to.line {
-        let l = get(from.line);
-        return l[clamp(l, from.col)..clamp(l, to.col).max(clamp(l, from.col))].to_string();
+        let l = line_at(lines, from.line);
+        let start = clamp_col(l, from.col);
+        return l[start..clamp_col(l, to.col).max(start)].to_string();
     }
-    let first = get(from.line);
-    let mut parts = vec![first[clamp(first, from.col)..].to_string()];
+    let first = line_at(lines, from.line);
+    let mut parts = vec![first[clamp_col(first, from.col)..].to_string()];
     for i in from.line + 1..to.line {
-        parts.push(get(i).to_string());
+        parts.push(line_at(lines, i).to_string());
     }
-    let last = get(to.line);
-    parts.push(last[..clamp(last, to.col)].to_string());
+    let last = line_at(lines, to.line);
+    parts.push(last[..clamp_col(last, to.col)].to_string());
     parts.join("\n")
 }
 

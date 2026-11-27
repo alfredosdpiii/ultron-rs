@@ -5,12 +5,13 @@
 use crate::auth::{AuthEvent, AuthInteraction, AuthPrompt, ModelAuth, OAuthAuth, OAuthCredential, SelectOption};
 use crate::http::{AbortSignal, BoxFuture, HttpRequest, Transport, cancelled, is_aborted};
 use crate::oauth_flow::{
-    Clock, ClockLoginEnv, FetchError, Poll, TextResponse, fetch_text, form_urlencode, generate_pkce,
-    oauth_callback_host, oauth_error_html, oauth_success_html, poll_device_code_flow,
+    Clock, ClockLoginEnv, FetchError, Poll, TextResponse, api_key_model_auth, fetch_text, form_urlencode,
+    generate_pkce, oauth_callback_host, oauth_error_html, oauth_success_html, poll_device_code_flow,
+    start_browser_auth_prompt,
 };
 use serde_json::{Map, Value};
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 const CALLBACK_PORT: u16 = 1456;
 const CALLBACK_PATH: &str = "/oauth/callback";
@@ -116,6 +117,90 @@ fn cancelled_or(error: FetchError, signal: Option<&AbortSignal>) -> String {
     }
 }
 
+struct RadiusDeviceAuth {
+    device_code: String,
+    user_code: String,
+    uri: String,
+    interval: Option<f64>,
+    expires_in: f64,
+}
+
+fn parse_device_auth(response: &TextResponse) -> Result<RadiusDeviceAuth, String> {
+    if !response.ok() {
+        return Err(read_oauth_error(response, "Radius OAuth device authorization failed").message);
+    }
+    let data = parse_json_body(&response.text)?;
+    let text = |key: &str| {
+        data.get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let expires_in = data.get("expires_in").and_then(Value::as_f64).filter(|n| *n != 0.0);
+    let (Some(device_code), Some(user_code), Some(uri), Some(expires_in)) = (
+        text("device_code"),
+        text("user_code"),
+        text("verification_uri"),
+        expires_in,
+    ) else {
+        return Err("Radius OAuth device authorization response is missing required fields".into());
+    };
+    Ok(RadiusDeviceAuth {
+        device_code,
+        user_code,
+        uri,
+        interval: data.get("interval").and_then(Value::as_f64),
+        expires_in,
+    })
+}
+
+fn map_device_poll_result(result: Result<OAuthCredential, TokenError>) -> Result<Poll<OAuthCredential>, String> {
+    match result {
+        Ok(credential) => Ok(Poll::Complete(credential)),
+        Err(TokenError::Other(message)) => Err(message),
+        Err(TokenError::Response(error)) => match error.oauth_error.as_deref() {
+            Some("authorization_pending") => Ok(Poll::Pending),
+            Some("slow_down") => Ok(Poll::SlowDown(None)),
+            Some("expired_token") => Ok(Poll::Failed("Device authorization expired.".into())),
+            Some("access_denied") => Ok(Poll::Failed("Device authorization was denied.".into())),
+            _ => Err(error.message),
+        },
+    }
+}
+
+enum BrowserOutcome {
+    Code(String),
+    Denied,
+    Manual(Result<String, String>),
+    Aborted,
+}
+
+fn extract_browser_code(outcome: BrowserOutcome, state: &str, signal: Option<&AbortSignal>) -> Result<String, String> {
+    let code = match outcome {
+        BrowserOutcome::Code(code) => Some(code),
+        BrowserOutcome::Denied | BrowserOutcome::Aborted => None,
+        BrowserOutcome::Manual(input) if is_aborted(signal) => {
+            let _ = input;
+            None
+        }
+        BrowserOutcome::Manual(input) => {
+            let input = input?;
+            let (code, parsed_state) = parse_authorization_input(&input);
+            if parsed_state.as_ref().is_some_and(|s| *s != state) {
+                return Err("OAuth state mismatch".into());
+            }
+            code
+        }
+    };
+    code.ok_or_else(|| {
+        if is_aborted(signal) {
+            "Login cancelled".into()
+        } else {
+            "OAuth callback did not complete.".into()
+        }
+    })
+}
+
 impl RadiusOAuth {
     async fn request_token(
         &self,
@@ -180,60 +265,31 @@ impl RadiusOAuth {
         let response = fetch_text(self.transport.as_ref(), request, signal, None)
             .await
             .map_err(|e| cancelled_or(e, signal))?;
-        if !response.ok() {
-            return Err(read_oauth_error(&response, "Radius OAuth device authorization failed").message);
-        }
-        let data = parse_json_body(&response.text)?;
-        let text = |key: &str| {
-            data.get(key)
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        };
-        let expires_in = data.get("expires_in").and_then(Value::as_f64).filter(|n| *n != 0.0);
-        let (Some(device_code), Some(user_code), Some(uri), Some(expires_in)) = (
-            text("device_code"),
-            text("user_code"),
-            text("verification_uri"),
-            expires_in,
-        ) else {
-            return Err("Radius OAuth device authorization response is missing required fields".into());
-        };
-        let interval = data.get("interval").and_then(Value::as_f64);
+        let auth = parse_device_auth(&response)?;
         interaction.notify(AuthEvent::DeviceCode {
-            user_code,
-            verification_uri: uri,
-            interval_seconds: interval,
-            expires_in_seconds: Some(expires_in),
+            user_code: auth.user_code,
+            verification_uri: auth.uri,
+            interval_seconds: auth.interval,
+            expires_in_seconds: Some(auth.expires_in),
         });
         poll_device_code_flow(
             &ClockLoginEnv(self.clock),
             signal,
-            interval,
-            Some(expires_in),
+            auth.interval,
+            Some(auth.expires_in),
             false,
             || async {
-                match self
+                let result = self
                     .request_token(
                         &[
                             ("grant_type", DEVICE_CODE_GRANT_TYPE),
                             ("client_id", CLIENT_ID),
-                            ("device_code", &device_code),
+                            ("device_code", &auth.device_code),
                         ],
                         signal,
                     )
-                    .await
-                {
-                    Ok(credential) => Ok(Poll::Complete(credential)),
-                    Err(TokenError::Other(message)) => Err(message),
-                    Err(TokenError::Response(error)) => match error.oauth_error.as_deref() {
-                        Some("authorization_pending") => Ok(Poll::Pending),
-                        Some("slow_down") => Ok(Poll::SlowDown(None)),
-                        Some("expired_token") => Ok(Poll::Failed("Device authorization expired.".into())),
-                        Some("access_denied") => Ok(Poll::Failed("Device authorization was denied.".into())),
-                        _ => Err(error.message),
-                    },
-                }
+                    .await;
+                map_device_poll_result(result)
             },
         )
         .await
@@ -288,68 +344,29 @@ impl RadiusOAuth {
             ("handoff", "url"),
             ("state", &state),
         ])));
-        interaction.notify(AuthEvent::Progress {
-            message: format!("Listening for OAuth callback on {redirect_uri}"),
-        });
-        interaction.notify(AuthEvent::AuthUrl {
-            url: authorize.to_string(),
-            instructions: Some(
-                "Continue in your browser. If the browser is on another machine, paste the final redirect URL here."
-                    .into(),
-            ),
-        });
-        let manual_abort = AbortSignal::new();
-        let manual = interaction.prompt(
-            AuthPrompt::ManualCode {
-                message: "Complete sign-in in your browser, or paste the authorization code / redirect URL here:"
-                    .into(),
-                placeholder: Some(redirect_uri.into()),
-            },
-            Some(manual_abort.clone()),
+        let (manual_abort, manual) = start_browser_auth_prompt(
+            interaction,
+            format!("Listening for OAuth callback on {redirect_uri}"),
+            authorize.to_string(),
+            "Continue in your browser. If the browser is on another machine, paste the final redirect URL here.",
+            redirect_uri.into(),
         );
         tokio::pin!(manual);
         let mut receiver = server.receiver;
-        enum Outcome {
-            Code(String),
-            Denied,
-            Manual(Result<String, String>),
-            Aborted,
-        }
         let outcome = tokio::select! {
             callback = &mut receiver => match callback {
-                Ok(Some(code)) => Outcome::Code(code),
-                Ok(None) => Outcome::Denied,
-                Err(_) => Outcome::Manual(manual.as_mut().await),
+                Ok(Some(code)) => BrowserOutcome::Code(code),
+                Ok(None) => BrowserOutcome::Denied,
+                Err(_) => BrowserOutcome::Manual(manual.as_mut().await),
             },
-            input = manual.as_mut() => Outcome::Manual(input),
-            () = cancelled(signal) => Outcome::Aborted,
+            input = manual.as_mut() => BrowserOutcome::Manual(input),
+            () = cancelled(signal) => BrowserOutcome::Aborted,
         };
         manual_abort.abort();
         if let Some(stop) = server.stop {
             let _ = stop.send(());
         }
-        let code = match outcome {
-            Outcome::Code(code) => Some(code),
-            Outcome::Denied | Outcome::Aborted => None,
-            Outcome::Manual(input) => {
-                if is_aborted(signal) {
-                    None
-                } else {
-                    let input = input?;
-                    let (code, parsed_state) = parse_authorization_input(&input);
-                    if parsed_state.as_ref().is_some_and(|s| *s != state) {
-                        return Err("OAuth state mismatch".into());
-                    }
-                    code
-                }
-            }
-        };
-        let Some(code) = code else {
-            if is_aborted(signal) {
-                return Err("Login cancelled".into());
-            }
-            return Err("OAuth callback did not complete.".into());
-        };
+        let code = extract_browser_code(outcome, &state, signal)?;
         self.request_token(
             &[
                 ("grant_type", "authorization_code"),
@@ -401,6 +418,53 @@ struct CallbackServer {
     port: u16,
 }
 
+fn evaluate_callback_request(base: &str, target: &str, expected_state: &str) -> (u16, String, Option<Option<String>>) {
+    let Ok(url) = reqwest::Url::parse(base).and_then(|base| base.join(target)) else {
+        return (404, oauth_error_html("Callback route not found.", None), None);
+    };
+    if url.path() != CALLBACK_PATH {
+        return (404, oauth_error_html("Callback route not found.", None), None);
+    }
+    let param = |key: &str| url.query_pairs().find(|(k, _)| k == key).map(|(_, v)| v.into_owned());
+    if param("state").as_deref() != Some(expected_state) {
+        return (400, oauth_error_html("OAuth state mismatch.", None), None);
+    }
+    if let Some(error) = param("error") {
+        let message = param("error_description").unwrap_or(error);
+        return (400, oauth_error_html(&message, None), Some(None));
+    }
+    if let Some(code) = param("code") {
+        return (
+            200,
+            oauth_success_html("Signed in to Radius. You may now close this page."),
+            Some(Some(code)),
+        );
+    }
+    (400, oauth_error_html("Missing authorization code.", None), None)
+}
+
+async fn serve_callback_connection(
+    mut socket: tokio::net::TcpStream,
+    base: &str,
+    expected_state: &str,
+) -> Option<Option<String>> {
+    let head = crate::oauth_flow::read_http_head(&mut socket).await;
+    let target = head.split_whitespace().nth(1).unwrap_or("/");
+    let (status, html, result) = evaluate_callback_request(base, target, expected_state);
+    let reason = match status {
+        200 => "OK",
+        400 => "Bad Request",
+        _ => "Not Found",
+    };
+    let response = format!(
+        "HTTP/1.1 {status} {reason}\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{html}",
+        html.len()
+    );
+    let _ = socket.write_all(response.as_bytes()).await;
+    let _ = socket.shutdown().await;
+    result
+}
+
 impl CallbackServer {
     async fn start(expected_state: &str, port: u16) -> Self {
         let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -424,50 +488,8 @@ impl CallbackServer {
                     accepted = listener.accept() => accepted,
                     _ = &mut stopped => return,
                 };
-                let Ok((mut socket, _)) = accepted else { continue };
-                let mut buffer = Vec::new();
-                let mut chunk = [0u8; 4096];
-                while !buffer.windows(4).any(|w| w == b"\r\n\r\n") {
-                    match socket.read(&mut chunk).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => buffer.extend_from_slice(&chunk[..n]),
-                    }
-                }
-                let head = String::from_utf8_lossy(&buffer).into_owned();
-                let target = head.split_whitespace().nth(1).unwrap_or("/").to_string();
-                let url = reqwest::Url::parse(&base).and_then(|base| base.join(&target));
-                let (status, html, result) = match url {
-                    Ok(url) if url.path() == CALLBACK_PATH => {
-                        let param = |key: &str| url.query_pairs().find(|(k, _)| k == key).map(|(_, v)| v.into_owned());
-                        if param("state").as_deref() != Some(state.as_str()) {
-                            (400, oauth_error_html("OAuth state mismatch.", None), None)
-                        } else if let Some(error) = param("error") {
-                            let message = param("error_description").unwrap_or(error);
-                            (400, oauth_error_html(&message, None), Some(None))
-                        } else if let Some(code) = param("code") {
-                            (
-                                200,
-                                oauth_success_html("Signed in to Radius. You may now close this page."),
-                                Some(Some(code)),
-                            )
-                        } else {
-                            (400, oauth_error_html("Missing authorization code.", None), None)
-                        }
-                    }
-                    _ => (404, oauth_error_html("Callback route not found.", None), None),
-                };
-                let reason = match status {
-                    200 => "OK",
-                    400 => "Bad Request",
-                    _ => "Not Found",
-                };
-                let response = format!(
-                    "HTTP/1.1 {status} {reason}\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{html}",
-                    html.len()
-                );
-                let _ = socket.write_all(response.as_bytes()).await;
-                let _ = socket.shutdown().await;
-                if let Some(result) = result
+                let Ok((socket, _)) = accepted else { continue };
+                if let Some(result) = serve_callback_connection(socket, &base, &state).await
                     && let Some(sender) = sender.take()
                 {
                     let _ = sender.send(result);
@@ -541,9 +563,6 @@ impl OAuthAuth for RadiusOAuth {
     }
 
     fn to_auth(&self, credential: &OAuthCredential) -> Result<ModelAuth, String> {
-        Ok(ModelAuth {
-            api_key: Some(credential.access.clone()),
-            ..Default::default()
-        })
+        api_key_model_auth(credential)
     }
 }

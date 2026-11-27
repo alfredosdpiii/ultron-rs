@@ -83,49 +83,89 @@ fn symbol(c: char) -> Option<(&'static [u16], u8, bool)> {
     Some((ranks, t, currency))
 }
 
-/// Tertiary weights: 0 lowercase or caseless, 1 a small variant (`ͣ`), 2 uppercase, 3 and 4 a compatibility form
-/// (`ª`, `²`, `½`, `æ`; `Æ`).
-fn ces(c: char) -> Ces {
-    let mut out = Ces::default();
-    let digit = |d: u32, t: u8| Ce { p: DIGIT + d, s: 0, t };
-    if ignorable(c) {
-        return out;
+fn digit_ce(digit: u32, tertiary: u8) -> Ce {
+    Ce {
+        p: DIGIT + digit,
+        s: 0,
+        t: tertiary,
     }
+}
+
+fn ascii_ces(c: char, out: &mut Ces) -> bool {
     if c.is_ascii_digit() {
-        out.push(digit(c as u32 - '0' as u32, 0));
-    } else if c.is_ascii_alphabetic() {
-        let p = LETTER + (c.to_ascii_lowercase() as u32 - 'a' as u32 + 1) * 16;
-        out.push(ce(p, 0, 2 * u8::from(c.is_ascii_uppercase())));
-    } else if let Some(d) = "¹²³".chars().position(|x| x == c) {
-        out.push(digit(d as u32 + 1, 3));
-    } else if let Some(n) = "¼½¾".chars().position(|x| x == c) {
-        let slash = symbol('\u{2044}').map_or(0, |(ranks, _, _)| u32::from(ranks[0]));
-        out.push(digit(if n == 2 { 3 } else { 1 }, 3));
-        out.push(ce(SYMBOL + slash, 0, 3));
-        out.push(digit(if n == 1 { 2 } else { 4 }, 3));
-    } else if let Some((ranks, t, currency)) = symbol(c) {
-        for rank in ranks {
+        out.push(digit_ce(c as u32 - '0' as u32, 0));
+        return true;
+    }
+    if c.is_ascii_alphabetic() {
+        let primary = LETTER + (c.to_ascii_lowercase() as u32 - 'a' as u32 + 1) * 16;
+        out.push(ce(primary, 0, 2 * u8::from(c.is_ascii_uppercase())));
+        return true;
+    }
+    false
+}
+
+fn compat_ces(c: char, out: &mut Ces) -> bool {
+    if let Some(index) = "¹²³".chars().position(|x| x == c) {
+        out.push(digit_ce(index as u32 + 1, 3));
+        return true;
+    }
+    let Some(index) = "¼½¾".chars().position(|x| x == c) else {
+        return false;
+    };
+    let slash = symbol('\u{2044}').map_or(0, |(ranks, _, _)| u32::from(ranks[0]));
+    out.push(digit_ce(if index == 2 { 3 } else { 1 }, 3));
+    out.push(ce(SYMBOL + slash, 0, 3));
+    out.push(digit_ce(if index == 1 { 2 } else { 4 }, 3));
+    true
+}
+
+fn push_symbol_ces(out: &mut Ces, ranks: &[u16], tertiary: u8, currency: bool) {
+    let base = if currency { CURRENCY } else { SYMBOL };
+    for rank in ranks {
+        out.push(Ce {
+            p: base + u32::from(*rank),
+            s: 0,
+            t: tertiary,
+        });
+    }
+}
+
+fn push_letter_ces(out: &mut Ces, primaries: [u16; 3], secondary: u16, tertiary: u8) {
+    for (index, primary) in primaries.into_iter().filter(|p| *p != 0).enumerate() {
+        out.push(Ce {
+            p: LETTER + u32::from(primary),
+            s: 0,
+            t: tertiary,
+        });
+        if index == 0 && secondary != 0 {
             out.push(Ce {
-                p: if currency { CURRENCY } else { SYMBOL } + u32::from(*rank),
-                s: 0,
-                t,
+                p: 0,
+                s: secondary,
+                t: 0,
             });
         }
-    } else if let Ok(i) = tables::MARKS.binary_search_by_key(&c, |row| row.0) {
-        out.push(ce(0, tables::MARKS[i].1, 0));
-    } else if let Ok(i) = tables::LETTERS.binary_search_by_key(&c, |row| row.0) {
-        let (_, primaries, s, t) = tables::LETTERS[i];
-        for (i, p) in primaries.into_iter().filter(|p| *p != 0).enumerate() {
-            out.push(Ce {
-                p: LETTER + u32::from(p),
-                s: 0,
-                t,
-            });
-            if i == 0 && s != 0 {
-                out.push(Ce { p: 0, s, t: 0 });
-            }
-        }
-    } else if c.is_numeric() {
+    }
+}
+
+fn table_ces(c: char, out: &mut Ces) -> bool {
+    if let Some((ranks, tertiary, currency)) = symbol(c) {
+        push_symbol_ces(out, ranks, tertiary, currency);
+        return true;
+    }
+    if let Ok(index) = tables::MARKS.binary_search_by_key(&c, |row| row.0) {
+        out.push(ce(0, tables::MARKS[index].1, 0));
+        return true;
+    }
+    if let Ok(index) = tables::LETTERS.binary_search_by_key(&c, |row| row.0) {
+        let (_, primaries, secondary, tertiary) = tables::LETTERS[index];
+        push_letter_ces(out, primaries, secondary, tertiary);
+        return true;
+    }
+    false
+}
+
+fn fallback_ces(c: char, out: &mut Ces) {
+    if c.is_numeric() {
         out.push(ce(DIGIT + 10 + c as u32, 0, 0));
     } else if matches!(c, '\u{e000}'..='\u{f8ff}' | '\u{f0000}'..) {
         out.push(ce(OTHER_LETTER + 0x11_0000 + c as u32, 0, 0));
@@ -135,6 +175,16 @@ fn ces(c: char) -> Ces {
     } else {
         out.push(ce(OTHER_SYMBOL + c as u32, 0, 0));
     }
+}
+
+/// Tertiary weights: 0 lowercase or caseless, 1 a small variant (`ͣ`), 2 uppercase, 3 and 4 a compatibility form
+/// (`ª`, `²`, `½`, `æ`; `Æ`).
+fn ces(c: char) -> Ces {
+    let mut out = Ces::default();
+    if ignorable(c) || ascii_ces(c, &mut out) || compat_ces(c, &mut out) || table_ces(c, &mut out) {
+        return out;
+    }
+    fallback_ces(c, &mut out);
     out
 }
 

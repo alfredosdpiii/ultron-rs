@@ -149,11 +149,18 @@ pub fn self_review(settings: &Value) -> SelfReview {
     }
 }
 
-/// `command` without its quoted text: a search for the words "gh pr create" ships nothing.
-// ponytail: a command inside quotes (`bash -c "git push"`) is not seen; parse the shell if that gets used to dodge.
+/// `command` without its quoted text (so `rg "gh pr create"` ships nothing), except quoted payloads passed to
+/// `sh`/`bash`/`zsh -c "..."` which are unwrapped so subshells cannot bypass ship guards.
 fn unquoted(command: &str) -> String {
+    static SHELL_C: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#"\b(?:ba|z|da)?sh\s+(?:-[a-zA-Z]*c[a-zA-Z]*)\s+(?:'([^']*)'|"([^"]*)")"#).expect("valid")
+    });
     static QUOTED: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#"'[^']*'|"[^"]*""#).expect("valid"));
-    QUOTED.replace_all(command, "''").into_owned()
+    let expanded = SHELL_C.replace_all(command, |caps: &regex::Captures| {
+        let inner = caps.get(1).or_else(|| caps.get(2)).map_or("", |m| m.as_str());
+        format!(" ; {inner} ; ")
+    });
+    QUOTED.replace_all(&expanded, "''").into_owned()
 }
 
 /// Whether `command` (unquoted) commits, pushes or opens a pull request.
@@ -166,50 +173,84 @@ fn ships(command: &str) -> bool {
 
 /// Where `command` (unquoted) opens its pull request: the last `cd <dir>` before `gh pr create`, else `cwd`. `None`
 /// when it opens none.
-// ponytail: a quoted or `~` directory is not followed and falls back to `cwd`; parse the shell if that matters.
-fn pr_directory(command: &str, cwd: &Path) -> Option<PathBuf> {
+fn pr_directory(typed: &str, command: &str, cwd: &Path, home: Option<&Path>) -> Option<PathBuf> {
     static CREATE: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"\bgh\s+pr\s+create\b").expect("valid"));
-    directory_of(command, cwd, &CREATE)
+    if !CREATE.is_match(command) {
+        return None;
+    }
+    directory_of(typed, cwd, home, &CREATE)
 }
 
 /// Where `command` (unquoted) pushes from, by the same rule. `None` when it pushes nothing.
-fn push_directory(typed: &str, command: &str, cwd: &Path) -> Option<PathBuf> {
+fn push_directory(typed: &str, command: &str, cwd: &Path, home: Option<&Path>) -> Option<PathBuf> {
     static PUSH: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"\bgit\s+(?:-C\s+\S+\s+)?push\b").expect("valid"));
     if !PUSH.is_match(command) {
         return None;
     }
-    Some(git_target_dir(typed, command, cwd, &PUSH))
+    Some(git_target_dir(typed, command, cwd, home, &PUSH))
 }
 
 /// Directory targeted by a shipping command (`git -C <dir> ...`, else last `cd <dir>` before it, else `cwd`).
-fn ship_directory(typed: &str, command: &str, cwd: &Path) -> PathBuf {
+fn ship_directory(typed: &str, command: &str, cwd: &Path, home: Option<&Path>) -> PathBuf {
     static SHIP: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r"\bgit\s+(?:-C\s+\S+\s+)?(commit|push)\b|\bgh\s+pr\s+create\b").expect("valid")
     });
-    git_target_dir(typed, command, cwd, &SHIP)
+    git_target_dir(typed, command, cwd, home, &SHIP)
 }
 
-fn git_target_dir(typed: &str, command: &str, cwd: &Path, what: &regex::Regex) -> PathBuf {
+fn expand_tilde(raw: &str, home: Option<&Path>) -> PathBuf {
+    if raw == "~"
+        && let Some(home) = home
+    {
+        return home.to_path_buf();
+    }
+    if let Some(rest) = raw.strip_prefix("~/")
+        && let Some(home) = home
+    {
+        return home.join(rest);
+    }
+    PathBuf::from(raw)
+}
+
+fn git_target_dir(typed: &str, _command: &str, cwd: &Path, home: Option<&Path>, what: &regex::Regex) -> PathBuf {
     static GIT_C: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r#"\bgit\s+-C\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|)]+))\s+(?:commit|push)\b"#).expect("valid")
     });
-    let base = directory_of(command, cwd, what).unwrap_or_else(|| cwd.to_path_buf());
+    let base = directory_of(typed, cwd, home, what).unwrap_or_else(|| cwd.to_path_buf());
     if let Some(found) = GIT_C.captures(typed)
         && let Some(dir) = found.iter().skip(1).flatten().next()
     {
-        return base.join(dir.as_str());
+        let expanded = expand_tilde(dir.as_str(), home);
+        return if expanded.is_absolute() {
+            expanded
+        } else {
+            base.join(expanded)
+        };
     }
     base
 }
 
-fn directory_of(command: &str, cwd: &Path, what: &regex::Regex) -> Option<PathBuf> {
-    static CD: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"(?:^|[;&|(\n])\s*cd\s+([^\s;&|)']+)").expect("valid"));
+fn directory_of(command: &str, cwd: &Path, home: Option<&Path>, what: &regex::Regex) -> Option<PathBuf> {
+    static CD: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#"(?:^|[;&|(\n])\s*cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|)'"]+))"#).expect("valid")
+    });
     let before = &command[..what.find(command)?.start()];
     Some(match CD.captures_iter(before).last() {
-        Some(found) => cwd.join(&found[1]),
+        Some(found) => {
+            let dir = found
+                .get(1)
+                .or_else(|| found.get(2))
+                .or_else(|| found.get(3))
+                .map_or("", |m| m.as_str());
+            let expanded = expand_tilde(dir, home);
+            if expanded.is_absolute() {
+                expanded
+            } else {
+                cwd.join(expanded)
+            }
+        }
         None => cwd.to_path_buf(),
     })
 }
@@ -415,6 +456,8 @@ pub struct SituationalSkills {
     self_review: SelfReview,
     /// Where the session's commands run, for the receipt of a pull request.
     cwd: PathBuf,
+    /// Home directory for expanding `~` in `cd` / `git -C` targets.
+    home: Option<PathBuf>,
     /// Which hygiene notes the first commit or push of a lane is shown for the whole change.
     hygiene: loki::hygiene::Level,
 }
@@ -429,8 +472,14 @@ impl SituationalSkills {
             changed: Mutex::new(HashSet::new()),
             self_review: SelfReview::Advise,
             cwd: PathBuf::new(),
+            home: None,
             hygiene: loki::hygiene::Level::Off,
         }
+    }
+
+    pub fn with_home(mut self, home: Option<PathBuf>) -> SituationalSkills {
+        self.home = home;
+        self
     }
 
     pub fn with_hygiene(mut self, level: loki::hygiene::Level) -> SituationalSkills {
@@ -568,7 +617,8 @@ impl CellObserver for SituationalSkills {
             return None;
         }
         let first = !jsrt::sync::lock(&self.given).contains(&(lane.to_string(), SHIP_SKILL.to_string()));
-        let ship_dir = ship_directory(typed, &command, &self.cwd);
+        let home = self.home.as_deref();
+        let ship_dir = ship_directory(typed, &command, &self.cwd, home);
         let head = format!(
             "{SHIP_SKILL} comes first: check what this change could break outside its diff, strip dead code and \
              needless comments (pstack/no-comments/SKILL.md), then run the command again (it is refused once per \
@@ -579,30 +629,35 @@ impl CellObserver for SituationalSkills {
                 String::new()
             }
         );
-        self.give(lane, SHIP_SKILL, head).or_else(|| {
-            if self.self_review != SelfReview::Require {
-                return None;
-            }
-            if let Some(dir) = pr_directory(&command, &self.cwd) {
-                return receipt_refusal(&dir).or_else(|| description_refusal(typed, &dir));
-            }
-            let dir = push_directory(typed, &command, &self.cwd)?;
-            let (described, tree) = stale_description(&dir)?;
-            let mut given = jsrt::sync::lock(&self.given);
-            given
-                .insert((lane.to_string(), format!("description {tree}")))
-                .then(|| {
-                    format!(
-                        "the description was written for tree {}, and this push carries {}: an open pull request would \
+        self.give(lane, SHIP_SKILL, head)
+            .or_else(|| self.required_review_refusal(typed, &command, lane, home))
+    }
+}
+
+impl SituationalSkills {
+    fn required_review_refusal(&self, typed: &str, command: &str, lane: &str, home: Option<&Path>) -> Option<String> {
+        if self.self_review != SelfReview::Require {
+            return None;
+        }
+        if let Some(dir) = pr_directory(typed, command, &self.cwd, home) {
+            return receipt_refusal(&dir).or_else(|| description_refusal(typed, &dir));
+        }
+        let dir = push_directory(typed, command, &self.cwd, home)?;
+        let (described, tree) = stale_description(&dir)?;
+        let mut given = jsrt::sync::lock(&self.given);
+        given
+            .insert((lane.to_string(), format!("description {tree}")))
+            .then(|| {
+                format!(
+                    "the description was written for tree {}, and this push carries {}: an open pull request would \
                      describe a change it no longer carries. Run the push again (it is refused once per tree); then \
                      review the new tree, run `spec_api.description(cwd={:?})` and update the pull request with \
                      `gh pr edit --body-file <path>`.",
-                        &described[..described.len().min(8)],
-                        &tree[..tree.len().min(8)],
-                        dir.display().to_string()
-                    )
-                })
-        })
+                    &described[..described.len().min(8)],
+                    &tree[..tree.len().min(8)],
+                    dir.display().to_string()
+                )
+            })
     }
 }
 
@@ -634,4 +689,32 @@ pub fn session_observer(
     hygiene: loki::hygiene::Level,
 ) -> Option<Arc<dyn CellObserver>> {
     build_observer(settings, cwd, resolve, engineering, hygiene).map(|observer| observer as Arc<dyn CellObserver>)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quoted_shell_subcommands_still_trigger_ship_guard() {
+        assert!(ships(&unquoted(r#"bash -c "git push origin main""#)));
+        assert!(ships(&unquoted(r#"sh -ec 'git commit -m "msg"'"#)));
+        assert!(!ships(&unquoted(r#"rg "git push" src/"#)));
+    }
+
+    #[test]
+    fn directory_of_handles_quoted_and_tilde_paths() {
+        let cwd = Path::new("/work");
+        let home = Path::new("/home/tester");
+        let quoted_cmd = r#"cd "my repo" && git push"#;
+        assert_eq!(
+            push_directory(quoted_cmd, &unquoted(quoted_cmd), cwd, Some(home)),
+            Some(PathBuf::from("/work/my repo"))
+        );
+        let tilde_cmd = "cd ~/proj && git push";
+        assert_eq!(
+            push_directory(tilde_cmd, &unquoted(tilde_cmd), cwd, Some(home)),
+            Some(PathBuf::from("/home/tester/proj"))
+        );
+    }
 }

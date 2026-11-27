@@ -301,6 +301,74 @@ fn string_of(value: Option<&Value>) -> Option<String> {
     value.and_then(Value::as_str).map(str::to_string)
 }
 
+fn non_message_entry_kind(kind: Option<&str>) -> Option<EntryKind> {
+    match kind? {
+        "compaction" => Some(EntryKind::Compaction),
+        "branch_summary" => Some(EntryKind::BranchSummary),
+        "custom" => Some(EntryKind::Custom),
+        _ => None,
+    }
+}
+
+fn extract_tool_calls(message: &Map<String, Value>) -> Vec<LogToolCall> {
+    let mut calls = Vec::new();
+    for part in message.get("content").and_then(Value::as_array).into_iter().flatten() {
+        let Some(item) = part.as_object() else { continue };
+        if item.get("type").and_then(Value::as_str) != Some("toolCall") {
+            continue;
+        }
+        let Some(name) = item.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let code = record(item.get("arguments"))
+            .and_then(|a| a.get("code"))
+            .and_then(Value::as_str);
+        calls.push(LogToolCall {
+            name: name.to_string(),
+            apis: code.filter(|_| name == "rlm").map(cell_apis),
+        });
+    }
+    calls
+}
+
+fn digest_custom_message(entry: &mut LogEntry, message: &Map<String, Value>) {
+    entry.kind = EntryKind::Custom;
+    if message.get("customType").and_then(Value::as_str) != Some(protocol::custom_types::RECALLED_MEMORY) {
+        return;
+    }
+    let details = record(message.get("details"));
+    let field = |key: &str| details.and_then(|d| d.get(key));
+    entry.recall = Some(Recall {
+        memories: field("ids").and_then(Value::as_array).map_or(0, Vec::len),
+        brief: field("digest").is_some_and(|d| !d.is_null()),
+        stale: field("stale").and_then(Value::as_u64).unwrap_or(0) as usize,
+    });
+}
+
+fn digest_message(entry: &mut LogEntry, message: &Map<String, Value>) {
+    match message.get("role").and_then(Value::as_str) {
+        Some("assistant") => {
+            entry.kind = EntryKind::Assistant;
+            entry.provider = string_of(message.get("provider"));
+            entry.model = string_of(message.get("model"));
+            entry.usage = log_usage(message.get("usage"));
+            entry.tool_calls = extract_tool_calls(message);
+        }
+        Some("toolResult") => {
+            entry.kind = EntryKind::ToolResult;
+            entry.tool_name = string_of(message.get("toolName"));
+            entry.is_error = message.get("isError") == Some(&Value::Bool(true));
+            entry.redactions = (text_of(message.get("content")).matches("[REDACTED:").count()) as f64;
+        }
+        Some("user") => {
+            entry.kind = EntryKind::User;
+            entry.nudge = classify_nudge(&text_of(message.get("content")));
+        }
+        Some("custom") => digest_custom_message(entry, message),
+        _ => {}
+    }
+}
+
 fn digest_entry(write: &Map<String, Value>) -> Option<LogEntry> {
     let id = write.get("id")?.as_str()?.to_string();
     let mut entry = LogEntry {
@@ -319,65 +387,13 @@ fn digest_entry(write: &Map<String, Value>) -> Option<LogEntry> {
         recall: None,
     };
     let kind = write.get("type").and_then(Value::as_str);
-    if let Some(k) = kind.and_then(|k| match k {
-        "compaction" => Some(EntryKind::Compaction),
-        "branch_summary" => Some(EntryKind::BranchSummary),
-        "custom" => Some(EntryKind::Custom),
-        _ => None,
-    }) {
+    if let Some(k) = non_message_entry_kind(kind) {
         entry.kind = k;
         entry.usage = log_usage(write.get("usage"));
         return Some(entry);
     }
-    let Some(message) = record(write.get("message")).filter(|_| kind == Some("message")) else {
-        return Some(entry);
-    };
-    match message.get("role").and_then(Value::as_str) {
-        Some("assistant") => {
-            entry.kind = EntryKind::Assistant;
-            entry.provider = string_of(message.get("provider"));
-            entry.model = string_of(message.get("model"));
-            entry.usage = log_usage(message.get("usage"));
-            for part in message.get("content").and_then(Value::as_array).into_iter().flatten() {
-                let Some(item) = part.as_object() else { continue };
-                if item.get("type").and_then(Value::as_str) != Some("toolCall") {
-                    continue;
-                }
-                let Some(name) = item.get("name").and_then(Value::as_str) else {
-                    continue;
-                };
-                let code = record(item.get("arguments"))
-                    .and_then(|a| a.get("code"))
-                    .and_then(Value::as_str);
-                entry.tool_calls.push(LogToolCall {
-                    name: name.to_string(),
-                    apis: code.filter(|_| name == "rlm").map(cell_apis),
-                });
-            }
-        }
-        Some("toolResult") => {
-            entry.kind = EntryKind::ToolResult;
-            entry.tool_name = string_of(message.get("toolName"));
-            entry.is_error = message.get("isError") == Some(&Value::Bool(true));
-            entry.redactions = (text_of(message.get("content")).matches("[REDACTED:").count()) as f64;
-        }
-        Some("user") => {
-            entry.kind = EntryKind::User;
-            entry.nudge = classify_nudge(&text_of(message.get("content")));
-        }
-        Some("custom") => {
-            entry.kind = EntryKind::Custom;
-            if message.get("customType").and_then(Value::as_str) == Some(protocol::custom_types::RECALLED_MEMORY) {
-                let details = record(message.get("details"));
-                let field = |key: &str| details.and_then(|d| d.get(key));
-                entry.recall = Some(Recall {
-                    memories: field("ids").and_then(Value::as_array).map_or(0, Vec::len),
-                    brief: field("digest").is_some_and(|d| !d.is_null()),
-                    stale: field("stale").and_then(Value::as_u64).unwrap_or(0) as usize,
-                });
-            }
-        }
-        _ => {}
+    if let Some(message) = record(write.get("message")).filter(|_| kind == Some("message")) {
+        digest_message(&mut entry, message);
     }
     Some(entry)
 }
@@ -489,51 +505,69 @@ pub fn read_session_log(path: &Path) -> Result<SessionLog, LogError> {
     Ok(log)
 }
 
-fn apply(log: &mut SessionLog, durable: &mut DurableDigest, write: &Map<String, Value>) {
-    let kind = write.get("kind").and_then(Value::as_str);
-    if kind == Some("list") {
-        let calls = (write.get("namespace").and_then(Value::as_str) == Some(ns::USAGE))
-            .then(|| {
-                write
-                    .get("key")
-                    .and_then(Value::as_str)?
-                    .strip_prefix(session_journal::ledger::CALLS_PREFIX)
-            })
-            .flatten();
-        if let Some(root) = calls {
-            match (write.get("op").and_then(Value::as_str), write.get("value")) {
-                (Some("append"), Some(call)) => log.usage_calls.entry(root.to_string()).or_default().push(call.clone()),
-                _ => drop(log.usage_calls.shift_remove(root)),
-            }
-            return;
-        }
-        if write.get("op").and_then(Value::as_str) == Some("append")
-            && write.get("namespace").and_then(Value::as_str) == Some(ns::MODULE)
-            && write.get("key").and_then(Value::as_str) == Some(ns::DURABLE_KEY)
-            && let Some(record) = write.get("value")
-        {
-            durable.commit(record);
+fn apply_list_write(log: &mut SessionLog, durable: &mut DurableDigest, write: &Map<String, Value>) {
+    let namespace = write.get("namespace").and_then(Value::as_str);
+    let key = write.get("key").and_then(Value::as_str);
+    let op = write.get("op").and_then(Value::as_str);
+    if namespace == Some(ns::USAGE)
+        && let Some(root) = key.and_then(|k| k.strip_prefix(session_journal::ledger::CALLS_PREFIX))
+    {
+        match (op, write.get("value")) {
+            (Some("append"), Some(call)) => log.usage_calls.entry(root.to_string()).or_default().push(call.clone()),
+            _ => drop(log.usage_calls.shift_remove(root)),
         }
         return;
     }
-    if kind == Some("entry") {
-        if let Some(entry) = digest_entry(write) {
-            log.entries.push(entry);
-        }
+    if op == Some("append")
+        && namespace == Some(ns::MODULE)
+        && key == Some(ns::DURABLE_KEY)
+        && let Some(record) = write.get("value")
+    {
+        durable.commit(record);
+    }
+}
+
+fn apply_op_meta(log: &mut SessionLog, key: &str, op: Option<&str>, value: Option<&Map<String, Value>>) {
+    if op != Some("set") {
         return;
     }
-    if kind == Some("usage") {
-        if let Some(usage) = log_usage(write.get("usage")) {
-            log.usage_rows.push(LogUsageRow {
-                usage,
-                entry_id: string_of(write.get("entryId")),
-                adjustment: write.get("adjustment") == Some(&Value::Bool(true)),
-            });
-        }
+    let Some(v) = value else { return };
+    let Some(lane) = v.get("lane").and_then(Value::as_str) else {
+        return;
+    };
+    let intent = record(v.get("intent"))
+        .and_then(|i| i.get("kind"))
+        .and_then(Value::as_str);
+    log.operations.insert(
+        key.to_string(),
+        LogOperation {
+            id: key.to_string(),
+            lane: lane.to_string(),
+            kind: intent.unwrap_or("run").to_string(),
+            started_at: timestamp_of(v.get("startedAt")),
+        },
+    );
+}
+
+fn apply_op_result(log: &mut SessionLog, key: &str, op: Option<&str>, value: Option<&Map<String, Value>>) {
+    if op != Some("set") {
         return;
     }
-    let (Some("value"), Some(namespace), Some(key)) = (
-        kind,
+    let Some(v) = value else { return };
+    let text = |k: &str| v.get(k).and_then(Value::as_str);
+    log.results.push(LogResult {
+        operation_id: text("operationId").unwrap_or(key).to_string(),
+        kind: text("kind").unwrap_or("run").to_string(),
+        status: text("status").unwrap_or("unknown").to_string(),
+        from_tip_id: text("fromTipId").map(str::to_string),
+        tip_id: text("tipId").map(str::to_string),
+        started_at: timestamp_of(v.get("startedAt")),
+        ended_at: timestamp_of(v.get("endedAt")),
+    });
+}
+
+fn apply_value_write(log: &mut SessionLog, write: &Map<String, Value>) {
+    let (Some(namespace), Some(key)) = (
         write.get("namespace").and_then(Value::as_str),
         write.get("key").and_then(Value::as_str),
     ) else {
@@ -541,55 +575,44 @@ fn apply(log: &mut SessionLog, durable: &mut DurableDigest, write: &Map<String, 
     };
     let op = write.get("op").and_then(Value::as_str);
     let value = record(write.get("value"));
-    if namespace == ns::OP_META {
-        if op == Some("set")
-            && let Some(v) = value
-            && let Some(lane) = v.get("lane").and_then(Value::as_str)
-        {
-            let intent = record(v.get("intent"))
-                .and_then(|i| i.get("kind"))
-                .and_then(Value::as_str);
-            log.operations.insert(
-                key.to_string(),
-                LogOperation {
-                    id: key.to_string(),
-                    lane: lane.to_string(),
-                    kind: intent.unwrap_or("run").to_string(),
-                    started_at: timestamp_of(v.get("startedAt")),
-                },
-            );
+    match namespace {
+        ns::OP_META => apply_op_meta(log, key, op, value),
+        ns::OP_RESULT => apply_op_result(log, key, op, value),
+        _ if KEPT_NAMESPACES.contains(&namespace) => {
+            let address = format!("{namespace}/{key}");
+            match op {
+                Some("set") => {
+                    let v = write.get("value").cloned().unwrap_or(Value::Null);
+                    log.values.insert(address, v);
+                }
+                Some("delete") => {
+                    log.values.shift_remove(&address);
+                }
+                _ => {}
+            }
         }
-        return;
+        _ => {}
     }
-    if namespace == ns::OP_RESULT {
-        if op == Some("set")
-            && let Some(v) = value
-        {
-            let text = |k: &str| v.get(k).and_then(Value::as_str);
-            log.results.push(LogResult {
-                operation_id: text("operationId").unwrap_or(key).to_string(),
-                kind: text("kind").unwrap_or("run").to_string(),
-                status: text("status").unwrap_or("unknown").to_string(),
-                from_tip_id: text("fromTipId").map(str::to_string),
-                tip_id: text("tipId").map(str::to_string),
-                started_at: timestamp_of(v.get("startedAt")),
-                ended_at: timestamp_of(v.get("endedAt")),
-            });
+}
+
+fn apply(log: &mut SessionLog, durable: &mut DurableDigest, write: &Map<String, Value>) {
+    match write.get("kind").and_then(Value::as_str) {
+        Some("list") => apply_list_write(log, durable, write),
+        Some("entry") => {
+            if let Some(entry) = digest_entry(write) {
+                log.entries.push(entry);
+            }
         }
-        return;
-    }
-    if !KEPT_NAMESPACES.contains(&namespace) {
-        return;
-    }
-    let address = format!("{namespace}/{key}");
-    match op {
-        Some("set") => {
-            let v = write.get("value").cloned().unwrap_or(Value::Null);
-            log.values.insert(address, v);
+        Some("usage") => {
+            if let Some(usage) = log_usage(write.get("usage")) {
+                log.usage_rows.push(LogUsageRow {
+                    usage,
+                    entry_id: string_of(write.get("entryId")),
+                    adjustment: write.get("adjustment") == Some(&Value::Bool(true)),
+                });
+            }
         }
-        Some("delete") => {
-            log.values.shift_remove(&address);
-        }
+        Some("value") => apply_value_write(log, write),
         _ => {}
     }
 }

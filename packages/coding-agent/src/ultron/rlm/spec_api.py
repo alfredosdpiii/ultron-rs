@@ -63,28 +63,41 @@ def _aside(directory: Path, branch: str) -> Path:
     return directory / f"spec-{quote(branch, safe='')}.json"
 
 
+def _branch_of(spec: Any) -> str | None:
+    if not isinstance(spec, dict):
+        return None
+    branch = spec.get("branch")
+    return branch if isinstance(branch, str) and branch else None
+
+
 def _spec(git: Git, directory: Path) -> dict[str, Any] | None:
     """The spec of the checked-out branch, in `spec.json`. A stack switches branches inside one checkout, so the
     spec of another branch is set aside under its branch's name and brought back when that branch is checked out."""
     branch = git.value("rev-parse", "--abbrev-ref", "HEAD")
+    if not branch:
+        return None
     current = directory / "spec.json"
     spec = _read(current)
-    if not branch or (isinstance(spec, dict) and spec.get("branch") == branch):
-        return spec if branch and isinstance(spec, dict) else None
-    if isinstance(spec, dict) and isinstance(spec.get("branch"), str) and spec["branch"]:
-        os.replace(current, _aside(directory, spec["branch"]))
+    other = _branch_of(spec)
+    if other == branch:
+        return spec
+    if other:
+        os.replace(current, _aside(directory, other))
     mine = _read(_aside(directory, branch))
-    if not isinstance(mine, dict) or mine.get("branch") != branch:
+    if _branch_of(mine) != branch:
         return None
     os.replace(_aside(directory, branch), current)
     return mine
 
 
+def _render_acceptance_line(item: dict[str, Any]) -> str:
+    evidence = f": {item['evidence']}" if item["evidence"] else ""
+    return f"- {item['status']} {item['id']} {item['text']}{evidence}"
+
+
 def _render(spec: dict[str, Any]) -> str:
     lines = [f"Spec: {spec['title']}", "", spec["goal"], ""]
-    for item in spec["acceptance"]:
-        evidence = f": {item['evidence']}" if item["evidence"] else ""
-        lines.append(f"- {item['status']} {item['id']} {item['text']}{evidence}")
+    lines += [_render_acceptance_line(item) for item in spec["acceptance"]]
     if spec.get("decisions"):
         lines += ["", "Decisions:", *(_decision(item) for item in spec["decisions"])]
     return "\n".join(lines) + "\n"
@@ -92,6 +105,33 @@ def _render(spec: dict[str, Any]) -> str:
 
 def _decision(item: dict[str, Any]) -> str:
     return f"- {item['id']} {item['choice']}. Why: {item['reason']}. If overruled: {item['if_overruled']}."
+
+
+def _clean_items(title: str, goal: str, acceptance: Any) -> list[str]:
+    items = [text.strip() for text in acceptance] if isinstance(acceptance, list) else []
+    if not title.strip() or not goal.strip() or not items or not all(items):
+        raise ReviewError("a spec needs a title, a goal and at least one acceptance item, each a sentence a check "
+                          "can show true or false")
+    return items
+
+
+def _merge_acceptance(items: list[str], old: dict[str, Any] | None) -> list[dict[str, Any]]:
+    prior = old["acceptance"] if old else []
+    kept = {item["text"]: item for item in prior}
+    merged: list[dict[str, Any]] = []
+    for number, text in enumerate(items, 1):
+        prev = kept.get(text, {})
+        merged.append({
+            "id": f"A{number}",
+            "text": text,
+            "status": prev.get("status", "pending"),
+            "evidence": prev.get("evidence", ""),
+        })
+    # What a review asked for stays until it is shown: rewording the spec does not answer it.
+    for item in prior:
+        if item.get("from") == "review" and item["text"] not in items:
+            merged.append(dict(item, id=f"A{len(merged) + 1}"))
+    return merged
 
 
 def write(title: str, goal: str, acceptance: list[str], *, cwd: str | None = None, revise: str | None = None,
@@ -102,29 +142,21 @@ def write(title: str, goal: str, acceptance: list[str], *, cwd: str | None = Non
 
     A branch has one spec. Replacing it takes `revise`, what changed in the request; an item whose text stays
     keeps its result."""
-    items = [text.strip() for text in acceptance] if isinstance(acceptance, list) else []
-    if not title.strip() or not goal.strip() or not items or not all(items):
-        raise ReviewError("a spec needs a title, a goal and at least one acceptance item, each a sentence a check "
-                          "can show true or false")
+    items = _clean_items(title, goal, acceptance)
     git, directory = _state(cwd, runner)
     old = _spec(git, directory)
     if old and not (revise or "").strip():
         raise ReviewError(f"this branch has a spec ({old['title']}): pass revise=\"<what changed in the request>\" "
                           "to replace it; an item whose text stays keeps its result")
-    kept = {item["text"]: item for item in old["acceptance"]} if old else {}
+    revisions = [*old["revisions"], revise.strip()] if old else []
+    decisions = old.get("decisions", []) if old else []
     spec = {
         "branch": git.value("rev-parse", "--abbrev-ref", "HEAD"),
         "title": title.strip(),
         "goal": goal.strip(),
-        "acceptance": [{"id": f"A{number}", "text": text, "status": kept.get(text, {}).get("status", "pending"),
-                        "evidence": kept.get(text, {}).get("evidence", "")}
-                       for number, text in enumerate(items, 1)]
-        # What a review asked for stays until it is shown: rewording the spec does not answer it.
-        + [dict(item, id=f"A{number}") for number, item in enumerate(
-            (item for item in (old["acceptance"] if old else [])
-             if item.get("from") == "review" and item["text"] not in items), len(items) + 1)],
-        "revisions": [*(old["revisions"] if old else []), *([revise.strip()] if old else [])],
-        "decisions": old.get("decisions", []) if old else [],
+        "acceptance": _merge_acceptance(items, old),
+        "revisions": revisions,
+        "decisions": decisions,
     }
     _store(directory / "spec.json", json.dumps(spec, indent=1) + "\n")
     return _render(spec) + ("\nWhere the request leaves a choice open, pick, and record it: "
@@ -242,6 +274,107 @@ def _names(paths: list[str], limit: int = 6) -> str:
     return ", ".join(f"`{path}`" for path in paths[:limit]) + more
 
 
+def _latest_checks(directory: Path, tree: str) -> dict[str, dict[str, Any]]:
+    recorded = _read(directory / "checks.json")
+    if not isinstance(recorded, list):
+        return {}
+    latest: dict[str, dict[str, Any]] = {}
+    for record in recorded:
+        if record.get("tree") == tree and not record.get("dirty"):
+            latest[record["command"]] = record
+    return latest
+
+
+def _receipt_purposes(receipt: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = receipt.get("purposes") or []
+    return [entry for entry in raw if isinstance(entry, dict) and entry.get("purpose")]
+
+
+def _receipt_files(receipt: dict[str, Any]) -> list[str]:
+    raw = receipt.get("files") or []
+    return [path for path in raw if isinstance(path, str)]
+
+
+def _stray_files(purposes: list[dict[str, Any]], files: list[str]) -> list[str]:
+    if not purposes:
+        return []
+    named: set[str] = set()
+    for purpose in purposes:
+        for path in purpose.get("files") or []:
+            named.add(path)
+    return [path for path in files if path not in named]
+
+
+def _spec_open_items(spec: dict[str, Any] | None) -> list[str]:
+    if spec is None:
+        return ["no spec says what this change must do (spec_api.write)"]
+    return [f"{item['id']} is {item['status']}" for item in spec["acceptance"] if item["status"] != "pass"]
+
+
+def _review_open_items(receipt: dict[str, Any], spec: dict[str, Any] | None,
+                       latest: dict[str, dict[str, Any]]) -> list[str]:
+    open_items: list[str] = []
+    confirmed = receipt.get("confirmed")
+    if confirmed != 0:
+        open_items.append(f"{confirmed} confirmed finding(s) in the review")
+    if receipt.get("incomplete") is not False:
+        open_items.append("the review did not finish")
+    open_items += _spec_open_items(spec)
+    if not latest:
+        open_items.append("no check ran on this tree (await spec_api.check(bash, \"<command>\"))")
+    for command, record in latest.items():
+        if record["exit_code"] != 0:
+            open_items.append(f"`{command}`: {_exit(record)}")
+    return open_items
+
+
+def _scope_open_items(receipt: dict[str, Any], purposes: list[dict[str, Any]], files: list[str]) -> list[str]:
+    open_items: list[str] = []
+    if len(purposes) > 1:
+        names = "; ".join(purpose["purpose"] for purpose in purposes)
+        open_items.append(f"{len(purposes)} separate purposes ({names}): one pull request each")
+    lines = receipt.get("lines")
+    if isinstance(lines, int) and lines > SIZE_CEILING:
+        open_items.append(f"{lines:,} changed lines, past {SIZE_CEILING:,}: split it by idea into a short stack "
+                          "(review each branch against its parent branch), or waive with why it is one idea")
+    stray = _stray_files(purposes, files)
+    if stray:
+        open_items.append(f"{len(stray)} file(s) under no purpose: {_names(stray)}")
+    return open_items
+
+
+def _render_purpose_line(purpose: dict[str, Any]) -> str:
+    files = f" ({_names(purpose['files'])})" if purpose.get("files") else ""
+    return f"- {purpose['purpose']}{files}"
+
+
+def _append_tail_sections(out: list[str], spec: dict[str, Any] | None, latest: dict[str, dict[str, Any]]) -> None:
+    if spec:
+        out += ["## Acceptance", ""]
+        out += [_render_acceptance_line(item) for item in spec["acceptance"]]
+        out.append("")
+    if latest:
+        out += ["## Verification", ""]
+        out += [f"- `{command}`: {_exit(record)} on this tree, last line `{record['last_line']}`"
+                for command, record in latest.items()]
+        out.append("")
+
+
+def _render_description(tree: str, spec: dict[str, Any] | None, purposes: list[dict[str, Any]],
+                        open_items: list[str], waived: str, latest: dict[str, dict[str, Any]]) -> str:
+    out = [MARKER.format(tree=tree)]
+    if spec:
+        out += ["## Why", "", spec["goal"], ""]
+    if purposes:
+        out += ["## What changed", "", *(_render_purpose_line(purpose) for purpose in purposes), ""]
+    if spec and spec.get("decisions"):
+        out += ["## Decisions", "", *(_decision(item) for item in spec["decisions"]), ""]
+    if open_items:
+        out += ["## Scope", "", f"- Ships with open items ({waived}): {'; '.join(open_items)}", ""]
+    _append_tail_sections(out, spec, latest)
+    return "\n".join(out)
+
+
 def description(*, cwd: str | None = None, runner: Runner | None = None) -> str:
     """Write the pull request's description for the committed tree and return its path, for
     `gh pr create --body-file <path>`. Raises ReviewError naming what is still open; see the module's text. You may
@@ -254,67 +387,16 @@ def description(*, cwd: str | None = None, runner: Runner | None = None) -> str:
         raise ReviewError(f"the committed tree {(tree or 'none')[:8]} has not been reviewed: commit the change, run "
                           f"`review = await review_api.run(rlm, \"\", cwd={where})`, then this again")
     spec = _spec(git, directory)
-    recorded = _read(directory / "checks.json")
-    latest: dict[str, dict[str, Any]] = {}
-    for record in recorded if isinstance(recorded, list) else []:
-        if record.get("tree") == tree and not record.get("dirty"):
-            latest[record["command"]] = record
-    purposes = [p for p in receipt.get("purposes") or [] if isinstance(p, dict) and p.get("purpose")]
-    files = [path for path in receipt.get("files") or [] if isinstance(path, str)]
-
-    open_items: list[str] = []
-    confirmed = receipt.get("confirmed")
-    if confirmed != 0:
-        open_items.append(f"{confirmed} confirmed finding(s) in the review")
-    if receipt.get("incomplete") is not False:
-        open_items.append("the review did not finish")
-    if spec is None:
-        open_items.append("no spec says what this change must do (spec_api.write)")
-    else:
-        open_items += [f"{item['id']} is {item['status']}" for item in spec["acceptance"] if item["status"] != "pass"]
-    if not latest:
-        open_items.append("no check ran on this tree (await spec_api.check(bash, \"<command>\"))")
-    open_items += [f"`{command}`: {_exit(record)}" for command, record in latest.items() if record["exit_code"] != 0]
-    if len(purposes) > 1:
-        open_items.append(f"{len(purposes)} separate purposes ({'; '.join(p['purpose'] for p in purposes)}): "
-                          "one pull request each")
-    lines = receipt.get("lines")
-    if isinstance(lines, int) and lines > SIZE_CEILING:
-        open_items.append(f"{lines:,} changed lines, past {SIZE_CEILING:,}: split it by idea into a short stack "
-                          "(review each branch against its parent branch), or waive with why it is one idea")
-    named = {path for p in purposes for path in p.get("files") or []}
-    stray = [path for path in files if path not in named] if purposes else []
-    if stray:
-        open_items.append(f"{len(stray)} file(s) under no purpose: {_names(stray)}")
-
+    latest = _latest_checks(directory, tree)
+    purposes = _receipt_purposes(receipt)
+    files = _receipt_files(receipt)
+    open_items = _review_open_items(receipt, spec, latest) + _scope_open_items(receipt, purposes, files)
     waived = receipt.get("waived")
     waived = waived.strip() if isinstance(waived, str) else ""
     if open_items and not waived:
         raise ReviewError("the pull request is not ready: " + "; ".join(open_items) + ". Fix them, commit, review "
                           "and run this again. For ones that are wrong or belong in a follow-up, "
                           f"`review_api.waive(\"<reason>\", cwd={where})` records why, and the description prints it.")
-
-    out = [MARKER.format(tree=tree)]
-    if spec:
-        out += ["## Why", "", spec["goal"], ""]
-    if purposes:
-        out += ["## What changed", ""]
-        out += [f"- {p['purpose']}" + (f" ({_names(p['files'])})" if p.get("files") else "") for p in purposes]
-        out.append("")
-    if spec and spec.get("decisions"):
-        out += ["## Decisions", "", *(_decision(item) for item in spec["decisions"]), ""]
-    if open_items:
-        out += ["## Scope", "", f"- Ships with open items ({waived}): {'; '.join(open_items)}", ""]
-    if spec:
-        out += ["## Acceptance", ""]
-        out += [f"- {item['status']} {item['id']} {item['text']}" + (f": {item['evidence']}" if item["evidence"] else "")
-                for item in spec["acceptance"]]
-        out.append("")
-    if latest:
-        out += ["## Verification", ""]
-        out += [f"- `{command}`: {_exit(record)} on this tree, last line `{record['last_line']}`"
-                for command, record in latest.items()]
-        out.append("")
     path = directory / "description.md"
-    _store(path, "\n".join(out))
+    _store(path, _render_description(tree, spec, purposes, open_items, waived, latest))
     return str(path)

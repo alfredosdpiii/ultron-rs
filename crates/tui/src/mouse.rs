@@ -64,32 +64,54 @@ pub struct SgrMouse {
     pub left_click: bool,
 }
 
-/// Decode `data`, or `None` when it is not exactly one SGR mouse report.
-pub fn parse_sgr_mouse(data: &str) -> Option<SgrMouse> {
+fn split_sgr_body(data: &str) -> Option<(&str, bool)> {
     let body = data.strip_prefix("\x1b[<")?;
-    let (body, release) = match body.as_bytes().last()? {
-        b'M' => (&body[..body.len() - 1], false),
-        b'm' => (&body[..body.len() - 1], true),
-        _ => return None,
-    };
+    match body.as_bytes().last()? {
+        b'M' => Some((&body[..body.len() - 1], false)),
+        b'm' => Some((&body[..body.len() - 1], true)),
+        _ => None,
+    }
+}
+
+fn next_sgr_number(parts: &mut std::str::Split<'_, char>) -> Option<i64> {
+    let part = parts.next()?;
+    if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    part.parse::<i64>().ok()
+}
+
+fn parse_sgr_coords(body: &str) -> Option<(u32, i64, i64)> {
     let mut parts = body.split(';');
-    let mut number = || -> Option<i64> {
-        let part = parts.next()?;
-        if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
-            return None;
-        }
-        part.parse::<i64>().ok()
-    };
-    let button = number()?;
-    let col = number()? - 1;
-    let row = number()? - 1;
+    let button = next_sgr_number(&mut parts)?;
+    let col = next_sgr_number(&mut parts)? - 1;
+    let row = next_sgr_number(&mut parts)? - 1;
     if parts.next().is_some() {
         return None;
     }
     let button = u32::try_from(button).ok()?;
-    let wheel = (button & 64 != 0 && button & 2 == 0).then_some(if button & 1 != 0 { 1 } else { -1 });
+    Some((button, col, row))
+}
+
+fn sgr_wheel(button: u32) -> Option<i64> {
+    if button & 64 == 0 || button & 2 != 0 {
+        return None;
+    }
+    Some(if button & 1 != 0 { 1 } else { -1 })
+}
+
+fn decode_sgr_flags(button: u32, release: bool) -> (Option<i64>, bool, bool) {
+    let wheel = sgr_wheel(button);
     let motion = button & 32 != 0 && wheel.is_none();
     let left_click = !release && wheel.is_none() && !motion && button & 3 == 0;
+    (wheel, motion, left_click)
+}
+
+/// Decode `data`, or `None` when it is not exactly one SGR mouse report.
+pub fn parse_sgr_mouse(data: &str) -> Option<SgrMouse> {
+    let (body, release) = split_sgr_body(data)?;
+    let (button, col, row) = parse_sgr_coords(body)?;
+    let (wheel, motion, left_click) = decode_sgr_flags(button, release);
     Some(SgrMouse {
         button,
         col,

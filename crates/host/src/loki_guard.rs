@@ -294,28 +294,14 @@ impl FileWriteGuard for LokiGuard {
         _cwd: &Path,
         _lane: &str,
     ) -> Result<Option<AfterCellReport>, String> {
-        let mut targets: Vec<String> = Vec::new();
-        for path in changes.files.iter().chain(&changes.checked) {
-            if let Some(relative) = inside(&self.root, path)
-                && !targets.contains(&relative)
-                && !loki_file_as_committed(&self.root, &relative)
-            {
-                targets.push(relative);
-            }
-        }
+        let targets = self.collect_targets(changes);
         if targets.is_empty() {
             return Ok(None);
         }
         let checked: Vec<String> = targets.iter().take(MAX_HOOK_FILES).cloned().collect();
         let report = (self.hook)(&self.root, &checked).map_err(|error| error.describe())?;
         if report.blocked_by_policy_changes() {
-            if self.paused_shown.swap(true, Ordering::SeqCst) {
-                return Ok(None);
-            }
-            return Ok(Some(AfterCellReport {
-                outcome: AfterOutcome::Clean,
-                message: Some("post-write checks are paused: .loki/ has uncommitted changes, and Loki checks against the committed policy. Before-write checks of edit() and write() still run. Commit .loki/ to resume them (git add .loki && git commit -m 'Add Loki guardrails' -- .loki).".into()),
-            }));
+            return Ok(self.paused_report());
         }
         let (hygiene_gaps, hygiene): (Vec<String>, Vec<String>) =
             loki::hygiene::written(&self.root, &checked, self.hygiene)
@@ -326,6 +312,63 @@ impl FileWriteGuard for LokiGuard {
         let blocking = self.unseen("blocking", &report.blocking, &checked);
         let advisory = self.unseen("advisory", &advisory, &checked);
         let hygiene = self.unseen("hygiene", &hygiene, &checked);
+        let sections = self.format_after_cell_sections(
+            &blocking,
+            &advisory,
+            &hygiene,
+            &not_checked,
+            targets.len() - checked.len(),
+        );
+        let outcome = after_cell_outcome(!report.blocking.is_empty(), &hygiene, &advisory);
+        Ok((!sections.is_empty()).then(|| AfterCellReport {
+            outcome,
+            message: Some(sections.join("\n")),
+        }))
+    }
+
+    fn before_shell(&self, command: &str, cwd: &Path) -> Result<Verdict, String> {
+        Ok(match loki::shell::command_refusal(&self.root, command, cwd) {
+            None => Verdict::Allow(None),
+            Some(reason) => self.refused(
+                reason.trim().to_string(),
+                "would refuse this command (advise-only mode)",
+            ),
+        })
+    }
+}
+
+impl LokiGuard {
+    fn collect_targets(&self, changes: &CellChanges) -> Vec<String> {
+        let mut targets = Vec::new();
+        for path in changes.files.iter().chain(&changes.checked) {
+            if let Some(relative) = inside(&self.root, path)
+                && !targets.contains(&relative)
+                && !loki_file_as_committed(&self.root, &relative)
+            {
+                targets.push(relative);
+            }
+        }
+        targets
+    }
+
+    fn paused_report(&self) -> Option<AfterCellReport> {
+        if self.paused_shown.swap(true, Ordering::SeqCst) {
+            return None;
+        }
+        Some(AfterCellReport {
+            outcome: AfterOutcome::Clean,
+            message: Some("post-write checks are paused: .loki/ has uncommitted changes, and Loki checks against the committed policy. Before-write checks of edit() and write() still run. Commit .loki/ to resume them (git add .loki && git commit -m 'Add Loki guardrails' -- .loki).".into()),
+        })
+    }
+
+    fn format_after_cell_sections(
+        &self,
+        blocking: &Unseen,
+        advisory: &Unseen,
+        hygiene: &Unseen,
+        not_checked: &[String],
+        unchecked_count: usize,
+    ) -> Vec<String> {
         let mut sections = Vec::new();
         if !blocking.fresh.is_empty() {
             sections.push(format!(
@@ -335,12 +378,7 @@ impl FileWriteGuard for LokiGuard {
             ));
         }
         if blocking.earlier > 0 {
-            sections.push(format!(
-                "{} reported earlier {} still open in {}.",
-                count(blocking.earlier, "finding"),
-                if blocking.earlier == 1 { "is" } else { "are" },
-                blocking.paths.join(", ")
-            ));
+            sections.push(format_earlier_line(blocking.earlier, "finding", &blocking.paths, "."));
         }
         if !advisory.fresh.is_empty() {
             sections.push(format!(
@@ -356,40 +394,36 @@ impl FileWriteGuard for LokiGuard {
             ));
         }
         if hygiene.earlier > 0 {
-            sections.push(format!(
-                "{} reported earlier {} still open in {}; fix these.",
-                count(hygiene.earlier, "hygiene note"),
-                if hygiene.earlier == 1 { "is" } else { "are" },
-                hygiene.paths.join(", ")
+            sections.push(format_earlier_line(
+                hygiene.earlier,
+                "hygiene note",
+                &hygiene.paths,
+                "; fix these.",
             ));
         }
-        sections.extend(self.notice(&not_checked));
-        if targets.len() > checked.len() {
-            sections.push(format!(
-                "({} more changed files were not checked)",
-                targets.len() - checked.len()
-            ));
+        sections.extend(self.notice(not_checked));
+        if unchecked_count > 0 {
+            sections.push(format!("({unchecked_count} more changed files were not checked)"));
         }
-        let outcome = if !report.blocking.is_empty() || !hygiene.fresh.is_empty() || hygiene.earlier > 0 {
-            AfterOutcome::Findings
-        } else if !advisory.fresh.is_empty() {
-            AfterOutcome::Advisory
-        } else {
-            AfterOutcome::Clean
-        };
-        Ok((!sections.is_empty()).then(|| AfterCellReport {
-            outcome,
-            message: Some(sections.join("\n")),
-        }))
+        sections
     }
+}
 
-    fn before_shell(&self, command: &str, cwd: &Path) -> Result<Verdict, String> {
-        Ok(match loki::shell::command_refusal(&self.root, command, cwd) {
-            None => Verdict::Allow(None),
-            Some(reason) => self.refused(
-                reason.trim().to_string(),
-                "would refuse this command (advise-only mode)",
-            ),
-        })
+fn format_earlier_line(earlier: usize, noun: &str, paths: &[String], suffix: &str) -> String {
+    let verb = if earlier == 1 { "is" } else { "are" };
+    format!(
+        "{} reported earlier {verb} still open in {}{suffix}",
+        count(earlier, noun),
+        paths.join(", ")
+    )
+}
+
+fn after_cell_outcome(has_blocking: bool, hygiene: &Unseen, advisory: &Unseen) -> AfterOutcome {
+    if has_blocking || !hygiene.fresh.is_empty() || hygiene.earlier > 0 {
+        AfterOutcome::Findings
+    } else if !advisory.fresh.is_empty() {
+        AfterOutcome::Advisory
+    } else {
+        AfterOutcome::Clean
     }
 }

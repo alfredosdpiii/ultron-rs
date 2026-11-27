@@ -154,21 +154,7 @@ impl Core {
             None => (Vec::new(), None),
         };
         if !request.summarize || entries.is_empty() {
-            let op = CompactionOp::begin_direct_navigation(
-                &mut lock_session(&self.session),
-                request.leaf.as_deref(),
-                request.label.as_deref(),
-                request.target.as_deref(),
-            )?;
-            let operation = op.operation_id().to_string();
-            self.navigation_start(&operation, &request.leaf);
-            let committed = op.commit_navigation(&mut lock_session(&self.session));
-            let ended = match &committed {
-                Ok(new_tip) => Ok(json!(new_tip)),
-                Err(error) => Err(Stopped::Failed(error.clone())),
-            };
-            self.navigation_end(&operation, &tip, ended.as_ref());
-            return committed;
+            return self.navigate_direct(&tip, &request);
         }
         let preparation = compaction::prepare_branch_entries(&entries, 0);
         let op = CompactionOp::begin_navigation(
@@ -180,7 +166,40 @@ impl Core {
         )?;
         let operation = op.operation_id().to_string();
         self.navigation_start(&operation, &request.leaf);
-        let ended = match self.summarized(op, &request, &entries, signal) {
+        let ended = self.finish_summarized_navigation(op, &request, &entries, signal);
+        self.announce();
+        let shown = ended.as_ref().map(|id| json!(id));
+        self.navigation_end(&operation, &tip, shown.as_ref().map_err(|e| *e));
+        let id = ended.map_err(|stopped| stopped.message())?;
+        Ok(Some(id))
+    }
+
+    fn navigate_direct(&mut self, tip: &Option<String>, request: &Request) -> Result<Option<String>, String> {
+        let op = CompactionOp::begin_direct_navigation(
+            &mut lock_session(&self.session),
+            request.leaf.as_deref(),
+            request.label.as_deref(),
+            request.target.as_deref(),
+        )?;
+        let operation = op.operation_id().to_string();
+        self.navigation_start(&operation, &request.leaf);
+        let committed = op.commit_navigation(&mut lock_session(&self.session));
+        let ended = match &committed {
+            Ok(new_tip) => Ok(json!(new_tip)),
+            Err(error) => Err(Stopped::Failed(error.clone())),
+        };
+        self.navigation_end(&operation, tip, ended.as_ref());
+        committed
+    }
+
+    fn finish_summarized_navigation(
+        &mut self,
+        op: CompactionOp,
+        request: &Request,
+        entries: &[Value],
+        signal: &ai::AbortSignal,
+    ) -> Result<String, Stopped> {
+        match self.summarized(op, request, entries, signal) {
             Ok(done) => Ok(done),
             Err((stopped, Some(op))) => {
                 let mut session = lock_session(&self.session);
@@ -191,12 +210,7 @@ impl Core {
                 Err(closed.err().map_or(stopped, Stopped::Failed))
             }
             Err((stopped, None)) => Err(stopped),
-        };
-        self.announce();
-        let shown = ended.as_ref().map(|id| json!(id));
-        self.navigation_end(&operation, &tip, shown.as_ref().map_err(|e| *e));
-        let id = ended.map_err(|stopped| stopped.message())?;
-        Ok(Some(id))
+        }
     }
 
     /// The summarized navigation from `summary.deciding`: the model's summary, committed by `op`. Answers the summary

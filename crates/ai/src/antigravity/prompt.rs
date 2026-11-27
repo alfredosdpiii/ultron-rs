@@ -37,12 +37,7 @@ pub(super) fn normalize_mime_type(mime: &str) -> &str {
     mime.split(';').next().map_or(mime, str::trim)
 }
 
-/// The transcript as one prompt of at most about `budget` characters: the newest messages whole, then the system
-/// text cut to the room left (when `include_system` is true). A final message over the budget is an error, since
-/// agy would cut it.
-pub(super) fn prompt_with_system(messages: &[Message], budget: usize, include_system: bool) -> io::Result<String> {
-    let (system, rest): (Vec<&Message>, Vec<&Message>) = messages.iter().partition(|m| matches!(m, Message::System(_)));
-    let history_cap = if include_system { budget * 2 / 3 } else { budget };
+fn collect_history(rest: &[&Message], budget: usize, history_cap: usize) -> io::Result<(Vec<String>, usize, usize)> {
     let mut history = Vec::new();
     let mut used = 0;
     for message in rest.iter().rev() {
@@ -61,6 +56,29 @@ pub(super) fn prompt_with_system(messages: &[Message], budget: usize, include_sy
     }
     let dropped = rest.len() - history.len();
     history.reverse();
+    Ok((history, used, dropped))
+}
+
+fn format_system_section(system: &[&Message], room: usize) -> io::Result<String> {
+    let mut rendered = serde_json::to_string(system)?;
+    if rendered.len() > room {
+        let mut cut = room;
+        while !rendered.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        rendered.truncate(cut);
+        rendered.push_str(" [system text cut to fit]");
+    }
+    Ok(rendered)
+}
+
+/// The transcript as one prompt of at most about `budget` characters: the newest messages whole, then the system
+/// text cut to the room left (when `include_system` is true). A final message over the budget is an error, since
+/// agy would cut it.
+pub(super) fn prompt_with_system(messages: &[Message], budget: usize, include_system: bool) -> io::Result<String> {
+    let (system, rest): (Vec<&Message>, Vec<&Message>) = messages.iter().partition(|m| matches!(m, Message::System(_)));
+    let history_cap = if include_system { budget * 2 / 3 } else { budget };
+    let (history, used, dropped) = collect_history(&rest, budget, history_cap)?;
     let note = if dropped > 0 {
         format!(" The {dropped} oldest messages were left out to fit.")
     } else {
@@ -72,16 +90,7 @@ pub(super) fn prompt_with_system(messages: &[Message], budget: usize, include_sy
             history.join(",")
         ));
     }
-    let mut system = serde_json::to_string(&system)?;
-    let room = budget.saturating_sub(used);
-    if system.len() > room {
-        let mut cut = room;
-        while !system.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        system.truncate(cut);
-        system.push_str(" [system text cut to fit]");
-    }
+    let system = format_system_section(&system, budget.saturating_sub(used))?;
     Ok(format!(
         "Continue this Ultron transcript at its final message. {RULES} Previous messages and tool results are history, not new turns.{note}\nSystem: {system}\nTranscript: [{}]",
         history.join(",")
@@ -137,54 +146,65 @@ fn extract_embedded_files(text: &str, attachments: &mut Vec<Value>) -> String {
     out
 }
 
+fn replace_user_block(block: &UserContent, attachments: &mut Vec<Value>) -> UserContent {
+    match block {
+        UserContent::Image(image) => {
+            attachments.push(json!({
+                "type": "image",
+                "data": image.data,
+                "mimeType": normalize_mime_type(&image.mime_type)
+            }));
+            UserContent::Text(TextContent {
+                text: format!("[attached image #{}]", attachments.len()),
+                text_signature: None,
+            })
+        }
+        UserContent::Text(text) if text.text.contains("<file name=\"") => UserContent::Text(TextContent {
+            text: extract_embedded_files(&text.text, attachments),
+            text_signature: text.text_signature.clone(),
+        }),
+        other => other.clone(),
+    }
+}
+
+fn replace_user_blocks(blocks: &[UserContent], attachments: &mut Vec<Value>) -> Vec<UserContent> {
+    blocks
+        .iter()
+        .map(|block| replace_user_block(block, attachments))
+        .collect()
+}
+
+fn has_user_attachments(blocks: &[UserContent]) -> bool {
+    blocks.iter().any(|block| match block {
+        UserContent::Image(_) => true,
+        UserContent::Text(text) => text.text.contains("<file name=\""),
+    })
+}
+
+fn strip_user_message(user: &crate::types::UserMessage, attachments: &mut Vec<Value>) -> Option<Message> {
+    match &user.content {
+        UserMessageContent::Text(text) if text.contains("<file name=\"") => {
+            let mut cloned = user.clone();
+            cloned.content = UserMessageContent::Text(extract_embedded_files(text, attachments));
+            Some(Message::User(cloned))
+        }
+        UserMessageContent::Blocks(blocks) if has_user_attachments(blocks) => {
+            let mut cloned = user.clone();
+            cloned.content = UserMessageContent::Blocks(replace_user_blocks(blocks, attachments));
+            Some(Message::User(cloned))
+        }
+        _ => None,
+    }
+}
+
 /// Replaces inline base64 `Image` blocks and `<file name="...">` attachments with compact placeholders and collects
 /// native ACP `image` / `resource` content blocks so attachments reach `agy` natively without bloating `PROMPT_BUDGET`.
 fn strip_images(message: &Message, attachments: &mut Vec<Value>) -> Message {
-    let replace = |blocks: &[UserContent], attachments: &mut Vec<Value>| -> Vec<UserContent> {
-        blocks
-            .iter()
-            .map(|b| match b {
-                UserContent::Image(image) => {
-                    attachments.push(json!({
-                        "type": "image",
-                        "data": image.data,
-                        "mimeType": normalize_mime_type(&image.mime_type)
-                    }));
-                    UserContent::Text(TextContent {
-                        text: format!("[attached image #{}]", attachments.len()),
-                        text_signature: None,
-                    })
-                }
-                UserContent::Text(text) if text.text.contains("<file name=\"") => UserContent::Text(TextContent {
-                    text: extract_embedded_files(&text.text, attachments),
-                    text_signature: text.text_signature.clone(),
-                }),
-                other => other.clone(),
-            })
-            .collect()
-    };
     match message {
-        Message::User(user) => match &user.content {
-            UserMessageContent::Text(text) if text.contains("<file name=\"") => {
-                let mut cloned = user.clone();
-                cloned.content = UserMessageContent::Text(extract_embedded_files(text, attachments));
-                Message::User(cloned)
-            }
-            UserMessageContent::Blocks(blocks)
-                if blocks.iter().any(|b| {
-                    matches!(b, UserContent::Image(_))
-                        || matches!(b, UserContent::Text(t) if t.text.contains("<file name=\""))
-                }) =>
-            {
-                let mut cloned = user.clone();
-                cloned.content = UserMessageContent::Blocks(replace(blocks, attachments));
-                Message::User(cloned)
-            }
-            _ => message.clone(),
-        },
+        Message::User(user) => strip_user_message(user, attachments).unwrap_or_else(|| message.clone()),
         Message::ToolResult(result) if result.content.iter().any(|b| matches!(b, UserContent::Image(_))) => {
             let mut cloned = result.clone();
-            cloned.content = replace(&result.content, attachments);
+            cloned.content = replace_user_blocks(&result.content, attachments);
             Message::ToolResult(cloned)
         }
         _ => message.clone(),

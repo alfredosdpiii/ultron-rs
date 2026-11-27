@@ -238,43 +238,12 @@ impl GitBaseline {
     /// What changed in `cwd` since the baseline, as a [`WorkspaceDiff`] (`changed` sorted); an error when Git can
     /// no longer answer (the commit or tree is gone, git is missing).
     pub fn changes(&self, cwd: &Path, env: &[(String, String)]) -> Result<WorkspaceDiff, String> {
-        let unknown = |what: &str| format!("git could not list the changes since the child started: {what}");
         let object = format!("{}^{{commit}}", self.commit);
         git(cwd, env, &["cat-file", "-e", &object], None)
-            .ok_or_else(|| unknown(&format!("commit {} is not in the repository", self.commit)))?;
+            .ok_or_else(|| unknown_changes(&format!("commit {} is not in the repository", self.commit)))?;
         let changed = match &self.state {
-            DirtyState::Tree(tree) => {
-                let object = format!("{tree}^{{tree}}");
-                git(cwd, env, &["cat-file", "-e", &object], None)
-                    .ok_or_else(|| unknown(&format!("tree {tree} is not in the repository")))?;
-                let now = work_tree(cwd, env).ok_or_else(|| unknown("git could not record the work tree"))?;
-                if &now == tree {
-                    Vec::new()
-                } else {
-                    let out = git(
-                        cwd,
-                        env,
-                        &[
-                            "diff",
-                            "--name-only",
-                            "-z",
-                            "--no-renames",
-                            "--relative",
-                            tree,
-                            &now,
-                            "--",
-                        ],
-                        None,
-                    )
-                    .ok_or_else(|| unknown("git diff failed"))?;
-                    nul_list(&out)
-                        .into_iter()
-                        .collect::<BTreeSet<_>>()
-                        .into_iter()
-                        .collect()
-                }
-            }
-            DirtyState::Paths { status: digest, dirty } => self.changed_paths(cwd, env, digest, dirty, &unknown)?,
+            DirtyState::Tree(tree) => diff_tree_changes(cwd, env, tree)?,
+            DirtyState::Paths { status: digest, dirty } => self.changed_paths(cwd, env, digest, dirty)?,
         };
         Ok(WorkspaceDiff {
             modified: changed.clone(),
@@ -284,22 +253,22 @@ impl GitBaseline {
         })
     }
 
-    /// [`GitBaseline::changes`] of a baseline in the earlier format.
-    fn changed_paths(
+    fn is_unchanged_clean_head(
         &self,
         cwd: &Path,
         env: &[(String, String)],
         digest: &str,
         dirty: &BTreeMap<String, String>,
-        unknown: &dyn Fn(&str) -> String,
-    ) -> Result<Vec<String>, String> {
-        if head(cwd, env).as_deref() == Some(self.commit.as_str()) && dirty.is_empty() {
-            let (raw, _) = status(cwd, env).ok_or_else(|| unknown("git status failed"))?;
-            let now = git(cwd, env, &["hash-object", "--stdin"], Some(&raw)).map(text);
-            if now.as_deref() == Some(digest) {
-                return Ok(Vec::new());
-            }
+    ) -> Result<bool, String> {
+        if head(cwd, env).as_deref() != Some(self.commit.as_str()) || !dirty.is_empty() {
+            return Ok(false);
         }
+        let (raw, _) = status(cwd, env).ok_or_else(|| unknown_changes("git status failed"))?;
+        let now = git(cwd, env, &["hash-object", "--stdin"], Some(&raw)).map(text);
+        Ok(now.as_deref() == Some(digest))
+    }
+
+    fn list_workspace_paths(&self, cwd: &Path, env: &[(String, String)]) -> Result<BTreeSet<String>, String> {
         let tracked = git(
             cwd,
             env,
@@ -314,12 +283,26 @@ impl GitBaseline {
             ],
             None,
         )
-        .ok_or_else(|| unknown("git diff failed"))?;
+        .ok_or_else(|| unknown_changes("git diff failed"))?;
         let untracked = git(cwd, env, &["ls-files", "-z", "--others", "--exclude-standard"], None)
-            .ok_or_else(|| unknown("git ls-files failed"))?;
-        let listed: BTreeSet<String> = nul_list(&tracked).into_iter().chain(nul_list(&untracked)).collect();
+            .ok_or_else(|| unknown_changes("git ls-files failed"))?;
+        Ok(nul_list(&tracked).into_iter().chain(nul_list(&untracked)).collect())
+    }
+
+    /// [`GitBaseline::changes`] of a baseline in the earlier format.
+    fn changed_paths(
+        &self,
+        cwd: &Path,
+        env: &[(String, String)],
+        digest: &str,
+        dirty: &BTreeMap<String, String>,
+    ) -> Result<Vec<String>, String> {
+        if self.is_unchanged_clean_head(cwd, env, digest, dirty)? {
+            return Ok(Vec::new());
+        }
+        let listed = self.list_workspace_paths(cwd, env)?;
         let paths: Vec<&String> = dirty.keys().collect();
-        let now = contents(cwd, env, &paths).ok_or_else(|| unknown("git hash-object failed"))?;
+        let now = contents(cwd, env, &paths).ok_or_else(|| unknown_changes("git hash-object failed"))?;
         let mut changed: BTreeSet<String> = listed
             .iter()
             .filter(|path| dirty.get(*path).is_none_or(|before| now.get(*path) != Some(before)))
@@ -343,18 +326,56 @@ impl GitBaseline {
     pub fn from_value(value: &Value) -> Option<GitBaseline> {
         let map: &Map<String, Value> = value.as_object()?;
         let commit = map.get("commit")?.as_str().filter(|c| !c.is_empty())?.to_string();
-        let state = match map.get("tree") {
-            Some(tree) => DirtyState::Tree(tree.as_str().filter(|t| !t.is_empty())?.to_string()),
-            None => DirtyState::Paths {
-                status: map.get("status")?.as_str()?.to_string(),
-                dirty: map
-                    .get("dirty")?
-                    .as_object()?
-                    .iter()
-                    .map(|(path, id)| id.as_str().map(|id| (path.clone(), id.to_string())))
-                    .collect::<Option<BTreeMap<_, _>>>()?,
-            },
-        };
+        let state = parse_dirty_state(map)?;
         Some(GitBaseline { commit, state })
     }
+}
+
+fn unknown_changes(what: &str) -> String {
+    format!("git could not list the changes since the child started: {what}")
+}
+
+fn diff_tree_changes(cwd: &Path, env: &[(String, String)], tree: &str) -> Result<Vec<String>, String> {
+    let object = format!("{tree}^{{tree}}");
+    git(cwd, env, &["cat-file", "-e", &object], None)
+        .ok_or_else(|| unknown_changes(&format!("tree {tree} is not in the repository")))?;
+    let now = work_tree(cwd, env).ok_or_else(|| unknown_changes("git could not record the work tree"))?;
+    if now == tree {
+        return Ok(Vec::new());
+    }
+    let out = git(
+        cwd,
+        env,
+        &[
+            "diff",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            "--relative",
+            tree,
+            &now,
+            "--",
+        ],
+        None,
+    )
+    .ok_or_else(|| unknown_changes("git diff failed"))?;
+    Ok(nul_list(&out)
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect())
+}
+
+fn parse_dirty_state(map: &Map<String, Value>) -> Option<DirtyState> {
+    if let Some(tree) = map.get("tree") {
+        return Some(DirtyState::Tree(tree.as_str().filter(|t| !t.is_empty())?.to_string()));
+    }
+    let status = map.get("status")?.as_str()?.to_string();
+    let dirty = map
+        .get("dirty")?
+        .as_object()?
+        .iter()
+        .map(|(path, id)| id.as_str().map(|id| (path.clone(), id.to_string())))
+        .collect::<Option<BTreeMap<_, _>>>()?;
+    Some(DirtyState::Paths { status, dirty })
 }

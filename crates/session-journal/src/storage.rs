@@ -52,6 +52,24 @@ impl JsonlStorage {
         })
     }
 
+    fn replay_v4_lines(path: &Path, lines: &[&str], header: &Map<String, Value>) -> Result<State, String> {
+        let mut state = State::default();
+        for (index, line) in lines.iter().enumerate() {
+            let replay = codec::parse_transaction(line).and_then(|writes| {
+                state.validate(&writes)?;
+                state.apply(writes);
+                Ok(())
+            });
+            if replay.is_err() {
+                return Err(format!("Invalid JSONL storage {}: line {}", path.display(), index + 2));
+            }
+        }
+        if let Some(next) = codec::header_i64(header, "nextSeq") {
+            state.advance_next_seq(next)?;
+        }
+        Ok(state)
+    }
+
     /// `JsonlStorage.open`: a format-4 file, or a legacy v3 file read as format-4 writes.
     pub fn open(path: &Path, clock: &mut dyn Clock) -> Result<Self, String> {
         let content = std::fs::read_to_string(path)
@@ -72,20 +90,7 @@ impl JsonlStorage {
                 "Session {id} uses unsupported storage version {storage_version}"
             ));
         }
-        let mut state = State::default();
-        for (index, line) in lines.iter().enumerate().skip(1) {
-            let replay = codec::parse_transaction(line).and_then(|writes| {
-                state.validate(&writes)?;
-                state.apply(writes);
-                Ok(())
-            });
-            if replay.is_err() {
-                return Err(format!("Invalid JSONL storage {}: line {}", path.display(), index + 1));
-            }
-        }
-        if let Some(next) = codec::header_i64(&header, "nextSeq") {
-            state.advance_next_seq(next)?;
-        }
+        let state = Self::replay_v4_lines(path, &lines[1..], &header)?;
         if torn {
             io::truncate(path, content.rfind('\n').map_or(0, |last| last + 1))?;
         }

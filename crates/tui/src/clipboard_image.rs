@@ -215,6 +215,44 @@ pub struct ImageSources<'a, 'b> {
     pub temp_file: &'a dyn Fn() -> std::path::PathBuf,
 }
 
+fn read_linux_clipboard(
+    var: &dyn Fn(&str) -> Option<String>,
+    proc_version: Option<&str>,
+    run: &mut RunTool<'_>,
+    native: &mut dyn FnMut() -> ImageRead,
+    temp_file: &dyn Fn() -> std::path::PathBuf,
+) -> ImageRead {
+    let wsl = is_wsl(var, proc_version);
+    let mut image = if is_wayland_session(var) || wsl {
+        via_wl_paste(run)
+    } else {
+        ImageRead::Failed
+    };
+    if image == ImageRead::Failed {
+        image = via_xclip(run);
+    }
+    if wsl && !matches!(image, ImageRead::Image { .. }) {
+        image = via_powershell(run, &temp_file()).unwrap_or(image);
+    }
+    if image == ImageRead::Failed { native() } else { image }
+}
+
+fn normalize_image_read(image: ImageRead) -> ImageRead {
+    let ImageRead::Image { bytes, mime_type } = image else {
+        return image;
+    };
+    if is_supported_image_mime_type(&mime_type) {
+        return ImageRead::Image { bytes, mime_type };
+    }
+    match convert_to_png(&bytes) {
+        Some(bytes) => ImageRead::Image {
+            bytes,
+            mime_type: "image/png".to_string(),
+        },
+        None => ImageRead::NoImage,
+    }
+}
+
 /// `readClipboardImage`: `Image` (converted to PNG unless it is a supported type) or why there is none.
 pub fn read_clipboard_image(sources: ImageSources<'_, '_>) -> ImageRead {
     let ImageSources {
@@ -228,34 +266,10 @@ pub fn read_clipboard_image(sources: ImageSources<'_, '_>) -> ImageRead {
     if var("TERMUX_VERSION").is_some_and(|v| !v.is_empty()) {
         return ImageRead::NoImage;
     }
-    let mut image = ImageRead::Failed;
-    if platform == "linux" {
-        let wsl = is_wsl(var, proc_version);
-        if is_wayland_session(var) || wsl {
-            image = via_wl_paste(run);
-        }
-        if image == ImageRead::Failed {
-            image = via_xclip(run);
-        }
-        if wsl && !matches!(image, ImageRead::Image { .. }) {
-            image = via_powershell(run, &temp_file()).unwrap_or(image);
-        }
-        if image == ImageRead::Failed {
-            image = native();
-        }
+    let image = if platform == "linux" {
+        read_linux_clipboard(var, proc_version, run, native, temp_file)
     } else {
-        image = native();
-    }
-    match image {
-        ImageRead::Image { bytes, mime_type } if !is_supported_image_mime_type(&mime_type) => {
-            match convert_to_png(&bytes) {
-                Some(bytes) => ImageRead::Image {
-                    bytes,
-                    mime_type: "image/png".to_string(),
-                },
-                None => ImageRead::NoImage,
-            }
-        }
-        image => image,
-    }
+        native()
+    };
+    normalize_image_read(image)
 }

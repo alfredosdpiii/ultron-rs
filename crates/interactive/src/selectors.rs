@@ -317,6 +317,42 @@ impl AuthSelector {
     }
 }
 
+impl AuthSelector {
+    fn render_provider_row(&self, p: &AuthProvider, selected: bool) -> String {
+        let t = &self.theme;
+        let label = if self.type_labels {
+            let kind = if p.auth_type == "oauth" {
+                "subscription"
+            } else {
+                "API key"
+            };
+            t.fg(Fg::Muted, &format!(" [{kind}]"))
+        } else {
+            String::new()
+        };
+        if selected {
+            format!(
+                "{}{}{label}{}",
+                t.fg(Fg::Accent, "→ "),
+                t.fg(Fg::Accent, &p.name),
+                self.status(p)
+            )
+        } else {
+            format!("  {}{label}{}", t.fg(Fg::Text, &p.name), self.status(p))
+        }
+    }
+
+    fn empty_message(&self) -> &'static str {
+        if !self.all.is_empty() {
+            "No matching providers"
+        } else if self.login {
+            "No providers available"
+        } else {
+            "No providers logged in. Use /login first."
+        }
+    }
+}
+
 impl Component for AuthSelector {
     fn render(&mut self, width: usize) -> Vec<String> {
         let t = Rc::clone(&self.theme);
@@ -344,28 +380,9 @@ impl Component for AuthSelector {
         let start = (self.selected as isize - max / 2).min(n - max).max(0) as usize;
         let end = (start + 8).min(self.filtered.len());
         for i in start..end {
-            let p = &self.filtered[i];
-            let label = if self.type_labels {
-                let kind = if p.auth_type == "oauth" {
-                    "subscription"
-                } else {
-                    "API key"
-                };
-                t.fg(Fg::Muted, &format!(" [{kind}]"))
-            } else {
-                String::new()
-            };
-            let line = if i == self.selected {
-                format!(
-                    "{}{}{label}{}",
-                    t.fg(Fg::Accent, "→ "),
-                    t.fg(Fg::Accent, &p.name),
-                    self.status(p)
-                )
-            } else {
-                format!("  {}{label}{}", t.fg(Fg::Text, &p.name), self.status(p))
-            };
-            lines.extend(truncated(line));
+            lines.extend(truncated(
+                self.render_provider_row(&self.filtered[i], i == self.selected),
+            ));
         }
         if start > 0 || end < self.filtered.len() {
             lines.extend(truncated(
@@ -373,14 +390,7 @@ impl Component for AuthSelector {
             ));
         }
         if self.filtered.is_empty() {
-            let message = if !self.all.is_empty() {
-                "No matching providers"
-            } else if self.login {
-                "No providers available"
-            } else {
-                "No providers logged in. Use /login first."
-            };
-            lines.extend(truncated(t.fg(Fg::Muted, &format!("  {message}"))));
+            lines.extend(truncated(t.fg(Fg::Muted, &format!("  {}", self.empty_message()))));
         }
         lines.push(String::new());
         lines.push(border);

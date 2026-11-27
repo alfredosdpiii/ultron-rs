@@ -58,6 +58,56 @@ pub fn session_id(instance_dir: &Path, session_dir: &Path) -> Option<String> {
         .then(|| id.to_string())
 }
 
+fn schedule_fits(schedule: &Schedule, at: (u32, u32), zone: &Zone) -> bool {
+    let local = schedule.next_due.map(|due| zone.fields(due as f64));
+    schedule.prompt == PROMPT
+        && schedule.interval_ms == Some(DAY_MS)
+        && schedule.daily_at == Some(at)
+        && local.is_some_and(|f| (f.hour, f.minute) == at)
+}
+
+fn new_dream_schedule(id: &str, now: i64, at: (u32, u32), zone: &Zone) -> Schedule {
+    Schedule {
+        id: format!("sch-{}", &jsrt::random::uuid_v4().replace('-', "")[..8]),
+        name: SCHEDULE_NAME.into(),
+        session_id: id.into(),
+        prompt: PROMPT.into(),
+        kind: Kind::Every,
+        interval_ms: Some(DAY_MS),
+        until: None,
+        max_runs: None,
+        created_at: now,
+        next_due: Some(next_slot(now, at, zone)),
+        runs: 0,
+        last_fired: None,
+        state: State::Active,
+        operation: None,
+        daily_at: Some(at),
+    }
+}
+
+fn resolve_dream_session(
+    instance_dir: &Path,
+    session_dir: &Path,
+    cwd: &Path,
+    on: bool,
+) -> Result<Option<catalog::Meta>, String> {
+    let id = match (session_id(instance_dir, session_dir), on) {
+        (Some(id), _) => id,
+        (None, false) => return Ok(None),
+        (None, true) => create_session(instance_dir, session_dir, cwd)?,
+    };
+    catalog::list(session_dir)
+        .into_iter()
+        .find(|m| m.id == id)
+        .map(Some)
+        .ok_or_else(|| format!("Unknown session: {id}"))
+}
+
+fn is_active_dream(schedule: &Schedule) -> bool {
+    schedule.active() && schedule.name == SCHEDULE_NAME
+}
+
 /// Bring the dream schedule in line with `settings` (`learn.dream`, default on; `learn.dreamAt`): the dream session
 /// is created in `cwd` when missing, its active `dream` schedule is kept when it is daily at the set time and runs
 /// [`PROMPT`], else replaced; off cancels it. The active schedule after it, if any.
@@ -70,56 +120,22 @@ pub fn ensure(
     zone: &Zone,
 ) -> Result<Option<Schedule>, String> {
     let on = settings["learn"]["dream"].as_bool().unwrap_or(true);
-    let id = match (session_id(instance_dir, session_dir), on) {
-        (Some(id), _) => id,
-        (None, false) => return Ok(None),
-        (None, true) => create_session(instance_dir, session_dir, cwd)?,
+    let Some(meta) = resolve_dream_session(instance_dir, session_dir, cwd, on)? else {
+        return Ok(None);
     };
-    let meta = catalog::list(session_dir)
-        .into_iter()
-        .find(|m| m.id == id)
-        .ok_or_else(|| format!("Unknown session: {id}"))?;
     let at = dream_at(settings);
     crate::prompt_schedules::in_journal(&meta.path, clock, |module| {
-        let current = module
-            .all()?
-            .into_iter()
-            .find(|s| s.active() && s.name == SCHEDULE_NAME);
-        let fits = |s: &Schedule| {
-            let local = s.next_due.map(|due| zone.fields(due as f64));
-            s.prompt == PROMPT
-                && s.interval_ms == Some(DAY_MS)
-                && s.daily_at == Some(at)
-                && local.is_some_and(|f| (f.hour, f.minute) == at)
-        };
-        match current {
-            Some(s) if on && fits(&s) => return Ok(Some(s)),
-            Some(s) => {
-                module.cancel(&s.id)?;
+        let current = module.all()?.into_iter().find(is_active_dream);
+        if let Some(s) = current {
+            if on && schedule_fits(&s, at, zone) {
+                return Ok(Some(s));
             }
-            None => {}
+            module.cancel(&s.id)?;
         }
         if !on {
             return Ok(None);
         }
-        let now = module.now();
-        let schedule = Schedule {
-            id: format!("sch-{}", &jsrt::random::uuid_v4().replace('-', "")[..8]),
-            name: SCHEDULE_NAME.into(),
-            session_id: id.clone(),
-            prompt: PROMPT.into(),
-            kind: Kind::Every,
-            interval_ms: Some(DAY_MS),
-            until: None,
-            max_runs: None,
-            created_at: now,
-            next_due: Some(next_slot(now, at, zone)),
-            runs: 0,
-            last_fired: None,
-            state: State::Active,
-            operation: None,
-            daily_at: Some(at),
-        };
+        let schedule = new_dream_schedule(&meta.id, module.now(), at, zone);
         module.put(&schedule)?;
         Ok(Some(schedule))
     })

@@ -12,86 +12,12 @@ impl Core {
     pub(super) fn on_agent_event(&mut self, agent_event: AgentEvent) {
         let run = self.run_id();
         match &agent_event {
-            AgentEvent::MessageStart { message } => {
-                let value = stored(message);
-                let aborted = self.run.as_ref().is_some_and(|r| r.signal.aborted());
-                if aborted
-                    && value["role"] == "assistant"
-                    && value["stopReason"] == "aborted"
-                    && value["content"].as_array().is_none_or(Vec::is_empty)
-                {
-                    if let Some(run) = self.run.as_mut() {
-                        run.hiding = true;
-                    }
-                    return;
-                }
-                self.journal(&agent_event);
-                let shown = self.persona_shown(value);
-                self.emit(WatchEvent::MessageStart {
-                    run_id: run,
-                    lane: MAIN_LANE.into(),
-                    message: shown,
-                });
-            }
+            AgentEvent::MessageStart { message } => self.on_message_start(run, message, &agent_event),
             AgentEvent::MessageUpdate {
                 message,
                 assistant_message_event,
-            } => {
-                if self.run.as_ref().is_some_and(|run| run.hiding) {
-                    return;
-                }
-                self.journal(&agent_event);
-                let (frame, usage) = crate::journal::update_fields(message, assistant_message_event);
-                self.emit(WatchEvent::MessageUpdate {
-                    run_id: run,
-                    lane: MAIN_LANE.into(),
-                    frame,
-                    usage,
-                    message: None,
-                });
-            }
-            AgentEvent::MessageEnd { message } => {
-                if self.run.as_mut().is_some_and(|run| std::mem::take(&mut run.hiding)) {
-                    return;
-                }
-                let value = stored(message);
-                if value["role"] == "user" {
-                    return self.user_message_end(value, None);
-                }
-                if value["role"] == "assistant"
-                    && let Some(running) = self.run.as_mut()
-                {
-                    running.error = value["errorMessage"].as_str().map(str::to_string);
-                }
-                let shown = self.persona_shown(value.clone());
-                self.emit(WatchEvent::MessageEnd {
-                    run_id: run,
-                    lane: MAIN_LANE.into(),
-                    message: shown,
-                });
-                let answered = value["role"] == "assistant";
-                let round_message = Some(value.clone());
-                let mut retry = None;
-                if let Message::Assistant(answer) = message {
-                    retry = self.retry_decision(answer);
-                }
-                if value["role"] == "assistant" {
-                    self.persona_assistant(&value);
-                    self.turn_guard_assistant(&value);
-                }
-                self.journal(&agent_event);
-                self.announce();
-                let retried = matches!(retry, Some(WatchEvent::RetryScheduled { .. }));
-                if let Some(note) = retry {
-                    self.emit(note);
-                }
-                if let Some(message) = round_message.filter(|_| !retried) {
-                    self.count_round(&message);
-                }
-                if answered {
-                    let _ = self.context.message_end(MAIN_LANE, "assistant");
-                }
-            }
+            } => self.on_message_update(run, message, assistant_message_event, &agent_event),
+            AgentEvent::MessageEnd { message } => self.on_message_end(run, message, &agent_event),
             AgentEvent::ToolExecutionStart {
                 tool_call_id,
                 tool_name,
@@ -124,23 +50,122 @@ impl Core {
                 tool_name,
                 result,
                 is_error,
-            } => {
-                let mut result = serde_json::to_value(result).unwrap_or(Value::Null);
-                if *is_error && result["details"] == json!({}) {
-                    result.as_object_mut().map(|m| m.remove("details"));
-                }
-                self.emit(WatchEvent::ToolEnd {
-                    run_id: run,
-                    lane: MAIN_LANE.into(),
-                    tool_call_id: tool_call_id.clone(),
-                    tool_name: tool_name.clone(),
-                    result,
-                    is_error: *is_error,
-                });
-            }
+            } => self.on_tool_execution_end(run, tool_call_id, tool_name, result, *is_error),
             AgentEvent::TurnStart => self.begin_generation(),
             AgentEvent::AgentStart | AgentEvent::AgentEnd { .. } | AgentEvent::TurnEnd { .. } => {}
         }
+    }
+
+    fn on_message_start(&mut self, run: Option<String>, message: &Message, agent_event: &AgentEvent) {
+        let value = stored(message);
+        if self.should_hide_aborted_assistant(&value) {
+            if let Some(run) = self.run.as_mut() {
+                run.hiding = true;
+            }
+            return;
+        }
+        self.journal(agent_event);
+        let shown = self.persona_shown(value);
+        self.emit(WatchEvent::MessageStart {
+            run_id: run,
+            lane: MAIN_LANE.into(),
+            message: shown,
+        });
+    }
+
+    fn should_hide_aborted_assistant(&self, value: &Value) -> bool {
+        let aborted = self.run.as_ref().is_some_and(|r| r.signal.aborted());
+        aborted
+            && value["role"] == "assistant"
+            && value["stopReason"] == "aborted"
+            && value["content"].as_array().is_none_or(Vec::is_empty)
+    }
+
+    fn on_message_update(
+        &mut self,
+        run: Option<String>,
+        message: &Message,
+        assistant_message_event: &ai::AssistantMessageEvent,
+        agent_event: &AgentEvent,
+    ) {
+        if self.run.as_ref().is_some_and(|run| run.hiding) {
+            return;
+        }
+        self.journal(agent_event);
+        let (frame, usage) = crate::journal::update_fields(message, assistant_message_event);
+        self.emit(WatchEvent::MessageUpdate {
+            run_id: run,
+            lane: MAIN_LANE.into(),
+            frame,
+            usage,
+            message: None,
+        });
+    }
+
+    fn on_message_end(&mut self, run: Option<String>, message: &Message, agent_event: &AgentEvent) {
+        if self.run.as_mut().is_some_and(|run| std::mem::take(&mut run.hiding)) {
+            return;
+        }
+        let value = stored(message);
+        if value["role"] == "user" {
+            return self.user_message_end(value, None);
+        }
+        let is_assistant = value["role"] == "assistant";
+        if is_assistant && let Some(running) = self.run.as_mut() {
+            running.error = value["errorMessage"].as_str().map(str::to_string);
+        }
+        let shown = self.persona_shown(value.clone());
+        self.emit(WatchEvent::MessageEnd {
+            run_id: run,
+            lane: MAIN_LANE.into(),
+            message: shown,
+        });
+        let retry = match message {
+            Message::Assistant(answer) => self.retry_decision(answer),
+            _ => None,
+        };
+        if is_assistant {
+            self.persona_assistant(&value);
+            self.turn_guard_assistant(&value);
+        }
+        self.journal(agent_event);
+        self.announce();
+        self.finish_message_end(value, retry, is_assistant);
+    }
+
+    fn finish_message_end(&mut self, value: Value, retry: Option<WatchEvent>, answered: bool) {
+        let retried = matches!(retry, Some(WatchEvent::RetryScheduled { .. }));
+        if let Some(note) = retry {
+            self.emit(note);
+        }
+        if !retried {
+            self.count_round(&value);
+        }
+        if answered {
+            let _ = self.context.message_end(MAIN_LANE, "assistant");
+        }
+    }
+
+    fn on_tool_execution_end(
+        &mut self,
+        run: Option<String>,
+        tool_call_id: &str,
+        tool_name: &str,
+        result: &agent::AgentToolResult,
+        is_error: bool,
+    ) {
+        let mut result = serde_json::to_value(result).unwrap_or(Value::Null);
+        if is_error && result["details"] == json!({}) {
+            result.as_object_mut().map(|m| m.remove("details"));
+        }
+        self.emit(WatchEvent::ToolEnd {
+            run_id: run,
+            lane: MAIN_LANE.into(),
+            tool_call_id: tool_call_id.to_string(),
+            tool_name: tool_name.to_string(),
+            result,
+            is_error,
+        });
     }
 
     /// A generation begins. The queued messages the loop took for it (drained before its `turn_start`) join the
@@ -224,36 +249,51 @@ impl Core {
             return;
         };
         if !ending {
-            if let Some(operation) = &operation {
-                self.lane.stack.agents.end_root_turn(operation);
-            }
-            let unanswered = self
-                .run
-                .as_ref()
-                .filter(|run| !run.cancelled && run.error.is_none())
-                .and_then(|run| self.unanswered(run.submission));
-            let _ = self.context.run_end(MAIN_LANE);
-            let waiting = context_lane::pending_count(&lock_session(&self.session));
-            let placed = self.branches.place(true);
-            if let Some(run) = self.run.as_mut() {
-                run.ending = true;
-                if let Some(unanswered) = unanswered {
-                    run.error = Some(unanswered);
-                }
-                if let Err(error) = placed {
-                    run.error.get_or_insert(error);
-                }
-                if let Some(write) = run.journal.error() {
-                    run.error.get_or_insert(write.to_string());
-                }
-            }
-            self.announce();
-            if waiting > 0 {
-                self.queue_update();
-            }
-            self.durable.bridge.set_user_abort(false);
+            self.prepare_run_end(operation.as_deref());
         }
-        let Some(run) = self.run.as_ref() else { return };
+        let Some(aborted) = self.finish_run_journal() else {
+            return;
+        };
+        let Some(run) = self.run.take() else { return };
+        self.finalize_ended_run(run, operation.as_deref(), aborted);
+    }
+
+    fn prepare_run_end(&mut self, operation: Option<&str>) {
+        if let Some(operation) = operation {
+            self.lane.stack.agents.end_root_turn(operation);
+        }
+        let unanswered = self
+            .run
+            .as_ref()
+            .filter(|run| !run.cancelled && run.error.is_none())
+            .and_then(|run| self.unanswered(run.submission));
+        let _ = self.context.run_end(MAIN_LANE);
+        let waiting = context_lane::pending_count(&lock_session(&self.session));
+        let placed = self.branches.place(true);
+        self.record_run_end_errors(unanswered, placed);
+        self.announce();
+        if waiting > 0 {
+            self.queue_update();
+        }
+        self.durable.bridge.set_user_abort(false);
+    }
+
+    fn record_run_end_errors(&mut self, unanswered: Option<String>, placed: Result<(), String>) {
+        let Some(run) = self.run.as_mut() else { return };
+        run.ending = true;
+        if let Some(unanswered) = unanswered {
+            run.error = Some(unanswered);
+        }
+        if let Err(error) = placed {
+            run.error.get_or_insert(error);
+        }
+        if let Some(write) = run.journal.error() {
+            run.error.get_or_insert(write.to_string());
+        }
+    }
+
+    fn finish_run_journal(&self) -> Option<bool> {
+        let run = self.run.as_ref()?;
         let aborted = run.cancelled;
         let finished = if aborted {
             run.journal.finish_aborted(&mut lock_session(&self.session))
@@ -266,10 +306,10 @@ impl Core {
             let failure = run.error.as_deref().map(|m| (code, m));
             run.journal.finish(Some(&mut lock_session(&self.session)), failure)
         };
-        if finished.is_err() {
-            return;
-        }
-        let Some(run) = self.run.take() else { return };
+        finished.is_ok().then_some(aborted)
+    }
+
+    fn finalize_ended_run(&mut self, run: Running, operation: Option<&str>, aborted: bool) {
         let error = if aborted { None } else { run.error.clone() };
         self.announce();
         self.taken.clear();
@@ -295,7 +335,7 @@ impl Core {
             ended_at: now_ms(),
         });
         let failed = error.is_some();
-        if let Some(operation) = &operation {
+        if let Some(operation) = operation {
             self.events.run_ended(MAIN_LANE, operation, aborted);
         }
         self.nudger.run_ended(&run.id);
@@ -436,53 +476,82 @@ impl Core {
         waiter: Option<Reply>,
         take_queued: bool,
     ) -> Result<(), (String, Reply)> {
-        let fail = |error: String, waiter: Option<Reply>| -> Result<(), (String, Reply)> {
-            match waiter {
-                Some(waiter) => Err((error, waiter)),
-                None => Err((error, Box::new(|_| {}))),
-            }
-        };
-        let api_key = self.api_key();
-        if api_key.is_none() && !lane::header_auth(&self.env, &self.model.provider) {
-            return fail(format!("No API key found for {}", self.model.provider), waiter);
+        if let Err(error) = self.ensure_provider_auth() {
+            return fail_prompt(error, waiter);
         }
         let text = message_text(&prompt);
         let continuation = prompt.get(crate::recovery::RECOVERY_DEPTH).is_some();
-        let mut naming_request = None;
+        let naming_request = match self.prepare_auto_name(&prompt, &text, continuation) {
+            Ok(request) => request,
+            Err(error) => return fail_prompt(error, waiter),
+        };
+        if let Err(error) = self.append_opening_messages(&prompt, &text, continuation) {
+            return fail_prompt(error, waiter);
+        }
+        if let Err(error) = self.store_lane_config() {
+            return fail_prompt(error, waiter);
+        }
+        let started_tip = self.tip().map_or(Value::Null, Value::from);
+        let (mut journal, captured) = match self.admit_run_journal(&prompt, take_queued) {
+            Ok(admitted) => admitted,
+            Err(error) => return fail_prompt(error, waiter),
+        };
+        self.spawn_naming_if_requested(naming_request);
+        self.configure_admitted_journal(&mut journal);
+        if self.model_unavailable {
+            return fail_prompt(self.fail_model_unavailable(journal), waiter);
+        }
+        self.start_admitted_run(prompt, continuation, started_tip, journal, captured, waiter)
+    }
+
+    fn ensure_provider_auth(&self) -> Result<(), String> {
+        if self.api_key().is_none() && !lane::header_auth(&self.env, &self.model.provider) {
+            return Err(format!("No API key found for {}", self.model.provider));
+        }
+        Ok(())
+    }
+
+    fn prepare_auto_name(
+        &mut self,
+        prompt: &Value,
+        text: &str,
+        continuation: bool,
+    ) -> Result<Option<(Model, Option<String>, String)>, String> {
         let auto_name = self.auto_name
             && !continuation
             && prompt["role"] != "custom"
             && self.runtime.mode != "rpc"
             && !self.env.flag_off(AUTO_NAME_ENV);
-        let named = if auto_name {
-            names::apply_auto_name(&mut lock_session(&self.session), &text)
-        } else {
-            Ok(None)
-        };
-        match named {
-            Ok(Some(_)) => {
-                self.name_changed();
-                let naming = naming::naming_settings(&self.runtime.config.settings);
-                if naming.enabled {
-                    let named = naming
-                        .model
-                        .as_deref()
-                        .and_then(|spec| spec.split_once('/'))
-                        .and_then(|(provider, id)| lane::catalog_model(provider, id, &self.env).ok());
-                    let naming_model = named.unwrap_or_else(|| {
-                        let chosen = naming::naming_model(naming.model.as_deref(), &self.model, &api_supported);
-                        if chosen.provider == self.model.provider && chosen.id == self.model.id {
-                            return self.model.clone();
-                        }
-                        lane::catalog_model(&chosen.provider, &chosen.id, &self.env).unwrap_or(chosen)
-                    });
-                    let key = self.keys.request_key(&naming_model.provider);
-                    naming_request = Some((naming_model, key, text.clone()));
-                }
-            }
-            Ok(None) => {}
-            Err(error) => return fail(error, waiter),
+        if !auto_name {
+            return Ok(None);
         }
+        if names::apply_auto_name(&mut lock_session(&self.session), text)?.is_none() {
+            return Ok(None);
+        }
+        self.name_changed();
+        let naming = naming::naming_settings(&self.runtime.config.settings);
+        if !naming.enabled {
+            return Ok(None);
+        }
+        let naming_model = self.resolve_naming_model(naming.model.as_deref());
+        let key = self.keys.request_key(&naming_model.provider);
+        Ok(Some((naming_model, key, text.to_string())))
+    }
+
+    fn resolve_naming_model(&self, spec: Option<&str>) -> Model {
+        let named = spec
+            .and_then(|spec| spec.split_once('/'))
+            .and_then(|(provider, id)| lane::catalog_model(provider, id, &self.env).ok());
+        named.unwrap_or_else(|| {
+            let chosen = naming::naming_model(spec, &self.model, &api_supported);
+            if chosen.provider == self.model.provider && chosen.id == self.model.id {
+                return self.model.clone();
+            }
+            lane::catalog_model(&chosen.provider, &chosen.id, &self.env).unwrap_or(chosen)
+        })
+    }
+
+    fn append_opening_messages(&mut self, prompt: &Value, text: &str, continuation: bool) -> Result<(), String> {
         let mut opening: Vec<Value> = self
             .loki_notice
             .take(crate::loki_notice::NOTICE_WAIT)
@@ -495,32 +564,30 @@ impl Core {
             )
             .collect();
         if prompt["role"] == "user" && !continuation {
-            opening.extend(self.recalled_memory(&text));
-            opening.extend(self.routed_playbook(&text));
-            opening.extend(self.refinements_message(&text));
-            opening.extend(self.mined_procedure_message(&text));
+            opening.extend(self.recalled_memory(text));
+            opening.extend(self.routed_playbook(text));
+            opening.extend(self.refinements_message(text));
+            opening.extend(self.mined_procedure_message(text));
         }
         for message in opening {
             self.announce_message(&message);
-            if let Err(error) = self.append(message) {
-                return fail(error, waiter);
-            }
+            self.append(message)?;
         }
-        if let Err(error) = self.store_lane_config() {
-            return fail(error, waiter);
-        }
+        Ok(())
+    }
+
+    fn admit_run_journal(&mut self, prompt: &Value, take_queued: bool) -> Result<(RunJournal, Vec<Value>), String> {
         let lane_config = lock_session(&self.session)
             .value(LANE_CONFIG, MAIN_LANE)
             .cloned()
             .unwrap_or(Value::Null);
-        let started_tip = self.tip().map_or(Value::Null, Value::from);
         let settings = self.run_settings();
         let captured: Vec<(String, Value)> = select_accepted(&sync::lock(&self.queues), take_queued);
         let mut inbox = self.lane_state()["inbox"].clone();
         if let Some(items) = inbox.as_array_mut() {
             items.retain(|item| !captured.iter().any(|(id, _)| item["entryId"] == id.as_str()));
         }
-        let mut journal = match RunJournal::admit(
+        let journal = RunJournal::admit(
             Some(&mut lock_session(&self.session)),
             lane_config,
             prompt.clone(),
@@ -528,18 +595,19 @@ impl Core {
             settings,
             &captured,
             inbox,
-        ) {
-            Ok(journal) => journal,
-            Err(error) => return fail(error, waiter),
-        };
+        )?;
         if !captured.is_empty() {
             sync::lock(&self.queues)
                 .items
                 .retain(|q| !captured.iter().any(|(id, _)| *id == q.entry_id));
             self.queue_update();
         }
-        let captured: Vec<Value> = captured.into_iter().map(|(_, message)| message).collect();
-        if let Some((naming_model, key, text)) = naming_request {
+        let messages = captured.into_iter().map(|(_, message)| message).collect();
+        Ok((journal, messages))
+    }
+
+    fn spawn_naming_if_requested(&mut self, request: Option<(Model, Option<String>, String)>) {
+        if let Some((naming_model, key, text)) = request {
             self.naming = Some(naming::Pending::spawn(
                 self.provider.clone(),
                 naming_model,
@@ -548,6 +616,9 @@ impl Core {
                 self.tx.clone(),
             ));
         }
+    }
+
+    fn configure_admitted_journal(&mut self, journal: &mut RunJournal) {
         journal.ledger_counts_turns();
         journal.set_retry_policy(self.summary_retry().journal_value());
         if let Some(options) = self.provider.stream_options() {
@@ -562,17 +633,29 @@ impl Core {
                     .usage_root_for_lane(MAIN_LANE, run.operation_id()),
             );
         }
-        if self.model_unavailable {
-            let identity = json!({"provider": self.model.provider, "modelId": self.model.id});
-            let result = journal.fail_configuration(
-                &mut lock_session(&self.session),
-                "model_unavailable",
-                MODEL_UNAVAILABLE,
-                identity,
-            );
-            self.announce();
-            return fail(result.err().unwrap_or_else(|| MODEL_UNAVAILABLE.to_string()), waiter);
-        }
+    }
+
+    fn fail_model_unavailable(&mut self, journal: RunJournal) -> String {
+        let identity = json!({"provider": self.model.provider, "modelId": self.model.id});
+        let result = journal.fail_configuration(
+            &mut lock_session(&self.session),
+            "model_unavailable",
+            MODEL_UNAVAILABLE,
+            identity,
+        );
+        self.announce();
+        result.err().unwrap_or_else(|| MODEL_UNAVAILABLE.to_string())
+    }
+
+    fn start_admitted_run(
+        &mut self,
+        prompt: Value,
+        continuation: bool,
+        started_tip: Value,
+        journal: RunJournal,
+        captured: Vec<Value>,
+        waiter: Option<Reply>,
+    ) -> Result<(), (String, Reply)> {
         let prompt_entry = self.tip().unwrap_or_default();
         if !continuation && prompt["role"] == "user" {
             self.checkpoint_turn(&prompt_entry);
@@ -581,7 +664,7 @@ impl Core {
             Ok(submission) => submission,
             Err(error) => {
                 let _ = journal.finish(Some(&mut lock_session(&self.session)), Some(("run_failed", &error)));
-                return fail(error, waiter);
+                return fail_prompt(error, waiter);
             }
         };
         let signal = AbortSignal::new();
@@ -625,54 +708,45 @@ impl Core {
         let Some(recovered) = self.recovered.take() else {
             return Ok(Some(json!({"resumed": false, "reason": "nothing to recover"})));
         };
-        let summary = json!({
-            "operationId": recovered.operation_id, "status": recovered.status, "depth": recovered.depth,
-            "interruptedCalls": recovered.interrupted_calls, "queued": recovered.queued.len(),
-        });
-        let answer = |resumed: bool, run: Value, reason: &str| {
-            Ok(Some(
-                json!({"resumed": resumed, "runId": run, "reason": reason, "recovered": summary}),
-            ))
-        };
+        let summary = recovery_summary(&recovered);
         if let Some(run) = self.resumed.take() {
-            return answer(true, json!(run), "durable run resumed");
+            return recovery_answer(true, json!(run), "durable run resumed", summary);
         }
         if self.run.is_some() {
-            return answer(false, Value::Null, "a run is in progress");
+            return recovery_answer(false, Value::Null, "a run is in progress", summary);
         }
+        let Some((prompt, reason)) = self.select_recovery_prompt(&recovered)? else {
+            return recovery_answer(false, Value::Null, unresumed_reason(&recovered), summary);
+        };
+        match self.prompt_with(prompt, None, false) {
+            Ok(()) => recovery_answer(true, json!(self.run_id()), reason, summary),
+            Err((error, _)) => Err(error),
+        }
+    }
+
+    fn select_recovery_prompt(
+        &mut self,
+        recovered: &crate::recovery::Recovered,
+    ) -> Result<Option<(Value, &'static str)>, String> {
         let resume_off = self.env.flag_off(RECOVERY_RESUME_ENV);
+        if recovered.resume && !resume_off {
+            let mut prompt = user_message(crate::recovery::CONTINUE_PROMPT.to_string(), Vec::new());
+            prompt[crate::recovery::RECOVERY_DEPTH] = json!(recovered.depth + 1);
+            return Ok(Some((prompt, "interrupted run")));
+        }
         let first = sync::lock(&self.queues)
             .items
             .iter()
             .find(|q| q.kind != QueueKind::NextRun)
             .cloned();
-        let prompt = match first {
-            _ if recovered.resume && !resume_off => {
-                let mut prompt = user_message(crate::recovery::CONTINUE_PROMPT.to_string(), Vec::new());
-                prompt[crate::recovery::RECOVERY_DEPTH] = json!(recovered.depth + 1);
-                Some((prompt, "interrupted run"))
-            }
+        match first {
             Some(queued) if recovered.status.as_deref() != Some("aborted") => {
                 self.remove_queued(std::slice::from_ref(&queued.entry_id))?;
                 let mut prompt = queued.message;
                 prompt["timestamp"] = json!(now_ms());
-                Some((prompt, "queued message"))
+                Ok(Some((prompt, "queued message")))
             }
-            _ => None,
-        };
-        let Some((prompt, reason)) = prompt else {
-            let reason = if recovered.operation_id.is_none() {
-                "nothing to recover"
-            } else if recovered.resume {
-                "resuming is off"
-            } else {
-                "the interrupted run is not resumed"
-            };
-            return answer(false, Value::Null, reason);
-        };
-        match self.prompt_with(prompt, None, false) {
-            Ok(()) => answer(true, json!(self.run_id()), reason),
-            Err((error, _)) => Err(error),
+            _ => Ok(None),
         }
     }
 
@@ -785,5 +859,38 @@ impl Core {
                 reply,
             });
         });
+    }
+}
+
+fn fail_prompt(error: String, waiter: Option<Reply>) -> Result<(), (String, Reply)> {
+    match waiter {
+        Some(waiter) => Err((error, waiter)),
+        None => Err((error, Box::new(|_| {}))),
+    }
+}
+
+fn recovery_summary(recovered: &crate::recovery::Recovered) -> Value {
+    json!({
+        "operationId": recovered.operation_id,
+        "status": recovered.status,
+        "depth": recovered.depth,
+        "interruptedCalls": recovered.interrupted_calls,
+        "queued": recovered.queued.len(),
+    })
+}
+
+fn recovery_answer(resumed: bool, run: Value, reason: &str, summary: Value) -> OpResult {
+    Ok(Some(
+        json!({"resumed": resumed, "runId": run, "reason": reason, "recovered": summary}),
+    ))
+}
+
+fn unresumed_reason(recovered: &crate::recovery::Recovered) -> &'static str {
+    if recovered.operation_id.is_none() {
+        "nothing to recover"
+    } else if recovered.resume {
+        "resuming is off"
+    } else {
+        "the interrupted run is not resumed"
     }
 }

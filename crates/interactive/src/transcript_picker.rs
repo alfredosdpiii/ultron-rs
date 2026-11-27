@@ -230,88 +230,109 @@ impl TranscriptPicker {
     }
 
     pub fn handle_input(&mut self, data: &str) -> PickerEvent {
-        if let Some(mouse) = parse_sgr_mouse(data) {
-            if let Some(wheel) = mouse.wheel {
-                return if self.browser.body.scroll(wheel * 3) {
-                    PickerEvent::Render
-                } else {
-                    PickerEvent::Ignored
-                };
-            }
-            if mouse.left_click && self.mode == PickerMode::Copy {
-                return self.click(mouse.row, mouse.col);
-            }
-            return PickerEvent::Ignored;
+        if let Some(event) = self.try_handle_mouse(data) {
+            return event;
         }
         if self.filter.is_some() {
             return self.handle_filter_input(data);
         }
+        if let Some(event) = self.handle_common_input(data) {
+            return event;
+        }
+        let mode_event = match self.mode {
+            PickerMode::Copy => self.handle_copy_input(data),
+            PickerMode::Rewind => self.handle_rewind_input(data),
+        };
+        mode_event.unwrap_or_else(|| self.scroll_key(data))
+    }
+
+    fn try_handle_mouse(&mut self, data: &str) -> Option<PickerEvent> {
+        let mouse = parse_sgr_mouse(data)?;
+        if let Some(wheel) = mouse.wheel {
+            return Some(if self.browser.body.scroll(wheel * 3) {
+                PickerEvent::Render
+            } else {
+                PickerEvent::Ignored
+            });
+        }
+        if mouse.left_click && self.mode == PickerMode::Copy {
+            return Some(self.click(mouse.row, mouse.col));
+        }
+        Some(PickerEvent::Ignored)
+    }
+
+    fn handle_common_input(&mut self, data: &str) -> Option<PickerEvent> {
         if self.k(data, "tui.select.cancel") {
-            if self.blocks.is_some() {
-                return self.ascend();
-            }
-            return PickerEvent::Cancel;
+            return Some(if self.blocks.is_some() {
+                self.ascend()
+            } else {
+                PickerEvent::Cancel
+            });
         }
         if self.k(data, "app.tools.expand") {
             self.expanded = !self.expanded;
             self.chat.set_tools_expanded(self.expanded);
-            return PickerEvent::Render;
+            return Some(PickerEvent::Render);
         }
         if self.k(data, "tui.select.up") {
-            return self.move_vertical(-1);
+            return Some(self.move_vertical(-1));
         }
         if self.k(data, "tui.select.down") {
-            return self.move_vertical(1);
+            return Some(self.move_vertical(1));
         }
-        match self.mode {
-            PickerMode::Copy => {
-                if self.k(data, "app.copy.blocks") {
-                    return self.descend();
-                }
-                if self.k(data, "app.copy.back") {
-                    return if self.blocks.is_some() {
-                        self.ascend()
-                    } else {
-                        PickerEvent::Ignored
-                    };
-                }
-                if self.k(data, "app.copy.open") {
-                    return self.open_selected_block();
-                }
-                if self.k(data, "tui.select.confirm") {
-                    return self.pick_outlined();
-                }
-            }
-            PickerMode::Rewind => {
-                if self.k(data, "app.rewind.filter") {
-                    self.open_filter();
-                    return PickerEvent::Render;
-                }
-                if self.k(data, "app.rewind.prevUser") {
-                    return self.move_to(-1, true);
-                }
-                if self.k(data, "app.rewind.nextUser") {
-                    return self.move_to(1, true);
-                }
-                if self.k(data, "tui.select.confirm") {
-                    return match self.targets.get(self.selected) {
-                        Some(t) => PickerEvent::Rewind {
-                            entry_id: t.entry_id.clone(),
-                        },
-                        None => PickerEvent::Ignored,
-                    };
-                }
-                if self.k(data, "app.rewind.restoreFiles") {
-                    return match self.targets.get(self.selected) {
-                        Some(t) => PickerEvent::RestoreFiles {
-                            entry_id: t.entry_id.clone(),
-                        },
-                        None => PickerEvent::Ignored,
-                    };
-                }
-            }
+        None
+    }
+
+    fn handle_copy_input(&mut self, data: &str) -> Option<PickerEvent> {
+        if self.k(data, "app.copy.blocks") {
+            return Some(self.descend());
         }
-        self.scroll_key(data)
+        if self.k(data, "app.copy.back") {
+            return Some(if self.blocks.is_some() {
+                self.ascend()
+            } else {
+                PickerEvent::Ignored
+            });
+        }
+        if self.k(data, "app.copy.open") {
+            return Some(self.open_selected_block());
+        }
+        if self.k(data, "tui.select.confirm") {
+            return Some(self.pick_outlined());
+        }
+        None
+    }
+
+    fn handle_rewind_input(&mut self, data: &str) -> Option<PickerEvent> {
+        if self.k(data, "app.rewind.filter") {
+            self.open_filter();
+            return Some(PickerEvent::Render);
+        }
+        if self.k(data, "app.rewind.prevUser") {
+            return Some(self.move_to(-1, true));
+        }
+        if self.k(data, "app.rewind.nextUser") {
+            return Some(self.move_to(1, true));
+        }
+        if self.k(data, "tui.select.confirm") {
+            return Some(
+                self.targets
+                    .get(self.selected)
+                    .map_or(PickerEvent::Ignored, |t| PickerEvent::Rewind {
+                        entry_id: t.entry_id.clone(),
+                    }),
+            );
+        }
+        if self.k(data, "app.rewind.restoreFiles") {
+            return Some(
+                self.targets
+                    .get(self.selected)
+                    .map_or(PickerEvent::Ignored, |t| PickerEvent::RestoreFiles {
+                        entry_id: t.entry_id.clone(),
+                    }),
+            );
+        }
+        None
     }
 
     /// Page up/down, home, end and shift+arrow scroll without moving the selection.
@@ -470,39 +491,21 @@ impl TranscriptPicker {
         self.filter = Some(input);
     }
 
-    fn handle_filter_input(&mut self, data: &str) -> PickerEvent {
-        if self.k(data, "tui.select.cancel") {
-            self.filter = None;
-            return PickerEvent::Render;
+    fn confirm_filter_selection(&self) -> PickerEvent {
+        let matches = self.filter_matches();
+        match self
+            .targets
+            .get(self.selected)
+            .filter(|_| matches.contains(&self.selected))
+        {
+            Some(t) => PickerEvent::Rewind {
+                entry_id: t.entry_id.clone(),
+            },
+            None => PickerEvent::Ignored,
         }
-        if self.k(data, "tui.select.confirm") {
-            let matches = self.filter_matches();
-            return match self
-                .targets
-                .get(self.selected)
-                .filter(|_| matches.contains(&self.selected))
-            {
-                Some(t) => PickerEvent::Rewind {
-                    entry_id: t.entry_id.clone(),
-                },
-                None => PickerEvent::Ignored,
-            };
-        }
-        if self.k(data, "app.tools.expand") {
-            self.expanded = !self.expanded;
-            self.chat.set_tools_expanded(self.expanded);
-            return PickerEvent::Render;
-        }
-        for (id, delta, user_only) in [
-            ("tui.select.up", -1, false),
-            ("app.rewind.prevUser", -1, true),
-            ("tui.select.down", 1, false),
-            ("app.rewind.nextUser", 1, true),
-        ] {
-            if self.k(data, id) {
-                return self.step_filtered(delta, user_only);
-            }
-        }
+    }
+
+    fn apply_filter_edit(&mut self, data: &str) -> PickerEvent {
         let Some(input) = self.filter.as_mut() else {
             return PickerEvent::Ignored;
         };
@@ -525,6 +528,32 @@ impl TranscriptPicker {
             }
         }
         PickerEvent::Render
+    }
+
+    fn handle_filter_input(&mut self, data: &str) -> PickerEvent {
+        if self.k(data, "tui.select.cancel") {
+            self.filter = None;
+            return PickerEvent::Render;
+        }
+        if self.k(data, "tui.select.confirm") {
+            return self.confirm_filter_selection();
+        }
+        if self.k(data, "app.tools.expand") {
+            self.expanded = !self.expanded;
+            self.chat.set_tools_expanded(self.expanded);
+            return PickerEvent::Render;
+        }
+        for (id, delta, user_only) in [
+            ("tui.select.up", -1, false),
+            ("app.rewind.prevUser", -1, true),
+            ("tui.select.down", 1, false),
+            ("app.rewind.nextUser", 1, true),
+        ] {
+            if self.k(data, id) {
+                return self.step_filtered(delta, user_only);
+            }
+        }
+        self.apply_filter_edit(data)
     }
 
     fn step_filtered(&mut self, delta: i64, user_only: bool) -> PickerEvent {
@@ -764,6 +793,64 @@ impl TranscriptPicker {
         }
     }
 
+    fn render_block_preview(&self, block: &CopyBlock, inner: usize, colors: &HighlightColors) -> (Vec<String>, usize) {
+        let raw: Vec<&str> = block.content.split('\n').collect();
+        let shown = &raw[..raw.len().min(BLOCK_PREVIEW_LINES)];
+        let styled: Vec<String> = match block.language.as_deref() {
+            Some(lang) if warmed() && supports_language(lang) => highlight_lines(&shown.join("\n"), Some(lang), colors),
+            _ => shown.iter().map(std::string::ToString::to_string).collect(),
+        };
+        let mut rows: Vec<String> = styled
+            .iter()
+            .map(|r| truncate_to_width(&r.replace('\t', "   "), inner, "…", false))
+            .collect();
+        if raw.len() > shown.len() {
+            rows.push(
+                self.theme
+                    .fg(Fg::Dim, &format!("… +{} more lines", raw.len() - shown.len())),
+            );
+        }
+        (rows, raw.len())
+    }
+
+    fn build_block_caption(
+        &self,
+        block: &CopyBlock,
+        index: usize,
+        total_blocks: usize,
+        line_count: usize,
+        inner: usize,
+        selected: bool,
+    ) -> (String, Vec<(Control, usize, usize, usize)>) {
+        let caption_color = if selected { COPY_OUTLINE } else { Fg::Dim };
+        let mut controls = vec![(Control::Copy, format!("⧉ {}", self.action))];
+        if block.href.is_some() {
+            controls.push((Control::Open, "↗ open".to_string()));
+        }
+        let controls_width: usize = controls.iter().map(|c| visible_width(&c.1) + 2).sum();
+        let summary = truncate_to_width(
+            &format!(
+                "{}/{total_blocks}{SEP_DOT}{}{SEP_DOT}{line_count} line{}",
+                index + 1,
+                block.label,
+                if line_count == 1 { "" } else { "s" }
+            ),
+            inner.saturating_sub(controls_width).max(4),
+            "…",
+            false,
+        );
+        let mut caption = self.theme.fg(caption_color, &summary);
+        let mut cursor = 2 + visible_width(&summary);
+        let mut regions = Vec::new();
+        for (kind, text) in &controls {
+            cursor += 2;
+            regions.push((*kind, index, cursor, cursor + visible_width(text)));
+            caption.push_str(&format!("  {}", self.theme.fg(Fg::Accent, text)));
+            cursor += visible_width(text);
+        }
+        (caption, regions)
+    }
+
     /// The selected turn exploded into captioned block previews, the selected block outlined. Caption controls are
     /// recorded by body line (`line_offset` + local line).
     fn compose_blocks(
@@ -778,53 +865,9 @@ impl TranscriptPicker {
         let mut lines = Vec::new();
         let mut selection = None;
         for (index, block) in blocks.iter().enumerate() {
-            let raw: Vec<&str> = block.content.split('\n').collect();
-            let shown = &raw[..raw.len().min(BLOCK_PREVIEW_LINES)];
-            let styled: Vec<String> = match block.language.as_deref() {
-                Some(lang) if warmed() && supports_language(lang) => {
-                    highlight_lines(&shown.join("\n"), Some(lang), &colors)
-                }
-                _ => shown.iter().map(std::string::ToString::to_string).collect(),
-            };
-            let mut rows: Vec<String> = styled
-                .iter()
-                .map(|r| truncate_to_width(&r.replace('\t', "   "), inner, "…", false))
-                .collect();
-            if raw.len() > shown.len() {
-                rows.push(
-                    self.theme
-                        .fg(Fg::Dim, &format!("… +{} more lines", raw.len() - shown.len())),
-                );
-            }
+            let (rows, line_count) = self.render_block_preview(block, inner, &colors);
             let selected = index == self.block_selected;
-            let caption_color = if selected { COPY_OUTLINE } else { Fg::Dim };
-            let mut controls = vec![(Control::Copy, format!("⧉ {}", self.action))];
-            if block.href.is_some() {
-                controls.push((Control::Open, "↗ open".to_string()));
-            }
-            let controls_width: usize = controls.iter().map(|c| visible_width(&c.1) + 2).sum();
-            let count = raw.len();
-            let summary = truncate_to_width(
-                &format!(
-                    "{}/{}{SEP_DOT}{}{SEP_DOT}{count} line{}",
-                    index + 1,
-                    blocks.len(),
-                    block.label,
-                    if count == 1 { "" } else { "s" }
-                ),
-                inner.saturating_sub(controls_width).max(4),
-                "…",
-                false,
-            );
-            let mut caption = self.theme.fg(caption_color, &summary);
-            let mut cursor = 2 + visible_width(&summary);
-            let mut regions = Vec::new();
-            for (kind, text) in &controls {
-                cursor += 2;
-                regions.push((*kind, index, cursor, cursor + visible_width(text)));
-                caption.push_str(&format!("  {}", self.theme.fg(Fg::Accent, text)));
-                cursor += visible_width(text);
-            }
+            let (caption, regions) = self.build_block_caption(block, index, blocks.len(), line_count, inner, selected);
             lines.push(String::new());
             self.controls.insert(line_offset + lines.len(), regions);
             if selected {

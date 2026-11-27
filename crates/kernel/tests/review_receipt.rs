@@ -705,11 +705,12 @@ fn review_conventions_static_sweep_and_preexisting() {
         "            self.find_tasks = list(tasks)",
         "            out = []",
         "            for task, chunk in zip(tasks, items):",
-        "                if 'Conventions' in task and chunk.startswith('File: sub/mod.py'):",
+        "                chunk_text = chunk[-1] if isinstance(chunk, list) else chunk",
+        "                if 'Conventions' in task and chunk_text.startswith('File: sub/mod.py'):",
         "                    out.append([{'file': 'sub/mod.py', 'line': 2, 'severity': 'minor', 'category': 'maintainability',",
         "                                 'claim': 'violates Rule S1: missing tenant_id validation',",
         "                                 'why': 'sub/AGENTS.md requires tenant_id', 'suggested_fix': 'validate', 'confidence': 0.9}])",
-        "                elif 'Correctness' in task and chunk.startswith('File: ok.py'):",
+        "                elif 'Correctness' in task and chunk_text.startswith('File: ok.py'):",
         "                    out.append([",
         "                        {'file': 'ok.py', 'line': 2, 'severity': 'major', 'category': 'correctness',",
         "                         'claim': 'syntax error: file does not compile', 'why': 'bogus', 'suggested_fix': 'none', 'confidence': 0.8},",
@@ -764,7 +765,10 @@ fn review_conventions_static_sweep_and_preexisting() {
     assert!(ok_conv.contains("never use eval()"), "{ok_conv}");
     assert!(!ok_conv.contains("totally fine now"), "{ok_conv}");
     assert!(!ok_conv.contains("Rule S1"), "{ok_conv}");
-    assert!(sub_conv.contains("Rule S1") && sub_conv.contains("never use eval()"), "{sub_conv}");
+    assert!(
+        sub_conv.contains("Rule S1") && sub_conv.contains("never use eval()"),
+        "{sub_conv}"
+    );
 
     // Gap sweep ran and its candidate went through verification.
     assert_eq!(out["sweep_called"], Value::Bool(true), "{out}");
@@ -774,7 +778,10 @@ fn review_conventions_static_sweep_and_preexisting() {
     assert!(!verified_joined.contains("file does not compile"), "{verified_joined}");
 
     let report = out["report"].as_str().unwrap();
-    assert!(report.contains("bad.py") && report.contains("no longer compiles"), "{report}");
+    assert!(
+        report.contains("bad.py") && report.contains("no longer compiles"),
+        "{report}"
+    );
     assert!(report.contains("## Pre-existing, not blocking (1)"), "{report}");
     assert!(report.contains("pre-existing issue in keep"), "{report}");
     assert_eq!(out["receipt"]["confirmed"], 1, "{out}");

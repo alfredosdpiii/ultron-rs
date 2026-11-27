@@ -157,42 +157,57 @@ pub struct StreamStats {
     messages: Option<HashSet<String>>,
 }
 
+fn fold_assistant_message(body: &Value, stats: &mut StreamStats) {
+    let Some(content) = body.get("content").and_then(Value::as_array) else {
+        return;
+    };
+    let messages = stats.messages.get_or_insert_with(HashSet::new);
+    let id = body
+        .get("id")
+        .and_then(Value::as_str)
+        .map_or_else(|| format!("line-{}", messages.len()), str::to_string);
+    if messages.insert(id) {
+        stats.turns += 1;
+    }
+    for part in content {
+        match part.get("type").and_then(Value::as_str) {
+            Some("tool_use") => stats.tool_calls += 1,
+            Some("text") => {
+                if let Some(text) = part
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .filter(|t| !t.trim().is_empty())
+                {
+                    stats.text = text.to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Fold one stream-json line of `claude -p` into `stats`; returns the final result message if it is one.
 pub fn fold_stream_line(line: &str, stats: &mut StreamStats) -> Option<Map<String, Value>> {
     let Ok(Value::Object(message)) = serde_json::from_str::<Value>(line) else {
         return None;
     };
-    if message.get("type") == Some(&json!("system"))
-        && message.get("subtype") == Some(&json!("init"))
-        && let Some(Value::String(model)) = message.get("model")
-    {
-        stats.model = Some(crate::claude_code_ref(model));
-    }
-    if message.get("type") == Some(&json!("assistant"))
-        && let Some(body) = message.get("message")
-        && let Some(content) = body.get("content").and_then(Value::as_array)
-    {
-        let messages = stats.messages.get_or_insert_with(HashSet::new);
-        let id = body
-            .get("id")
-            .and_then(Value::as_str)
-            .map_or_else(|| format!("line-{}", messages.len()), str::to_string);
-        if messages.insert(id) {
-            stats.turns += 1;
+    match message.get("type").and_then(Value::as_str) {
+        Some("system")
+            if message.get("subtype") == Some(&json!("init"))
+                && let Some(Value::String(model)) = message.get("model") =>
+        {
+            stats.model = Some(crate::claude_code_ref(model));
+            None
         }
-        for part in content {
-            if part.get("type") == Some(&json!("tool_use")) {
-                stats.tool_calls += 1;
+        Some("assistant") => {
+            if let Some(body) = message.get("message") {
+                fold_assistant_message(body, stats);
             }
-            if part.get("type") == Some(&json!("text"))
-                && let Some(text) = part.get("text").and_then(Value::as_str)
-                && !text.trim().is_empty()
-            {
-                stats.text = text.to_string();
-            }
+            None
         }
+        Some("result") => Some(message),
+        _ => None,
     }
-    (message.get("type") == Some(&json!("result"))).then_some(message)
 }
 
 /// A finished child (`NativeExternalChildResult`).
@@ -268,35 +283,17 @@ pub struct ChildOptions<'a> {
     pub var: &'a dyn Fn(&str) -> Option<String>,
 }
 
-/// Run one subagent as `claude -p` attached to its own `ultron mcp --child` server; `token` is the child's
-/// one-time verdict token; `signal` aborts the process group.
-pub fn run_claude_child(
+fn spawn_claude_process(
     options: &ChildOptions,
     run: &ChildRun,
-    token: &str,
-    signal: &kernel::Signal,
-    progress: &dyn Fn(&StreamStats),
-) -> Result<ChildResult, String> {
+    args: &[String],
+    cwd: &str,
+) -> Result<std::process::Child, String> {
     use std::os::unix::process::CommandExt;
-    let model = child_claude_model(run.model.as_deref(), options.model)?;
-    let cwd = run.cwd.clone().unwrap_or_else(|| options.cwd.to_string());
-    let base = config::paths::tmpdir(options.var);
-    let dir =
-        config::paths::private_temp_dir(&base, "ultron-child-").map_err(|e| format!("{}: {e}", base.display()))?;
-    let cleanup = scopeguard(dir.clone());
-    let prompt_file = dir.join("system-prompt.md");
-    config::paths::write_private(&prompt_file, &options.system_prompt).map_err(|e| e.to_string())?;
-    let mcp_config = child_mcp_config(&options.server, run, &model, token, &cwd);
-    let args = child_claude_args(
-        &model,
-        &mcp_config,
-        &prompt_file.display().to_string(),
-        &options.skip_permissions,
-    );
     let mut command = Command::new(options.claude);
     command
-        .args(&args)
-        .current_dir(&cwd)
+        .args(args)
+        .current_dir(cwd)
         .envs(run.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -306,15 +303,11 @@ pub fn run_claude_child(
         command.env_remove(name);
     }
     command.env_remove(host::PARENT_TOKEN_ENV);
-    let mut child = command.spawn().map_err(|e| e.to_string())?;
-    if let Some(mut stdin) = child.stdin.take() {
-        let prompt = run.prompt.clone();
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(prompt.as_bytes());
-        });
-    }
-    let mut stderr_pipe = child.stderr.take().expect("piped stderr");
-    let stderr_reader = std::thread::spawn(move || {
+    command.spawn().map_err(|e| e.to_string())
+}
+
+fn spawn_stderr_tail(mut stderr_pipe: std::process::ChildStderr) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
         let mut text = Vec::new();
         let _ = stderr_pipe.read_to_end(&mut text);
         let text = String::from_utf8_lossy(&text).into_owned();
@@ -323,18 +316,13 @@ pub fn run_claude_child(
             start += 1;
         }
         text[start..].to_string()
-    });
-    let stdout = child.stdout.take().expect("piped stdout");
-    let watched = signals::child::Watched::new(child);
-    let stopper = watched.clone();
-    let link = signal.link(move |_| {
-        std::thread::spawn(move || {
-            stopper.stop(signals::child::Stop {
-                group: true,
-                term_grace: Some(KILL_GRACE),
-            });
-        });
-    });
+    })
+}
+
+fn read_child_stream(
+    stdout: std::process::ChildStdout,
+    progress: &dyn Fn(&StreamStats),
+) -> (StreamStats, Option<Map<String, Value>>) {
     let mut stats = StreamStats::default();
     let mut result = None;
     for line in BufReader::new(stdout).lines() {
@@ -347,6 +335,63 @@ pub fn run_claude_child(
         }
         progress(&stats);
     }
+    (stats, result)
+}
+
+fn prepare_child_launch(
+    options: &ChildOptions,
+    run: &ChildRun,
+    model: &str,
+    token: &str,
+    cwd: &str,
+) -> Result<(DirGuard, Vec<String>), String> {
+    let base = config::paths::tmpdir(options.var);
+    let dir =
+        config::paths::private_temp_dir(&base, "ultron-child-").map_err(|e| format!("{}: {e}", base.display()))?;
+    let prompt_file = dir.join("system-prompt.md");
+    config::paths::write_private(&prompt_file, &options.system_prompt).map_err(|e| e.to_string())?;
+    let mcp_config = child_mcp_config(&options.server, run, model, token, cwd);
+    let args = child_claude_args(
+        model,
+        &mcp_config,
+        &prompt_file.display().to_string(),
+        &options.skip_permissions,
+    );
+    Ok((scopeguard(dir), args))
+}
+
+/// Run one subagent as `claude -p` attached to its own `ultron mcp --child` server; `token` is the child's
+/// one-time verdict token; `signal` aborts the process group.
+pub fn run_claude_child(
+    options: &ChildOptions,
+    run: &ChildRun,
+    token: &str,
+    signal: &kernel::Signal,
+    progress: &dyn Fn(&StreamStats),
+) -> Result<ChildResult, String> {
+    let model = child_claude_model(run.model.as_deref(), options.model)?;
+    let cwd = run.cwd.clone().unwrap_or_else(|| options.cwd.to_string());
+    let (cleanup, args) = prepare_child_launch(options, run, &model, token, &cwd)?;
+    let mut child = spawn_claude_process(options, run, &args, &cwd)?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let prompt = run.prompt.clone();
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(prompt.as_bytes());
+        });
+    }
+    let stderr_reader = spawn_stderr_tail(child.stderr.take().expect("piped stderr"));
+    let stdout = child.stdout.take().expect("piped stdout");
+    let watched = signals::child::Watched::new(child);
+    let stopper = watched.clone();
+    let link = signal.link(move |_| {
+        std::thread::spawn(move || {
+            stopper.stop(signals::child::Stop {
+                group: true,
+                term_grace: Some(KILL_GRACE),
+            });
+        });
+    });
+    let (stats, result) = read_child_stream(stdout, progress);
     let status = watched.wait();
     drop(link);
     let stderr = stderr_reader.join().unwrap_or_default();

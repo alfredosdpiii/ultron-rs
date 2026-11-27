@@ -530,59 +530,81 @@ impl Shared {
 
     fn next(&self, q: &mut Queue, now: Instant) -> Next {
         if q.releasing {
-            if q.state.is_some() {
-                return Next::Send(self.state_request(q));
-            }
-            if q.released {
-                return Next::Exit;
-            }
-            q.released = true;
-            if self.protocol == Protocol::Osc7501 {
-                return Next::Send(osc_7501_clear().to_string());
-            }
-            return Next::Send(self.request(q, "pane.release_agent", Map::new()));
+            return self.next_releasing(q);
         }
         if let Some(seq) = q.task_events.pop_front() {
             return Next::Send(seq);
         }
+        if let Some(next) = self.next_session_dirty(q) {
+            return next;
+        }
         let mut wait: Option<Duration> = None;
-        if q.session_dirty {
-            q.session_dirty = false;
-            if self.protocol == Protocol::LegacySocket {
-                let mut params = Map::new();
-                Self::session_fields(q, &mut params);
-                if let Some(source) = q.session.as_ref().and_then(|s| s.start_source.clone()) {
-                    params.insert("session_start_source".into(), source.into());
-                }
-                return Next::Send(self.request(q, "pane.report_agent_session", params));
-            }
+        if let Some(next) = self.next_state(q, now, &mut wait) {
+            return next;
         }
-        if let Some((state, _, _, at)) = &q.state {
-            let ready_at = if *state == State::Working { *at } else { *at + SETTLE };
-            if now >= ready_at {
-                return Next::Send(self.state_request(q));
-            }
-            wait = Some(ready_at - now);
-        }
-        if q.metadata.is_some() {
-            if self.protocol == Protocol::Osc7501 {
-                q.sent_metadata = q.metadata.take();
-            } else {
-                let ready_at = q.metadata_at.map_or(now, |at| at + METADATA_INTERVAL);
-                if now >= ready_at {
-                    let metadata = q.metadata.take().expect("pending metadata");
-                    if let Some(params) = metadata_params(q.sent_metadata.as_ref(), &metadata) {
-                        q.metadata_at = Some(now);
-                        q.sent_metadata = Some(metadata);
-                        return Next::Send(self.request(q, "pane.report_metadata", params));
-                    }
-                } else {
-                    let left = ready_at - now;
-                    wait = Some(wait.map_or(left, |w| w.min(left)));
-                }
-            }
+        if let Some(next) = self.next_metadata(q, now, &mut wait) {
+            return next;
         }
         Next::Wait(wait)
+    }
+
+    fn next_releasing(&self, q: &mut Queue) -> Next {
+        if q.state.is_some() {
+            return Next::Send(self.state_request(q));
+        }
+        if q.released {
+            return Next::Exit;
+        }
+        q.released = true;
+        if self.protocol == Protocol::Osc7501 {
+            return Next::Send(osc_7501_clear().to_string());
+        }
+        Next::Send(self.request(q, "pane.release_agent", Map::new()))
+    }
+
+    fn next_session_dirty(&self, q: &mut Queue) -> Option<Next> {
+        if !q.session_dirty {
+            return None;
+        }
+        q.session_dirty = false;
+        if self.protocol != Protocol::LegacySocket {
+            return None;
+        }
+        let mut params = Map::new();
+        Self::session_fields(q, &mut params);
+        if let Some(source) = q.session.as_ref().and_then(|s| s.start_source.clone()) {
+            params.insert("session_start_source".into(), source.into());
+        }
+        Some(Next::Send(self.request(q, "pane.report_agent_session", params)))
+    }
+
+    fn next_state(&self, q: &mut Queue, now: Instant, wait: &mut Option<Duration>) -> Option<Next> {
+        let (state, _, _, at) = q.state.as_ref()?;
+        let ready_at = if *state == State::Working { *at } else { *at + SETTLE };
+        if now >= ready_at {
+            return Some(Next::Send(self.state_request(q)));
+        }
+        *wait = Some(ready_at - now);
+        None
+    }
+
+    fn next_metadata(&self, q: &mut Queue, now: Instant, wait: &mut Option<Duration>) -> Option<Next> {
+        q.metadata.as_ref()?;
+        if self.protocol == Protocol::Osc7501 {
+            q.sent_metadata = q.metadata.take();
+            return None;
+        }
+        let ready_at = q.metadata_at.map_or(now, |at| at + METADATA_INTERVAL);
+        if now < ready_at {
+            let left = ready_at - now;
+            *wait = Some(wait.map_or(left, |w| w.min(left)));
+            return None;
+        }
+        let metadata = q.metadata.take()?;
+        let params = metadata_params(q.sent_metadata.as_ref(), &metadata)?;
+        q.metadata_at = Some(now);
+        q.sent_metadata = Some(metadata);
+        Some(Next::Send(self.request(q, "pane.report_metadata", params)))
     }
 }
 
@@ -594,24 +616,40 @@ fn metadata_params(sent: Option<&Metadata>, now: &Metadata) -> Option<Map<String
         return None;
     }
     let mut params = Map::new();
-    match &now.display_agent {
-        Some(name) => {
-            params.insert("display_agent".into(), name.clone().into());
+    insert_metadata_field(
+        &mut params,
+        "display_agent",
+        "clear_display_agent",
+        &sent.display_agent,
+        &now.display_agent,
+    );
+    insert_metadata_field(&mut params, "title", "clear_title", &sent.title, &now.title);
+    let tokens = diff_metadata_tokens(sent, now);
+    if !tokens.is_empty() {
+        params.insert("tokens".into(), Value::Object(tokens));
+    }
+    Some(params)
+}
+
+fn insert_metadata_field(
+    params: &mut Map<String, Value>,
+    key: &str,
+    clear_key: &str,
+    sent: &Option<String>,
+    now: &Option<String>,
+) {
+    match now {
+        Some(value) => {
+            params.insert(key.into(), value.clone().into());
         }
-        None if sent.display_agent.is_some() => {
-            params.insert("clear_display_agent".into(), true.into());
+        None if sent.is_some() => {
+            params.insert(clear_key.into(), true.into());
         }
         None => {}
     }
-    match &now.title {
-        Some(title) => {
-            params.insert("title".into(), title.clone().into());
-        }
-        None if sent.title.is_some() => {
-            params.insert("clear_title".into(), true.into());
-        }
-        None => {}
-    }
+}
+
+fn diff_metadata_tokens(sent: &Metadata, now: &Metadata) -> Map<String, Value> {
     let mut tokens = Map::new();
     for (key, value) in &now.tokens {
         tokens.insert(key.clone(), value.clone().into());
@@ -621,10 +659,7 @@ fn metadata_params(sent: Option<&Metadata>, now: &Metadata) -> Option<Map<String
             tokens.insert(key.clone(), Value::Null);
         }
     }
-    if !tokens.is_empty() {
-        params.insert("tokens".into(), Value::Object(tokens));
-    }
-    Some(params)
+    tokens
 }
 
 fn run(shared: Arc<Shared>, mut transport: Box<dyn Transport>) {

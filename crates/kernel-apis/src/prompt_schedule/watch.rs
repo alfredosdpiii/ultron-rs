@@ -128,6 +128,57 @@ impl GitHub {
         serde_json::from_slice(&output.stdout).map_err(|_| "gh returned invalid JSON".into())
     }
 
+    fn fetch_thread_page(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u32,
+        cursor: Option<&str>,
+        deadline: Instant,
+    ) -> Result<Value, String> {
+        let mut args = vec![
+            "api".into(),
+            "--hostname".into(),
+            "github.com".into(),
+            "graphql".into(),
+            "-f".into(),
+            format!("query={THREADS}"),
+            "-f".into(),
+            format!("owner={owner}"),
+            "-f".into(),
+            format!("repo={repo}"),
+            "-F".into(),
+            format!("number={pr}"),
+        ];
+        if let Some(cursor) = cursor {
+            args.extend(["-f".into(), format!("after={cursor}")]);
+        }
+        let response = self.json(&args, deadline)?;
+        if response
+            .get("errors")
+            .is_some_and(|e| e.as_array().is_none_or(|e| !e.is_empty()))
+        {
+            return Err("GitHub GraphQL errors".into());
+        }
+        Ok(response["data"]["repository"]["pullRequest"]["reviewThreads"].clone())
+    }
+
+    fn fetch_review_threads(&self, owner: &str, repo: &str, pr: u32, deadline: Instant) -> Result<Vec<Value>, String> {
+        let mut threads = Vec::new();
+        let mut cursors = std::collections::HashSet::new();
+        let mut cursor = None;
+        // ponytail: cap at 100 pages; fail visibly rather than silently ignore a truncated PR.
+        for _ in 0..100 {
+            let page = self.fetch_thread_page(owner, repo, pr, cursor.as_deref(), deadline)?;
+            collect_unresolved_threads(&page, &mut threads)?;
+            match next_thread_cursor(&page, &mut cursors)? {
+                None => return Ok(threads),
+                Some(next) => cursor = Some(next),
+            }
+        }
+        Err("review thread pagination limit exceeded".into())
+    }
+
     pub fn poll(&self, watch: &Watch) -> Result<Value, String> {
         let deadline = Instant::now() + Duration::from_secs(30);
         let view = self.json(
@@ -147,64 +198,41 @@ impl GitHub {
             return snapshot(view, Vec::new());
         }
         let (owner, repo) = watch.repo.split_once('/').ok_or("invalid pinned repository")?;
-        let mut threads = Vec::new();
-        let mut cursors = std::collections::HashSet::new();
-        let mut cursor = None;
-        // ponytail: cap at 100 pages; fail visibly rather than silently ignore a truncated PR.
-        for _ in 0..100 {
-            let mut args = vec![
-                "api".into(),
-                "--hostname".into(),
-                "github.com".into(),
-                "graphql".into(),
-                "-f".into(),
-                format!("query={THREADS}"),
-                "-f".into(),
-                format!("owner={owner}"),
-                "-f".into(),
-                format!("repo={repo}"),
-                "-F".into(),
-                format!("number={}", watch.pr),
-            ];
-            if let Some(cursor) = &cursor {
-                args.extend(["-f".into(), format!("after={cursor}")]);
-            }
-            let response = self.json(&args, deadline)?;
-            if response
-                .get("errors")
-                .is_some_and(|e| e.as_array().is_none_or(|e| !e.is_empty()))
-            {
-                return Err("GitHub GraphQL errors".into());
-            }
-            let page = &response["data"]["repository"]["pullRequest"]["reviewThreads"];
-            let nodes = page["nodes"].as_array().ok_or("missing review threads")?;
-            for node in nodes {
-                let id = node["id"].as_str().ok_or("missing thread id")?;
-                let resolved = node["isResolved"].as_bool().ok_or("missing thread resolution")?;
-                let count = node["comments"]["totalCount"]
-                    .as_u64()
-                    .ok_or("missing thread comment count")?;
-                if !resolved {
-                    threads.push(json!({"id": id, "comments": count}));
-                }
-            }
-            match page["pageInfo"]["hasNextPage"].as_bool() {
-                Some(false) => return snapshot(view, threads),
-                Some(true) => {
-                    let next = page["pageInfo"]["endCursor"]
-                        .as_str()
-                        .filter(|c| !c.is_empty())
-                        .ok_or("missing review thread cursor")?
-                        .to_string();
-                    if !cursors.insert(next.clone()) {
-                        return Err("repeated review thread cursor".into());
-                    }
-                    cursor = Some(next);
-                }
-                None => return Err("missing review thread pagination".into()),
-            }
+        let threads = self.fetch_review_threads(owner, repo, watch.pr, deadline)?;
+        snapshot(view, threads)
+    }
+}
+
+fn collect_unresolved_threads(page: &Value, threads: &mut Vec<Value>) -> Result<(), String> {
+    let nodes = page["nodes"].as_array().ok_or("missing review threads")?;
+    for node in nodes {
+        let id = node["id"].as_str().ok_or("missing thread id")?;
+        let resolved = node["isResolved"].as_bool().ok_or("missing thread resolution")?;
+        let count = node["comments"]["totalCount"]
+            .as_u64()
+            .ok_or("missing thread comment count")?;
+        if !resolved {
+            threads.push(json!({"id": id, "comments": count}));
         }
-        Err("review thread pagination limit exceeded".into())
+    }
+    Ok(())
+}
+
+fn next_thread_cursor(page: &Value, cursors: &mut std::collections::HashSet<String>) -> Result<Option<String>, String> {
+    match page["pageInfo"]["hasNextPage"].as_bool() {
+        Some(false) => Ok(None),
+        Some(true) => {
+            let next = page["pageInfo"]["endCursor"]
+                .as_str()
+                .filter(|c| !c.is_empty())
+                .ok_or("missing review thread cursor")?
+                .to_string();
+            if !cursors.insert(next.clone()) {
+                return Err("repeated review thread cursor".into());
+            }
+            Ok(Some(next))
+        }
+        None => Err("missing review thread pagination".into()),
     }
 }
 
@@ -240,7 +268,7 @@ fn validate_view(view: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn snapshot(view: Value, threads: Vec<Value>) -> Result<Value, String> {
+fn parse_checks(view: &Value) -> Result<Vec<Value>, String> {
     let mut checks = Vec::new();
     for check in view["statusCheckRollup"].as_array().into_iter().flatten() {
         if check["name"].as_str().or_else(|| check["context"].as_str()).is_none()
@@ -252,19 +280,30 @@ fn snapshot(view: Value, threads: Vec<Value>) -> Result<Value, String> {
             "status": check["status"], "conclusion": check["conclusion"], "state": check["state"],
             "id": check["detailsUrl"].as_str().or_else(|| check["targetUrl"].as_str())}));
     }
-    let reviews: Vec<_> = view["reviews"].as_array().ok_or("missing reviews")?.iter().map(|r| {
-        json!({"id": r["id"], "author": r["author"]["login"], "state": r["state"], "submittedAt": r["submittedAt"], "commit": r["commit"]["oid"]})
-    }).collect();
-    let ready = view["state"] == "OPEN"
+    Ok(checks)
+}
+
+fn check_passed(check: &Value) -> bool {
+    check["state"] == "SUCCESS"
+        || (check["status"] == "COMPLETED"
+            && matches!(check["conclusion"].as_str(), Some("SUCCESS" | "NEUTRAL" | "SKIPPED")))
+}
+
+fn is_pr_ready(view: &Value, threads: &[Value], checks: &[Value]) -> bool {
+    view["state"] == "OPEN"
         && view["mergeable"] == "MERGEABLE"
         && view["mergeStateStatus"] == "CLEAN"
         && matches!(view["reviewDecision"].as_str(), Some("APPROVED" | ""))
         && threads.is_empty()
-        && checks.iter().all(|c| {
-            c["state"] == "SUCCESS"
-                || (c["status"] == "COMPLETED"
-                    && matches!(c["conclusion"].as_str(), Some("SUCCESS" | "NEUTRAL" | "SKIPPED")))
-        });
+        && checks.iter().all(check_passed)
+}
+
+fn snapshot(view: Value, threads: Vec<Value>) -> Result<Value, String> {
+    let checks = parse_checks(&view)?;
+    let reviews: Vec<_> = view["reviews"].as_array().ok_or("missing reviews")?.iter().map(|r| {
+        json!({"id": r["id"], "author": r["author"]["login"], "state": r["state"], "submittedAt": r["submittedAt"], "commit": r["commit"]["oid"]})
+    }).collect();
+    let ready = is_pr_ready(&view, &threads, &checks);
     Ok(normalize(json!({"state": view["state"], "head": view["headRefOid"],
         "mergeable": view["mergeable"], "mergeState": view["mergeStateStatus"],
         "reviewDecision": view["reviewDecision"], "checks": checks, "reviews": reviews,

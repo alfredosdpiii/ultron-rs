@@ -338,6 +338,55 @@ pub async fn abortable_sleep(
     }
 }
 
+fn next_slow_down_interval(current_ms: f64, server_seconds: Option<f64>) -> f64 {
+    match server_seconds.filter(|s| s.is_finite() && *s > 0.0) {
+        Some(seconds) => MINIMUM_INTERVAL_MS.max((seconds * 1000.0).floor()),
+        None => MINIMUM_INTERVAL_MS.max(current_ms + SLOW_DOWN_INTERVAL_INCREMENT_MS),
+    }
+}
+
+async fn sleep_until_deadline(
+    env: &dyn LoginEnv,
+    deadline: f64,
+    interval_ms: f64,
+    signal: Option<&AbortSignal>,
+) -> Result<bool, String> {
+    let remaining = deadline - env.now_ms();
+    if remaining <= 0.0 {
+        return Ok(false);
+    }
+    abortable_sleep(env, interval_ms.min(remaining), signal, CANCEL_MESSAGE).await?;
+    Ok(true)
+}
+
+fn device_flow_timeout_message(slow_downs: u32) -> String {
+    if slow_downs > 0 {
+        SLOW_DOWN_TIMEOUT_MESSAGE.into()
+    } else {
+        TIMEOUT_MESSAGE.into()
+    }
+}
+
+enum PollStep<T> {
+    Done(Result<T, String>),
+    Continue { interval_ms: f64, slow_downs: u32 },
+}
+
+fn apply_poll_outcome<T>(outcome: Poll<T>, interval_ms: f64, slow_downs: u32) -> PollStep<T> {
+    match outcome {
+        Poll::Complete(value) => PollStep::Done(Ok(value)),
+        Poll::Failed(message) => PollStep::Done(Err(message)),
+        Poll::SlowDown(server) => PollStep::Continue {
+            interval_ms: next_slow_down_interval(interval_ms, server),
+            slow_downs: slow_downs + 1,
+        },
+        Poll::Pending => PollStep::Continue {
+            interval_ms,
+            slow_downs,
+        },
+    }
+}
+
 /// `pollOAuthDeviceCodeFlow`: polls until `poll` completes or fails, the deadline (`expires_in_seconds` from now on
 /// `env`'s clock) passes, or `signal` aborts. Polls immediately unless `wait_before_first_poll`; RFC 8628 interval
 /// rules: default 5 s, at least 1 s, `slow_down` takes the server's interval or adds 5 s.
@@ -356,40 +405,29 @@ where
     let deadline = expires_in_seconds.map_or(f64::INFINITY, |s| env.now_ms() + s * 1000.0);
     let mut interval_ms =
         MINIMUM_INTERVAL_MS.max((interval_seconds.unwrap_or(DEFAULT_POLL_INTERVAL_SECONDS) * 1000.0).floor());
-    let mut slow_downs = 0;
+    let mut slow_downs = 0u32;
     if wait_before_first_poll {
-        let remaining = deadline - env.now_ms();
-        if remaining > 0.0 {
-            abortable_sleep(env, interval_ms.min(remaining), signal, CANCEL_MESSAGE).await?;
-        }
+        let _ = sleep_until_deadline(env, deadline, interval_ms, signal).await?;
     }
     while env.now_ms() < deadline {
         if is_aborted(signal) {
             return Err(CANCEL_MESSAGE.into());
         }
-        match poll().await? {
-            Poll::Complete(value) => return Ok(value),
-            Poll::Failed(message) => return Err(message),
-            Poll::SlowDown(server) => {
-                slow_downs += 1;
-                interval_ms = match server.filter(|s| s.is_finite() && *s > 0.0) {
-                    Some(seconds) => MINIMUM_INTERVAL_MS.max((seconds * 1000.0).floor()),
-                    None => MINIMUM_INTERVAL_MS.max(interval_ms + SLOW_DOWN_INTERVAL_INCREMENT_MS),
-                };
+        match apply_poll_outcome(poll().await?, interval_ms, slow_downs) {
+            PollStep::Done(result) => return result,
+            PollStep::Continue {
+                interval_ms: next_interval,
+                slow_downs: next_slow_downs,
+            } => {
+                interval_ms = next_interval;
+                slow_downs = next_slow_downs;
             }
-            Poll::Pending => {}
         }
-        let remaining = deadline - env.now_ms();
-        if remaining <= 0.0 {
+        if !sleep_until_deadline(env, deadline, interval_ms, signal).await? {
             break;
         }
-        abortable_sleep(env, interval_ms.min(remaining), signal, CANCEL_MESSAGE).await?;
     }
-    Err(if slow_downs > 0 {
-        SLOW_DOWN_TIMEOUT_MESSAGE.into()
-    } else {
-        TIMEOUT_MESSAGE.into()
-    })
+    Err(device_flow_timeout_message(slow_downs))
 }
 
 /// `new URL(text)` accepting only http(s) (`trustedHttpUrl`), normalized (`url.href`).
@@ -398,4 +436,64 @@ pub fn trusted_http_url(value: Option<&Value>, https_only: bool) -> Option<Strin
     let url = reqwest::Url::parse(text).ok()?;
     let ok = url.scheme() == "https" || (!https_only && url.scheme() == "http");
     ok.then(|| url.to_string())
+}
+
+/// Read an HTTP/1.x request head (up to `\r\n\r\n`) from a local OAuth callback socket.
+pub(crate) async fn read_http_head(socket: &mut tokio::net::TcpStream) -> String {
+    use tokio::io::AsyncReadExt;
+
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 4096];
+    while !buffer.windows(4).any(|w| w == b"\r\n\r\n") {
+        match socket.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => buffer.extend_from_slice(&chunk[..n]),
+        }
+    }
+    String::from_utf8_lossy(&buffer).into_owned()
+}
+
+/// Notify the user of a browser OAuth callback listener and authorization URL, and start the manual fallback prompt.
+pub(crate) fn start_browser_auth_prompt<'a>(
+    interaction: &'a dyn crate::auth::AuthInteraction,
+    progress_message: String,
+    authorize_url: String,
+    instructions: &str,
+    placeholder: String,
+) -> (AbortSignal, BoxFuture<'a, Result<String, String>>) {
+    interaction.notify(crate::auth::AuthEvent::Progress {
+        message: progress_message,
+    });
+    interaction.notify(crate::auth::AuthEvent::AuthUrl {
+        url: authorize_url,
+        instructions: Some(instructions.into()),
+    });
+    let manual_abort = AbortSignal::new();
+    let manual = interaction.prompt(
+        crate::auth::AuthPrompt::ManualCode {
+            message: "Complete sign-in in your browser, or paste the authorization code / redirect URL here:".into(),
+            placeholder: Some(placeholder),
+        },
+        Some(manual_abort.clone()),
+    );
+    (manual_abort, manual)
+}
+
+/// Convert an OAuth credential's access token into a [`crate::auth::ModelAuth`] carrying an API key.
+pub(crate) fn api_key_model_auth(credential: &crate::auth::OAuthCredential) -> Result<crate::auth::ModelAuth, String> {
+    Ok(crate::auth::ModelAuth {
+        api_key: Some(credential.access.clone()),
+        ..Default::default()
+    })
+}
+
+/// Map a failed login result to [`CANCEL_MESSAGE`] when the abort signal has fired.
+pub(crate) fn map_aborted_login(
+    result: Result<crate::auth::OAuthCredential, String>,
+    signal: Option<&AbortSignal>,
+) -> Result<crate::auth::OAuthCredential, String> {
+    match result {
+        Err(_) if is_aborted(signal) => Err(CANCEL_MESSAGE.into()),
+        other => other,
+    }
 }

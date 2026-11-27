@@ -15,11 +15,21 @@
 //! the events anchored on the caller's conversation branch (A07). Experiments are append-only, and only runs on
 //! the same frozen fixture compare. Calls serialize; a failed write makes the service unusable until reopened.
 
+mod experiments;
+mod ledger;
+mod project;
+
+pub use project::{
+    BranchSource, InstructionHook, LocalServicesModule, check_refinement_safety, instruction_hook,
+    instruction_hook_with_memory, local_module, refinement_view, safe_project_refinements,
+};
+
 use kernel_apis::artifacts::KeyedDocuments;
 use kernel_apis::store::read_versioned;
 use kernel_apis::util::{Clock, system_clock};
+use ledger::{Record, active, apply, lookup, replay_refinement_document};
 use serde_json::{Map, Value, json};
-use session_journal::ns::{EXPERIMENTS, REFINEMENTS};
+use session_journal::ns::REFINEMENTS;
 use std::sync::{Arc, Mutex};
 
 const KINDS: [&str; 4] = ["observation", "instruction", "skill", "agent"];
@@ -155,30 +165,36 @@ pub(crate) fn frontmatter(text: &str, then_newline: bool) -> Option<(&str, &str)
     Some((&text[start..close], &text[rest..]))
 }
 
+fn frontmatter_line_key(line: &str) -> Option<&str> {
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    let rest = line.trim_start_matches(jsrt::string::is_space);
+    let mut chars = rest.char_indices();
+    if !chars.next().is_some_and(|(_, ch)| ch.is_ascii_alphabetic()) {
+        return None;
+    }
+    let end = chars
+        .find(|(_, ch)| !(ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '-'))
+        .map_or(rest.len(), |(at, _)| at);
+    rest[end..]
+        .trim_start_matches(jsrt::string::is_space)
+        .starts_with(':')
+        .then_some(&rest[..end])
+}
+
+fn frontmatter_escalation(text: &str) -> Option<String> {
+    let (front, _) = frontmatter(text.trim_start_matches(jsrt::string::is_space), false)?;
+    front.split('\n').find_map(|line| {
+        let key = frontmatter_line_key(line)?;
+        CAPABILITY_KEYS
+            .contains(&normalize(key).as_str())
+            .then(|| key.to_string())
+    })
+}
+
 /// Capability non-escalation: a structured or frontmatter key that would claim authority.
 fn escalation(value: &Value) -> Option<String> {
     match value {
-        Value::String(text) => {
-            let (front, _) = frontmatter(text.trim_start_matches(jsrt::string::is_space), false)?;
-            for line in front.split('\n') {
-                let line = line.strip_suffix('\r').unwrap_or(line);
-                let rest = line.trim_start_matches(jsrt::string::is_space);
-                let mut chars = rest.char_indices();
-                if !chars.next().is_some_and(|(_, ch)| ch.is_ascii_alphabetic()) {
-                    continue;
-                }
-                let end = chars
-                    .find(|(_, ch)| !(ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '-'))
-                    .map_or(rest.len(), |(at, _)| at);
-                let key = &rest[..end];
-                if rest[end..].trim_start_matches(jsrt::string::is_space).starts_with(':')
-                    && CAPABILITY_KEYS.contains(&normalize(key).as_str())
-                {
-                    return Some(key.to_string());
-                }
-            }
-            None
-        }
+        Value::String(text) => frontmatter_escalation(text),
         Value::Array(items) => items.iter().find_map(escalation),
         Value::Object(map) => map.iter().find_map(|(key, item)| {
             if CAPABILITY_KEYS.contains(&normalize(key).as_str()) {
@@ -263,6 +279,25 @@ fn nonempty(value: &Value) -> bool {
     }
 }
 
+fn validate_proposal_content(content: &Value) -> Result<(), String> {
+    if !(content.is_string() || content.is_object() || content.is_array()) || !nonempty(content) {
+        return Err("Content must be nonempty JSON text, an object, or an array".into());
+    }
+    Ok(())
+}
+
+fn validate_proposal_extras(map: &Map<String, Value>) -> Result<(Value, Value), String> {
+    let evidence = map.get("evidence").cloned().unwrap_or_else(|| json!([]));
+    if evidence.is_number() || evidence.is_boolean() {
+        return Err("Evidence must be JSON text, an object, or an array".into());
+    }
+    let scope = map.get("scope").cloned().unwrap_or_else(|| json!("session"));
+    if scope.as_str().is_none_or(|scope| jsrt::string::trim(scope).is_empty()) {
+        return Err("Scope must be a nonempty string".into());
+    }
+    Ok((evidence, scope))
+}
+
 /// `proposal(value)`: `{kind, target, baseVersion, content, evidence, scope}` with the defaults filled in.
 fn proposal(value: &Value) -> Result<Value, String> {
     let map = fields(
@@ -276,226 +311,21 @@ fn proposal(value: &Value) -> Result<Value, String> {
         return Err("baseVersion must be a nonnegative safe integer".into());
     }
     let content = &map["content"];
-    if !(content.is_string() || content.is_object() || content.is_array()) || !nonempty(content) {
-        return Err("Content must be nonempty JSON text, an object, or an array".into());
-    }
-    let evidence = map.get("evidence").cloned().unwrap_or_else(|| json!([]));
-    if evidence.is_number() || evidence.is_boolean() {
-        return Err("Evidence must be JSON text, an object, or an array".into());
-    }
-    let scope = map.get("scope").cloned().unwrap_or_else(|| json!("session"));
-    if scope.as_str().is_none_or(|scope| jsrt::string::trim(scope).is_empty()) {
-        return Err("Scope must be a nonempty string".into());
-    }
+    validate_proposal_content(content)?;
+    let (evidence, scope) = validate_proposal_extras(map)?;
     Ok(json!({
         "kind": kind, "target": target, "baseVersion": base, "content": content, "evidence": evidence, "scope": scope,
     }))
 }
 
-/// One refinement (`RefinementRecord`).
-#[derive(Clone, Debug)]
-struct Record {
-    id: String,
-    kind: String,
-    target: String,
-    base_version: Value,
-    content: Value,
-    evidence: Value,
-    scope: Value,
-    version: Option<i64>,
-    previous_id: Option<String>,
-    state: &'static str,
-    approval: Option<&'static str>,
-    history: Vec<Value>,
-}
-
-impl Record {
-    fn json(&self) -> Value {
-        json!({
-            "id": self.id, "kind": self.kind, "target": self.target, "baseVersion": self.base_version,
-            "content": self.content, "evidence": self.evidence, "scope": self.scope, "version": self.version,
-            "previousId": self.previous_id, "state": self.state, "approval": self.approval, "history": self.history,
-        })
-    }
-
-    fn transition(&mut self, state: &'static str, at: &str, cause: &str) {
-        self.state = state;
-        self.history.push(json!({"state": state, "at": at, "cause": cause}));
-    }
-}
-
-fn lookup(records: &[Record], id: &Value) -> Result<usize, String> {
-    let id = id.as_str().filter(|id| !id.is_empty()).ok_or("Invalid refinement ID")?;
-    records
-        .iter()
-        .position(|record| record.id == id)
-        .ok_or_else(|| format!("Unknown refinement: {id}"))
-}
-
-fn active(records: &[Record], kind: &str, target: &str) -> Option<usize> {
-    records
-        .iter()
-        .position(|record| record.kind == kind && record.target == target && record.state == "active")
-}
-
-fn on_branch(event: &Value, branch: Option<&Branch>) -> bool {
-    let Some(test) = branch.and_then(|branch| branch.on_branch.as_ref()) else {
-        return true;
-    };
-    match event.as_object().and_then(|event| event.get("anchor")) {
-        Some(Value::String(anchor)) => test(anchor),
-        _ => true,
-    }
-}
-
-/// `apply(records, event)`: one ledger event; returns the index of the record it changed.
-fn apply(records: &mut Vec<Record>, event: &Value) -> Result<usize, String> {
-    let map = event.as_object().ok_or("Malformed refinement event")?;
-    let action = map.get("action").and_then(Value::as_str).unwrap_or_default();
-    let optional: &[&str] = match action {
-        "propose" => &["proposal"],
-        "activate" => &["approval", "anchor"],
-        "rollback" => &["anchor"],
-        _ => &[],
-    };
-    fields(event, &["action", "id", "at"], optional)?;
-    let (Some(id), Some(at)) = (
-        map["id"].as_str().filter(|id| !id.is_empty()),
-        map["at"].as_str().filter(|at| jsrt::date::parse_date(at).is_some()),
-    ) else {
-        return Err("Malformed refinement event".into());
-    };
-    if action == "propose" {
-        let data = proposal(map.get("proposal").unwrap_or(&Value::Null))?;
-        if records.iter().any(|record| record.id == id) {
-            return Err("Duplicate refinement ID".into());
-        }
-        let text = |key: &str| data[key].as_str().unwrap_or_default().to_string();
-        let mut record = Record {
-            id: id.into(),
-            kind: text("kind"),
-            target: text("target"),
-            base_version: data["baseVersion"].clone(),
-            content: data["content"].clone(),
-            evidence: data["evidence"].clone(),
-            scope: data["scope"].clone(),
-            version: None,
-            previous_id: None,
-            state: "proposed",
-            approval: None,
-            history: Vec::new(),
-        };
-        record.transition("proposed", at, id);
-        records.push(record);
-        return Ok(records.len() - 1);
-    }
-    let index = lookup(records, &map["id"])?;
-    match action {
-        "activate" => {
-            let record = &records[index];
-            if record.state != "proposed" {
-                return Err("Only a proposed refinement can be activated".into());
-            }
-            identity(&json!(record.kind), &json!(record.target))?;
-            if !nonempty(&record.evidence) {
-                return Err("Activation requires nonempty evidence".into());
-            }
-            let previous = active(records, &record.kind, &record.target);
-            let current = previous.and_then(|p| records[p].version).unwrap_or(0);
-            if record.base_version.as_f64() != Some(current as f64) {
-                return Err("Stale base version".into());
-            }
-            let version = records
-                .iter()
-                .filter(|item| item.kind == record.kind && item.target == record.target)
-                .map(|item| item.version.unwrap_or(0))
-                .fold(0, i64::max);
-            if version + 1 > jsrt::number::MAX_SAFE_INTEGER {
-                return Err("Version exhausted".into());
-            }
-            let approval = map.get("approval");
-            if approval.is_some_and(|a| a != "approved" && a != "not_required") {
-                return Err("Malformed refinement approval".into());
-            }
-            let claims = approval.is_some_and(|a| a == "approved");
-            if claims && record.approval != Some("approved") {
-                return Err("Activation claims an approval that was not recorded".into());
-            }
-            let previous_id = previous.map(|p| records[p].id.clone());
-            let record = &mut records[index];
-            record.version = Some(version + 1);
-            record.previous_id = previous_id;
-            if record.approval != Some("approved") {
-                record.approval = approval.is_some_and(|a| a == "not_required").then_some("not_required");
-            }
-            if let Some(previous) = previous {
-                records[previous].transition("superseded", at, id);
-            }
-            records[index].transition("active", at, id);
-        }
-        "approve" => {
-            if records[index].state != "proposed" {
-                return Err("Only a proposed refinement can be approved".into());
-            }
-            records[index].approval = Some("approved");
-        }
-        "reject" => {
-            if records[index].state != "proposed" {
-                return Err("Only a proposed refinement can be rejected".into());
-            }
-            records[index].transition("rejected", at, id);
-        }
-        "rollback" => {
-            let record = &records[index];
-            if active(records, &record.kind, &record.target) != Some(index) {
-                return Err("Only the latest active refinement can be rolled back".into());
-            }
-            let previous = record.previous_id.clone();
-            records[index].transition("rolled_back", at, id);
-            if let Some(previous) = previous {
-                let previous = lookup(records, &json!(previous))?;
-                records[previous].transition("active", at, id);
-            }
-        }
-        _ => return Err("Unknown refinement action".into()),
-    }
-    Ok(index)
-}
-
-/// `experiment(value)`: a recorded run with valid metadata whose usage, when present, reconciles.
-fn experiment(value: &Value) -> Result<(), String> {
-    const INVALID: &str = "Experiment requires variant, fixtureHash, outcome and valid record metadata";
-    let map = value.as_object().ok_or(INVALID)?;
-    let outcome = map.get("outcome").and_then(Value::as_str);
-    if !map.get("variant").is_some_and(Value::is_string)
-        || !map.get("fixtureHash").is_some_and(Value::is_string)
-        || !outcome.is_some_and(|o| ["passed", "failed", "incomplete"].contains(&o))
-        || map.get("id").and_then(Value::as_str).is_none_or(str::is_empty)
-        || map
-            .get("recordedAt")
-            .and_then(Value::as_str)
-            .is_none_or(|at| jsrt::date::parse_date(at).is_none())
-    {
-        return Err(INVALID.into());
-    }
-    if let Some(usage) = map.get("usage") {
-        let usage = usage.as_object().ok_or("Experiment usage must be an object")?;
-        let mut sum = 0.0;
-        for (key, amount) in usage {
-            let amount = amount
-                .as_f64()
-                .filter(|a| a.is_finite() && *a >= 0.0)
-                .ok_or("Experiment usage amounts must be finite and nonnegative")?;
-            if key != "total" {
-                sum += amount;
-            }
-        }
-        let total = usage.get("total").and_then(Value::as_f64);
-        if !total.is_some_and(|total| (total - sum).abs() <= 1e-9 * sum.max(1.0)) {
-            return Err("Experiment usage total does not reconcile with its parts".into());
-        }
-    }
-    Ok(())
+fn is_duplicate_proposal(record: &Record, data: &Value) -> bool {
+    record.kind == data["kind"]
+        && record.target == data["target"]
+        && record.scope == data["scope"]
+        && same_json(&record.content, &data["content"])
+        && (record.state == "proposed"
+            || record.state == "active"
+            || (record.state == "rejected" && same_json(&record.evidence, &data["evidence"])))
 }
 
 /// Refinements and experiments over keyed durable documents (one service instance per owner).
@@ -565,26 +395,122 @@ impl LocalServices {
 
     fn records(&self, branch: Option<&Branch>) -> Result<(Vec<Record>, Vec<Value>), String> {
         let saved = self.documents.get(REFINEMENTS.key)?;
-        let mut records = Vec::new();
-        let mut events = Vec::new();
-        if let Some(stored) = read_versioned(&REFINEMENTS.address(), saved, REFINEMENTS.version_field)? {
-            let replay = (|| -> Result<(), String> {
-                let document = fields(&stored, &["formatVersion", "events"], &[])?;
-                let list = document["events"].as_array();
-                if document["formatVersion"].as_f64() != Some(1.0) || list.is_none() {
-                    return Err("Unsupported document format".into());
-                }
-                events = list.cloned().unwrap_or_default();
-                for event in &events {
-                    if on_branch(event, branch) {
-                        apply(&mut records, event)?;
-                    }
-                }
-                Ok(())
-            })();
-            replay.map_err(|_| "Invalid refinement document".to_string())?;
+        let Some(stored) = read_versioned(&REFINEMENTS.address(), saved, REFINEMENTS.version_field)? else {
+            return Ok((Vec::new(), Vec::new()));
+        };
+        replay_refinement_document(&stored, branch).map_err(|_| "Invalid refinement document".to_string())
+    }
+
+    fn build_propose_event(&self, records: &[Record], payload: &Value) -> Result<Value, String> {
+        let data = proposal(payload)?;
+        if let Some(key) = escalation(&data["content"]) {
+            return Err(format!("Refinement content cannot request capabilities ({key})"));
         }
-        Ok((records, events))
+        if let Some(duplicate) = records.iter().find(|record| is_duplicate_proposal(record, &data)) {
+            return Err(format!(
+                "Duplicate refinement proposal: {} ({})",
+                duplicate.id, duplicate.state
+            ));
+        }
+        Ok(json!({
+            "action": "propose",
+            "id": (self.options.ids)(),
+            "proposal": data,
+            "at": self.now(),
+        }))
+    }
+
+    fn prepare_activation_approval(&self, pending: &Record) -> Result<&'static str, String> {
+        if let Some(key) = escalation(&pending.content) {
+            return Err(format!("Refinement content cannot request capabilities ({key})"));
+        }
+        if self.options.require_approval && pending.approval != Some("approved") {
+            return Err("Activation requires approval".into());
+        }
+        if pending.approval == Some("approved") {
+            Ok("approved")
+        } else {
+            Ok("not_required")
+        }
+    }
+
+    fn build_mutation_event(
+        &self,
+        kind: &str,
+        records: &[Record],
+        payload: &Value,
+        branch: Option<&Branch>,
+    ) -> Result<Value, String> {
+        let map = fields(payload, &["id"], &[])?;
+        let action = &kind["refinements.".len()..];
+        let mut event = Map::new();
+        event.insert("action".into(), action.into());
+        event.insert("id".into(), map["id"].clone());
+        event.insert("at".into(), self.now().into());
+        if (action == "activate" || action == "rollback")
+            && let Some(anchor) = branch.and_then(|branch| branch.anchor.clone())
+        {
+            event.insert("anchor".into(), anchor.into());
+        }
+        if action == "activate" {
+            let pending = &records[lookup(records, &map["id"])?];
+            let approval = self.prepare_activation_approval(pending)?;
+            event.insert("approval".into(), approval.into());
+        }
+        Ok(Value::Object(event))
+    }
+
+    fn apply_and_persist_refinement(
+        &self,
+        records: &mut Vec<Record>,
+        mut events: Vec<Value>,
+        event: Value,
+        persist: &mut dyn FnMut(&str, &Value) -> Result<(), String>,
+    ) -> Result<Value, String> {
+        let index = apply(records, &event)?;
+        let result = &records[index];
+        if event["action"] == "activate"
+            && let Some(validate) = &self.options.validate
+            && !validate(&result.kind, &result.content)?
+        {
+            return Err("Refinement content validation failed".into());
+        }
+        events.push(event);
+        persist(REFINEMENTS.key, &json!({"formatVersion": 1, "events": events}))?;
+        Ok(result.json())
+    }
+
+    fn list_refinements(records: &[Record], payload: &Value) -> Result<Value, String> {
+        fields(payload, &[], &[])?;
+        Ok(Value::Array(records.iter().map(Record::json).collect()))
+    }
+
+    fn current_refinement(records: &[Record], payload: &Value) -> Result<Value, String> {
+        let map = fields(payload, &["kind", "target"], &[])?;
+        let (kind, target) = identity(&map["kind"], &map["target"])?;
+        Ok(active(records, &kind, &target).map_or(Value::Null, |index| records[index].json()))
+    }
+
+    fn get_refinement(records: &[Record], payload: &Value) -> Result<Value, String> {
+        let map = fields(payload, &["id"], &[])?;
+        Ok(records[lookup(records, &map["id"])?].json())
+    }
+
+    fn mutate_refinement(
+        &self,
+        kind: &str,
+        mut records: Vec<Record>,
+        events: Vec<Value>,
+        payload: &Value,
+        branch: Option<&Branch>,
+        persist: &mut dyn FnMut(&str, &Value) -> Result<(), String>,
+    ) -> Result<Value, String> {
+        let event = if kind == "refinements.propose" {
+            self.build_propose_event(&records, payload)?
+        } else {
+            self.build_mutation_event(kind, &records, payload, branch)?
+        };
+        self.apply_and_persist_refinement(&mut records, events, event, persist)
     }
 
     fn refinements(
@@ -594,190 +520,12 @@ impl LocalServices {
         branch: Option<&Branch>,
         persist: &mut dyn FnMut(&str, &Value) -> Result<(), String>,
     ) -> Result<Value, String> {
-        let (mut records, events) = self.records(branch)?;
-        if kind == "refinements.list" {
-            fields(payload, &[], &[])?;
-            return Ok(Value::Array(records.iter().map(Record::json).collect()));
-        }
-        if kind == "refinements.current" {
-            let map = fields(payload, &["kind", "target"], &[])?;
-            let (kind, target) = identity(&map["kind"], &map["target"])?;
-            return Ok(active(&records, &kind, &target).map_or(Value::Null, |index| records[index].json()));
-        }
-        let mut event = Map::new();
-        if kind == "refinements.propose" {
-            let data = proposal(payload)?;
-            if let Some(key) = escalation(&data["content"]) {
-                return Err(format!("Refinement content cannot request capabilities ({key})"));
-            }
-            let duplicate = records.iter().find(|record| {
-                record.kind == data["kind"]
-                    && record.target == data["target"]
-                    && record.scope == data["scope"]
-                    && same_json(&record.content, &data["content"])
-                    && (record.state == "proposed"
-                        || record.state == "active"
-                        || (record.state == "rejected" && same_json(&record.evidence, &data["evidence"])))
-            });
-            if let Some(duplicate) = duplicate {
-                return Err(format!(
-                    "Duplicate refinement proposal: {} ({})",
-                    duplicate.id, duplicate.state
-                ));
-            }
-            event.insert("action".into(), "propose".into());
-            event.insert("id".into(), (self.options.ids)().into());
-            event.insert("proposal".into(), data);
-            event.insert("at".into(), self.now().into());
-        } else {
-            let map = fields(payload, &["id"], &[])?;
-            if kind == "refinements.get" {
-                return Ok(records[lookup(&records, &map["id"])?].json());
-            }
-            let action = &kind["refinements.".len()..];
-            event.insert("action".into(), action.into());
-            event.insert("id".into(), map["id"].clone());
-            event.insert("at".into(), self.now().into());
-            if (action == "activate" || action == "rollback")
-                && let Some(anchor) = branch.and_then(|branch| branch.anchor.clone())
-            {
-                event.insert("anchor".into(), anchor.into());
-            }
-            if action == "activate" {
-                let pending = &records[lookup(&records, &map["id"])?];
-                if let Some(key) = escalation(&pending.content) {
-                    return Err(format!("Refinement content cannot request capabilities ({key})"));
-                }
-                if self.options.require_approval && pending.approval != Some("approved") {
-                    return Err("Activation requires approval".into());
-                }
-                let approval = if pending.approval == Some("approved") {
-                    "approved"
-                } else {
-                    "not_required"
-                };
-                event.insert("approval".into(), approval.into());
-            }
-        }
-        let event = Value::Object(event);
-        let index = apply(&mut records, &event)?;
-        let result = &records[index];
-        if event["action"] == "activate"
-            && let Some(validate) = &self.options.validate
-            && !validate(&result.kind, &result.content)?
-        {
-            return Err("Refinement content validation failed".into());
-        }
-        let mut next = events;
-        next.push(event);
-        persist(REFINEMENTS.key, &json!({"formatVersion": 1, "events": next}))?;
-        Ok(result.json())
-    }
-
-    fn experiments(
-        &self,
-        kind: &str,
-        payload: &Value,
-        persist: &mut dyn FnMut(&str, &Value) -> Result<(), String>,
-    ) -> Result<Value, String> {
-        let saved = self.documents.get(EXPERIMENTS.key)?;
-        let mut runs: Vec<Value> = Vec::new();
-        if let Some(stored) = read_versioned(&EXPERIMENTS.address(), saved, EXPERIMENTS.version_field)? {
-            let document = fields(&stored, &["formatVersion", "runs"], &[])?;
-            let list = document["runs"].as_array();
-            if document["formatVersion"].as_f64() != Some(1.0) || list.is_none() {
-                return Err("Invalid experiment document".into());
-            }
-            let mut seen = std::collections::HashSet::new();
-            for run in list.into_iter().flatten() {
-                experiment(run)?;
-                if !seen.insert(run["id"].as_str().unwrap_or_default().to_string()) {
-                    return Err("Duplicate experiment ID".into());
-                }
-                runs.push(run.clone());
-            }
-        }
+        let (records, events) = self.records(branch)?;
         match kind {
-            "experiments.list" => {
-                fields(payload, &[], &[])?;
-                Ok(Value::Array(runs))
-            }
-            "experiments.record" => {
-                let map = fields(payload, &["run"], &[])?;
-                let mut value = map["run"].as_object().cloned().ok_or("Invalid experiment run")?;
-                value.insert("id".into(), (self.options.ids)().into());
-                value.insert("recordedAt".into(), self.now().into());
-                let value = Value::Object(value);
-                experiment(&value)?;
-                runs.push(value.clone());
-                persist(EXPERIMENTS.key, &json!({"formatVersion": 1, "runs": runs}))?;
-                Ok(value)
-            }
-            _ => {
-                let map = fields(payload, &["baseline", "candidate"], &[])?;
-                let find = |id: &Value| runs.iter().find(|run| run["id"] == *id);
-                let (Some(baseline), Some(candidate)) = (find(&map["baseline"]), find(&map["candidate"])) else {
-                    return Err("Unknown experiment".into());
-                };
-                if baseline["fixtureHash"] != candidate["fixtureHash"] {
-                    return Err("Different fixtures cannot form a matched comparison".into());
-                }
-                Ok(json!({
-                    "baseline": baseline, "candidate": candidate,
-                    "claim": "Observed runs only; no statistical superiority established",
-                }))
-            }
+            "refinements.list" => Self::list_refinements(&records, payload),
+            "refinements.current" => Self::current_refinement(&records, payload),
+            "refinements.get" => Self::get_refinement(&records, payload),
+            _ => self.mutate_refinement(kind, records, events, payload, branch, persist),
         }
-    }
-}
-
-/// The conversation branch refinements follow (`mainBranch`): the main lane's tip and which anchors are on its
-/// path, read when a request is made.
-pub type BranchSource = Arc<dyn Fn() -> Branch + Send + Sync>;
-
-/// An active refinement record as prompts show it: `{id, version, text}`, text content as is, other content as its
-/// JSON.
-pub fn refinement_view(record: &Value) -> Value {
-    let text = match &record["content"] {
-        Value::String(text) => text.clone(),
-        other => jsrt::json::stringify(other),
-    };
-    json!({"id": record["id"], "version": record["version"], "text": text})
-}
-
-/// A definition id's active instruction refinements, `[{id, version, text}]`.
-pub type InstructionHook = Arc<dyn Fn(&str) -> Result<Vec<Value>, String> + Send + Sync>;
-
-/// The active instruction refinements of a definition id as a typed-agent host's refinement hook
-/// (`refinements` of `NativeHostOptions`): `[{id, version, text}]` of `instruction:<definition id>` on the branch
-/// `branch` names (`mainBranch`; every event without one).
-pub fn instruction_hook(services: Arc<LocalServices>, branch: Option<BranchSource>) -> InstructionHook {
-    Arc::new(move |definition: &str| {
-        let branch = branch.as_ref().map(|source| source());
-        let current = services.current("instruction", &format!("instruction:{definition}"), branch.as_ref())?;
-        Ok(current.map_or_default(|record| vec![refinement_view(&record)]))
-    })
-}
-
-/// `refinements.*` and `experiments.*` as a host module. With a `branch`, refinements follow the conversation branch
-/// (session-worker.ts `branchedServices`): a change is anchored at the main lane's tip and read back only while that
-/// anchor is on the branch in use; without one every refinement event applies.
-pub struct LocalServicesModule {
-    pub services: Arc<LocalServices>,
-    pub branch: Option<BranchSource>,
-}
-
-impl kernel_apis::ApiModule for LocalServicesModule {
-    fn prefixes(&self) -> &[&str] {
-        &["refinements.", "experiments."]
-    }
-
-    fn handle(&self, request: &kernel_apis::Request<'_>) -> Result<Value, String> {
-        let branch = match &self.branch {
-            Some(source) if request.kind.starts_with("refinements.") => Some(source()),
-            _ => None,
-        };
-        self.services
-            .handle(request.kind, &Value::Object(request.payload.clone()), branch.as_ref())
     }
 }

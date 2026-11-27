@@ -795,25 +795,39 @@ impl Lanes {
             (cell.kernel.clone(), cell.waits.clone(), cell.kill.clone())
         };
         waits.abort(reason);
+        let outcome = self.await_cancel_outcome(id, reason, &kernel, &kill);
+        self.finish_cancel_cell(id);
+        outcome
+    }
+
+    fn await_cancel_outcome(
+        &self,
+        id: &str,
+        reason: &str,
+        kernel: &Arc<Kernel>,
+        kill: &Signal,
+    ) -> Result<Result<ExecutionResult, String>, String> {
         let grace = self.inner.options.cancel_grace;
         let wait_grace = Duration::from_millis(250).min(grace / 2);
-        let outcome = if let Some(outcome) = (!wait_grace.is_zero())
+        if let Some(outcome) = (!wait_grace.is_zero())
             .then(|| self.await_end(id, wait_grace))
             .flatten()
         {
-            Ok(outcome)
-        } else {
-            let _ = kernel.interrupt_active();
-            let remaining = grace.saturating_sub(wait_grace);
-            match self.await_end(id, remaining) {
-                Some(outcome) => Ok(outcome),
-                None => {
-                    kill.abort(reason);
-                    self.await_end(id, Duration::from_secs(10))
-                        .ok_or_else(|| format!("cell {id} did not end after its kernel was killed"))
-                }
+            return Ok(outcome);
+        }
+        let _ = kernel.interrupt_active();
+        let remaining = grace.saturating_sub(wait_grace);
+        match self.await_end(id, remaining) {
+            Some(outcome) => Ok(outcome),
+            None => {
+                kill.abort(reason);
+                self.await_end(id, Duration::from_secs(10))
+                    .ok_or_else(|| format!("cell {id} did not end after its kernel was killed"))
             }
-        };
+        }
+    }
+
+    fn finish_cancel_cell(&self, id: &str) {
         let mut state = sync::lock(&self.inner.state);
         if let Some(cell) = state.cells.get_mut(id) {
             cell.cancellers -= 1;
@@ -821,7 +835,6 @@ impl Lanes {
                 state.cells.remove(id);
             }
         }
-        outcome
     }
 
     fn await_end(&self, id: &str, timeout: Duration) -> Option<Result<ExecutionResult, String>> {
@@ -850,70 +863,79 @@ impl Lanes {
     /// (the requesting cell's lane kernel's latest [`kernel::ContinuityReport`], or null). `own` is the requesting
     /// cell, which cannot cancel itself.
     pub fn request(&self, kind: &str, payload: Map<String, Value>, own: Option<&str>) -> Result<Value, String> {
-        let text = |name: &str| match payload.get(name).and_then(Value::as_str) {
-            Some(text) if !text.trim().is_empty() => Ok(text.to_string()),
-            _ => Err(format!("{name} must be a nonempty string")),
-        };
         match kind {
-            "rlm.lanes" => {
-                jsrt::payload::fields(&payload, &[])?;
-                Ok(json!({ "lanes": self.list() }))
-            }
-            "rlm.lane.open" => {
-                jsrt::payload::fields(&payload, &["lane"])?;
-                self.open(&text("lane")?)?;
-                Ok(json!({ "opened": true }))
-            }
-            "rlm.lane.close" => {
-                jsrt::payload::fields(&payload, &["lane"])?;
-                self.close_lane(&text("lane")?)?;
-                Ok(json!({ "closed": true }))
-            }
-            "rlm.cells" => {
-                jsrt::payload::fields(&payload, &[])?;
-                let state = sync::lock(&self.inner.state);
-                let mut cells: Vec<Value> = state
-                    .cells
-                    .iter()
-                    .filter(|(_, c)| c.outcome.is_none())
-                    .map(|(id, c)| {
-                        let mut cell =
-                            json!({ "cell": id, "lane": c.lane, "parked": c.parked > 0, "detached": c.detached });
-                        if c.cancelled {
-                            cell["cancelling"] = json!(true);
-                        }
-                        cell
-                    })
-                    .collect();
-                cells.sort_by(|a, b| a["cell"].as_str().cmp(&b["cell"].as_str()));
-                Ok(json!({ "cells": cells }))
-            }
-            "rlm.cell.cancel" | "rlm.cancel" => {
-                jsrt::payload::fields(&payload, &["cell"])?;
-                let cell = text("cell")?;
-                if own == Some(cell.as_str()) {
-                    return Err("a cell cannot cancel itself".into());
-                }
-                let outcome = self.cancel(&cell, "cancelled from another cell")?;
-                Ok(match outcome {
-                    Ok(result) => json!({ "cancelled": true, "status": result.status }),
-                    Err(error) => json!({ "cancelled": true, "status": "error", "error": error }),
-                })
-            }
-            "rlm.pool" => {
-                jsrt::payload::fields(&payload, &[])?;
-                Ok(self.pool_stats())
-            }
-            "rlm.recovery" => {
-                jsrt::payload::fields(&payload, &[])?;
-                let lane = own
-                    .and_then(|cell| sync::lock(&self.inner.state).cells.get(cell).map(|c| c.lane.clone()))
-                    .ok_or("rlm.recovery: the request is not from a running cell")?;
-                let report = self.kernel(&lane).and_then(|kernel| kernel.last_recovery());
-                serde_json::to_value(report).map_err(|e| e.to_string())
-            }
+            "rlm.lanes" => self.request_lanes(&payload),
+            "rlm.lane.open" => self.request_lane_open(&payload),
+            "rlm.lane.close" => self.request_lane_close(&payload),
+            "rlm.cells" => self.request_cells(&payload),
+            "rlm.cell.cancel" | "rlm.cancel" => self.request_cancel(&payload, own),
+            "rlm.pool" => self.request_pool(&payload),
+            "rlm.recovery" => self.request_recovery(&payload, own),
             other => Err(format!("Unknown host request: {other}")),
         }
+    }
+
+    fn request_lanes(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &[])?;
+        Ok(json!({ "lanes": self.list() }))
+    }
+
+    fn request_lane_open(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &["lane"])?;
+        self.open(&nonempty_field(payload, "lane")?)?;
+        Ok(json!({ "opened": true }))
+    }
+
+    fn request_lane_close(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &["lane"])?;
+        self.close_lane(&nonempty_field(payload, "lane")?)?;
+        Ok(json!({ "closed": true }))
+    }
+
+    fn request_cells(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &[])?;
+        let state = sync::lock(&self.inner.state);
+        let mut cells: Vec<Value> = state
+            .cells
+            .iter()
+            .filter(|(_, c)| c.outcome.is_none())
+            .map(|(id, c)| {
+                let mut cell = json!({ "cell": id, "lane": c.lane, "parked": c.parked > 0, "detached": c.detached });
+                if c.cancelled {
+                    cell["cancelling"] = json!(true);
+                }
+                cell
+            })
+            .collect();
+        cells.sort_by(|a, b| a["cell"].as_str().cmp(&b["cell"].as_str()));
+        Ok(json!({ "cells": cells }))
+    }
+
+    fn request_cancel(&self, payload: &Map<String, Value>, own: Option<&str>) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &["cell"])?;
+        let cell = nonempty_field(payload, "cell")?;
+        if own == Some(cell.as_str()) {
+            return Err("a cell cannot cancel itself".into());
+        }
+        let outcome = self.cancel(&cell, "cancelled from another cell")?;
+        Ok(match outcome {
+            Ok(result) => json!({ "cancelled": true, "status": result.status }),
+            Err(error) => json!({ "cancelled": true, "status": "error", "error": error }),
+        })
+    }
+
+    fn request_pool(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &[])?;
+        Ok(self.pool_stats())
+    }
+
+    fn request_recovery(&self, payload: &Map<String, Value>, own: Option<&str>) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &[])?;
+        let lane = own
+            .and_then(|cell| sync::lock(&self.inner.state).cells.get(cell).map(|c| c.lane.clone()))
+            .ok_or("rlm.recovery: the request is not from a running cell")?;
+        let report = self.kernel(&lane).and_then(|kernel| kernel.last_recovery());
+        serde_json::to_value(report).map_err(|e| e.to_string())
     }
 
     /// Cancels every running cell and shuts every lane down.
@@ -932,5 +954,12 @@ impl Lanes {
             let _ = self.cancel(&cell, "REPL lanes closed");
         }
         self.pool().close();
+    }
+}
+
+fn nonempty_field(payload: &Map<String, Value>, name: &str) -> Result<String, String> {
+    match payload.get(name).and_then(Value::as_str) {
+        Some(text) if !text.trim().is_empty() => Ok(text.to_string()),
+        _ => Err(format!("{name} must be a nonempty string")),
     }
 }

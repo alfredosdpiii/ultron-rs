@@ -81,75 +81,126 @@ fn text(value: &Value, key: &str, what: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{what} needs {key}"))
 }
 
+fn parse_memory(m: &Value, scopes: &BTreeMap<String, String>) -> Result<Memory, String> {
+    let memory = Memory {
+        key: text(m, "key", "a memory")?,
+        scope: text(m, "scope", "a memory")?,
+        subject: text(m, "subject", "a memory")?,
+        content: text(m, "content", "a memory")?,
+        kind: text(m, "type", "a memory")?,
+        evidence: text(m, "evidence", "a memory")?,
+    };
+    if scopes.contains_key(&memory.scope) {
+        Ok(memory)
+    } else {
+        Err(format!("memory {} has an unknown scope", memory.key))
+    }
+}
+
+fn parse_replacements(raw: &[Value]) -> Result<Vec<(String, String)>, String> {
+    raw.iter()
+        .map(|r| Ok((text(r, "key", "a replacement")?, text(r, "content", "a replacement")?)))
+        .collect()
+}
+
+fn parse_invalidated(raw: &[Value]) -> Result<Vec<String>, String> {
+    raw.iter()
+        .map(|k| {
+            k.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "invalidated must list keys".to_string())
+        })
+        .collect()
+}
+
+fn parse_query(
+    q: &Value,
+    scopes: &BTreeMap<String, String>,
+    session_project: &BTreeMap<String, String>,
+) -> Result<Query, String> {
+    let session = text(q, "session", "a query")?;
+    if !session_project.contains_key(&session) || !scopes.contains_key(&session) {
+        return Err(format!("query session {session} has no scope or project"));
+    }
+    Ok(Query {
+        query: text(q, "query", "a query")?,
+        expected: q["expected"]
+            .as_array()
+            .ok_or("a query needs expected")?
+            .iter()
+            .filter_map(|k| k.as_str().map(str::to_string))
+            .collect(),
+        session,
+    })
+}
+
+fn list_field<'a>(file: &'a Value, key: &str) -> Result<&'a [Value], String> {
+    file[key]
+        .as_array()
+        .map(Vec::as_slice)
+        .ok_or_else(|| format!("memory set: {key} must be a list"))
+}
+
+fn parse_memories(file: &Value, scopes: &BTreeMap<String, String>) -> Result<Vec<Memory>, String> {
+    list_field(file, "memories")?
+        .iter()
+        .map(|m| parse_memory(m, scopes))
+        .collect()
+}
+
+fn parse_queries(
+    file: &Value,
+    scopes: &BTreeMap<String, String>,
+    session_project: &BTreeMap<String, String>,
+) -> Result<Vec<Query>, String> {
+    list_field(file, "queries")?
+        .iter()
+        .map(|q| parse_query(q, scopes, session_project))
+        .collect()
+}
+
+fn validate_memory_refs(
+    memories: &[Memory],
+    replacements: &[(String, String)],
+    invalidated: &[String],
+) -> Result<(), String> {
+    if let Some(key) = replacements
+        .iter()
+        .map(|(k, _)| k)
+        .chain(invalidated)
+        .find(|k| !memories.iter().any(|m| m.key == **k))
+    {
+        return Err(format!("memory set: {key} is not a memory"));
+    }
+    Ok(())
+}
+
+struct Mutations {
+    replacements: Vec<(String, String)>,
+    invalidated: Vec<String>,
+}
+
+fn parse_mutations(file: &Value, memories: &[Memory]) -> Result<Mutations, String> {
+    let replacements = parse_replacements(list_field(file, "replacements")?)?;
+    let invalidated = parse_invalidated(list_field(file, "invalidated")?)?;
+    validate_memory_refs(memories, &replacements, &invalidated)?;
+    Ok(Mutations {
+        replacements,
+        invalidated,
+    })
+}
+
 impl MemorySet {
     pub fn load(source: &str) -> Result<MemorySet, String> {
         let file: Value = serde_json::from_str(source).map_err(|e| format!("memory set: not JSON: {e}"))?;
-        let list = |key: &str| {
-            file[key]
-                .as_array()
-                .cloned()
-                .ok_or(format!("memory set: {key} must be a list"))
-        };
         let scopes = strings(&file["scopes"], "scopes")?;
         let session_project = strings(&file["sessionProject"], "sessionProject")?;
-        let memories = list("memories")?
-            .iter()
-            .map(|m| {
-                let memory = Memory {
-                    key: text(m, "key", "a memory")?,
-                    scope: text(m, "scope", "a memory")?,
-                    subject: text(m, "subject", "a memory")?,
-                    content: text(m, "content", "a memory")?,
-                    kind: text(m, "type", "a memory")?,
-                    evidence: text(m, "evidence", "a memory")?,
-                };
-                if scopes.contains_key(&memory.scope) {
-                    Ok(memory)
-                } else {
-                    Err(format!("memory {} has an unknown scope", memory.key))
-                }
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let known = |key: &str| memories.iter().any(|m| m.key == key);
-        let replacements = list("replacements")?
-            .iter()
-            .map(|r| Ok((text(r, "key", "a replacement")?, text(r, "content", "a replacement")?)))
-            .collect::<Result<Vec<_>, String>>()?;
-        let invalidated: Vec<String> = list("invalidated")?
-            .iter()
-            .map(|k| {
-                k.as_str()
-                    .map(str::to_string)
-                    .ok_or("invalidated must list keys".to_string())
-            })
-            .collect::<Result<_, _>>()?;
-        if let Some(key) = replacements
-            .iter()
-            .map(|(k, _)| k)
-            .chain(&invalidated)
-            .find(|k| !known(k))
-        {
-            return Err(format!("memory set: {key} is not a memory"));
-        }
-        let queries = list("queries")?
-            .iter()
-            .map(|q| {
-                let session = text(q, "session", "a query")?;
-                if !session_project.contains_key(&session) || !scopes.contains_key(&session) {
-                    return Err(format!("query session {session} has no scope or project"));
-                }
-                Ok(Query {
-                    query: text(q, "query", "a query")?,
-                    expected: q["expected"]
-                        .as_array()
-                        .ok_or("a query needs expected")?
-                        .iter()
-                        .filter_map(|k| k.as_str().map(str::to_string))
-                        .collect(),
-                    session,
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+        let memories = parse_memories(&file, &scopes)?;
+        let Mutations {
+            replacements,
+            invalidated,
+        } = parse_mutations(&file, &memories)?;
+        let queries = parse_queries(&file, &scopes, &session_project)?;
         Ok(MemorySet {
             hash: jsrt::hash::sha256_hex(source),
             scopes,
@@ -237,104 +288,164 @@ pub fn load(backend: &dyn MemoryBackend, set: &MemorySet, signal: &Signal) -> Re
     Ok(())
 }
 
+fn dedup_ranked(items: &[Value], limit: usize) -> Vec<(Option<String>, String)> {
+    let mut seen = HashSet::new();
+    let mut ranked = Vec::new();
+    for item in items {
+        let key = item["document_id"].as_str().map(str::to_string);
+        if key.as_ref().is_some_and(|k| !seen.insert(k.clone())) {
+            continue;
+        }
+        ranked.push((key, item["text"].as_str().unwrap_or_default().to_string()));
+        if ranked.len() == limit {
+            break;
+        }
+    }
+    ranked
+}
+
+#[derive(Default)]
+struct MeasureState {
+    recall: f64,
+    reciprocal: f64,
+    scored: usize,
+    returned: usize,
+    out_of_scope: usize,
+    retired: usize,
+    failures: Vec<Value>,
+    ms: Vec<f64>,
+    errors: usize,
+}
+
+struct MeasureContext<'a> {
+    backend: &'a dyn MemoryBackend,
+    set: &'a MemorySet,
+    min_score: Option<f64>,
+    limit: usize,
+    old_texts: HashSet<&'a str>,
+    signal: &'a Signal,
+}
+
+impl MeasureState {
+    fn check_leakage(
+        &mut self,
+        index: usize,
+        query: &Query,
+        allowed: &[String],
+        ranked: &[(Option<String>, String)],
+        ctx: &MeasureContext<'_>,
+    ) {
+        let scope_of = |key: &str| {
+            ctx.set
+                .memories
+                .iter()
+                .find(|m| m.key == key)
+                .map(|m| &ctx.set.scopes[&m.scope])
+        };
+        for (key, text) in ranked {
+            let leaked = key
+                .as_deref()
+                .and_then(scope_of)
+                .is_some_and(|tag| !allowed.contains(tag));
+            let stale =
+                key.as_ref().is_some_and(|k| ctx.set.invalidated.contains(k)) || ctx.old_texts.contains(text.as_str());
+            if leaked {
+                self.out_of_scope += 1;
+                self.failures
+                    .push(json!({"query": index, "failure": "out of scope", "key": key, "session": query.session}));
+            }
+            if stale {
+                self.retired += 1;
+                self.failures
+                    .push(json!({"query": index, "failure": "retired memory recalled", "key": key}));
+            }
+        }
+    }
+
+    fn score_expected(&mut self, index: usize, query: &Query, ranked: &[(Option<String>, String)]) {
+        if query.expected.is_empty() {
+            return;
+        }
+        self.scored += 1;
+        let keys: Vec<Option<&str>> = ranked.iter().map(|(k, _)| k.as_deref()).collect();
+        let found = query
+            .expected
+            .iter()
+            .filter(|e| keys.contains(&Some(e.as_str())))
+            .count();
+        self.recall += found as f64 / query.expected.len() as f64;
+        let first = keys
+            .iter()
+            .position(|k| k.is_some_and(|k| query.expected.iter().any(|e| e == k)));
+        self.reciprocal += first.map_or(0.0, |rank| 1.0 / (rank + 1) as f64);
+        if found < query.expected.len() {
+            self.failures.push(json!({
+                "query": index, "failure": "missed", "expected": query.expected,
+                "got": keys, "text": query.query, "session": query.session,
+            }));
+        }
+    }
+
+    fn measure_query(&mut self, index: usize, query: &Query, ctx: &MeasureContext<'_>) {
+        let allowed = ctx.set.visible(&query.session);
+        let mut request = json!({
+            "query": query.query, "tags": allowed, "tags_match": "any_strict",
+            "types": ["observation", "world", "experience"], "budget": "low", "max_tokens": 1024,
+        });
+        if let Some(min) = ctx.min_score {
+            request["min_scores"] = json!({"final": min});
+        }
+        let started = Instant::now();
+        let response = ctx.backend.recall(&request, ctx.signal);
+        self.ms.push(started.elapsed().as_secs_f64() * 1000.0);
+        let items = match response.as_ref().map(|r| r["results"].as_array()) {
+            Ok(Some(items)) => items.clone(),
+            other => {
+                self.errors += 1;
+                let error = other.err().cloned().unwrap_or_else(|| "no results list".into());
+                self.failures
+                    .push(json!({"query": index, "failure": "recall failed", "error": error}));
+                return;
+            }
+        };
+        let ranked = dedup_ranked(&items, ctx.limit);
+        self.returned += ranked.len();
+        self.check_leakage(index, query, &allowed, &ranked, ctx);
+        self.score_expected(index, query, &ranked);
+    }
+}
+
 /// Recall every query of `set` from `backend` (already [`load`]ed) under `config`, and score it.
 pub fn measure(backend: &dyn MemoryBackend, set: &MemorySet, config: &Value, signal: &Signal) -> Point {
     let limit = config["limit"].as_u64().map_or(DEFAULT_LIMIT, |l| l as usize);
     let min_score = config["minScore"].as_f64();
-    let scope_of = |key: &str| {
-        set.memories
-            .iter()
-            .find(|m| m.key == key)
-            .map(|m| &set.scopes[&m.scope])
-    };
     let old_texts: HashSet<&str> = set
         .replacements
         .iter()
         .filter_map(|(key, _)| set.memories.iter().find(|m| &m.key == key))
         .map(|m| m.content.as_str())
         .collect();
-    let (mut recall, mut reciprocal, mut scored) = (0.0, 0.0, 0usize);
-    let (mut returned, mut out_of_scope, mut retired) = (0usize, 0usize, 0usize);
-    let (mut failures, mut ms, mut errors) = (Vec::new(), Vec::new(), 0usize);
+    let ctx = MeasureContext {
+        backend,
+        set,
+        min_score,
+        limit,
+        old_texts,
+        signal,
+    };
+    let mut state = MeasureState::default();
     for (index, query) in set.queries.iter().enumerate() {
-        let allowed = set.visible(&query.session);
-        let mut request = json!({
-            "query": query.query, "tags": allowed, "tags_match": "any_strict",
-            "types": ["observation", "world", "experience"], "budget": "low", "max_tokens": 1024,
-        });
-        if let Some(min) = min_score {
-            request["min_scores"] = json!({"final": min});
-        }
-        let started = Instant::now();
-        let response = backend.recall(&request, signal);
-        ms.push(started.elapsed().as_secs_f64() * 1000.0);
-        let items = match response.as_ref().map(|r| r["results"].as_array()) {
-            Ok(Some(items)) => items.clone(),
-            other => {
-                errors += 1;
-                let error = other.err().cloned().unwrap_or_else(|| "no results list".into());
-                failures.push(json!({"query": index, "failure": "recall failed", "error": error}));
-                continue;
-            }
-        };
-        let mut seen = HashSet::new();
-        let mut ranked: Vec<(Option<String>, String)> = Vec::new();
-        for item in &items {
-            let key = item["document_id"].as_str().map(str::to_string);
-            if key.as_ref().is_some_and(|k| !seen.insert(k.clone())) {
-                continue;
-            }
-            ranked.push((key, item["text"].as_str().unwrap_or_default().to_string()));
-            if ranked.len() == limit {
-                break;
-            }
-        }
-        returned += ranked.len();
-        for (key, text) in &ranked {
-            let leaked = key
-                .as_deref()
-                .and_then(scope_of)
-                .is_some_and(|tag| !allowed.contains(tag));
-            let stale = key.as_ref().is_some_and(|k| set.invalidated.contains(k)) || old_texts.contains(text.as_str());
-            if leaked {
-                out_of_scope += 1;
-                failures.push(json!({"query": index, "failure": "out of scope", "key": key, "session": query.session}));
-            }
-            if stale {
-                retired += 1;
-                failures.push(json!({"query": index, "failure": "retired memory recalled", "key": key}));
-            }
-        }
-        if !query.expected.is_empty() {
-            scored += 1;
-            let keys: Vec<Option<&str>> = ranked.iter().map(|(k, _)| k.as_deref()).collect();
-            let found = query
-                .expected
-                .iter()
-                .filter(|e| keys.contains(&Some(e.as_str())))
-                .count();
-            recall += found as f64 / query.expected.len() as f64;
-            let first = keys
-                .iter()
-                .position(|k| k.is_some_and(|k| query.expected.iter().any(|e| e == k)));
-            reciprocal += first.map_or(0.0, |rank| 1.0 / (rank + 1) as f64);
-            if found < query.expected.len() {
-                failures.push(json!({
-                    "query": index, "failure": "missed", "expected": query.expected,
-                    "got": keys, "text": query.query, "session": query.session,
-                }));
-            }
-        }
+        state.measure_query(index, query, &ctx);
     }
-    ms.sort_by(f64::total_cmp);
-    let scored_n = scored.max(1) as f64;
-    let leakage = out_of_scope + retired;
+    state.ms.sort_by(f64::total_cmp);
+    let scored_n = state.scored.max(1) as f64;
+    let leakage = state.out_of_scope + state.retired;
     let metrics = json!({
         "quality": "recall@k", "penalty": "leaked results",
-        "limit": limit, "queries": set.queries.len(), "recallAtK": recall / scored_n, "mrr": reciprocal / scored_n,
-        "scopeLeakage": out_of_scope as f64 / returned.max(1) as f64, "outOfScope": out_of_scope,
-        "retiredLeakage": retired, "errors": errors,
-        "latencyMs": if ms.is_empty() { Value::Null } else { json!({"p50": ms[ms.len() / 2].round(), "max": ms[ms.len() - 1].round()}) },
+        "limit": limit, "queries": set.queries.len(), "recallAtK": state.recall / scored_n, "mrr": state.reciprocal / scored_n,
+        "scopeLeakage": state.out_of_scope as f64 / state.returned.max(1) as f64, "outOfScope": state.out_of_scope,
+        "retiredLeakage": state.retired, "errors": state.errors,
+        "latencyMs": if state.ms.is_empty() { Value::Null } else { json!({"p50": state.ms[state.ms.len() / 2].round(), "max": state.ms[state.ms.len() - 1].round()}) },
     });
     Point {
         pipeline: "memory",
@@ -344,16 +455,16 @@ pub fn measure(backend: &dyn MemoryBackend, set: &MemorySet, config: &Value, sig
         mode: "offline",
         outcome: if leakage > 0 {
             Outcome::Failed
-        } else if errors > 0 {
+        } else if state.errors > 0 {
             Outcome::Incomplete
         } else {
             Outcome::Passed
         },
-        quality: recall / scored_n,
+        quality: state.recall / scored_n,
         penalty: leakage as f64,
         cost_usd: None,
         metrics,
-        failures,
+        failures: state.failures,
     }
 }
 

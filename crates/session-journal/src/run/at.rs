@@ -48,22 +48,24 @@ impl OpAt {
         OpAt::NavigationReadyToCommit,
     ];
 
+    const NAMES: [&'static str; 12] = [
+        "starting",
+        "checkpoint",
+        "assistant.ready",
+        "assistant.effect_pending",
+        "assistant.retry_wait",
+        "assistant.failed",
+        "tools",
+        "summary.deciding",
+        "summary.ready",
+        "summary.effect_pending",
+        "summary.retry_wait",
+        "navigation.ready_to_commit",
+    ];
+
     /// The stored spelling.
     pub const fn as_str(self) -> &'static str {
-        match self {
-            OpAt::Starting => "starting",
-            OpAt::Checkpoint => "checkpoint",
-            OpAt::AssistantReady => "assistant.ready",
-            OpAt::AssistantEffectPending => "assistant.effect_pending",
-            OpAt::AssistantRetryWait => "assistant.retry_wait",
-            OpAt::AssistantFailed => "assistant.failed",
-            OpAt::Tools => "tools",
-            OpAt::SummaryDeciding => "summary.deciding",
-            OpAt::SummaryReady => "summary.ready",
-            OpAt::SummaryEffectPending => "summary.effect_pending",
-            OpAt::SummaryRetryWait => "summary.retry_wait",
-            OpAt::NavigationReadyToCommit => "navigation.ready_to_commit",
-        }
+        Self::NAMES[self as usize]
     }
 
     /// The state a stored `at` names; `None` for a value no writer of this build produces.

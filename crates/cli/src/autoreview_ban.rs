@@ -54,6 +54,40 @@ pub fn summary(list: &BanList) -> String {
     }
 }
 
+fn read_ban_map(settings: &config::settings::SettingsManager) -> Map<String, Value> {
+    match settings
+        .global_settings()
+        .get("autoreview")
+        .and_then(|autoreview| autoreview.get("ban"))
+    {
+        Some(Value::Object(ban)) => ban.clone(),
+        _ => Map::new(),
+    }
+}
+
+fn unchanged_ban_result(ban: Map<String, Value>, login: &str, target: &str, add: bool) -> Result<String, Refused> {
+    if add {
+        return Ok(format!("{login} is already banned for {target}"));
+    }
+    let list = BanList::from_value(Some(&Value::Object(ban)));
+    let elsewhere: Vec<&str> = list
+        .rules()
+        .iter()
+        .filter(|(_, logins)| logins.iter().any(|known| same_login(known, login)))
+        .map(|(key, _)| key.as_str())
+        .collect();
+    let hint = if elsewhere.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; it is banned for {} (--account {})",
+            elsewhere.join(", "),
+            elsewhere[0]
+        )
+    };
+    Err(Refused::Error(format!("{login} is not banned for {target}{hint}")))
+}
+
 /// Ban (`add`) or unban `login` for the reviewing account `account` (a login, `host/login` or `*`; none is `*`, every
 /// account). The message says what changed.
 pub fn change(env: &Env, login: &str, account: Option<&str>, add: bool) -> Result<String, Refused> {
@@ -75,14 +109,7 @@ pub fn change(env: &Env, login: &str, account: Option<&str>, add: bool) -> Resul
             error.message
         )));
     }
-    let mut ban = match settings
-        .global_settings()
-        .get("autoreview")
-        .and_then(|autoreview| autoreview.get("ban"))
-    {
-        Some(Value::Object(ban)) => ban.clone(),
-        _ => Map::new(),
-    };
+    let mut ban = read_ban_map(&settings);
     let target = describe_key(key);
     let changed = if add {
         add_ban(&mut ban, key, &login)
@@ -90,26 +117,7 @@ pub fn change(env: &Env, login: &str, account: Option<&str>, add: bool) -> Resul
         remove_ban(&mut ban, key, &login)
     };
     if !changed {
-        if add {
-            return Ok(format!("{login} is already banned for {target}"));
-        }
-        let list = BanList::from_value(Some(&Value::Object(ban)));
-        let elsewhere: Vec<&str> = list
-            .rules()
-            .iter()
-            .filter(|(_, logins)| logins.iter().any(|known| same_login(known, &login)))
-            .map(|(key, _)| key.as_str())
-            .collect();
-        let hint = if elsewhere.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "; it is banned for {} (--account {})",
-                elsewhere.join(", "),
-                elsewhere[0]
-            )
-        };
-        return Err(Refused::Error(format!("{login} is not banned for {target}{hint}")));
+        return unchanged_ban_result(ban, &login, &target, add);
     }
     settings.patch_global_object(
         review::settings::KEY,

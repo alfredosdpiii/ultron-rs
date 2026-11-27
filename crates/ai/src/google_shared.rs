@@ -6,7 +6,8 @@ use crate::constrained::{json_schema_tool_parameters, resolve_json_schema_strict
 use crate::models::clamp_thinking_level;
 use crate::transcript::{collapse_system_messages, transform_messages};
 use crate::types::{
-    AssistantContent, Message, Model, StopReason, Tool, TranscriptContext, UserContent, UserMessageContent,
+    AssistantContent, AssistantMessage, Message, Model, StopReason, Tool, ToolCall, ToolResultMessage,
+    TranscriptContext, UserContent, UserMessage, UserMessageContent,
 };
 use serde_json::{Map, Value, json};
 
@@ -191,6 +192,142 @@ pub fn contents_to_wire(contents: &[Value], vertex: bool) -> Vec<Value> {
         .collect()
 }
 
+fn normalize_google_tool_id(id: &str, needs_id: bool) -> String {
+    if !needs_id {
+        return id.to_string();
+    }
+    id.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(64)
+        .collect()
+}
+
+fn convert_user_message(user: &UserMessage) -> Option<Value> {
+    let parts: Vec<Value> = match &user.content {
+        UserMessageContent::Text(text) => vec![text_part(text, false, None)],
+        UserMessageContent::Blocks(blocks) => blocks
+            .iter()
+            .map(|block| match block {
+                UserContent::Text(t) => text_part(&t.text, false, None),
+                UserContent::Image(i) => inline_data(&i.data, &i.mime_type),
+            })
+            .collect(),
+    };
+    (!parts.is_empty()).then(|| json!({ "parts": parts, "role": "user" }))
+}
+
+fn convert_tool_call_block(call: &ToolCall, same: bool, needs_id: bool) -> Value {
+    let sig = resolve_thought_signature(same, call.thought_signature.as_deref());
+    let mut function_call = Map::new();
+    let args = if call.arguments.is_null() {
+        json!({})
+    } else {
+        call.arguments.clone()
+    };
+    function_call.insert("name".into(), call.name.clone().into());
+    function_call.insert("args".into(), args);
+    if needs_id {
+        function_call.insert("id".into(), call.id.clone().into());
+    }
+    let mut part = Map::new();
+    part.insert("functionCall".into(), Value::Object(function_call));
+    if let Some(sig) = sig {
+        part.insert("thoughtSignature".into(), sig.into());
+    }
+    Value::Object(part)
+}
+
+fn convert_assistant_block(block: &AssistantContent, same: bool, needs_id: bool) -> Option<Value> {
+    match block {
+        AssistantContent::Text(t) => {
+            let sig = resolve_thought_signature(same, t.text_signature.as_deref());
+            (!(t.text.trim().is_empty() && sig.is_none())).then(|| text_part(&t.text, false, sig))
+        }
+        AssistantContent::Thinking(t) if same => {
+            let sig = resolve_thought_signature(same, t.thinking_signature.as_deref());
+            (!(t.thinking.trim().is_empty() && sig.is_none())).then(|| text_part(&t.thinking, true, sig))
+        }
+        AssistantContent::Thinking(t) => (!t.thinking.trim().is_empty()).then(|| text_part(&t.thinking, false, None)),
+        AssistantContent::ToolCall(call) => Some(convert_tool_call_block(call, same, needs_id)),
+    }
+}
+
+fn convert_assistant_message(assistant: &AssistantMessage, model: &Model, needs_id: bool) -> Option<Value> {
+    let same = assistant.provider == model.provider && assistant.model == model.id;
+    let parts: Vec<Value> = assistant
+        .content
+        .iter()
+        .filter_map(|block| convert_assistant_block(block, same, needs_id))
+        .collect();
+    (!parts.is_empty()).then(|| json!({ "parts": parts, "role": "model" }))
+}
+
+fn collect_tool_result_images(result: &ToolResultMessage, model: &Model) -> Vec<Value> {
+    if !model.supports_images() {
+        return Vec::new();
+    }
+    result
+        .content
+        .iter()
+        .filter_map(|c| match c {
+            UserContent::Image(i) => Some(inline_data(&i.data, &i.mime_type)),
+            UserContent::Text(_) => None,
+        })
+        .collect()
+}
+
+fn merge_function_response(contents: &mut Vec<Value>, part: Value) {
+    let merge = contents.last_mut().filter(|last| {
+        last["role"] == "user"
+            && last["parts"]
+                .as_array()
+                .is_some_and(|parts| parts.iter().any(|p| p.get("functionResponse").is_some()))
+    });
+    match merge {
+        Some(last) => {
+            if let Some(parts) = last["parts"].as_array_mut() {
+                parts.push(part);
+            }
+        }
+        None => contents.push(json!({ "parts": [part], "role": "user" })),
+    }
+}
+
+fn push_tool_result(contents: &mut Vec<Value>, result: &ToolResultMessage, model: &Model, needs_id: bool) {
+    let text = result.joined_text();
+    let images = collect_tool_result_images(result, model);
+    let multimodal = supports_multimodal_function_response(&model.id);
+    let value = if !text.is_empty() {
+        text
+    } else if !images.is_empty() {
+        "(see attached image)".to_string()
+    } else {
+        String::new()
+    };
+    let mut response = Map::new();
+    response.insert("name".into(), result.tool_name.clone().into());
+    let key = if result.is_error { "error" } else { "output" };
+    response.insert("response".into(), json!({ key: value }));
+    if !images.is_empty() && multimodal {
+        response.insert("parts".into(), Value::Array(images.clone()));
+    }
+    if needs_id {
+        response.insert("id".into(), result.tool_call_id.clone().into());
+    }
+    merge_function_response(contents, json!({ "functionResponse": response }));
+    if !images.is_empty() && !multimodal {
+        let mut parts = vec![text_part("Tool result image:", false, None)];
+        parts.extend(images);
+        contents.push(json!({ "parts": parts, "role": "user" }));
+    }
+}
+
 /// Convert the transcript to Gemini `contents` (the leading system prompt travels separately), shaped as upstream
 /// builds them; `contents_to_wire` gives the serialized form.
 pub fn convert_messages(model: &Model, context: &TranscriptContext, now: i64) -> Vec<Value> {
@@ -200,150 +337,22 @@ pub fn convert_messages(model: &Model, context: &TranscriptContext, now: i64) ->
         _ => &collapsed[..],
     };
     let needs_id = requires_tool_call_id(&model.id);
-    let normalize = |id: &str, _: &crate::types::AssistantMessage| -> String {
-        if !needs_id {
-            return id.to_string();
-        }
-        id.chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .take(64)
-            .collect()
-    };
+    let normalize = |id: &str, _: &AssistantMessage| normalize_google_tool_id(id, needs_id);
     let transformed = transform_messages(conversation, model, Some(&normalize), now);
     let mut contents: Vec<Value> = Vec::new();
     for message in &transformed {
         match message {
             Message::User(user) => {
-                let parts: Vec<Value> = match &user.content {
-                    UserMessageContent::Text(text) => vec![text_part(text, false, None)],
-                    UserMessageContent::Blocks(blocks) => blocks
-                        .iter()
-                        .map(|block| match block {
-                            UserContent::Text(t) => text_part(&t.text, false, None),
-                            UserContent::Image(i) => inline_data(&i.data, &i.mime_type),
-                        })
-                        .collect(),
-                };
-                if parts.is_empty() {
-                    continue;
+                if let Some(entry) = convert_user_message(user) {
+                    contents.push(entry);
                 }
-                contents.push(json!({ "parts": parts, "role": "user" }));
             }
             Message::Assistant(assistant) => {
-                let same = assistant.provider == model.provider && assistant.model == model.id;
-                let mut parts = Vec::new();
-                for block in &assistant.content {
-                    match block {
-                        AssistantContent::Text(t) => {
-                            let sig = resolve_thought_signature(same, t.text_signature.as_deref());
-                            if t.text.trim().is_empty() && sig.is_none() {
-                                continue;
-                            }
-                            parts.push(text_part(&t.text, false, sig));
-                        }
-                        AssistantContent::Thinking(t) if same => {
-                            let sig = resolve_thought_signature(same, t.thinking_signature.as_deref());
-                            if t.thinking.trim().is_empty() && sig.is_none() {
-                                continue;
-                            }
-                            parts.push(text_part(&t.thinking, true, sig));
-                        }
-                        AssistantContent::Thinking(t) => {
-                            if t.thinking.trim().is_empty() {
-                                continue;
-                            }
-                            parts.push(text_part(&t.thinking, false, None));
-                        }
-                        AssistantContent::ToolCall(call) => {
-                            let sig = resolve_thought_signature(same, call.thought_signature.as_deref());
-                            let mut function_call = Map::new();
-                            let args = if call.arguments.is_null() {
-                                json!({})
-                            } else {
-                                call.arguments.clone()
-                            };
-                            function_call.insert("name".into(), call.name.clone().into());
-                            function_call.insert("args".into(), args);
-                            if needs_id {
-                                function_call.insert("id".into(), call.id.clone().into());
-                            }
-                            let mut part = Map::new();
-                            part.insert("functionCall".into(), Value::Object(function_call));
-                            if let Some(sig) = sig {
-                                part.insert("thoughtSignature".into(), sig.into());
-                            }
-                            parts.push(Value::Object(part));
-                        }
-                    }
-                }
-                if parts.is_empty() {
-                    continue;
-                }
-                contents.push(json!({ "parts": parts, "role": "model" }));
-            }
-            Message::ToolResult(result) => {
-                let text = result
-                    .content
-                    .iter()
-                    .filter_map(|c| match c {
-                        UserContent::Text(t) => Some(t.text.as_str()),
-                        UserContent::Image(_) => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let images: Vec<Value> = if model.supports_images() {
-                    result
-                        .content
-                        .iter()
-                        .filter_map(|c| match c {
-                            UserContent::Image(i) => Some(inline_data(&i.data, &i.mime_type)),
-                            UserContent::Text(_) => None,
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                let multimodal = supports_multimodal_function_response(&model.id);
-                let value = if !text.is_empty() {
-                    text
-                } else if !images.is_empty() {
-                    "(see attached image)".to_string()
-                } else {
-                    String::new()
-                };
-                let mut response = Map::new();
-                response.insert("name".into(), result.tool_name.clone().into());
-                let key = if result.is_error { "error" } else { "output" };
-                response.insert("response".into(), json!({ key: value }));
-                if !images.is_empty() && multimodal {
-                    response.insert("parts".into(), Value::Array(images.clone()));
-                }
-                if needs_id {
-                    response.insert("id".into(), result.tool_call_id.clone().into());
-                }
-                let part = json!({ "functionResponse": response });
-                let merge = contents.last_mut().filter(|last| {
-                    last["role"] == "user"
-                        && last["parts"]
-                            .as_array()
-                            .is_some_and(|parts| parts.iter().any(|p| p.get("functionResponse").is_some()))
-                });
-                match merge {
-                    Some(last) => last["parts"].as_array_mut().unwrap_or(&mut Vec::new()).push(part),
-                    None => contents.push(json!({ "parts": [part], "role": "user" })),
-                }
-                if !images.is_empty() && !multimodal {
-                    let mut parts = vec![text_part("Tool result image:", false, None)];
-                    parts.extend(images.iter().cloned());
-                    contents.push(json!({ "parts": parts, "role": "user" }));
+                if let Some(entry) = convert_assistant_message(assistant, model, needs_id) {
+                    contents.push(entry);
                 }
             }
+            Message::ToolResult(result) => push_tool_result(&mut contents, result, model, needs_id),
             Message::System(_) => {}
         }
     }

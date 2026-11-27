@@ -145,6 +145,49 @@ fn build_headers(extra: &[(String, String)]) -> Result<Vec<(String, String)>, Me
     Ok(headers)
 }
 
+fn validate_hindsight_namespace(base_url: &str, bank_id: &str) -> Result<String, MemoryError> {
+    let base = url::Url::parse(base_url).map_err(|_| MemoryError::code(ErrorCode::InvalidConfig))?;
+    let invalid = !matches!(base.scheme(), "http" | "https")
+        || !base.username().is_empty()
+        || base.password().is_some_and(|p| !p.is_empty())
+        || base.query().is_some_and(|q| !q.is_empty())
+        || base.fragment().is_some_and(|f| !f.is_empty())
+        || utf16::len(base.as_str()) > 8192;
+    if invalid {
+        return Err(MemoryError::code(ErrorCode::InvalidConfig));
+    }
+    let href = base.as_str();
+    let namespace = format!(
+        "{}/v1/default/banks/{}",
+        href.strip_suffix('/').unwrap_or(href),
+        segment(bank_id)?
+    );
+    if utf16::len(&namespace) > 8192 {
+        return Err(MemoryError::code(ErrorCode::InvalidConfig));
+    }
+    Ok(namespace)
+}
+
+fn build_scope_filters(options: &HindsightOptions) -> Result<Map<String, Value>, MemoryError> {
+    let mut filters = Map::new();
+    for (scope, tags) in &options.scope_tags {
+        if !matches!(scope.as_str(), "session" | "project" | "global") {
+            return Err(MemoryError::code(ErrorCode::UnsupportedScope));
+        }
+        filters.insert(scope.clone(), scope_tags(tags, scope)?);
+    }
+    Ok(filters)
+}
+
+fn map_transport_error(error: TransportError) -> MemoryError {
+    MemoryError::code(match error {
+        TransportError::Timeout => ErrorCode::Timeout,
+        TransportError::Aborted => ErrorCode::Aborted,
+        TransportError::TooLarge => ErrorCode::ResponseTooLarge,
+        TransportError::Failed => ErrorCode::HttpError,
+    })
+}
+
 impl HindsightBackend {
     /// Validates the options like TS: INVALID_CONFIG for limits, URL, bank or headers; UNSUPPORTED_SCOPE for tags.
     pub fn new(options: HindsightOptions) -> Result<Self, MemoryError> {
@@ -153,32 +196,8 @@ impl HindsightBackend {
         if !safe_integer_in(timeout_ms, 1.0, 120_000.0) || !safe_integer_in(max_bytes, 1.0, 16_777_216.0) {
             return Err(MemoryError::code(ErrorCode::InvalidConfig));
         }
-        let base = url::Url::parse(&options.base_url).map_err(|_| MemoryError::code(ErrorCode::InvalidConfig))?;
-        if !matches!(base.scheme(), "http" | "https")
-            || !base.username().is_empty()
-            || base.password().is_some_and(|p| !p.is_empty())
-            || base.query().is_some_and(|q| !q.is_empty())
-            || base.fragment().is_some_and(|f| !f.is_empty())
-            || utf16::len(base.as_str()) > 8192
-        {
-            return Err(MemoryError::code(ErrorCode::InvalidConfig));
-        }
-        let href = base.as_str();
-        let namespace = format!(
-            "{}/v1/default/banks/{}",
-            href.strip_suffix('/').unwrap_or(href),
-            segment(&options.bank_id)?
-        );
-        if utf16::len(&namespace) > 8192 {
-            return Err(MemoryError::code(ErrorCode::InvalidConfig));
-        }
-        let mut filters = Map::new();
-        for (scope, tags) in &options.scope_tags {
-            if !matches!(scope.as_str(), "session" | "project" | "global") {
-                return Err(MemoryError::code(ErrorCode::UnsupportedScope));
-            }
-            filters.insert(scope.clone(), scope_tags(tags, scope)?);
-        }
+        let namespace = validate_hindsight_namespace(&options.base_url, &options.bank_id)?;
+        let filters = build_scope_filters(&options)?;
         let headers = build_headers(&options.headers)?;
         let transport = match options.transport {
             Some(transport) => transport,
@@ -226,14 +245,7 @@ impl HindsightBackend {
         let response = self
             .transport
             .send(request, self.max_bytes, self.timeout, signal)
-            .map_err(|error| {
-                MemoryError::code(match error {
-                    TransportError::Timeout => ErrorCode::Timeout,
-                    TransportError::Aborted => ErrorCode::Aborted,
-                    TransportError::TooLarge => ErrorCode::ResponseTooLarge,
-                    TransportError::Failed => ErrorCode::HttpError,
-                })
-            })?;
+            .map_err(map_transport_error)?;
         if signal.is_aborted() {
             return Err(MemoryError::code(ErrorCode::Aborted));
         }

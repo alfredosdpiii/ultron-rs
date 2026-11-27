@@ -43,16 +43,7 @@ fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-/// `loadEntriesFromFile`: all parsed lines of a session file, or nothing when the first parsed line
-/// is not a session header. A missing file is empty. When the file is a session whose last line
-/// lacks a newline, a newline is appended so the next append starts a new line.
-pub fn load_entries_from_file(env: &dyn Env, path: &str) -> io::Result<Vec<Value>> {
-    let path = normalize_path(env, path);
-    let file = match File::open(&path) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        other => other?,
-    };
-    let mut reader = BufReader::with_capacity(1024 * 1024, file);
+fn read_entries_from_reader(reader: &mut BufReader<File>) -> io::Result<(Vec<Value>, bool)> {
     let mut entries = Vec::new();
     let mut line = Vec::new();
     let mut pending = false;
@@ -66,6 +57,20 @@ pub fn load_entries_from_file(env: &dyn Env, path: &str) -> io::Result<Vec<Value
         pending = !complete;
         entries.extend(parse_line(&text));
     }
+    Ok((entries, pending))
+}
+
+/// `loadEntriesFromFile`: all parsed lines of a session file, or nothing when the first parsed line
+/// is not a session header. A missing file is empty. When the file is a session whose last line
+/// lacks a newline, a newline is appended so the next append starts a new line.
+pub fn load_entries_from_file(env: &dyn Env, path: &str) -> io::Result<Vec<Value>> {
+    let path = normalize_path(env, path);
+    let file = match File::open(&path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        other => other?,
+    };
+    let mut reader = BufReader::with_capacity(1024 * 1024, file);
+    let (entries, pending) = read_entries_from_reader(&mut reader)?;
     if entries.first().is_none_or(|header| !is_header(header)) {
         return Ok(Vec::new());
     }
@@ -286,6 +291,106 @@ fn text_content(content: Option<&Value>) -> Option<String> {
     }
 }
 
+#[derive(Default)]
+struct SessionInfoBuilder {
+    header: Option<Value>,
+    message_count: usize,
+    first_message: String,
+    all_messages: Vec<String>,
+    name: Option<String>,
+    last_activity: Option<f64>,
+}
+
+impl SessionInfoBuilder {
+    fn feed_line(&mut self, raw: &[u8]) -> Option<()> {
+        let Some(entry) = parse_line(&lossy(raw)) else {
+            return Some(());
+        };
+        if self.header.is_none() {
+            if entry_type(&entry) != Some("session") {
+                return None;
+            }
+            self.header = Some(entry);
+            return Some(());
+        }
+        match entry_type(&entry) {
+            Some("session_info") => self.feed_session_info(&entry),
+            Some("message") => self.feed_message(&entry),
+            _ => Some(()),
+        }
+    }
+
+    fn feed_session_info(&mut self, entry: &Value) -> Option<()> {
+        self.name = match entry.get("name") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(n)) => Some(jsrt::string::trim(n).to_string()).filter(|n| !n.is_empty()),
+            Some(_) => return None,
+        };
+        Some(())
+    }
+
+    fn feed_message(&mut self, entry: &Value) -> Option<()> {
+        self.message_count += 1;
+        let message = match entry.get("message") {
+            None | Some(Value::Null) => return None,
+            Some(Value::Object(message)) => message,
+            Some(_) => return Some(()),
+        };
+        let role = message.get("role").and_then(Value::as_str);
+        if !message.contains_key("content") || !matches!(role, Some("user" | "assistant")) {
+            return Some(());
+        }
+        self.record_activity(entry, message);
+        let text = text_content(message.get("content"))?;
+        if !text.is_empty() {
+            if self.first_message.is_empty() && role == Some("user") {
+                self.first_message.clone_from(&text);
+            }
+            self.all_messages.push(text);
+        }
+        Some(())
+    }
+
+    fn record_activity(&mut self, entry: &Value, message: &serde_json::Map<String, Value>) {
+        let activity = match message.get("timestamp") {
+            Some(Value::Number(n)) => n.as_f64(),
+            _ => js::date_value(entry.get("timestamp")).map(|t| t as f64),
+        };
+        if let Some(t) = activity {
+            self.last_activity = Some(self.last_activity.unwrap_or(0.0).max(t));
+        }
+    }
+
+    fn finish(self, path: &str, mtime: f64) -> Option<SessionInfo> {
+        let header = self.header?;
+        let header_time = match header.get("timestamp") {
+            Some(Value::String(s)) => jsrt::date::parse_date(s),
+            _ => None,
+        };
+        let modified = match self.last_activity {
+            Some(t) if t > 0.0 => jsrt::date::time_clip(t),
+            _ => header_time.or_else(|| jsrt::date::time_clip(mtime)),
+        };
+        Some(SessionInfo {
+            path: path.to_string(),
+            // ponytail: a non-string header id is listed by upstream; skip such files here.
+            id: header.get("id")?.as_str()?.to_string(),
+            cwd: header_cwd(&header).unwrap_or_default().to_string(),
+            name: self.name,
+            parent_session_path: header.get("parentSession").and_then(Value::as_str).map(str::to_string),
+            created: js::date_value(header.get("timestamp")),
+            modified,
+            message_count: self.message_count,
+            first_message: if self.first_message.is_empty() {
+                "(no messages)".to_string()
+            } else {
+                self.first_message
+            },
+            all_messages_text: self.all_messages.join(" "),
+        })
+    }
+}
+
 /// `buildSessionInfo`. `None` when the file is not a session or holds data upstream would throw on.
 fn build_session_info(path: &str, mtime: Option<f64>) -> Option<SessionInfo> {
     let mtime = match mtime {
@@ -293,10 +398,7 @@ fn build_session_info(path: &str, mtime: Option<f64>) -> Option<SessionInfo> {
         None => mtime_ms(&fs::metadata(path).ok()?).ok()?,
     };
     let mut reader = BufReader::new(File::open(path).ok()?);
-    let mut header: Option<Value> = None;
-    let (mut message_count, mut first_message, mut all_messages) = (0, String::new(), Vec::new());
-    let mut name = None;
-    let mut last_activity: Option<f64> = None;
+    let mut builder = SessionInfoBuilder::default();
     let mut buf = Vec::new();
     loop {
         buf.clear();
@@ -305,82 +407,10 @@ fn build_session_info(path: &str, mtime: Option<f64>) -> Option<SessionInfo> {
         }
         let chunk = buf.strip_suffix(b"\n").unwrap_or(&buf);
         for raw in chunk.split(|b| *b == b'\r') {
-            let Some(entry) = parse_line(&lossy(raw)) else { continue };
-            if header.is_none() {
-                if entry_type(&entry) != Some("session") {
-                    return None;
-                }
-                header = Some(entry);
-                continue;
-            }
-            match entry_type(&entry) {
-                Some("session_info") => {
-                    name = match entry.get("name") {
-                        None | Some(Value::Null) => None,
-                        Some(Value::String(n)) => Some(jsrt::string::trim(n).to_string()).filter(|n| !n.is_empty()),
-                        Some(_) => return None,
-                    };
-                    continue;
-                }
-                Some("message") => {}
-                _ => continue,
-            }
-            message_count += 1;
-            let message = match entry.get("message") {
-                None | Some(Value::Null) => return None,
-                Some(Value::Object(message)) => message,
-                Some(_) => continue,
-            };
-            if !(message.get("role").is_some_and(Value::is_string) && message.contains_key("content")) {
-                continue;
-            }
-            let role = message.get("role").and_then(Value::as_str);
-            if !matches!(role, Some("user" | "assistant")) {
-                continue;
-            }
-            let activity = match message.get("timestamp") {
-                Some(Value::Number(n)) => n.as_f64(),
-                _ => js::date_value(entry.get("timestamp")).map(|t| t as f64),
-            };
-            if let Some(t) = activity {
-                last_activity = Some(last_activity.unwrap_or(0.0).max(t));
-            }
-            let text = text_content(message.get("content"))?;
-            if text.is_empty() {
-                continue;
-            }
-            if first_message.is_empty() && role == Some("user") {
-                first_message.clone_from(&text);
-            }
-            all_messages.push(text);
+            builder.feed_line(raw)?;
         }
     }
-    let header = header?;
-    let header_time = match header.get("timestamp") {
-        Some(Value::String(s)) => jsrt::date::parse_date(s),
-        _ => None,
-    };
-    let modified = match last_activity {
-        Some(t) if t > 0.0 => jsrt::date::time_clip(t),
-        _ => header_time.or_else(|| jsrt::date::time_clip(mtime)),
-    };
-    Some(SessionInfo {
-        path: path.to_string(),
-        // ponytail: a non-string header id is listed by upstream; skip such files here.
-        id: header.get("id")?.as_str()?.to_string(),
-        cwd: header_cwd(&header).unwrap_or_default().to_string(),
-        name,
-        parent_session_path: header.get("parentSession").and_then(Value::as_str).map(str::to_string),
-        created: js::date_value(header.get("timestamp")),
-        modified,
-        message_count,
-        first_message: if first_message.is_empty() {
-            "(no messages)".to_string()
-        } else {
-            first_message
-        },
-        all_messages_text: all_messages.join(" "),
-    })
+    builder.finish(path, mtime)
 }
 
 fn sort_session_infos(sessions: &mut [SessionInfo]) {

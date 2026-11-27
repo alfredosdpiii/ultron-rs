@@ -281,157 +281,235 @@ const COMMANDS: &[Command] = &[
     },
 ];
 
-fn run_inner(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
-    let io = |e: std::io::Error| e.to_string();
-    let mut env = startup::offline_env(argv, env);
+fn io_err(e: std::io::Error) -> String {
+    e.to_string()
+}
+
+fn dispatch_subcommand(
+    argv: &[String],
+    env: &mut Env,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<Option<i32>, String> {
     let mut proxied = false;
     let first = argv.first().map(String::as_str);
     for command in COMMANDS {
         if command.proxy && !proxied {
-            env = startup::proxy_env(&env);
+            *env = startup::proxy_env(env);
             proxied = true;
         }
         if !command.names.is_empty() && !first.is_some_and(|name| command.names.contains(&name)) {
             continue;
         }
         if command.package_files {
-            package_files(&env)?;
+            package_files(env)?;
         }
-        if let Some(result) = (command.run)(argv, &env, out, err) {
-            return result;
+        if let Some(result) = (command.run)(argv, env, out, err) {
+            return result.map(Some);
         }
     }
-    let env = &env;
-    if let Some(name) = first.filter(|name| COMMANDS.iter().any(|c| c.typescript && c.names.contains(name))) {
-        return Err(format!("`ultron {name}` is not implemented in the Rust build yet"));
-    }
-    let acp = argv.first().is_some_and(|a| a == "acp");
-    let mut parsed = parse_args(if acp { &argv[1..] } else { argv });
+    Ok(None)
+}
+
+fn report_diagnostics_and_warnings(parsed: &Args, err: &mut dyn Write) -> Result<bool, String> {
     for d in &parsed.diagnostics {
         let label = if d.kind == DiagnosticKind::Error {
             "Error"
         } else {
             "Warning"
         };
-        writeln!(err, "{label}: {}", d.message).map_err(io)?;
+        writeln!(err, "{label}: {}", d.message).map_err(io_err)?;
     }
     if parsed.diagnostics.iter().any(|d| d.kind == DiagnosticKind::Error) {
-        return Ok(1);
+        return Ok(true);
     }
-    for warning in startup::extension_flag_warnings(&parsed)
+    for warning in startup::extension_flag_warnings(parsed)
         .into_iter()
-        .chain(startup::ignored_flag_warnings(&parsed))
+        .chain(startup::ignored_flag_warnings(parsed))
     {
-        writeln!(err, "Warning: {warning}").map_err(io)?;
+        writeln!(err, "Warning: {warning}").map_err(io_err)?;
     }
+    Ok(false)
+}
+
+fn handle_export(
+    input: &str,
+    output: Option<&str>,
+    env: &Env,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, String> {
+    match export_html::export(input, output, env) {
+        Ok(path) => {
+            writeln!(out, "Exported to: {path}").map_err(io_err)?;
+            Ok(0)
+        }
+        Err(message) => {
+            writeln!(err, "Error: {message}").map_err(io_err)?;
+            Ok(1)
+        }
+    }
+}
+
+fn handle_list_models(list: &ListModels, env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
+    let search = match list {
+        ListModels::All => None,
+        ListModels::Search(p) => Some(p.as_str()),
+    };
+    if let Some(warning) = list_models::models_json_warning(env) {
+        err.write_all(warning.as_bytes()).map_err(io_err)?;
+    }
+    package_files(env)?;
+    let models = session_core::lane::available_models(env);
+    out.write_all(list_models::render(&models, search, &env.docs()).as_bytes())
+        .map_err(io_err)?;
+    Ok(0)
+}
+
+fn handle_early_flags(
+    parsed: &Args,
+    env: &Env,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<Option<i32>, String> {
     if parsed.version {
-        writeln!(out, "{}", config::version()).map_err(io)?;
-        return Ok(0);
+        writeln!(out, "{}", config::version()).map_err(io_err)?;
+        return Ok(Some(0));
     }
     if let Some(input) = &parsed.export {
         let output = parsed.messages.first().map(String::as_str);
-        return match export_html::export(input, output, env) {
-            Ok(path) => {
-                writeln!(out, "Exported to: {path}").map_err(io)?;
-                Ok(0)
-            }
-            Err(message) => {
-                writeln!(err, "Error: {message}").map_err(io)?;
-                Ok(1)
-            }
-        };
+        return handle_export(input, output, env, out, err).map(Some);
     }
     if parsed.help {
-        out.write_all(HELP.as_bytes()).map_err(io)?;
-        return Ok(0);
+        out.write_all(HELP.as_bytes()).map_err(io_err)?;
+        return Ok(Some(0));
     }
     if let Some(list) = &parsed.list_models {
-        let search = match list {
-            ListModels::All => None,
-            ListModels::Search(p) => Some(p.as_str()),
-        };
-        if let Some(warning) = list_models::models_json_warning(env) {
-            err.write_all(warning.as_bytes()).map_err(io)?;
-        }
-        package_files(env)?;
-        let models = session_core::lane::available_models(env);
-        out.write_all(list_models::render(&models, search, &env.docs()).as_bytes())
-            .map_err(io)?;
-        return Ok(0);
+        return handle_list_models(list, env, out, err).map(Some);
     }
-    package_files(env)?;
-    print_mode::trace_startup(env, "cli.native");
+    Ok(None)
+}
+
+fn apply_claude_root(parsed: &mut Args, env: &Env, err: &mut dyn Write) -> Result<Result<Option<Env>, i32>, String> {
     let claude_setting = claude_root::settings::ClaudeCodeSettings::load(&env.cwd, &env.agent_dir()).root;
-    let mut rooted = None;
-    if parsed.claude || session_core::core::claude_root_requested(&*env.var) || claude_setting {
-        match claude_root::worker_root::subscription_root(
-            parsed.provider.as_deref(),
-            parsed.model.as_deref(),
-            &*env.var,
-        ) {
-            Ok(selection) => {
-                parsed.model = Some(selection.model);
-                parsed.provider = selection.provider;
-                rooted = Some(startup::overlay(
-                    env,
-                    vec![(session_core::core::ROOT_ENV.to_string(), "claude".to_string())],
-                ));
-            }
-            Err(message) => {
-                writeln!(err, "Error: {message}").map_err(io)?;
-                return Ok(1);
-            }
+    if !parsed.claude && !session_core::core::claude_root_requested(&*env.var) && !claude_setting {
+        return Ok(Ok(None));
+    }
+    match claude_root::worker_root::subscription_root(parsed.provider.as_deref(), parsed.model.as_deref(), &*env.var) {
+        Ok(selection) => {
+            parsed.model = Some(selection.model);
+            parsed.provider = selection.provider;
+            let rooted = startup::overlay(
+                env,
+                vec![(session_core::core::ROOT_ENV.to_string(), "claude".to_string())],
+            );
+            Ok(Ok(Some(rooted)))
+        }
+        Err(message) => {
+            writeln!(err, "Error: {message}").map_err(io_err)?;
+            Ok(Err(1))
         }
     }
-    let env = rooted.as_ref().unwrap_or(env);
-    if acp {
-        if !parsed.file_args.is_empty() || !parsed.messages.is_empty() || parsed.mode.is_some() {
-            writeln!(
-                err,
-                "Error: `ultron acp` takes session options only (no messages, @files or --mode)"
-            )
-            .map_err(io)?;
-            return Ok(1);
-        }
-        if let Some(selector) = acp::session_selector(&parsed) {
-            writeln!(
-                err,
-                "Error: `ultron acp` opens the sessions its client asks for (session/new, session/load): {selector} is not supported"
-            )
-            .map_err(io)?;
-            return Ok(1);
-        }
-        return acp::run(parsed, env, Box::new(std::io::stdin()), Box::new(std::io::stdout()));
-    }
-    let rpc_mode = parsed.mode.as_deref() == Some("rpc");
-    if rpc_mode && !parsed.file_args.is_empty() {
-        writeln!(err, "Error: @file arguments are not supported in RPC mode").map_err(io)?;
+}
+
+fn run_acp(parsed: Args, env: &Env, err: &mut dyn Write) -> Result<i32, String> {
+    if !parsed.file_args.is_empty() || !parsed.messages.is_empty() || parsed.mode.is_some() {
+        writeln!(
+            err,
+            "Error: `ultron acp` takes session options only (no messages, @files or --mode)"
+        )
+        .map_err(io_err)?;
         return Ok(1);
     }
-    if !rpc_mode && !setup::offer_setup_on_first_run(&parsed, env, out) {
-        return Ok(0);
+    if let Some(selector) = acp::session_selector(&parsed) {
+        writeln!(
+            err,
+            "Error: `ultron acp` opens the sessions its client asks for (session/new, session/load): {selector} is not supported"
+        )
+        .map_err(io_err)?;
+        return Ok(1);
     }
-    let stdin = startup::read_piped_stdin(&parsed);
-    for warning in startup::tool_flag_warnings(&parsed)
+    acp::run(parsed, env, Box::new(std::io::stdin()), Box::new(std::io::stdout()))
+}
+
+fn print_tool_warnings(parsed: &Args, env: &Env, err: &mut dyn Write) -> Result<(), String> {
+    for warning in startup::tool_flag_warnings(parsed)
         .into_iter()
         .chain(startup::tool_env_warnings(env))
     {
-        writeln!(err, "Warning: {warning}").map_err(io)?;
+        writeln!(err, "Warning: {warning}").map_err(io_err)?;
     }
-    match native_run(&parsed, env, stdin, out, err) {
+    Ok(())
+}
+
+fn report_native_result(result: Result<i32, NativeError>, env: &Env, err: &mut dyn Write) -> Result<i32, String> {
+    match result {
         Ok(code) => Ok(code),
         Err(NativeError::Exit(message)) => {
-            writeln!(err, "Error: {message}").map_err(io)?;
+            writeln!(err, "Error: {message}").map_err(io_err)?;
             Ok(1)
         }
         Err(NativeError::Failed(message)) => {
-            writeln!(err, "Error: {message}").map_err(io)?;
+            writeln!(err, "Error: {message}").map_err(io_err)?;
             if let Some(hint) = setup::no_model_hint(env) {
-                writeln!(err, "{hint}").map_err(io)?;
+                writeln!(err, "{hint}").map_err(io_err)?;
             }
             Ok(1)
         }
     }
+}
+
+fn run_native_with_warnings(parsed: &Args, env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
+    let rpc_mode = parsed.mode.as_deref() == Some("rpc");
+    if rpc_mode && !parsed.file_args.is_empty() {
+        writeln!(err, "Error: @file arguments are not supported in RPC mode").map_err(io_err)?;
+        return Ok(1);
+    }
+    if !rpc_mode && !setup::offer_setup_on_first_run(parsed, env, out) {
+        return Ok(0);
+    }
+    let stdin = startup::read_piped_stdin(parsed);
+    print_tool_warnings(parsed, env, err)?;
+    report_native_result(native_run(parsed, env, stdin, out, err), env, err)
+}
+
+fn check_unimplemented_ts(first: Option<&str>) -> Result<(), String> {
+    if let Some(name) = first.filter(|name| COMMANDS.iter().any(|c| c.typescript && c.names.contains(name))) {
+        return Err(format!("`ultron {name}` is not implemented in the Rust build yet"));
+    }
+    Ok(())
+}
+
+fn run_parsed(mut parsed: Args, acp: bool, env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
+    if let Some(code) = handle_early_flags(&parsed, env, out, err)? {
+        return Ok(code);
+    }
+    package_files(env)?;
+    print_mode::trace_startup(env, "cli.native");
+    let rooted = match apply_claude_root(&mut parsed, env, err)? {
+        Ok(rooted) => rooted,
+        Err(code) => return Ok(code),
+    };
+    let env = rooted.as_ref().unwrap_or(env);
+    if acp {
+        return run_acp(parsed, env, err);
+    }
+    run_native_with_warnings(&parsed, env, out, err)
+}
+
+fn run_inner(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
+    let mut env = startup::offline_env(argv, env);
+    if let Some(code) = dispatch_subcommand(argv, &mut env, out, err)? {
+        return Ok(code);
+    }
+    let first = argv.first().map(String::as_str);
+    check_unimplemented_ts(first)?;
+    let acp = first == Some("acp");
+    let parsed = parse_args(if acp { &argv[1..] } else { argv });
+    if report_diagnostics_and_warnings(&parsed, err)? {
+        return Ok(1);
+    }
+    run_parsed(parsed, acp, &env, out, err)
 }
 
 /// How `runNativeUltronCommand` ends when it fails.
@@ -448,23 +526,11 @@ impl From<String> for NativeError {
     }
 }
 
-/// `runNativeUltronCommand`: select the session, assemble the prompt (piped stdin, `@file`s, messages), then run
-/// RPC mode, the TUI (no prompt, not `-p`, on a terminal), or the client: a prompt's answer (`-p` prints it,
-/// `--mode json` prints the result, otherwise the text streams as it arrives), or without a prompt the attached
-/// session or the server's sessions.
-fn native_run(
-    parsed: &Args,
-    env: &Env,
-    stdin: Option<String>,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
-) -> Result<i32, NativeError> {
-    let io = |e: std::io::Error| NativeError::Failed(e.to_string());
-    let json_mode = parsed.mode.as_deref() == Some("json");
-    let rpc_mode = parsed.mode.as_deref() == Some("rpc");
-    let terminal = interactive::is_terminal();
-    let has_prompt = stdin.is_some() || !parsed.file_args.is_empty() || !parsed.messages.is_empty();
-    let selection = native_command(parsed, env, rpc_mode || has_prompt, terminal)?;
+fn native_io(e: std::io::Error) -> NativeError {
+    NativeError::Failed(e.to_string())
+}
+
+fn assemble_prompt(parsed: &Args, env: &Env, stdin: Option<String>) -> Result<Option<print_mode::Prompt>, NativeError> {
     let files = if parsed.file_args.is_empty() {
         file_args::ProcessedFiles::default()
     } else {
@@ -476,27 +542,92 @@ fn native_run(
         .chain(parsed.messages.iter().cloned())
         .filter(|part| !part.is_empty())
         .collect();
-    let prompt = (!parts.is_empty()).then(|| print_mode::Prompt {
+    Ok((!parts.is_empty()).then(|| print_mode::Prompt {
         text: parts.join("\n\n"),
         images: files.images,
-    });
-    let runs_tui = !rpc_mode && prompt.is_none() && !parsed.print && terminal;
-    let target = match selection {
+    }))
+}
+
+fn resolve_selection(
+    selection: Selection,
+    runs_tui: bool,
+    env: &Env,
+    out: &mut dyn Write,
+) -> Result<Option<Target>, NativeError> {
+    match selection {
         Selection::List(sessions) if runs_tui => {
             let stdin = std::io::stdin();
-            match interactive::pick_session(&sessions, &mut std::io::stdout(), &mut stdin.lock()) {
+            let target = match interactive::pick_session(&sessions, &mut std::io::stdout(), &mut stdin.lock()) {
                 Some(metadata) => Target::Open(metadata),
                 None => Target::New { id: None },
-            }
+            };
+            Ok(Some(target))
         }
         Selection::List(sessions) => {
             out.write_all(render_session_list(&sessions, &env.cwd.display().to_string()).as_bytes())
-                .map_err(io)?;
-            return Ok(0);
+                .map_err(native_io)?;
+            Ok(None)
         }
-        Selection::Target(target) => target,
+        Selection::Target(target) => Ok(Some(target)),
+    }
+}
+
+fn streaming_listener() -> client::runtime::EventListener {
+    std::sync::Arc::new(|event: &serde_json::Value| {
+        if event["type"] == "message_update"
+            && event["frame"]["type"] == "text_delta"
+            && let Some(delta) = event["frame"]["delta"].as_str()
+        {
+            let mut stdout = std::io::stdout();
+            let _ = stdout.write_all(delta.as_bytes());
+            let _ = stdout.flush();
+        }
+    })
+}
+
+fn run_prompted(
+    parsed: &Args,
+    env: &Env,
+    prompt: print_mode::Prompt,
+    target: Target,
+    json_mode: bool,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, NativeError> {
+    let streaming = !parsed.print && !json_mode;
+    let on_event = streaming.then(streaming_listener);
+    let herdr = herdr_report::PrintReport::start(env);
+    let prompted = print_mode::run_prompt(parsed, env, prompt, target, on_event);
+    if let Some(herdr) = &herdr {
+        herdr.finish(prompted.as_ref().map(|p| p.text.as_str()).map_err(String::as_str));
+    }
+    let prompted = prompted?;
+    for notice in &prompted.notices {
+        writeln!(err, "{notice}").map_err(native_io)?;
+    }
+    let text = if streaming {
+        "\n".to_string()
+    } else {
+        print_mode::render(json_mode, &prompted)
     };
-    if rpc_mode {
+    out.write_all(text.as_bytes()).map_err(native_io)?;
+    Ok(0)
+}
+
+fn has_prompt_input(parsed: &Args, stdin: &Option<String>) -> bool {
+    stdin.is_some() || !parsed.file_args.is_empty() || !parsed.messages.is_empty()
+}
+
+fn dispatch_native_target(
+    parsed: &Args,
+    env: &Env,
+    target: Target,
+    prompt: Option<print_mode::Prompt>,
+    runs_tui: bool,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, NativeError> {
+    if parsed.mode.as_deref() == Some("rpc") {
         return Ok(rpc::remote::run(
             parsed,
             env,
@@ -510,38 +641,34 @@ fn native_run(
     }
     let Some(prompt) = prompt else {
         out.write_all(print_mode::run_unprompted(parsed, env, target)?.as_bytes())
-            .map_err(io)?;
+            .map_err(native_io)?;
         return Ok(0);
     };
-    let streaming = !parsed.print && !json_mode;
-    let on_event: Option<client::runtime::EventListener> = streaming.then(|| {
-        std::sync::Arc::new(|event: &serde_json::Value| {
-            if event["type"] == "message_update"
-                && event["frame"]["type"] == "text_delta"
-                && let Some(delta) = event["frame"]["delta"].as_str()
-            {
-                let mut stdout = std::io::stdout();
-                let _ = stdout.write_all(delta.as_bytes());
-                let _ = stdout.flush();
-            }
-        }) as client::runtime::EventListener
-    });
-    let herdr = herdr_report::PrintReport::start(env);
-    let prompted = print_mode::run_prompt(parsed, env, prompt, target, on_event);
-    if let Some(herdr) = &herdr {
-        herdr.finish(prompted.as_ref().map(|p| p.text.as_str()).map_err(String::as_str));
-    }
-    let prompted = prompted?;
-    for notice in &prompted.notices {
-        writeln!(err, "{notice}").map_err(io)?;
-    }
-    let text = if streaming {
-        "\n".to_string()
-    } else {
-        print_mode::render(json_mode, &prompted)
+    let json_mode = parsed.mode.as_deref() == Some("json");
+    run_prompted(parsed, env, prompt, target, json_mode, out, err)
+}
+
+/// `runNativeUltronCommand`: select the session, assemble the prompt (piped stdin, `@file`s, messages), then run
+/// RPC mode, the TUI (no prompt, not `-p`, on a terminal), or the client: a prompt's answer (`-p` prints it,
+/// `--mode json` prints the result, otherwise the text streams as it arrives), or without a prompt the attached
+/// session or the server's sessions.
+fn native_run(
+    parsed: &Args,
+    env: &Env,
+    stdin: Option<String>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, NativeError> {
+    let rpc_mode = parsed.mode.as_deref() == Some("rpc");
+    let terminal = interactive::is_terminal();
+    let prompted = rpc_mode || has_prompt_input(parsed, &stdin);
+    let selection = native_command(parsed, env, prompted, terminal)?;
+    let prompt = assemble_prompt(parsed, env, stdin)?;
+    let runs_tui = !rpc_mode && prompt.is_none() && !parsed.print && terminal;
+    let Some(target) = resolve_selection(selection, runs_tui, env, out)? else {
+        return Ok(0);
     };
-    out.write_all(text.as_bytes()).map_err(io)?;
-    Ok(0)
+    dispatch_native_target(parsed, env, target, prompt, runs_tui, out, err)
 }
 
 /// What the session flags select.
@@ -578,13 +705,21 @@ pub fn render_session_list(sessions: &[SessionListing], cwd: &str) -> String {
     out
 }
 
-/// The checks `runNativeUltronCommand` makes before it starts a server, and its session selection.
-fn native_command(parsed: &Args, env: &Env, prompted: bool, terminal: bool) -> Result<Selection, String> {
-    if parsed.fork.is_some()
-        && (parsed.continue_ || parsed.resume || parsed.session.is_some() || parsed.session_id.is_some())
-    {
+fn validate_fork_flags(parsed: &Args) -> Result<(), String> {
+    if parsed.fork.is_none() {
+        return Ok(());
+    }
+    if parsed.continue_ || parsed.resume || parsed.session.is_some() || parsed.session_id.is_some() {
         return Err("--fork cannot be combined with another session selector".into());
     }
+    if parsed.no_session {
+        return Err("--fork cannot be combined with --no-session".into());
+    }
+    Ok(())
+}
+
+fn validate_native_args(parsed: &Args) -> Result<(), String> {
+    validate_fork_flags(parsed)?;
     if let Some(dir) = &parsed.session_dir
         && !Path::new(dir).is_absolute()
     {
@@ -595,70 +730,115 @@ fn native_command(parsed: &Args, env: &Env, prompted: bool, terminal: bool) -> R
     {
         return Err("--name requires a non-empty value".into());
     }
-    let session_dir = session::session_directory(parsed.session_dir.as_deref(), env);
-    print_mode::trace_startup(env, "cli.list-sessions");
-    let repo = SessionRepo::new(&session_dir, SystemClock::shared());
+    Ok(())
+}
+
+fn open_or_new_session(session_dir: &Path, id: String) -> Result<Selection, String> {
+    Ok(Selection::Target(match catalog::find(session_dir, &id)? {
+        Some(metadata) => Target::Open(metadata),
+        None => Target::New { id: Some(id) },
+    }))
+}
+
+fn select_resume(
+    parsed: &Args,
+    repo: &SessionRepo,
+    cwd: &str,
+    prompted: bool,
+    terminal: bool,
+) -> Result<Selection, String> {
+    let listed = names::list_sessions(Path::new(repo.root()), cwd);
+    if let Some(selector) = &parsed.resume_selector {
+        let found = names::resolve_resume(&listed, selector)?;
+        return Ok(Selection::Target(Target::Open(found.metadata.clone())));
+    }
+    if !prompted {
+        return Ok(Selection::List(listed));
+    }
+    let picked = if terminal {
+        let stdin = std::io::stdin();
+        interactive::pick_session(&listed, &mut std::io::stdout(), &mut stdin.lock())
+    } else {
+        listed.into_iter().next().map(|newest| newest.metadata)
+    };
+    Ok(Selection::Target(match picked {
+        Some(metadata) => Target::Open(metadata),
+        None => Target::New { id: None },
+    }))
+}
+
+fn select_continue(
+    sessions: &[session_journal::Metadata],
+    session_dir: &Path,
+    repo: &SessionRepo,
+) -> Result<Selection, String> {
+    if let Some(newest) = sessions.first() {
+        return open_or_new_session(session_dir, newest.id.clone());
+    }
+    let all = names::list_all_sessions(repo);
+    Ok(Selection::Target(match all.into_iter().next() {
+        Some(newest) => Target::Open(newest.metadata),
+        None => Target::New { id: None },
+    }))
+}
+
+fn load_catalog_sessions(parsed: &Args, env: &Env, session_dir: &Path) -> Vec<session_journal::Metadata> {
     let needs_sessions = parsed.continue_ || parsed.resume || parsed.session.is_some() || parsed.fork.is_some();
-    let durable = durable_client::is_client(env);
-    let sessions = match (needs_sessions, durable) {
-        (false, _) => Vec::new(),
-        (true, false) => catalog::list(&session_dir, Some(&env.cwd.display().to_string())),
-        (true, true) => catalog::list(&session_dir, None),
-    };
-    if parsed.fork.is_some() && parsed.no_session {
-        return Err("--fork cannot be combined with --no-session".into());
+    if !needs_sessions {
+        return Vec::new();
     }
-    let cwd = env.cwd.display().to_string();
-    let open_or_new = |id: String| -> Result<Selection, String> {
-        Ok(Selection::Target(match catalog::find(&session_dir, &id)? {
-            Some(metadata) => Target::Open(metadata),
-            None => Target::New { id: Some(id) },
-        }))
-    };
-    if let Some(fork) = &parsed.fork {
-        let id = session::session_id_from_selector(fork, &sessions, &env.cwd)?;
-        let metadata = catalog::find(&session_dir, &id)?.ok_or_else(|| format!("Unknown session: {id}"))?;
-        return Ok(Selection::Target(Target::Fork(metadata)));
-    }
-    if let Some(id) = &parsed.session_id {
-        return open_or_new(id.clone());
-    }
-    if parsed.resume {
-        let listed = names::list_sessions(Path::new(repo.root()), &cwd);
-        if let Some(selector) = &parsed.resume_selector {
-            let found = names::resolve_resume(&listed, selector)?;
-            return Ok(Selection::Target(Target::Open(found.metadata.clone())));
-        }
-        if !prompted {
-            return Ok(Selection::List(listed));
-        }
-        let picked = if terminal {
-            let stdin = std::io::stdin();
-            interactive::pick_session(&listed, &mut std::io::stdout(), &mut stdin.lock())
-        } else {
-            listed.into_iter().next().map(|newest| newest.metadata)
-        };
-        return Ok(Selection::Target(match picked {
-            Some(metadata) => Target::Open(metadata),
-            None => Target::New { id: None },
-        }));
-    }
+    let filter = (!durable_client::is_client(env)).then(|| env.cwd.display().to_string());
+    catalog::list(session_dir, filter.as_deref())
+}
+
+fn select_fork(
+    fork: &str,
+    sessions: &[session_journal::Metadata],
+    session_dir: &Path,
+    cwd: &Path,
+) -> Result<Selection, String> {
+    let id = session::session_id_from_selector(fork, sessions, cwd)?;
+    let metadata = catalog::find(session_dir, &id)?.ok_or_else(|| format!("Unknown session: {id}"))?;
+    Ok(Selection::Target(Target::Fork(metadata)))
+}
+
+fn select_default_session(
+    parsed: &Args,
+    sessions: &[session_journal::Metadata],
+    session_dir: &Path,
+    repo: &SessionRepo,
+    cwd: &Path,
+) -> Result<Selection, String> {
     if parsed.continue_ {
-        if let Some(newest) = sessions.first() {
-            return open_or_new(newest.id.clone());
-        }
-        let all = names::list_all_sessions(&repo);
-        return Ok(Selection::Target(match all.into_iter().next() {
-            Some(newest) => Target::Open(newest.metadata),
-            None => Target::New { id: None },
-        }));
+        return select_continue(sessions, session_dir, repo);
     }
     if let Some(selector) = &parsed.session {
-        return open_or_new(session::session_id_from_selector(selector, &sessions, &env.cwd)?);
+        let id = session::session_id_from_selector(selector, sessions, cwd)?;
+        return open_or_new_session(session_dir, id);
     }
     Ok(Selection::Target(if parsed.no_session {
         Target::Ephemeral
     } else {
         Target::New { id: None }
     }))
+}
+
+/// The checks `runNativeUltronCommand` makes before it starts a server, and its session selection.
+fn native_command(parsed: &Args, env: &Env, prompted: bool, terminal: bool) -> Result<Selection, String> {
+    validate_native_args(parsed)?;
+    let session_dir = session::session_directory(parsed.session_dir.as_deref(), env);
+    print_mode::trace_startup(env, "cli.list-sessions");
+    let repo = SessionRepo::new(&session_dir, SystemClock::shared());
+    let sessions = load_catalog_sessions(parsed, env, &session_dir);
+    if let Some(fork) = &parsed.fork {
+        return select_fork(fork, &sessions, &session_dir, &env.cwd);
+    }
+    if let Some(id) = &parsed.session_id {
+        return open_or_new_session(&session_dir, id.clone());
+    }
+    if parsed.resume {
+        let cwd = env.cwd.display().to_string();
+        return select_resume(parsed, &repo, &cwd, prompted, terminal);
+    }
+    select_default_session(parsed, &sessions, &session_dir, &repo, &env.cwd)
 }

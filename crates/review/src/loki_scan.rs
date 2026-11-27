@@ -52,17 +52,8 @@ impl LokiScan {
             return;
         };
         for ((path, old_text, new_text), squiggles) in code_files.iter().zip(scored) {
-            let notes = loki::hygiene::notes(
-                path,
-                old_text,
-                new_text,
-                &squiggles,
-                loki::hygiene::Level::On,
-            );
-            let fresh: Vec<String> = notes
-                .into_iter()
-                .filter(|note| !violations.contains(note))
-                .collect();
+            let notes = loki::hygiene::notes(path, old_text, new_text, &squiggles, loki::hygiene::Level::On);
+            let fresh: Vec<String> = notes.into_iter().filter(|note| !violations.contains(note)).collect();
             violations.extend(fresh);
         }
     }

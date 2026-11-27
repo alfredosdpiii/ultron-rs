@@ -628,7 +628,6 @@ impl Delegation {
 
     pub fn handle_with(&self, kind: &str, payload: Value, lane: &str, cell: &CellContext) -> Result<Value, String> {
         let request = Request::of(kind);
-        let cancel = cell.cancel.as_ref();
         let Value::Object(payload) = payload else {
             return Err("Host payload must be a JSON object".into());
         };
@@ -644,148 +643,213 @@ impl Delegation {
         let Some(request) = request else {
             return Err(format!("Unknown host request: {kind}"));
         };
+        self.dispatch_request(request, payload, parent, lane, cell)
+    }
+
+    fn dispatch_request(
+        &self,
+        request: Request,
+        payload: Map<String, Value>,
+        parent: Option<&str>,
+        lane: &str,
+        cell: &CellContext,
+    ) -> Result<Value, String> {
+        match request {
+            Request::Spawn | Request::Finish | Request::ListSubagents | Request::Progress | Request::DeleteSubagent => {
+                self.dispatch_child_request(request, payload, parent, lane)
+            }
+            Request::Collect
+            | Request::Results
+            | Request::Merge
+            | Request::WorktreesList
+            | Request::WorktreesCleanup => self.dispatch_sync_request(request, &payload, parent, lane, cell),
+        }
+    }
+
+    fn dispatch_child_request(
+        &self,
+        request: Request,
+        payload: Map<String, Value>,
+        parent: Option<&str>,
+        lane: &str,
+    ) -> Result<Value, String> {
         match request {
             Request::Spawn => self.spawn(&payload, parent, lane),
             Request::Finish => self.finish_request(payload, parent),
-            Request::ListSubagents => {
-                jsrt::payload::fields(&payload, &[])?;
-                let state = sync::lock(&self.inner.state);
-                let subagents: Vec<Value> = state
-                    .tasks
-                    .iter()
-                    .filter(|t| t.record["definition"] == CHILD && Some(t.id.as_str()) != parent)
-                    .filter(|t| state.visible(&t.id, parent))
-                    .map(public_task)
-                    .collect();
-                Ok(json!({ "subagents": subagents }))
-            }
+            Request::ListSubagents => self.handle_list_subagents(&payload, parent),
             Request::Progress => {
                 let ids = self.selected(&payload, parent)?;
                 Ok(json!({ "subagents": self.progress(&ids) }))
             }
-            Request::Collect | Request::Results => {
-                let collect = matches!(request, Request::Collect);
-                let ids = self.selected(&payload, parent)?;
-                let waits = collect && self.collect_mode(lane) == CollectMode::InCell;
-                if !waits {
-                    let running = self.unfinished(&ids);
-                    if collect && !running.is_empty() {
-                        return Err(format!(
-                            "rlm.collect: {} subagent(s) still running ({}). The host waits for them, not this cell: do other work, or end your turn; each end arrives as a child_done event, then collect again.",
-                            running.len(),
-                            running.join(", ")
-                        ));
-                    }
-                    let mut out = self.collected(self.wait_until(&ids, Some(Duration::ZERO), None))?;
-                    if !collect {
-                        out["running"] = json!(running);
-                    }
-                    return Ok(out);
-                }
-                let timeout = collect_timeout(payload.get("timeout_ms"))?;
-                let outcomes = self.wait_until(&ids, timeout, cancel);
-                if outcomes.len() < ids.len() {
-                    if let Some(reason) = cancel.and_then(Signal::reason) {
-                        return Err(format!("rlm.collect was cancelled: {reason}"));
-                    }
-                    if let Some(timeout) = timeout.filter(|_| !cancel.is_some_and(Signal::is_aborted)) {
-                        let running = self.unfinished(&ids);
-                        return Err(format!(
-                            "rlm.collect: timed out after {} ms with {} subagent(s) still running ({}); they keep running. `await rlm.results()` returns the results of those that ended and the ids still running; collect again to wait more.",
-                            timeout.as_millis(),
-                            running.len(),
-                            running.join(", ")
-                        ));
-                    }
-                    return Err("rlm.collect was cancelled".into());
-                }
-                self.collected(outcomes)
-            }
-            Request::DeleteSubagent => {
-                jsrt::payload::fields(&payload, &["selector"])?;
-                let selector = nonempty_string(payload.get("selector"), "selector")?;
-                let known = {
-                    let state = sync::lock(&self.inner.state);
-                    state.is_child(&selector) && state.visible(&selector, parent)
-                };
-                if !known {
-                    return Err("Unknown RLM child".into());
-                }
-                let result = self.cancel(&selector, "RLM child deleted")?;
-                Ok(json!({ "deleted": result["status"] == "cancelled" }))
-            }
-            Request::Merge => self.merge_request(&payload, parent, lane, cell),
-            Request::WorktreesList => {
-                jsrt::payload::fields(&payload, &["all"])?;
-                let shared = self.inner.workspace.as_deref();
-                let from = sync::lock(&self.inner.state)
-                    .workspace_of(parent, shared)
-                    .or_else(|| std::env::current_dir().ok())
-                    .unwrap_or_default();
-                let state = sync::lock(&self.inner.state);
-                let worktrees: Vec<Value> = wt::list_records(&from)
-                    .into_iter()
-                    .filter(|r| payload.get("all") == Some(&Value::Bool(true)) || r.session_id == self.inner.session_id)
-                    .map(|r| {
-                        let running = r
-                            .task_id
-                            .as_deref()
-                            .and_then(|t| state.task(t))
-                            .is_some_and(|t| t.outcome.is_none());
-                        json!({ "id": r.id, "task": r.task_id, "name": r.name, "branch": r.branch, "path": r.path,
-                                "state": r.state, "commit": r.commit.clone().flatten(), "running": running,
-                                "session": r.session_id })
-                    })
-                    .collect();
-                Ok(json!({ "worktrees": worktrees }))
-            }
-            Request::WorktreesCleanup => {
-                jsrt::payload::fields(&payload, &["branches"])?;
-                let workspace = sync::lock(&self.inner.state).workspace_of(parent, self.inner.workspace.as_deref());
-                let Some(workspace) = workspace else {
-                    return Ok(json!({ "removed": [], "kept_branches": [], "running": [] }));
-                };
-                let running = |record: &WorktreeRecord| {
-                    let state = sync::lock(&self.inner.state);
-                    record
-                        .task_id
-                        .as_deref()
-                        .and_then(|t| state.task(t))
-                        .is_some_and(|t| t.outcome.is_none())
-                };
-                let branches = payload.get("branches") == Some(&Value::Bool(true));
-                let session = self.inner.session_id.clone();
-                let records: Vec<WorktreeRecord> = wt::list_records(&workspace)
-                    .into_iter()
-                    .filter(|r| r.session_id == session)
-                    .collect();
-                let select = |r: &WorktreeRecord| r.session_id == session && !running(r);
-                let own = wt::prune_worktrees(
-                    &workspace,
-                    &wt::PruneOptions {
-                        select: Some(&select),
-                        force: true,
-                        delete_branches: branches,
-                    },
-                );
-                let orphans = wt::prune_worktrees(
-                    &workspace,
-                    &wt::PruneOptions {
-                        select: None,
-                        force: false,
-                        delete_branches: branches,
-                    },
-                );
-                let removed = [own.removed, orphans.removed].concat();
-                let kept = [own.kept_branches, orphans.kept_branches].concat();
-                let still: Vec<String> = records
-                    .iter()
-                    .filter(|r| running(r))
-                    .map(|r| r.branch.clone())
-                    .collect();
-                Ok(json!({ "removed": removed, "kept_branches": kept, "running": still }))
-            }
+            Request::DeleteSubagent => self.handle_delete_subagent(&payload, parent),
+            _ => unreachable!("routed by dispatch_request"),
         }
+    }
+
+    fn dispatch_sync_request(
+        &self,
+        request: Request,
+        payload: &Map<String, Value>,
+        parent: Option<&str>,
+        lane: &str,
+        cell: &CellContext,
+    ) -> Result<Value, String> {
+        match request {
+            Request::Collect => self.handle_collect_or_results(true, payload, parent, lane, cell.cancel.as_ref()),
+            Request::Results => self.handle_collect_or_results(false, payload, parent, lane, cell.cancel.as_ref()),
+            Request::Merge => self.merge_request(payload, parent, lane, cell),
+            Request::WorktreesList => self.handle_worktrees_list(payload, parent),
+            Request::WorktreesCleanup => self.handle_worktrees_cleanup(payload, parent),
+            _ => unreachable!("routed by dispatch_request"),
+        }
+    }
+
+    fn handle_list_subagents(&self, payload: &Map<String, Value>, parent: Option<&str>) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &[])?;
+        let state = sync::lock(&self.inner.state);
+        let subagents: Vec<Value> = state
+            .tasks
+            .iter()
+            .filter(|t| t.record["definition"] == CHILD && Some(t.id.as_str()) != parent)
+            .filter(|t| state.visible(&t.id, parent))
+            .map(public_task)
+            .collect();
+        Ok(json!({ "subagents": subagents }))
+    }
+
+    fn handle_collect_or_results(
+        &self,
+        collect: bool,
+        payload: &Map<String, Value>,
+        parent: Option<&str>,
+        lane: &str,
+        cancel: Option<&Signal>,
+    ) -> Result<Value, String> {
+        let ids = self.selected(payload, parent)?;
+        let waits = collect && self.collect_mode(lane) == CollectMode::InCell;
+        if !waits {
+            let running = self.unfinished(&ids);
+            if collect && !running.is_empty() {
+                return Err(format!(
+                    "rlm.collect: {} subagent(s) still running ({}). The host waits for them, not this cell: do other work, or end your turn; each end arrives as a child_done event, then collect again.",
+                    running.len(),
+                    running.join(", ")
+                ));
+            }
+            let mut out = self.collected(self.wait_until(&ids, Some(Duration::ZERO), None))?;
+            if !collect {
+                out["running"] = json!(running);
+            }
+            return Ok(out);
+        }
+        let timeout = collect_timeout(payload.get("timeout_ms"))?;
+        let outcomes = self.wait_until(&ids, timeout, cancel);
+        if outcomes.len() < ids.len() {
+            return Err(self.collect_incomplete_error(&ids, timeout, cancel));
+        }
+        self.collected(outcomes)
+    }
+
+    fn collect_incomplete_error(&self, ids: &[String], timeout: Option<Duration>, cancel: Option<&Signal>) -> String {
+        if let Some(reason) = cancel.and_then(Signal::reason) {
+            return format!("rlm.collect was cancelled: {reason}");
+        }
+        if let Some(timeout) = timeout.filter(|_| !cancel.is_some_and(Signal::is_aborted)) {
+            let running = self.unfinished(ids);
+            return format!(
+                "rlm.collect: timed out after {} ms with {} subagent(s) still running ({}); they keep running. `await rlm.results()` returns the results of those that ended and the ids still running; collect again to wait more.",
+                timeout.as_millis(),
+                running.len(),
+                running.join(", ")
+            );
+        }
+        "rlm.collect was cancelled".into()
+    }
+
+    fn handle_delete_subagent(&self, payload: &Map<String, Value>, parent: Option<&str>) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &["selector"])?;
+        let selector = nonempty_string(payload.get("selector"), "selector")?;
+        let known = {
+            let state = sync::lock(&self.inner.state);
+            state.is_child(&selector) && state.visible(&selector, parent)
+        };
+        if !known {
+            return Err("Unknown RLM child".into());
+        }
+        let result = self.cancel(&selector, "RLM child deleted")?;
+        Ok(json!({ "deleted": result["status"] == "cancelled" }))
+    }
+
+    fn handle_worktrees_list(&self, payload: &Map<String, Value>, parent: Option<&str>) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &["all"])?;
+        let shared = self.inner.workspace.as_deref();
+        let from = sync::lock(&self.inner.state)
+            .workspace_of(parent, shared)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default();
+        let state = sync::lock(&self.inner.state);
+        let worktrees: Vec<Value> = wt::list_records(&from)
+            .into_iter()
+            .filter(|r| payload.get("all") == Some(&Value::Bool(true)) || r.session_id == self.inner.session_id)
+            .map(|r| {
+                let running = r
+                    .task_id
+                    .as_deref()
+                    .and_then(|t| state.task(t))
+                    .is_some_and(|t| t.outcome.is_none());
+                json!({ "id": r.id, "task": r.task_id, "name": r.name, "branch": r.branch, "path": r.path,
+                        "state": r.state, "commit": r.commit.clone().flatten(), "running": running,
+                        "session": r.session_id })
+            })
+            .collect();
+        Ok(json!({ "worktrees": worktrees }))
+    }
+
+    fn handle_worktrees_cleanup(&self, payload: &Map<String, Value>, parent: Option<&str>) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &["branches"])?;
+        let workspace = sync::lock(&self.inner.state).workspace_of(parent, self.inner.workspace.as_deref());
+        let Some(workspace) = workspace else {
+            return Ok(json!({ "removed": [], "kept_branches": [], "running": [] }));
+        };
+        let running = |record: &WorktreeRecord| {
+            let state = sync::lock(&self.inner.state);
+            record
+                .task_id
+                .as_deref()
+                .and_then(|t| state.task(t))
+                .is_some_and(|t| t.outcome.is_none())
+        };
+        let branches = payload.get("branches") == Some(&Value::Bool(true));
+        let session = self.inner.session_id.clone();
+        let records: Vec<WorktreeRecord> = wt::list_records(&workspace)
+            .into_iter()
+            .filter(|r| r.session_id == session)
+            .collect();
+        let select = |r: &WorktreeRecord| r.session_id == session && !running(r);
+        let own = wt::prune_worktrees(
+            &workspace,
+            &wt::PruneOptions {
+                select: Some(&select),
+                force: true,
+                delete_branches: branches,
+            },
+        );
+        let orphans = wt::prune_worktrees(
+            &workspace,
+            &wt::PruneOptions {
+                select: None,
+                force: false,
+                delete_branches: branches,
+            },
+        );
+        let removed = [own.removed, orphans.removed].concat();
+        let kept = [own.kept_branches, orphans.kept_branches].concat();
+        let still: Vec<String> = records
+            .iter()
+            .filter(|r| running(r))
+            .map(|r| r.branch.clone())
+            .collect();
+        Ok(json!({ "removed": removed, "kept_branches": kept, "running": still }))
     }
 
     /// `rlm.merge`: the children end first (a host-side wait, cancelled with the cell), then each child's branch is
@@ -865,20 +929,23 @@ enum Request {
     WorktreesCleanup,
 }
 
+const REQUEST_KINDS: &[(&str, Request)] = &[
+    ("rlm.spawn", Request::Spawn),
+    ("rlm.finish", Request::Finish),
+    ("rlm.list_subagents", Request::ListSubagents),
+    ("rlm.progress", Request::Progress),
+    ("rlm.collect", Request::Collect),
+    ("rlm.results", Request::Results),
+    ("rlm.delete_subagent", Request::DeleteSubagent),
+    ("rlm.merge", Request::Merge),
+    ("rlm.worktrees.list", Request::WorktreesList),
+    ("rlm.worktrees.cleanup", Request::WorktreesCleanup),
+];
+
 impl Request {
     fn of(kind: &str) -> Option<Request> {
-        Some(match kind {
-            "rlm.spawn" => Request::Spawn,
-            "rlm.finish" => Request::Finish,
-            "rlm.list_subagents" => Request::ListSubagents,
-            "rlm.progress" => Request::Progress,
-            "rlm.collect" => Request::Collect,
-            "rlm.results" => Request::Results,
-            "rlm.delete_subagent" => Request::DeleteSubagent,
-            "rlm.merge" => Request::Merge,
-            "rlm.worktrees.list" => Request::WorktreesList,
-            "rlm.worktrees.cleanup" => Request::WorktreesCleanup,
-            _ => return None,
-        })
+        REQUEST_KINDS
+            .iter()
+            .find_map(|(name, request)| (*name == kind).then_some(*request))
     }
 }

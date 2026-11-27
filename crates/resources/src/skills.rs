@@ -154,50 +154,93 @@ fn load_dir(dir: &str, source: &str, include_root_files: bool) -> LoadSkillsResu
     load_dir_with(dir, source, include_root_files, &mut Ignore::new(), dir)
 }
 
-/// `loadSkillsFromDirInternal`: the `.gitignore`, `.ignore` and `.fdignore` rules of each directory apply to it and
-/// below, relative to the walk's `root`.
-fn load_dir_with(dir: &str, source: &str, include_root_files: bool, ig: &mut Ignore, root: &str) -> LoadSkillsResult {
-    let mut result = LoadSkillsResult::default();
-    if !std::path::Path::new(dir).exists() {
-        return result;
+fn load_declared_skill(
+    dir: &str,
+    entries: &[(String, fs::FileType)],
+    source: &str,
+    ig: &Ignore,
+    root: &str,
+) -> Option<LoadSkillsResult> {
+    let (name, file_type) = entries.iter().find(|(name, _)| name == "SKILL.md")?;
+    let full = jsrt::path::join(&[dir, name]);
+    if !kind(&full, file_type).is_some_and(|(_, is_file)| is_file) || ig.ignores(&relative(root, &full)) {
+        return None;
     }
-    add_ignore_rules(ig, dir, root);
-    let entries = sorted_entries(dir);
-    if let Some((name, file_type)) = entries.iter().find(|(name, _)| name == "SKILL.md") {
-        let full = jsrt::path::join(&[dir, name]);
-        if kind(&full, file_type).is_some_and(|(_, is_file)| is_file) && !ig.ignores(&relative(root, &full)) {
-            let (skill, diagnostics) = load_skill_from_file(&full, source);
-            result.skills.extend(skill);
-            result.diagnostics.extend(diagnostics);
+    let (skill, diagnostics) = load_skill_from_file(&full, source);
+    Some(LoadSkillsResult {
+        skills: skill.into_iter().collect(),
+        diagnostics,
+    })
+}
+
+fn is_ignored_entry(ig: &Ignore, root: &str, full: &str, is_dir: bool) -> bool {
+    let rel = relative(root, full);
+    ig.ignores(&if is_dir { format!("{rel}/") } else { rel })
+}
+
+fn is_root_skill_file(name: &str, is_file: bool, include_root_files: bool) -> bool {
+    is_file && include_root_files && name.ends_with(".md")
+}
+
+struct SkillWalk<'a> {
+    source: &'a str,
+    ig: &'a mut Ignore,
+    root: &'a str,
+}
+
+impl SkillWalk<'_> {
+    fn load_dir(&mut self, dir: &str, include_root_files: bool) -> LoadSkillsResult {
+        let mut result = LoadSkillsResult::default();
+        if !std::path::Path::new(dir).exists() {
             return result;
         }
+        add_ignore_rules(self.ig, dir, self.root);
+        let entries = sorted_entries(dir);
+        if let Some(declared) = load_declared_skill(dir, &entries, self.source, self.ig, self.root) {
+            return declared;
+        }
+        for (name, file_type) in &entries {
+            self.load_entry(dir, name, file_type, include_root_files, &mut result);
+        }
+        result
     }
-    for (name, file_type) in &entries {
+
+    fn load_entry(
+        &mut self,
+        dir: &str,
+        name: &str,
+        file_type: &fs::FileType,
+        include_root_files: bool,
+        result: &mut LoadSkillsResult,
+    ) {
         if name.starts_with('.') || name == "node_modules" {
-            continue;
+            return;
         }
         let full = jsrt::path::join(&[dir, name]);
         let Some((is_dir, is_file)) = kind(&full, file_type) else {
-            continue;
+            return;
         };
-        let rel = relative(root, &full);
-        if ig.ignores(&if is_dir { format!("{rel}/") } else { rel }) {
-            continue;
+        if is_ignored_entry(self.ig, self.root, &full, is_dir) {
+            return;
         }
         if is_dir {
-            let sub = load_dir_with(&full, source, false, ig, root);
+            let sub = self.load_dir(&full, false);
             result.skills.extend(sub.skills);
             result.diagnostics.extend(sub.diagnostics);
-            continue;
+            return;
         }
-        if !is_file || !include_root_files || !name.ends_with(".md") {
-            continue;
+        if is_root_skill_file(name, is_file, include_root_files) {
+            let (skill, diagnostics) = load_skill_from_file(&full, self.source);
+            result.skills.extend(skill);
+            result.diagnostics.extend(diagnostics);
         }
-        let (skill, diagnostics) = load_skill_from_file(&full, source);
-        result.skills.extend(skill);
-        result.diagnostics.extend(diagnostics);
     }
-    result
+}
+
+/// `loadSkillsFromDirInternal`: the `.gitignore`, `.ignore` and `.fdignore` rules of each directory apply to it and
+/// below, relative to the walk's `root`.
+fn load_dir_with(dir: &str, source: &str, include_root_files: bool, ig: &mut Ignore, root: &str) -> LoadSkillsResult {
+    SkillWalk { source, ig, root }.load_dir(dir, include_root_files)
 }
 
 /// Options of `loadSkills`.
@@ -210,6 +253,82 @@ pub struct LoadSkillsOptions<'a> {
     pub include_defaults: bool,
 }
 
+#[derive(Default)]
+struct SkillCollector {
+    skills: Vec<Skill>,
+    real_paths: HashSet<String>,
+    diagnostics: Vec<Diagnostic>,
+    collisions: Vec<Diagnostic>,
+}
+
+impl SkillCollector {
+    fn add(&mut self, result: LoadSkillsResult) {
+        self.diagnostics.extend(result.diagnostics);
+        for skill in result.skills {
+            let real = canonicalize(&skill.file_path);
+            if self.real_paths.contains(&real) {
+                continue;
+            }
+            if let Some(existing) = self.skills.iter().find(|s| s.name == skill.name) {
+                self.collisions.push(Diagnostic {
+                    kind: "collision",
+                    message: format!("name \"{}\" collision", skill.name),
+                    path: Some(skill.file_path.clone()),
+                    collision: Some((existing.file_path.clone(), skill.file_path.clone())),
+                });
+            } else {
+                self.real_paths.insert(real);
+                self.skills.push(skill);
+            }
+        }
+    }
+
+    fn load_explicit(&mut self, path: &str, source: &str) {
+        let Ok(meta) = fs::metadata(path) else {
+            self.diagnostics
+                .push(Diagnostic::warning("skill path does not exist", Some(path)));
+            return;
+        };
+        if meta.is_dir() {
+            self.add(load_dir(path, source, true));
+        } else if meta.is_file() && path.ends_with(".md") {
+            let (skill, found) = load_skill_from_file(path, source);
+            self.add(LoadSkillsResult {
+                skills: skill.into_iter().collect(),
+                diagnostics: found,
+            });
+        } else {
+            self.diagnostics
+                .push(Diagnostic::warning("skill path is not a markdown file", Some(path)));
+        }
+    }
+
+    fn finish(mut self) -> LoadSkillsResult {
+        self.diagnostics.extend(self.collisions);
+        LoadSkillsResult {
+            skills: self.skills,
+            diagnostics: self.diagnostics,
+        }
+    }
+}
+
+fn is_under(target: &str, root: &str) -> bool {
+    target == root || target.starts_with(&format!("{root}/"))
+}
+
+fn explicit_skill_source(path: &str, user_dir: &str, project_dir: &str, include_defaults: bool) -> &'static str {
+    if include_defaults {
+        return "path";
+    }
+    if is_under(path, user_dir) {
+        "user"
+    } else if is_under(path, project_dir) {
+        "project"
+    } else {
+        "path"
+    }
+}
+
 /// Load skills from the agent dir, the project's `.pi/skills` and explicit paths; first name wins.
 pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
     let cwd = resolve_path(options.cwd, "/", options.home, false);
@@ -217,69 +336,17 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
     let user_dir = jsrt::path::join(&[&agent_dir, "skills"]);
     let project_dir = resolve(&cwd, &format!("{}/skills", config::paths::CONFIG_DIR_NAME));
 
-    let mut skills: Vec<Skill> = Vec::new();
-    let mut real_paths: HashSet<String> = HashSet::new();
-    let mut diagnostics: Vec<Diagnostic> = Vec::new();
-    let mut collisions: Vec<Diagnostic> = Vec::new();
-    let mut add = |result: LoadSkillsResult, diagnostics: &mut Vec<Diagnostic>| {
-        diagnostics.extend(result.diagnostics);
-        for skill in result.skills {
-            let real = canonicalize(&skill.file_path);
-            if real_paths.contains(&real) {
-                continue;
-            }
-            if let Some(existing) = skills.iter().find(|s| s.name == skill.name) {
-                collisions.push(Diagnostic {
-                    kind: "collision",
-                    message: format!("name \"{}\" collision", skill.name),
-                    path: Some(skill.file_path.clone()),
-                    collision: Some((existing.file_path.clone(), skill.file_path.clone())),
-                });
-            } else {
-                real_paths.insert(real);
-                skills.push(skill);
-            }
-        }
-    };
-
+    let mut collector = SkillCollector::default();
     if options.include_defaults {
-        add(load_dir(&user_dir, "user", true), &mut diagnostics);
-        add(load_dir(&project_dir, "project", true), &mut diagnostics);
+        collector.add(load_dir(&user_dir, "user", true));
+        collector.add(load_dir(&project_dir, "project", true));
     }
-    let under = |target: &str, root: &str| target == root || target.starts_with(&format!("{root}/"));
     for raw in options.skill_paths {
         let path = resolve_path(raw, &cwd, options.home, true);
-        let Ok(meta) = fs::metadata(&path) else {
-            diagnostics.push(Diagnostic::warning("skill path does not exist", Some(&path)));
-            continue;
-        };
-        let source = if !options.include_defaults && under(&path, &user_dir) {
-            "user"
-        } else if !options.include_defaults && under(&path, &project_dir) {
-            "project"
-        } else {
-            "path"
-        };
-        if meta.is_dir() {
-            add(load_dir(&path, source, true), &mut diagnostics);
-        } else if meta.is_file() && path.ends_with(".md") {
-            let (skill, found) = load_skill_from_file(&path, source);
-            match skill {
-                Some(skill) => add(
-                    LoadSkillsResult {
-                        skills: vec![skill],
-                        diagnostics: found,
-                    },
-                    &mut diagnostics,
-                ),
-                None => diagnostics.extend(found),
-            }
-        } else {
-            diagnostics.push(Diagnostic::warning("skill path is not a markdown file", Some(&path)));
-        }
+        let source = explicit_skill_source(&path, &user_dir, &project_dir, options.include_defaults);
+        collector.load_explicit(&path, source);
     }
-    diagnostics.extend(collisions);
-    LoadSkillsResult { skills, diagnostics }
+    collector.finish()
 }
 
 /// Mark the named skills always-on (body read once), in order, up to `ALWAYS_SKILLS_MAX_CHARS`.
@@ -412,6 +479,37 @@ fn short_purpose(description: &str, max: usize) -> String {
     }
 }
 
+fn is_hidden_bundled(skill: &Skill, prefix: &str) -> bool {
+    skill.disable_model_invocation && skill.always_on_content.is_none() && skill.file_path.starts_with(prefix)
+}
+
+fn bundled_header(bundled: &str, proactive: bool) -> String {
+    if proactive {
+        format!(
+            "Bundled skills in {bundled} (<source>/<name>/SKILL.md). Use them on your own: when a task fits one, read it and follow it without being asked, and say which in one line. The principles pstack's skills cite are pstack/principle-<name>/SKILL.md."
+        )
+    } else {
+        format!(
+            "Bundled skills in {bundled} (<source>/<name>/SKILL.md). Read one only when the user asks for it or the task plainly calls for that workflow; ordinary coding needs none. The principles pstack's skills cite are pstack/principle-<name>/SKILL.md."
+        )
+    }
+}
+
+fn bundled_principles_line(skills: &[Skill], prefix: &str) -> Option<String> {
+    if skills
+        .iter()
+        .any(|s| s.name == "situational-principles" && s.always_on_content.is_some())
+    {
+        return None;
+    }
+    let principles: Vec<&str> = skills
+        .iter()
+        .filter(|s| is_hidden_bundled(s, prefix))
+        .filter_map(|s| s.name.strip_prefix("principle-"))
+        .collect();
+    (!principles.is_empty()).then(|| format!("pstack principles: {}", principles.join(", ")))
+}
+
 /// Index of the bundled skills that are loaded but hidden from the listing; "" when none (or no bundled dir).
 /// `proactive` (engineering mode with the Rust guide): the model uses them on its own instead of only when asked.
 pub fn bundled_skills_note(skills: &[Skill], bundled: Option<&str>, proactive: bool) -> String {
@@ -419,12 +517,7 @@ pub fn bundled_skills_note(skills: &[Skill], bundled: Option<&str>, proactive: b
     let prefix = format!("{bundled}/");
     let listed: Vec<String> = skills
         .iter()
-        .filter(|s| {
-            s.disable_model_invocation
-                && s.always_on_content.is_none()
-                && s.file_path.starts_with(&prefix)
-                && !s.name.starts_with("principle-")
-        })
+        .filter(|s| is_hidden_bundled(s, &prefix) && !s.name.starts_with("principle-"))
         .map(|s| {
             format!(
                 "- {}: {}",
@@ -436,29 +529,10 @@ pub fn bundled_skills_note(skills: &[Skill], bundled: Option<&str>, proactive: b
     if listed.is_empty() {
         return String::new();
     }
-    let mut lines = vec![if proactive {
-        format!(
-            "Bundled skills in {bundled} (<source>/<name>/SKILL.md). Use them on your own: when a task fits one, read it and follow it without being asked, and say which in one line. The principles pstack's skills cite are pstack/principle-<name>/SKILL.md."
-        )
-    } else {
-        format!(
-            "Bundled skills in {bundled} (<source>/<name>/SKILL.md). Read one only when the user asks for it or the task plainly calls for that workflow; ordinary coding needs none. The principles pstack's skills cite are pstack/principle-<name>/SKILL.md."
-        )
-    }];
+    let mut lines = vec![bundled_header(bundled, proactive)];
     lines.extend(listed);
-    if proactive
-        && !skills
-            .iter()
-            .any(|s| s.name == "situational-principles" && s.always_on_content.is_some())
-    {
-        let principles: Vec<&str> = skills
-            .iter()
-            .filter(|s| s.disable_model_invocation && s.always_on_content.is_none() && s.file_path.starts_with(&prefix))
-            .filter_map(|s| s.name.strip_prefix("principle-"))
-            .collect();
-        if !principles.is_empty() {
-            lines.push(format!("pstack principles: {}", principles.join(", ")));
-        }
+    if proactive && let Some(line) = bundled_principles_line(skills, &prefix) {
+        lines.push(line);
     }
     lines.join("\n")
 }

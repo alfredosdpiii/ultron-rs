@@ -98,55 +98,69 @@ fn parse_time(s: &str) -> Option<(i64, &str)> {
     Some((sign * total, rest))
 }
 
-fn parse_date(s: &str) -> Option<((Day, i64), &str)> {
-    let number = |s: &str| -> Option<(u32, usize)> {
-        let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
-        Some((s[..end].parse().ok()?, end))
-    };
-    let (day, mut rest) = if let Some(r) = s.strip_prefix('M') {
-        let (m, a) = number(r)?;
-        let r = r[a..].strip_prefix('.')?;
-        let (w, b) = number(r)?;
-        let r = r[b..].strip_prefix('.')?;
-        let (d, c) = number(r)?;
-        (Day::Month(m, w, d), &r[c..])
-    } else if let Some(r) = s.strip_prefix('J') {
-        let (n, a) = number(r)?;
-        (Day::Julian(n), &r[a..])
-    } else {
-        let (n, a) = number(s)?;
-        (Day::Zero(n), &s[a..])
-    };
-    let mut time = 7200;
-    if let Some(r) = rest.strip_prefix('/') {
-        let (t, r) = parse_time(r)?;
-        time = t;
-        rest = r;
+fn parse_u32_prefix(s: &str) -> Option<(u32, &str)> {
+    let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    let value = s[..end].parse().ok()?;
+    Some((value, &s[end..]))
+}
+
+fn parse_month_rule(s: &str) -> Option<(Day, &str)> {
+    let (month, rest) = parse_u32_prefix(s)?;
+    let (week, rest) = parse_u32_prefix(rest.strip_prefix('.')?)?;
+    let (weekday, rest) = parse_u32_prefix(rest.strip_prefix('.')?)?;
+    Some((Day::Month(month, week, weekday), rest))
+}
+
+fn parse_rule_day(s: &str) -> Option<(Day, &str)> {
+    if let Some(rest) = s.strip_prefix('M') {
+        return parse_month_rule(rest);
     }
+    if let Some(rest) = s.strip_prefix('J') {
+        let (day, rest) = parse_u32_prefix(rest)?;
+        return Some((Day::Julian(day), rest));
+    }
+    let (day, rest) = parse_u32_prefix(s)?;
+    Some((Day::Zero(day), rest))
+}
+
+fn parse_date(s: &str) -> Option<((Day, i64), &str)> {
+    let (day, rest) = parse_rule_day(s)?;
+    let (time, rest) = match rest.strip_prefix('/') {
+        Some(after_slash) => parse_time(after_slash)?,
+        None => (7200, rest),
+    };
     Some(((day, time), rest))
 }
 
-fn parse_posix(s: &str) -> Option<PosixRule> {
-    let rest = parse_name(s)?;
-    let (std_west, rest) = parse_time(rest)?;
-    if rest.is_empty() {
-        return Some(PosixRule {
-            std_offset: -std_west,
-            dst: None,
-        });
-    }
+fn parse_dst_transitions(rest: &str) -> Option<(RuleTime, RuleTime)> {
+    let rules = if rest.is_empty() { ",M3.2.0,M11.1.0" } else { rest };
+    let (start, rest) = parse_date(rules.strip_prefix(',')?)?;
+    let (end, rest) = parse_date(rest.strip_prefix(',')?)?;
+    rest.is_empty().then_some((start, end))
+}
+
+fn parse_dst_rule(std_west: i64, rest: &str) -> Option<(i64, RuleTime, RuleTime)> {
     let rest = parse_name(rest)?;
     let (dst_west, rest) = if rest.is_empty() || rest.starts_with(',') {
         (std_west - 3600, rest)
     } else {
         parse_time(rest)?
     };
-    let rules = if rest.is_empty() { ",M3.2.0,M11.1.0" } else { rest };
-    let (start, rest) = parse_date(rules.strip_prefix(',')?)?;
-    let (end, rest) = parse_date(rest.strip_prefix(',')?)?;
-    rest.is_empty().then_some(PosixRule {
+    let (start, end) = parse_dst_transitions(rest)?;
+    Some((-dst_west, start, end))
+}
+
+fn parse_posix(s: &str) -> Option<PosixRule> {
+    let rest = parse_name(s)?;
+    let (std_west, rest) = parse_time(rest)?;
+    let dst = if rest.is_empty() {
+        None
+    } else {
+        Some(parse_dst_rule(std_west, rest)?)
+    };
+    Some(PosixRule {
         std_offset: -std_west,
-        dst: Some((-dst_west, start, end)),
+        dst,
     })
 }
 
@@ -204,48 +218,90 @@ fn be(bytes: &[u8], at: usize, len: usize) -> Option<i64> {
     Some((value << shift) >> shift)
 }
 
+struct TzifSection {
+    base: usize,
+    size: usize,
+    counts: [usize; 6],
+}
+
+fn tzif_counts(bytes: &[u8], at: usize) -> Option<[usize; 6]> {
+    let mut counts = [0; 6];
+    for (index, slot) in counts.iter_mut().enumerate() {
+        *slot = be(bytes, at + 20 + 4 * index, 4)? as usize;
+    }
+    Some(counts)
+}
+
+fn tzif_section(bytes: &[u8]) -> Option<TzifSection> {
+    if bytes.get(..4)? != b"TZif" {
+        return None;
+    }
+    let first = tzif_counts(bytes, 0)?;
+    if bytes[4] < b'2' {
+        return Some(TzifSection {
+            base: 0,
+            size: 4,
+            counts: first,
+        });
+    }
+    let [isut, isstd, leap, time, types, chars] = first;
+    let base = 44 + time * 5 + types * 6 + chars + leap * 8 + isstd + isut;
+    Some(TzifSection {
+        base,
+        size: 8,
+        counts: tzif_counts(bytes, base)?,
+    })
+}
+
+fn read_tzif_transitions(bytes: &[u8], section: &TzifSection) -> Option<Vec<(i64, usize)>> {
+    let data = section.base + 44;
+    let count = section.counts[3];
+    let size = section.size;
+    let mut transitions = Vec::with_capacity(count);
+    for index in 0..count {
+        let at = be(bytes, data + index * size, size)?;
+        let kind = *bytes.get(data + count * size + index)? as usize;
+        transitions.push((at, kind));
+    }
+    Some(transitions)
+}
+
+fn read_tzif_offsets(bytes: &[u8], types_at: usize, count: usize) -> Option<Vec<i64>> {
+    let mut offsets = Vec::with_capacity(count);
+    for index in 0..count {
+        offsets.push(be(bytes, types_at + index * 6, 4)?);
+    }
+    Some(offsets)
+}
+
+fn read_tzif_footer(bytes: &[u8], end: usize) -> Option<Option<PosixRule>> {
+    let footer = bytes.get(end..)?;
+    let text = std::str::from_utf8(footer).ok()?.trim_matches('\n');
+    Some(parse_posix(text))
+}
+
 impl Zone {
     pub fn utc() -> Zone {
         Zone::default()
     }
 
     pub fn from_tzif(bytes: &[u8]) -> Option<Zone> {
-        if bytes.get(..4)? != b"TZif" {
-            return None;
-        }
-        let counts = |at: usize| -> Option<[usize; 6]> {
-            let mut c = [0; 6];
-            for (i, slot) in c.iter_mut().enumerate() {
-                *slot = be(bytes, at + 20 + 4 * i, 4)? as usize;
-            }
-            Some(c)
-        };
-        let [isut, isstd, leap, time, types, chars] = counts(0)?;
-        let (base, size) = if bytes[4] >= b'2' {
-            let v1 = 44 + time * 5 + types * 6 + chars + leap * 8 + isstd + isut;
-            (v1, 8)
-        } else {
-            (0, 4)
-        };
-        let [isut, isstd, leap, time, types, chars] = counts(base)?;
-        let data = base + 44;
-        let mut zone = Zone::default();
-        for i in 0..time {
-            let at = be(bytes, data + i * size, size)?;
-            let kind = *bytes.get(data + time * size + i)? as usize;
-            zone.transitions.push((at, kind));
-        }
-        let types_at = data + time * (size + 1);
-        for i in 0..types {
-            zone.offsets.push(be(bytes, types_at + i * 6, 4)?);
-        }
-        if size == 8 {
+        let section = tzif_section(bytes)?;
+        let [isut, isstd, leap, time, types, chars] = section.counts;
+        let types_at = section.base + 44 + time * (section.size + 1);
+        let transitions = read_tzif_transitions(bytes, &section)?;
+        let offsets = read_tzif_offsets(bytes, types_at, types)?;
+        let footer = if section.size == 8 {
             let end = types_at + types * 6 + chars + leap * 12 + isstd + isut;
-            let footer = bytes.get(end..)?;
-            let text = std::str::from_utf8(footer).ok()?.trim_matches('\n');
-            zone.footer = parse_posix(text);
-        }
-        Some(zone)
+            read_tzif_footer(bytes, end)?
+        } else {
+            None
+        };
+        Some(Zone {
+            transitions,
+            offsets,
+            footer,
+        })
     }
 
     /// The zone of a POSIX TZ string such as `EST5EDT,M3.2.0,M11.1.0`.

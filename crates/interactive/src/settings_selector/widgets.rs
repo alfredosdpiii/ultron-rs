@@ -21,6 +21,37 @@ pub(super) enum ListAction {
     Cancel,
 }
 
+fn handled_mouse(render: Option<bool>, focus: Option<bool>) -> MouseResult {
+    MouseResult {
+        handled: Some(true),
+        render,
+        focus,
+        ..MouseResult::default()
+    }
+}
+
+fn handle_search_row_mouse(search: &mut Input, event: &MouseEvent) -> Option<(MouseResult, Option<ListAction>)> {
+    if event.y != 0 {
+        return None;
+    }
+    let result = search.handle_mouse(event)?;
+    Some((
+        MouseResult {
+            focus: Some(true),
+            ..result
+        },
+        None,
+    ))
+}
+
+fn map_select_event(event: SelectEvent) -> SelectOutcome {
+    match event {
+        SelectEvent::Selected(item) => SelectOutcome::Picked(item.value),
+        SelectEvent::Cancelled => SelectOutcome::Back,
+        SelectEvent::SelectionChanged(item) => SelectOutcome::Highlight(item.value),
+    }
+}
+
 impl List {
     pub(super) fn new(
         theme: Rc<Theme>,
@@ -50,60 +81,55 @@ impl List {
     /// `SettingsList.handleMouse` (no submenu open): the search row goes to the search input, the wheel moves the
     /// selection, a left press selects the row and the click that follows activates the pressed row.
     pub(super) fn handle_mouse(&mut self, event: &MouseEvent) -> Option<(MouseResult, Option<ListAction>)> {
-        if let Some(search) = self.search.as_mut() {
-            if event.y == 0 {
-                let result = search.handle_mouse(event)?;
-                return Some((
-                    MouseResult {
-                        focus: Some(true),
-                        ..result
-                    },
-                    None,
-                ));
-            }
-            if event.y == 1 {
-                return None;
-            }
+        if let Some(search) = self.search.as_mut()
+            && matches!(event.y, 0 | 1)
+        {
+            return handle_search_row_mouse(search, event);
         }
         let n = self.filtered.len();
         if n == 0 {
             return None;
         }
-        let handled = |render: Option<bool>, focus: Option<bool>| MouseResult {
-            handled: Some(true),
-            render,
-            focus,
-            ..MouseResult::default()
-        };
-        if event.kind == MouseEventType::Wheel
-            && let Some(delta) = event.wheel_delta.filter(|d| *d != 0)
-        {
-            let previous = self.selected;
-            self.selected = if delta < 0 {
-                self.selected.saturating_sub(1)
-            } else {
-                (self.selected + 1).min(n - 1)
-            };
-            return Some((handled(Some(self.selected != previous), None), None));
+        if event.kind == MouseEventType::Wheel {
+            return self.handle_wheel_mouse(event.wheel_delta, n);
         }
+        self.handle_click_mouse(event)
+    }
+
+    fn handle_wheel_mouse(
+        &mut self,
+        wheel_delta: Option<i64>,
+        count: usize,
+    ) -> Option<(MouseResult, Option<ListAction>)> {
+        let delta = wheel_delta.filter(|d| *d != 0)?;
+        let previous = self.selected;
+        self.selected = if delta < 0 {
+            self.selected.saturating_sub(1)
+        } else {
+            (self.selected + 1).min(count - 1)
+        };
+        Some((handled_mouse(Some(self.selected != previous), None), None))
+    }
+
+    fn row_index_at(&self, y: i64) -> Option<usize> {
+        let offset = if self.search.is_some() { 2 } else { 0 };
+        let (start, end) = self.range();
+        let index = start as i64 + y - offset;
+        (index >= start as i64 && index < end as i64).then_some(index as usize)
+    }
+
+    fn handle_click_mouse(&mut self, event: &MouseEvent) -> Option<(MouseResult, Option<ListAction>)> {
         if event.button != MouseButton::Left || !matches!(event.kind, MouseEventType::Press | MouseEventType::Click) {
             return None;
         }
-        let offset = if self.search.is_some() { 2 } else { 0 };
-        let (start, end) = self.range();
-        let index = start as i64 + event.y - offset;
-        if index < start as i64 || index >= end as i64 {
-            return None;
-        }
-        let index = index as usize;
+        let index = self.row_index_at(event.y)?;
         if event.kind == MouseEventType::Press {
             self.pressed = Some(index);
             self.selected = index;
-            return Some((handled(None, Some(true)), None));
+            return Some((handled_mouse(None, Some(true)), None));
         }
         self.selected = self.pressed.take().unwrap_or(index);
-        let action = self.activate();
-        Some((handled(None, None), action))
+        Some((handled_mouse(None, None), self.activate()))
     }
 
     pub(super) fn update(&mut self, id: &str, value: &str) {
@@ -162,75 +188,96 @@ impl List {
             .unwrap_or(0)
             .min(36);
         for row in start..end {
-            let it = &self.items[self.filtered[row]];
-            let selected = row == self.selected;
-            let prefix = if selected {
-                t.fg(Fg::Accent, "→ ")
-            } else {
-                "  ".to_string()
-            };
-            let padded = format!(
-                "{}{}",
-                it.label,
-                " ".repeat(label_width.saturating_sub(visible_width(&it.label)))
-            );
-            let label = if selected { t.fg(Fg::Accent, &padded) } else { padded };
-            let used = visible_width(&prefix) + label_width + 2;
-            let value = truncate_to_width(&it.value, width.saturating_sub(used + 2), "", false);
-            let value = if selected {
-                t.fg(Fg::Accent, &value)
-            } else {
-                t.fg(Fg::Muted, &value)
-            };
-            lines.push(truncate_to_width(
-                &format!("{prefix}{label}  {value}"),
-                width,
-                "...",
-                false,
-            ));
+            lines.push(self.render_row(row, label_width, width));
         }
         if start > 0 || end < self.filtered.len() {
             let text = format!("  ({}/{})", self.selected + 1, self.filtered.len());
             lines.push(t.fg(Fg::Dim, &truncate_to_width(&text, width.saturating_sub(2), "", false)));
         }
-        if let Some(description) = self
-            .filtered
-            .get(self.selected)
-            .and_then(|&i| self.items[i].description.clone())
-        {
-            lines.push(String::new());
-            for line in wrap_text_with_ansi(&description, width.saturating_sub(4)) {
-                lines.push(t.fg(Fg::Dim, &format!("  {line}")));
-            }
-        }
+        self.render_selected_description(&mut lines, width);
         self.hint(&mut lines, width);
         lines
     }
 
+    fn render_row(&self, row: usize, label_width: usize, width: usize) -> String {
+        let t = &self.theme;
+        let it = &self.items[self.filtered[row]];
+        let selected = row == self.selected;
+        let prefix = if selected {
+            t.fg(Fg::Accent, "→ ")
+        } else {
+            "  ".to_string()
+        };
+        let padded = format!(
+            "{}{}",
+            it.label,
+            " ".repeat(label_width.saturating_sub(visible_width(&it.label)))
+        );
+        let label = if selected { t.fg(Fg::Accent, &padded) } else { padded };
+        let used = visible_width(&prefix) + label_width + 2;
+        let value = truncate_to_width(&it.value, width.saturating_sub(used + 2), "", false);
+        let value = if selected {
+            t.fg(Fg::Accent, &value)
+        } else {
+            t.fg(Fg::Muted, &value)
+        };
+        truncate_to_width(&format!("{prefix}{label}  {value}"), width, "...", false)
+    }
+
+    fn render_selected_description(&self, lines: &mut Vec<String>, width: usize) {
+        let Some(description) = self
+            .filtered
+            .get(self.selected)
+            .and_then(|&i| self.items[i].description.as_deref())
+        else {
+            return;
+        };
+        lines.push(String::new());
+        for line in wrap_text_with_ansi(description, width.saturating_sub(4)) {
+            lines.push(self.theme.fg(Fg::Dim, &format!("  {line}")));
+        }
+    }
+
     pub(super) fn handle_input(&mut self, data: &str) -> Option<ListAction> {
         let k = |id: &str| self.keys.matches(data, id);
-        let n = self.filtered.len();
         let search_empty = self.search.as_ref().is_none_or(|s| s.value().is_empty());
         if k("tui.select.up") {
-            if n > 0 {
-                self.selected = if self.selected == 0 { n - 1 } else { self.selected - 1 };
-            }
+            self.select_prev();
         } else if k("tui.select.down") {
-            if n > 0 {
-                self.selected = if self.selected + 1 >= n { 0 } else { self.selected + 1 };
-            }
+            self.select_next();
         } else if k("tui.select.confirm") || (data == " " && search_empty) {
             return self.activate();
         } else if k("tui.select.cancel") {
             return Some(ListAction::Cancel);
-        } else if let Some(search) = self.search.as_mut() {
-            search.handle_input(data);
-            let query = search.value().to_string();
-            let indexed: Vec<usize> = (0..self.items.len()).collect();
-            self.filtered = fuzzy_filter(&indexed, &query, |&i| self.items[i].label.clone());
-            self.selected = 0;
+        } else {
+            self.apply_search_input(data);
         }
         None
+    }
+
+    fn select_prev(&mut self) {
+        let n = self.filtered.len();
+        if n > 0 {
+            self.selected = if self.selected == 0 { n - 1 } else { self.selected - 1 };
+        }
+    }
+
+    fn select_next(&mut self) {
+        let n = self.filtered.len();
+        if n > 0 {
+            self.selected = if self.selected + 1 >= n { 0 } else { self.selected + 1 };
+        }
+    }
+
+    fn apply_search_input(&mut self, data: &str) {
+        let Some(search) = self.search.as_mut() else {
+            return;
+        };
+        search.handle_input(data);
+        let query = search.value().to_string();
+        let indexed: Vec<usize> = (0..self.items.len()).collect();
+        self.filtered = fuzzy_filter(&indexed, &query, |&i| self.items[i].label.clone());
+        self.selected = 0;
     }
 
     pub(super) fn activate(&mut self) -> Option<ListAction> {
@@ -334,12 +381,7 @@ impl SelectSubmenu {
             self.list = Self::build(&self.theme, &filtered, "", self.layout);
             return None;
         }
-        match self.list.handle_input(data) {
-            Some(SelectEvent::Selected(item)) => Some(SelectOutcome::Picked(item.value)),
-            Some(SelectEvent::Cancelled) => Some(SelectOutcome::Back),
-            Some(SelectEvent::SelectionChanged(item)) => Some(SelectOutcome::Highlight(item.value)),
-            None => None,
-        }
+        self.list.handle_input(data).map(map_select_event)
     }
 
     /// `SelectSubmenu` as a `Container` (title, description, search input, list, hint): the search row goes to the
@@ -375,14 +417,7 @@ impl SelectSubmenu {
         };
         let mut events = Vec::new();
         let result = self.list.handle_mouse(&local, &mut events)?;
-        let outcomes = events
-            .into_iter()
-            .map(|event| match event {
-                SelectEvent::Selected(item) => SelectOutcome::Picked(item.value),
-                SelectEvent::Cancelled => SelectOutcome::Back,
-                SelectEvent::SelectionChanged(item) => SelectOutcome::Highlight(item.value),
-            })
-            .collect();
+        let outcomes = events.into_iter().map(map_select_event).collect();
         Some((result, outcomes))
     }
 

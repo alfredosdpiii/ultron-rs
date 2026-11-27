@@ -348,6 +348,6 @@ fn session_core_stored_catalog_overlay_needs_a_newer_stamp() {
             .into_iter()
             .map(|m| m.id)
             .collect();
-        assert_eq!(ids.contains(&"x-new".to_string()), listed, "{stamp}");
+        assert_eq!(ids.iter().any(|i| i == "x-new"), listed, "{stamp}");
     }
 }

@@ -122,6 +122,58 @@ pub fn deep_merge(base: &Settings, overrides: &Settings) -> Settings {
     result
 }
 
+fn migrate_skills(settings: &mut Settings) {
+    let Some(Value::Object(skills)) = settings.get("skills").cloned() else {
+        return;
+    };
+    if let Some(enable) = skills.get("enableSkillCommands")
+        && !settings.contains_key("enableSkillCommands")
+    {
+        settings.insert("enableSkillCommands".into(), enable.clone());
+    }
+    match skills.get("customDirectories") {
+        Some(Value::Array(dirs)) if !dirs.is_empty() => {
+            settings.insert("skills".into(), Value::Array(dirs.clone()));
+        }
+        _ => {
+            settings.shift_remove("skills");
+        }
+    }
+}
+
+fn retry_provider_map(retry: &Map<String, Value>) -> Option<Map<String, Value>> {
+    match retry.get("provider") {
+        Some(Value::Object(p)) => Some(p.clone()),
+        Some(Value::Array(items)) => Some(
+            items
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (i.to_string(), v.clone()))
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+fn migrate_retry(settings: &mut Settings) {
+    let Some(Value::Object(retry)) = settings.get_mut("retry") else {
+        return;
+    };
+    let provider = retry_provider_map(retry);
+    let has_cap = provider
+        .as_ref()
+        .and_then(|p| p.get("maxRetryDelayMs"))
+        .is_some_and(|v| !v.is_null());
+    if let Some(max) = retry.get("maxDelayMs").filter(|v| v.is_number()).cloned()
+        && !has_cap
+    {
+        let mut provider = provider.unwrap_or_default();
+        provider.insert("maxRetryDelayMs".into(), max);
+        retry.insert("provider".into(), Value::Object(provider));
+    }
+    retry.shift_remove("maxDelayMs");
+}
+
 /// `migrateSettings`: queueMode, the websockets boolean, the old skills object, and retry.maxDelayMs.
 pub fn migrate(mut settings: Settings) -> Settings {
     if settings.contains_key("queueMode") && !settings.contains_key("steeringMode") {
@@ -135,46 +187,8 @@ pub fn migrate(mut settings: Settings) -> Settings {
         settings.insert("transport".into(), transport.into());
         settings.shift_remove("websockets");
     }
-    if let Some(Value::Object(skills)) = settings.get("skills").cloned() {
-        if let Some(enable) = skills.get("enableSkillCommands")
-            && !settings.contains_key("enableSkillCommands")
-        {
-            settings.insert("enableSkillCommands".into(), enable.clone());
-        }
-        match skills.get("customDirectories") {
-            Some(Value::Array(dirs)) if !dirs.is_empty() => {
-                settings.insert("skills".into(), Value::Array(dirs.clone()));
-            }
-            _ => {
-                settings.shift_remove("skills");
-            }
-        }
-    }
-    if let Some(Value::Object(retry)) = settings.get_mut("retry") {
-        let provider: Option<Map<String, Value>> = match retry.get("provider") {
-            Some(Value::Object(p)) => Some(p.clone()),
-            Some(Value::Array(items)) => Some(
-                items
-                    .iter()
-                    .enumerate()
-                    .map(|(i, v)| (i.to_string(), v.clone()))
-                    .collect(),
-            ),
-            _ => None,
-        };
-        let has_cap = provider
-            .as_ref()
-            .and_then(|p| p.get("maxRetryDelayMs"))
-            .is_some_and(|v| !v.is_null());
-        if let Some(max) = retry.get("maxDelayMs").filter(|v| v.is_number()).cloned()
-            && !has_cap
-        {
-            let mut provider = provider.unwrap_or_default();
-            provider.insert("maxRetryDelayMs".into(), max);
-            retry.insert("provider".into(), Value::Object(provider));
-        }
-        retry.shift_remove("maxDelayMs");
-    }
+    migrate_skills(&mut settings);
+    migrate_retry(&mut settings);
     settings
 }
 
@@ -377,6 +391,53 @@ impl SettingsManager {
         self.remerge();
     }
 
+    fn read_existing_settings(path: &Path, exists: bool) -> Result<Settings, String> {
+        if !exists {
+            return Ok(Settings::new());
+        }
+        let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+        if content.is_empty() {
+            Ok(Settings::new())
+        } else {
+            parse_settings(&content)
+        }
+    }
+
+    fn merge_nested_field(base: Option<&Value>, keys: &[String], in_memory: &Map<String, Value>) -> Value {
+        let mut nested = match base {
+            Some(Value::Object(base)) => base.clone(),
+            _ => Map::new(),
+        };
+        for key in keys {
+            match in_memory.get(key) {
+                Some(v) => nested.insert(key.clone(), v.clone()),
+                None => nested.shift_remove(key),
+            };
+        }
+        Value::Object(nested)
+    }
+
+    fn merge_modified(current: &Settings, snapshot: &Settings, modified: &Modified) -> Settings {
+        let mut merged = current.clone();
+        for field in &modified.fields {
+            match (modified.nested_keys(field), snapshot.get(field)) {
+                (Some(keys), Some(Value::Object(in_memory))) => {
+                    merged.insert(
+                        field.clone(),
+                        Self::merge_nested_field(current.get(field), keys, in_memory),
+                    );
+                }
+                (_, Some(v)) => {
+                    merged.insert(field.clone(), v.clone());
+                }
+                (_, None) => {
+                    merged.shift_remove(field);
+                }
+            }
+        }
+        merged
+    }
+
     /// Merge this process's modified keys of `scope` into the file's current object and write it.
     fn persist(&self, scope: Scope) -> Result<(), String> {
         let path = &self.paths[scope.index()];
@@ -392,38 +453,8 @@ impl SettingsManager {
         } else {
             None
         };
-        let current = match exists {
-            true => match fs::read_to_string(path).map_err(|e| e.to_string())? {
-                content if content.is_empty() => Settings::new(),
-                content => parse_settings(&content)?,
-            },
-            false => Settings::new(),
-        };
-        let mut merged = current.clone();
-        for field in &modified.fields {
-            let value = snapshot.get(field);
-            match (modified.nested_keys(field), value) {
-                (Some(keys), Some(Value::Object(in_memory))) => {
-                    let mut nested = match current.get(field) {
-                        Some(Value::Object(base)) => base.clone(),
-                        _ => Map::new(),
-                    };
-                    for key in keys {
-                        match in_memory.get(key) {
-                            Some(v) => nested.insert(key.clone(), v.clone()),
-                            None => nested.shift_remove(key),
-                        };
-                    }
-                    merged.insert(field.clone(), Value::Object(nested));
-                }
-                (_, Some(v)) => {
-                    merged.insert(field.clone(), v.clone());
-                }
-                (_, None) => {
-                    merged.shift_remove(field);
-                }
-            }
-        }
+        let current = Self::read_existing_settings(path, exists)?;
+        let merged = Self::merge_modified(&current, snapshot, modified);
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }

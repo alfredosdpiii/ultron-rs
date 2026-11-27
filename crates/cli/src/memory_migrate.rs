@@ -56,61 +56,74 @@ fn write_journal(path: &Path, journal: &Map<String, Value>) -> Result<(), String
     jsrt::fs::atomic_write(path, Value::Object(journal.clone()).to_string()).map_err(|e| e.to_string())
 }
 
-pub fn run(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
-    let io = |e: std::io::Error| e.to_string();
+fn io(e: std::io::Error) -> String {
+    e.to_string()
+}
+
+enum ParsedMigrate {
+    Run { dry_run: bool },
+    Exit(i32),
+}
+
+fn write_usage_error(err: &mut dyn Write, message: &str) -> Result<ParsedMigrate, String> {
+    writeln!(err, "Error: {message}").map_err(io)?;
+    err.write_all(USAGE.as_bytes()).map_err(io)?;
+    Ok(ParsedMigrate::Exit(1))
+}
+
+fn parse_migrate_flag(
+    arg: &str,
+    rest: &mut std::slice::Iter<'_, String>,
+    to: &mut Option<String>,
+    dry_run: &mut bool,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<Option<ParsedMigrate>, String> {
+    match arg {
+        "--dry-run" => *dry_run = true,
+        "--to" => *to = rest.next().cloned(),
+        other if other.starts_with("--to=") => *to = Some(other["--to=".len()..].to_string()),
+        "--help" | "-h" => {
+            out.write_all(USAGE.as_bytes()).map_err(io)?;
+            return Ok(Some(ParsedMigrate::Exit(0)));
+        }
+        other => return Ok(Some(write_usage_error(err, &format!("unknown option: {other}"))?)),
+    }
+    Ok(None)
+}
+
+fn parse_migrate_args(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<ParsedMigrate, String> {
     let mut to = None;
     let mut dry_run = false;
     let mut rest = argv.iter();
     while let Some(arg) = rest.next() {
-        match arg.as_str() {
-            "--dry-run" => dry_run = true,
-            "--to" => to = rest.next().cloned(),
-            other if other.starts_with("--to=") => to = Some(other["--to=".len()..].to_string()),
-            "--help" | "-h" => {
-                out.write_all(USAGE.as_bytes()).map_err(io)?;
-                return Ok(0);
-            }
-            other => {
-                writeln!(err, "Error: unknown option: {other}").map_err(io)?;
-                err.write_all(USAGE.as_bytes()).map_err(io)?;
-                return Ok(1);
-            }
+        if let Some(early) = parse_migrate_flag(arg, &mut rest, &mut to, &mut dry_run, out, err)? {
+            return Ok(early);
         }
     }
     if to.as_deref() != Some("memorantado") {
-        writeln!(err, "Error: --to must be memorantado").map_err(io)?;
-        err.write_all(USAGE.as_bytes()).map_err(io)?;
-        return Ok(1);
+        return write_usage_error(err, "--to must be memorantado");
     }
-    let agent_dir = env.agent_dir();
-    let var = |key: &str| (env.var)(key);
-    let settings = config::settings::SettingsManager::create(&env.cwd, &agent_dir, false);
-    let Some(source) = hindsight::Endpoint::from_env(&var, &env.cwd, &agent_dir) else {
-        writeln!(err, "Error: Hindsight is not configured. Set ULTRON_HINDSIGHT_URL.").map_err(io)?;
-        return Ok(1);
-    };
-    let Some(target) = memorantado::Endpoint::configured(&var, &settings) else {
-        writeln!(err, "Error: memorantado is turned off (ULTRON_MEMORANTADO_URL).").map_err(io)?;
-        return Ok(1);
-    };
-    let signal = Signal::new();
-    let hindsight =
-        hindsight::HindsightBackend::new(hindsight::HindsightOptions::new(&source.url, &source.bank, Map::new()))
-            .map_err(|e| e.to_string())?;
-    let journal_path = agent_dir.join("memory").join("migrate-journal.json");
-    let mut journal = read_journal(&journal_path);
+    Ok(ParsedMigrate::Run { dry_run })
+}
+
+fn fetch_hindsight_documents(
+    hindsight: &hindsight::HindsightBackend,
+    source_url: &str,
+    signal: &Signal,
+) -> Result<Vec<Value>, String> {
     let mut documents = Vec::new();
     let mut offset = 0;
     loop {
         let page = hindsight
-            .documents(PAGE, offset, &signal)
-            .map_err(|e| format!("Hindsight at {}: {e}", source.url))?;
+            .documents(PAGE, offset, signal)
+            .map_err(|e| format!("Hindsight at {source_url}: {e}"))?;
         let items = page["items"].as_array().cloned().unwrap_or_default();
         for item in &items {
             let Some(id) = item["id"].as_str() else { continue };
             documents.push(
                 hindsight
-                    .get(id, &signal)
+                    .get(id, signal)
                     .map_err(|e| format!("Hindsight document {id}: {e}"))?,
             );
         }
@@ -119,52 +132,68 @@ pub fn run(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
             break;
         }
     }
-    let planned: Vec<(Value, Plan)> = documents
-        .into_iter()
-        .map(|d| {
-            let plan = plan(&d, &journal);
-            (d, plan)
-        })
-        .collect();
+    Ok(documents)
+}
+
+fn plan_summary(planned: &[(Value, Plan)]) -> String {
     let count = |wanted: fn(&Plan) -> bool| planned.iter().filter(|(_, p)| wanted(p)).count();
-    let summary = format!(
+    format!(
         "{} claims, {} episodes, {} unchanged, {} skipped",
         count(|p| *p == Plan::Claim),
         count(|p| *p == Plan::Episode),
         count(|p| *p == Plan::Unchanged),
         count(|p| matches!(p, Plan::Skip(_)))
-    );
-    if dry_run {
+    )
+}
+
+fn plan_verb(plan: &Plan) -> String {
+    match plan {
+        Plan::Claim => "claim".to_string(),
+        Plan::Episode => "episode".to_string(),
+        Plan::Unchanged => "unchanged".to_string(),
+        Plan::Skip(why) => format!("skip ({why})"),
+    }
+}
+
+fn print_dry_run(
+    planned: &[(Value, Plan)],
+    source: &hindsight::Endpoint,
+    target: &memorantado::Endpoint,
+    summary: &str,
+    out: &mut dyn Write,
+) -> Result<i32, String> {
+    writeln!(
+        out,
+        "Dry run: {} Hindsight documents (bank {} at {}) to memorantado project {} at {}; nothing was written.",
+        planned.len(),
+        source.bank,
+        source.url,
+        target.project,
+        target.url
+    )
+    .map_err(io)?;
+    for (document, plan) in planned {
         writeln!(
             out,
-            "Dry run: {} Hindsight documents (bank {} at {}) to memorantado project {} at {}; nothing was written.",
-            planned.len(),
-            source.bank,
-            source.url,
-            target.project,
-            target.url
+            "  {}: {}",
+            plan_verb(plan),
+            document["id"].as_str().unwrap_or_default()
         )
         .map_err(io)?;
-        for (document, plan) in &planned {
-            let verb = match plan {
-                Plan::Claim => "claim".to_string(),
-                Plan::Episode => "episode".to_string(),
-                Plan::Unchanged => "unchanged".to_string(),
-                Plan::Skip(why) => format!("skip ({why})"),
-            };
-            writeln!(out, "  {verb}: {}", document["id"].as_str().unwrap_or_default()).map_err(io)?;
-        }
-        writeln!(out, "{summary}.").map_err(io)?;
-        return Ok(0);
     }
-    let transport = memorantado::ReqwestTransport::new()?;
-    if !memorantado::resolve::answers(&transport, &target.url) {
-        writeln!(err, "Error: memorantado does not answer at {}.", target.url).map_err(io)?;
-        return Ok(1);
-    }
-    let memorantado = target.backend(Map::new()).map_err(|e| e.to_string())?;
+    writeln!(out, "{summary}.").map_err(io)?;
+    Ok(0)
+}
+
+fn copy_planned(
+    planned: &[(Value, Plan)],
+    memorantado: &dyn MemoryBackend,
+    signal: &Signal,
+    journal: &mut Map<String, Value>,
+    err: &mut dyn Write,
+) -> Result<(usize, usize), String> {
     let (mut copied, mut failed) = (0, 0);
-    for (document, plan) in &planned {
+    for (document, plan) in planned {
         let mode = match plan {
             Plan::Claim => "replace",
             Plan::Episode => "append",
@@ -179,7 +208,7 @@ pub fn run(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
         };
         let item = json!({"content": text, "document_id": id, "tags": document["tags"], "update_mode": mode,
             "metadata": metadata});
-        match memorantado.retain(&json!({"items": [item]}), &signal) {
+        match memorantado.retain(&json!({"items": [item]}), signal) {
             Ok(_) => {
                 copied += 1;
                 journal.insert(id.to_string(), jsrt::hash::sha256_hex(text.as_bytes()).into());
@@ -190,7 +219,83 @@ pub fn run(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
             }
         }
     }
-    write_journal(&journal_path, &journal)?;
+    Ok((copied, failed))
+}
+
+fn resolve_endpoints(
+    env: &Env,
+    agent_dir: &Path,
+    err: &mut dyn Write,
+) -> Result<Option<(hindsight::Endpoint, memorantado::Endpoint)>, String> {
+    let var = |key: &str| (env.var)(key);
+    let settings = config::settings::SettingsManager::create(&env.cwd, agent_dir, false);
+    let Some(source) = hindsight::Endpoint::from_env(&var, &env.cwd, agent_dir) else {
+        writeln!(err, "Error: Hindsight is not configured. Set ULTRON_HINDSIGHT_URL.").map_err(io)?;
+        return Ok(None);
+    };
+    let Some(target) = memorantado::Endpoint::configured(&var, &settings) else {
+        writeln!(err, "Error: memorantado is turned off (ULTRON_MEMORANTADO_URL).").map_err(io)?;
+        return Ok(None);
+    };
+    Ok(Some((source, target)))
+}
+
+fn execute_migration(
+    planned: &[(Value, Plan)],
+    target: &memorantado::Endpoint,
+    signal: &Signal,
+    journal_path: &Path,
+    journal: &mut Map<String, Value>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, String> {
+    let transport = memorantado::ReqwestTransport::new()?;
+    if !memorantado::resolve::answers(&transport, &target.url) {
+        writeln!(err, "Error: memorantado does not answer at {}.", target.url).map_err(io)?;
+        return Ok(1);
+    }
+    let memorantado = target.backend(Map::new()).map_err(|e| e.to_string())?;
+    let (copied, failed) = copy_planned(planned, &memorantado, signal, journal, err)?;
+    write_journal(journal_path, journal)?;
+    let summary = plan_summary(planned);
     writeln!(out, "Copied {copied}, failed {failed} ({summary}).").map_err(io)?;
     Ok(i32::from(failed > 0))
+}
+
+fn build_migration_plan(
+    source: &hindsight::Endpoint,
+    journal: &Map<String, Value>,
+    signal: &Signal,
+) -> Result<Vec<(Value, Plan)>, String> {
+    let hindsight =
+        hindsight::HindsightBackend::new(hindsight::HindsightOptions::new(&source.url, &source.bank, Map::new()))
+            .map_err(|e| e.to_string())?;
+    let documents = fetch_hindsight_documents(&hindsight, &source.url, signal)?;
+    Ok(documents
+        .into_iter()
+        .map(|d| {
+            let p = plan(&d, journal);
+            (d, p)
+        })
+        .collect())
+}
+
+pub fn run(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
+    let dry_run = match parse_migrate_args(argv, out, err)? {
+        ParsedMigrate::Run { dry_run } => dry_run,
+        ParsedMigrate::Exit(code) => return Ok(code),
+    };
+    let agent_dir = env.agent_dir();
+    let Some((source, target)) = resolve_endpoints(env, &agent_dir, err)? else {
+        return Ok(1);
+    };
+    let signal = Signal::new();
+    let journal_path = agent_dir.join("memory").join("migrate-journal.json");
+    let mut journal = read_journal(&journal_path);
+    let planned = build_migration_plan(&source, &journal, &signal)?;
+    if dry_run {
+        let summary = plan_summary(&planned);
+        return print_dry_run(&planned, &source, &target, &summary, out);
+    }
+    execute_migration(&planned, &target, &signal, &journal_path, &mut journal, out, err)
 }

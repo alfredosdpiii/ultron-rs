@@ -8,6 +8,7 @@
 //! [`RunnerPreparer`] (`prepareEnvironment`, which becomes a host job).
 
 mod knowledge;
+mod publish;
 mod run;
 
 pub use knowledge::{
@@ -228,67 +229,84 @@ pub(super) fn short(sha: &str) -> String {
     sha.chars().take(7).collect()
 }
 
-/// Whether a review is due. A review ends the account's part unless something asks again: a pending request, a
-/// re-request, a new mention, or (because this account then blocks the merge) its own request for changes.
-pub fn decide(input: &DecisionInput) -> Result<Decision, Error> {
+fn is_later(a: &str, b: &str) -> bool {
+    jsrt::utf16::cmp(a, b).is_gt()
+}
+
+fn decide_first_review(requested: bool, new_mention: bool) -> Decision {
+    if requested {
+        decision(true, "review requested")
+    } else if new_mention {
+        decision(true, "mentioned")
+    } else {
+        decision(false, "no review request or mention for this account")
+    }
+}
+
+fn decide_new_commits(input: &DecisionInput, last_sha: &str) -> Decision {
+    let since = format!("new commits since {}", short(last_sha));
+    if input.requested {
+        return decision(true, format!("{since}, review requested"));
+    }
+    if input.last_requested_changes {
+        return decision(true, format!("{since}, after this account requested changes"));
+    }
+    decision(
+        false,
+        format!(
+            "{} was reviewed and nothing asks for a review of the new commits",
+            short(last_sha)
+        ),
+    )
+}
+
+fn decide_pre_check(input: &DecisionInput, new_mention: bool) -> Option<Decision> {
     let pull = input.pull;
-    let later = |a: &str, b: &str| jsrt::utf16::cmp(a, b).is_gt();
-    let new_mention = input
-        .mention_at
-        .as_deref()
-        .is_some_and(|at| input.last_at.as_deref().is_none_or(|last| later(at, last)));
-    let ended = if pull.merged { "merged" } else { "closed" };
     if pull.state != "open" {
-        return Ok(if new_mention {
+        let ended = if pull.merged { "merged" } else { "closed" };
+        return Some(if new_mention {
             decision(true, format!("mentioned on a {ended} pull request"))
         } else {
             decision(false, format!("the pull request is {ended}"))
         });
     }
     if pull.draft && !new_mention && !input.requested {
-        return Ok(decision(false, "the pull request is a draft"));
+        return Some(decision(false, "the pull request is a draft"));
     }
     if input.skip_bots && pull.author_is_bot && !new_mention {
-        return Ok(decision(
+        return Some(decision(
             false,
             format!("the author {} is a bot (autoreview.skipBots)", pull.author),
         ));
     }
+    None
+}
+
+/// Whether a review is due. A review ends the account's part unless something asks again: a pending request, a
+/// re-request, a new mention, or (because this account then blocks the merge) its own request for changes.
+pub fn decide(input: &DecisionInput) -> Result<Decision, Error> {
+    let pull = input.pull;
+    let new_mention = input
+        .mention_at
+        .as_deref()
+        .is_some_and(|at| input.last_at.as_deref().is_none_or(|last| is_later(at, last)));
+    if let Some(early) = decide_pre_check(input, new_mention) {
+        return Ok(early);
+    }
     let Some(last_sha) = &input.last_sha else {
-        if input.requested {
-            return Ok(decision(true, "review requested"));
-        }
-        if new_mention {
-            return Ok(decision(true, "mentioned"));
-        }
-        return Ok(decision(false, "no review request or mention for this account"));
+        return Ok(decide_first_review(input.requested, new_mention));
     };
     if new_mention {
         return Ok(decision(true, "mentioned again"));
     }
     if *last_sha != pull.head_sha {
-        let since = format!("new commits since {}", short(last_sha));
-        if input.requested {
-            return Ok(decision(true, format!("{since}, review requested")));
-        }
-        if input.last_requested_changes {
-            return Ok(decision(true, format!("{since}, after this account requested changes")));
-        }
-        return Ok(decision(
-            false,
-            format!(
-                "{} was reviewed and nothing asks for a review of the new commits",
-                short(last_sha)
-            ),
-        ));
+        return Ok(decide_new_commits(input, last_sha));
     }
-    if input.requested {
-        let requested_at = (input.requested_at)()?;
-        if let (Some(requested_at), Some(last_at)) = (&requested_at, &input.last_at)
-            && later(requested_at, last_at)
-        {
-            return Ok(decision(true, "review requested again"));
-        }
+    if input.requested
+        && let (Some(requested_at), Some(last_at)) = ((input.requested_at)()?, &input.last_at)
+        && is_later(&requested_at, last_at)
+    {
+        return Ok(decision(true, "review requested again"));
     }
     Ok(decision(
         false,
@@ -438,15 +456,407 @@ pub enum Preparation {
     Done(Outcome),
 }
 
-/// Decide whether a pull request is due for a review by an account and, if so, acknowledge it at once (one comment
-/// per pull request and head commit; none on a closed or merged pull request). The review itself is [`run_review`].
-pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewOptions) -> Result<Preparation, Error> {
-    let (account, r) = (&candidate.account, &candidate.pull);
-    let dry_run = options.dry_run.unwrap_or(deps.config.dry_run);
-    let github = github_of(deps, account);
-    let key = pull_state_key(account, r);
-    let name = format!("{} as {}", pull_key(r), account.login);
+struct LastReview {
+    sha: Option<String>,
+    at: Option<String>,
+    requested_changes: bool,
+}
 
+fn last_review_info(reviews: &[Review], saved: &PullState, login: &str, dry_run: bool) -> LastReview {
+    let saved_counts = saved.last_reviewed_sha.is_some() && (dry_run || saved.last_review_dry_run != Some(true));
+    let own = latest_own_review(reviews, login);
+    let mut last = LastReview {
+        sha: own.map(|review| review.commit_id.clone()),
+        at: own.map(|review| review.submitted_at.clone()),
+        requested_changes: own.is_some_and(|review| review.state == "CHANGES_REQUESTED"),
+    };
+    let saved_at = saved.last_reviewed_at.clone().unwrap_or_default();
+    if saved_counts
+        && last
+            .at
+            .as_deref()
+            .is_none_or(|at| jsrt::utf16::cmp(&saved_at, at).is_gt())
+    {
+        last.sha = saved.last_reviewed_sha.clone();
+        last.at = saved.last_reviewed_at.clone();
+        last.requested_changes = saved.last_verdict.as_deref() == Some("request_changes");
+    }
+    last
+}
+
+fn check_team_request(
+    deps: &ReviewerDeps,
+    github: &GitHub,
+    r: &PullRef,
+    pull: &PullRequest,
+    name: &str,
+) -> Result<Option<String>, Error> {
+    if pull.state != "open" || pull.draft {
+        return Ok(None);
+    }
+    for team in &pull.requested_teams {
+        let member = github.in_team(&r.owner, team)?;
+        if member.is_none() {
+            (deps.log)(&format!(
+                "{name}: membership of the requested team {}/{team} cannot be read; not counted",
+                r.owner
+            ));
+        }
+        if member == Some(true) {
+            return Ok(Some(team.clone()));
+        }
+    }
+    Ok(None)
+}
+
+fn read_mentions(
+    github: &GitHub,
+    account: &Account,
+    r: &PullRef,
+    pull: &PullRequest,
+    reviews: &[Review],
+    bans: &crate::ban::BanList,
+    ignored: &mut Vec<String>,
+) -> Result<Option<String>, Error> {
+    let banned = |login: &str| bans.banned(account, login).is_some();
+    let mut comments = github.issue_comments(r)?;
+    comments.extend(github.review_comments(r)?);
+    let mention_at = latest_mention_except(&account.login, pull, &comments, reviews, &banned);
+    if bans.applies_to(account)
+        && let Some(any) = latest_mention(&account.login, pull, &comments, reviews)
+        && mention_at
+            .as_deref()
+            .is_none_or(|kept| jsrt::utf16::cmp(&any, kept).is_gt())
+    {
+        ignored.push("a mention by a banned login".into());
+    }
+    Ok(mention_at)
+}
+
+fn apply_quiet_window(
+    deps: &ReviewerDeps,
+    pull: &PullRequest,
+    mention_at: Option<&str>,
+    last_at: Option<&str>,
+    decided: &mut Decision,
+) {
+    let has_new_mention = mention_at.is_some_and(|m| last_at.is_none_or(|l| m > l));
+    if !decided.review || deps.config.quiet_minutes.0 <= 0.0 || has_new_mention {
+        return;
+    }
+    let quiet_ms = deps.config.quiet_minutes.0 * 60_000.0;
+    let last_activity = jsrt::date::parse_date(&pull.updated_at).or_else(|| jsrt::date::parse_date(&pull.created_at));
+    if let Some(at) = last_activity
+        && (jsrt::date::now_ms() as f64 - at as f64) < quiet_ms
+    {
+        decided.review = false;
+        decided.reason = format!(
+            "waiting for quiet window ({} min since last update, autoreview.quietMinutes)",
+            deps.config.quiet_minutes.0 as u64
+        );
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal request resolver splitting evaluate_pull_decision"
+)]
+fn resolve_review_request(
+    deps: &ReviewerDeps,
+    github: &GitHub,
+    account: &Account,
+    r: &PullRef,
+    pull: &PullRequest,
+    bans: &crate::ban::BanList,
+    ignored: &mut Vec<String>,
+    name: &str,
+) -> Result<bool, Error> {
+    let me = account.login.to_lowercase();
+    let direct = pull.requested_reviewers.iter().any(|login| login.to_lowercase() == me);
+    let through_team = if direct {
+        None
+    } else {
+        check_team_request(deps, github, r, pull, name)?
+    };
+    let mut requested = direct || through_team.is_some();
+    if requested
+        && bans.applies_to(account)
+        && let Some((_, actor)) = github.last_review_requester(r, through_team.as_deref())?
+        && bans.banned(account, &actor).is_some()
+    {
+        requested = false;
+        ignored.push(format!("the review request by {actor}"));
+    }
+    Ok(requested)
+}
+
+fn needs_mentions_check(gave_up: bool, requested: bool, last: &LastReview, pull: &PullRequest) -> bool {
+    gave_up || !(requested && last.sha.is_none() && pull.state == "open" && !pull.draft)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal decision helper splitting prepare_pull"
+)]
+fn evaluate_pull_decision(
+    deps: &ReviewerDeps,
+    github: &GitHub,
+    account: &Account,
+    r: &PullRef,
+    pull: &PullRequest,
+    reviews: &[Review],
+    bans: &crate::ban::BanList,
+    last: &LastReview,
+    gave_up: bool,
+    name: &str,
+) -> Result<(Decision, Option<String>), Error> {
+    let mut ignored = Vec::new();
+    let requested = resolve_review_request(deps, github, account, r, pull, bans, &mut ignored, name)?;
+    let mention_at = if needs_mentions_check(gave_up, requested, last, pull) {
+        read_mentions(github, account, r, pull, reviews, bans, &mut ignored)?
+    } else {
+        None
+    };
+    let requested_at = || github.last_review_request_at(r);
+    let mut decided = decide(&DecisionInput {
+        pull,
+        last_sha: last.sha.clone(),
+        last_at: last.at.clone(),
+        last_requested_changes: last.requested_changes,
+        mention_at: mention_at.clone(),
+        requested,
+        skip_bots: deps.config.skip_bots,
+        requested_at: &requested_at,
+    })?;
+    apply_quiet_window(deps, pull, mention_at.as_deref(), last.at.as_deref(), &mut decided);
+    if !decided.review && !ignored.is_empty() {
+        decided.reason = format!("{}; ignored {} (autoreview.ban)", decided.reason, ignored.join(" and "));
+    }
+    Ok((decided, mention_at))
+}
+
+fn learn_closed_fates(
+    deps: &ReviewerDeps,
+    github: &GitHub,
+    account: &Account,
+    r: &PullRef,
+    pull: &PullRequest,
+    saved: &PullState,
+) {
+    let learned = (|| {
+        let threads = if pull.merged {
+            Some(github.review_threads(r)?)
+        } else {
+            None
+        };
+        let fates = fates_of(&FateInput {
+            pull: pull_key(r),
+            now: jsrt::date::iso_string((deps.now)()),
+            findings: saved.findings.iter().map(PostedFinding::ledger).collect(),
+            threads: threads.map_or_default(thread_states),
+            merged: pull.merged,
+            ..FateInput::default()
+        });
+        learn(
+            deps,
+            r,
+            &fates,
+            &saved.findings,
+            &format!("{} as {}", pull_key(r), account.login),
+        )
+    })();
+    if let Err(error) = learned {
+        (deps.log)(&format!("{}: the fates at close were not read: {error}", pull_key(r)));
+    }
+}
+
+fn handle_closed_skip(
+    deps: &ReviewerDeps,
+    github: &GitHub,
+    account: &Account,
+    r: &PullRef,
+    pull: &PullRequest,
+    saved: &PullState,
+    key: &str,
+) -> Result<(), Error> {
+    if pull.state == "open" || saved.last_verdict.is_none() {
+        return Ok(());
+    }
+    if saved.closed != Some(true) && deps.config.learn {
+        if saved.findings.iter().any(|finding| finding.status == "open") {
+            learn_closed_fates(deps, github, account, r, pull, saved);
+        }
+        record_notes(deps, r, github, &format!("{} as {}", pull_key(r), account.login));
+    }
+    deps.store.update_pull(key, |state, _| state.closed = Some(true))?;
+    Ok(())
+}
+
+fn give_up_on_head(
+    deps: &ReviewerDeps,
+    github: &GitHub,
+    r: &PullRef,
+    head: &str,
+    key: &str,
+    dry_run: bool,
+    name: &str,
+) -> Result<Outcome, Error> {
+    if !dry_run {
+        github.post_comment(
+            r,
+            &format!(
+                "I could not review `{}` after {MAX_ATTEMPTS} attempts. Push a new commit or mention me again to retry.",
+                short(head)
+            ),
+        )?;
+    }
+    let at = jsrt::date::iso_string((deps.now)());
+    deps.store.update_pull(key, |state, _| state.gave_up(head, at))?;
+    (deps.log)(&format!(
+        "{name}: gave up on {} after {MAX_ATTEMPTS} attempts",
+        short(head)
+    ));
+    Ok(Outcome::GaveUp(format!("{MAX_ATTEMPTS} attempts failed")))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal attempt gate helper splitting prepare_pull"
+)]
+fn check_attempt_gate(
+    deps: &ReviewerDeps,
+    github: &GitHub,
+    r: &PullRef,
+    saved: &PullState,
+    head: &str,
+    key: &str,
+    mention_at: Option<&str>,
+    dry_run: bool,
+    force: bool,
+    name: &str,
+) -> Result<Option<Outcome>, Error> {
+    if force {
+        return Ok(None);
+    }
+    let mut attempts = saved.head_attempts(head);
+    if attempts == HeadAttempts::GaveUp
+        && deps
+            .store
+            .update_pull(key, |state, _| state.retry_after_mention(head, mention_at))?
+    {
+        (deps.log)(&format!(
+            "{name}: mentioned after giving up on {}; trying again",
+            short(head)
+        ));
+        attempts = HeadAttempts::Fresh;
+    }
+    if attempts == HeadAttempts::GaveUp {
+        return Ok(Some(Outcome::Skipped("gave up on this commit earlier".into())));
+    }
+    if matches!(attempts, HeadAttempts::Failed(failed) if failed >= MAX_ATTEMPTS) {
+        return Ok(Some(give_up_on_head(deps, github, r, head, key, dry_run, name)?));
+    }
+    Ok(None)
+}
+
+struct AckResult {
+    body: Option<String>,
+    at: Option<i64>,
+    tag_to_ack_ms: Option<i64>,
+}
+
+#[expect(clippy::too_many_arguments, reason = "internal ack poster splitting maybe_post_ack")]
+fn post_ack_comment(
+    deps: &ReviewerDeps,
+    github: &GitHub,
+    candidate: &Candidate,
+    head: &str,
+    key: &str,
+    line: &str,
+    body: &str,
+    reason: &str,
+    name: &str,
+) -> Result<(Option<i64>, Option<i64>), Error> {
+    let mut ack_at = None;
+    let mut tag_to_ack_ms = None;
+    let posted = github.post_comment(&candidate.pull, body).and_then(|_| {
+        let posted = (deps.now)();
+        ack_at = Some(posted);
+        if let Some(notified) = candidate.notified_at {
+            tag_to_ack_ms = Some((posted - notified).max(0));
+        }
+        deps.store.update_pull(key, |state, _| {
+            state.last_ack_sha = Some(head.to_string());
+            state.last_ack_line = Some(line.to_string());
+            state.last_ack_at = Some(jsrt::date::iso_string(posted));
+        })?;
+        (deps.log)(&format!(
+            "{name}: acknowledged {} ({reason}){}",
+            short(head),
+            tag_to_ack_ms.map_or(String::new(), |ms| format!(", {} after the notification", seconds(ms)))
+        ));
+        Ok(())
+    });
+    match posted {
+        Err(error @ Error::RateLimit { .. }) => Err(error),
+        Err(error) => {
+            (deps.log)(&format!("{name}: the acknowledgement was not posted: {error}"));
+            Ok((ack_at, tag_to_ack_ms))
+        }
+        Ok(()) => Ok((ack_at, tag_to_ack_ms)),
+    }
+}
+
+#[expect(clippy::too_many_arguments, reason = "internal ack helper splitting prepare_pull")]
+fn maybe_post_ack(
+    deps: &ReviewerDeps,
+    github: &GitHub,
+    candidate: &Candidate,
+    pull: &PullRequest,
+    saved: &PullState,
+    head: &str,
+    key: &str,
+    reason: &str,
+    dry_run: bool,
+    name: &str,
+) -> Result<AckResult, Error> {
+    let mut ack_at = (saved.last_ack_sha.as_deref() == Some(head))
+        .then(|| saved.last_ack_at.as_deref().and_then(jsrt::date::parse_date))
+        .flatten();
+    let mut tag_to_ack_ms = None;
+    let should_ack = deps.config.ack
+        && !deps.config.ack_lines.is_empty()
+        && saved.last_ack_sha.as_deref() != Some(head)
+        && pull.state == "open";
+    if !should_ack {
+        return Ok(AckResult {
+            body: None,
+            at: ack_at,
+            tag_to_ack_ms,
+        });
+    }
+    let line = pick_ack_line(&deps.config.ack_lines, saved.last_ack_line.as_deref(), (deps.random)());
+    let body = ack_body(&line, head, &deps.config.ack_art);
+    if !dry_run {
+        let (posted_at, elapsed) = post_ack_comment(deps, github, candidate, head, key, &line, &body, reason, name)?;
+        ack_at = posted_at.or(ack_at);
+        tag_to_ack_ms = elapsed;
+    }
+    Ok(AckResult {
+        body: Some(body),
+        at: ack_at,
+        tag_to_ack_ms,
+    })
+}
+
+fn load_pull_and_check_ban(
+    deps: &ReviewerDeps,
+    github: &GitHub,
+    account: &Account,
+    r: &PullRef,
+    name: &str,
+    force: bool,
+) -> Result<Result<(PullRequest, crate::ban::BanList), Outcome>, Error> {
     let pull = github.pull(r)?;
     if pull.head_sha.is_empty() {
         return Err(Error::GitHub {
@@ -456,244 +866,123 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
     }
     let bans = deps.bans.refresh();
     if let Some(rule) = bans.banned(account, &pull.author) {
-        if options.force {
-            return Err(Error::Other(refusal(&name, &pull.author, rule)));
+        if force {
+            return Err(Error::Other(refusal(name, &pull.author, rule)));
         }
-        return Ok(Preparation::Done(Outcome::Skipped(banned_reason(&pull.author))));
+        return Ok(Err(Outcome::Skipped(banned_reason(&pull.author))));
     }
+    Ok(Ok((pull, bans)))
+}
+
+fn is_recheck_only(force: bool, last: &LastReview, saved: &PullState, head: &str) -> bool {
+    !force
+        && last.sha.as_deref() == Some(head)
+        && saved.last_reviewed_sha.as_deref() == Some(head)
+        && saved.last_review_complete == Some(true)
+}
+
+#[expect(clippy::too_many_arguments, reason = "internal helper splitting prepare_pull")]
+fn decide_or_skip_pull(
+    deps: &ReviewerDeps,
+    github: &GitHub,
+    account: &Account,
+    r: &PullRef,
+    pull: &PullRequest,
+    reviews: &[Review],
+    bans: &crate::ban::BanList,
+    last: &LastReview,
+    saved: &PullState,
+    head: &str,
+    key: &str,
+    dry_run: bool,
+    force: bool,
+    name: &str,
+) -> Result<Result<Decision, Outcome>, Error> {
+    let gave_up = saved.head_attempts(head) == HeadAttempts::GaveUp;
+    let (decided, mention_at) = if force {
+        (decision(true, "asked for on the command line"), None)
+    } else {
+        evaluate_pull_decision(deps, github, account, r, pull, reviews, bans, last, gave_up, name)?
+    };
+    if !decided.review {
+        handle_closed_skip(deps, github, account, r, pull, saved, key)?;
+        return Ok(Err(Outcome::Skipped(decided.reason)));
+    }
+    if let Some(outcome) = check_attempt_gate(
+        deps,
+        github,
+        r,
+        saved,
+        head,
+        key,
+        mention_at.as_deref(),
+        dry_run,
+        force,
+        name,
+    )? {
+        return Ok(Err(outcome));
+    }
+    Ok(Ok(decided))
+}
+
+/// Decide whether a pull request is due for a review by an account and, if so, acknowledge it at once (one comment
+/// per pull request and head commit; none on a closed or merged pull request). The review itself is [`run_review`].
+pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewOptions) -> Result<Preparation, Error> {
+    let (account, r) = (&candidate.account, &candidate.pull);
+    let dry_run = options.dry_run.unwrap_or(deps.config.dry_run);
+    let github = github_of(deps, account);
+    let key = pull_state_key(account, r);
+    let name = format!("{} as {}", pull_key(r), account.login);
+
+    let (pull, bans) = match load_pull_and_check_ban(deps, &github, account, r, &name, options.force)? {
+        Ok(loaded) => loaded,
+        Err(outcome) => return Ok(Preparation::Done(outcome)),
+    };
     let head = pull.head_sha.clone();
     let reviews = github.reviews(r)?;
     let saved: PullState = deps.store.read().pulls.get(&key).cloned().unwrap_or_default();
-    let saved_counts = saved.last_reviewed_sha.is_some() && (dry_run || saved.last_review_dry_run != Some(true));
-    let own = latest_own_review(&reviews, &account.login);
-    let mut last_sha = own.map(|review| review.commit_id.clone());
-    let mut last_at = own.map(|review| review.submitted_at.clone());
-    let mut last_requested_changes = own.is_some_and(|review| review.state == "CHANGES_REQUESTED");
-    let saved_at = saved.last_reviewed_at.clone().unwrap_or_default();
-    if saved_counts
-        && last_at
-            .as_deref()
-            .is_none_or(|at| jsrt::utf16::cmp(&saved_at, at).is_gt())
-    {
-        last_sha = saved.last_reviewed_sha.clone();
-        last_at = saved.last_reviewed_at.clone();
-        last_requested_changes = saved.last_verdict.as_deref() == Some("request_changes");
-    }
-
-    let me = account.login.to_lowercase();
-    let mut requested = pull.requested_reviewers.iter().any(|login| login.to_lowercase() == me);
-    let gave_up = saved.head_attempts(&head) == HeadAttempts::GaveUp;
-    let mut mention_at = None;
-    let decided = if options.force {
-        decision(true, "asked for on the command line")
-    } else {
-        let mut through_team = None;
-        if !requested && pull.state == "open" && !pull.draft {
-            for team in &pull.requested_teams {
-                let member = github.in_team(&r.owner, team)?;
-                if member.is_none() {
-                    (deps.log)(&format!(
-                        "{name}: membership of the requested team {}/{team} cannot be read; not counted",
-                        r.owner
-                    ));
-                }
-                if member == Some(true) {
-                    requested = true;
-                    through_team = Some(team.clone());
-                    break;
-                }
-            }
-        }
-        let banned = |login: &str| bans.banned(account, login).is_some();
-        let mut ignored = Vec::new();
-        if requested
-            && bans.applies_to(account)
-            && let Some((_, actor)) = github.last_review_requester(r, through_team.as_deref())?
-            && banned(&actor)
-        {
-            requested = false;
-            ignored.push(format!("the review request by {actor}"));
-        }
-        if gave_up || !(requested && last_sha.is_none() && pull.state == "open" && !pull.draft) {
-            let mut comments = github.issue_comments(r)?;
-            comments.extend(github.review_comments(r)?);
-            mention_at = latest_mention_except(&account.login, &pull, &comments, &reviews, &banned);
-            if bans.applies_to(account)
-                && let Some(any) = latest_mention(&account.login, &pull, &comments, &reviews)
-                && mention_at
-                    .as_deref()
-                    .is_none_or(|kept| jsrt::utf16::cmp(&any, kept).is_gt())
-            {
-                ignored.push("a mention by a banned login".into());
-            }
-        }
-        let requested_at = || github.last_review_request_at(r);
-        let mut decided = decide(&DecisionInput {
-            pull: &pull,
-            last_sha: last_sha.clone(),
-            last_at: last_at.clone(),
-            last_requested_changes,
-            mention_at: mention_at.clone(),
-            requested,
-            skip_bots: deps.config.skip_bots,
-            requested_at: &requested_at,
-        })?;
-        let has_new_mention = mention_at
-            .as_deref()
-            .is_some_and(|m| last_at.as_deref().is_none_or(|l| m > l));
-        if decided.review && deps.config.quiet_minutes.0 > 0.0 && !has_new_mention {
-            let quiet_ms = deps.config.quiet_minutes.0 * 60_000.0;
-            let last_activity =
-                jsrt::date::parse_date(&pull.updated_at).or_else(|| jsrt::date::parse_date(&pull.created_at));
-            if let Some(at) = last_activity
-                && (jsrt::date::now_ms() as f64 - at as f64) < quiet_ms
-            {
-                decided.review = false;
-                decided.reason = format!(
-                    "waiting for quiet window ({} min since last update, autoreview.quietMinutes)",
-                    deps.config.quiet_minutes.0 as u64
-                );
-            }
-        }
-        if !decided.review && !ignored.is_empty() {
-            decided.reason = format!("{}; ignored {} (autoreview.ban)", decided.reason, ignored.join(" and "));
-        }
-        decided
+    let last = last_review_info(&reviews, &saved, &account.login, dry_run);
+    let decided = match decide_or_skip_pull(
+        deps,
+        &github,
+        account,
+        r,
+        &pull,
+        &reviews,
+        &bans,
+        &last,
+        &saved,
+        &head,
+        &key,
+        dry_run,
+        options.force,
+        &name,
+    )? {
+        Ok(decided) => decided,
+        Err(outcome) => return Ok(Preparation::Done(outcome)),
     };
-    if !decided.review {
-        if pull.state != "open" && saved.last_verdict.is_some() {
-            if saved.closed != Some(true)
-                && deps.config.learn
-                && saved.findings.iter().any(|finding| finding.status == "open")
-            {
-                let learned = (|| {
-                    let threads = if pull.merged {
-                        Some(github.review_threads(r)?)
-                    } else {
-                        None
-                    };
-                    let fates = fates_of(&FateInput {
-                        pull: pull_key(r),
-                        now: jsrt::date::iso_string((deps.now)()),
-                        findings: saved.findings.iter().map(PostedFinding::ledger).collect(),
-                        threads: threads.map_or_default(thread_states),
-                        merged: pull.merged,
-                        ..FateInput::default()
-                    });
-                    learn(
-                        deps,
-                        r,
-                        &fates,
-                        &saved.findings,
-                        &format!("{} as {}", pull_key(r), account.login),
-                    )
-                })();
-                if let Err(error) = learned {
-                    (deps.log)(&format!("{}: the fates at close were not read: {error}", pull_key(r)));
-                }
-            }
-            if saved.closed != Some(true) && deps.config.learn {
-                record_notes(deps, r, &github, &format!("{} as {}", pull_key(r), account.login));
-            }
-            deps.store.update_pull(&key, |state, _| state.closed = Some(true))?;
-        }
-        return Ok(Preparation::Done(Outcome::Skipped(decided.reason)));
-    }
-
-    let mut attempts = saved.head_attempts(&head);
-    if !options.force
-        && attempts == HeadAttempts::GaveUp
-        && deps
-            .store
-            .update_pull(&key, |state, _| state.retry_after_mention(&head, mention_at.as_deref()))?
-    {
-        (deps.log)(&format!(
-            "{name}: mentioned after giving up on {}; trying again",
-            short(&head)
-        ));
-        attempts = HeadAttempts::Fresh;
-    }
-    if !options.force && attempts == HeadAttempts::GaveUp {
-        return Ok(Preparation::Done(Outcome::Skipped(
-            "gave up on this commit earlier".into(),
-        )));
-    }
-    if !options.force && matches!(attempts, HeadAttempts::Failed(failed) if failed >= MAX_ATTEMPTS) {
-        if !dry_run {
-            github.post_comment(
-                r,
-                &format!(
-                    "I could not review `{}` after {MAX_ATTEMPTS} attempts. Push a new commit or mention me again to retry.",
-                    short(&head)
-                ),
-            )?;
-        }
-        let at = jsrt::date::iso_string((deps.now)());
-        deps.store.update_pull(&key, |state, _| state.gave_up(&head, at))?;
-        (deps.log)(&format!(
-            "{name}: gave up on {} after {MAX_ATTEMPTS} attempts",
-            short(&head)
-        ));
-        return Ok(Preparation::Done(Outcome::GaveUp(format!(
-            "{MAX_ATTEMPTS} attempts failed"
-        ))));
-    }
-
-    let mut ack = None;
-    let mut ack_at = if saved.last_ack_sha.as_deref() == Some(head.as_str()) {
-        saved.last_ack_at.as_deref().and_then(jsrt::date::parse_date)
-    } else {
-        None
-    };
-    let mut tag_to_ack_ms = None;
-    if deps.config.ack
-        && !deps.config.ack_lines.is_empty()
-        && saved.last_ack_sha.as_deref() != Some(head.as_str())
-        && pull.state == "open"
-    {
-        let line = pick_ack_line(&deps.config.ack_lines, saved.last_ack_line.as_deref(), (deps.random)());
-        let body = ack_body(&line, &head, &deps.config.ack_art);
-        if !dry_run {
-            let posted = github.post_comment(r, &body).and_then(|_| {
-                let posted = (deps.now)();
-                ack_at = Some(posted);
-                if let Some(notified) = candidate.notified_at {
-                    tag_to_ack_ms = Some((posted - notified).max(0));
-                }
-                deps.store.update_pull(&key, |state, _| {
-                    state.last_ack_sha = Some(head.clone());
-                    state.last_ack_line = Some(line.clone());
-                    state.last_ack_at = Some(jsrt::date::iso_string(posted));
-                })?;
-                (deps.log)(&format!(
-                    "{name}: acknowledged {} ({}){}",
-                    short(&head),
-                    decided.reason,
-                    tag_to_ack_ms.map_or(String::new(), |ms| format!(", {} after the notification", seconds(ms)))
-                ));
-                Ok(())
-            });
-            match posted {
-                Err(error @ Error::RateLimit { .. }) => return Err(error),
-                Err(error) => (deps.log)(&format!("{name}: the acknowledgement was not posted: {error}")),
-                Ok(()) => {}
-            }
-        }
-        ack = Some(body);
-    }
-    let recheck_only = !options.force
-        && last_sha.as_deref() == Some(head.as_str())
-        && saved.last_reviewed_sha.as_deref() == Some(head.as_str())
-        && saved.last_review_complete == Some(true);
+    let ack = maybe_post_ack(
+        deps,
+        &github,
+        candidate,
+        &pull,
+        &saved,
+        &head,
+        &key,
+        &decided.reason,
+        dry_run,
+        &name,
+    )?;
+    let recheck_only = is_recheck_only(options.force, &last, &saved, &head);
     Ok(Preparation::Due(Box::new(Prepared {
         candidate: candidate.clone(),
         dry_run,
         pull,
         reason: decided.reason,
-        last_sha,
-        ack,
-        ack_at,
-        tag_to_ack_ms,
+        last_sha: last.sha,
+        ack: ack.body,
+        ack_at: ack.at,
+        tag_to_ack_ms: ack.tag_to_ack_ms,
         recheck_only,
         forced: options.force,
     })))

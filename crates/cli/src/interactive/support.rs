@@ -244,6 +244,59 @@ pub(super) fn reload_plugins(link: &Link) -> Result<(), String> {
     apply_presentation_plugins(&data)
 }
 
+fn check_gh_auth() -> Result<(), String> {
+    let auth = std::process::Command::new("gh")
+        .args(["auth", "status"])
+        .stdin(std::process::Stdio::null())
+        .output();
+    match auth {
+        Err(_) => Err("Error: GitHub CLI (gh) is not installed. Install it from https://cli.github.com/".into()),
+        Ok(out) if !out.status.success() => {
+            Err("Error: GitHub CLI is not logged in. Run 'gh auth login' first.".into())
+        }
+        Ok(_) => Ok(()),
+    }
+}
+
+fn parse_gist_output(out: &signals::child::Output, env: &Env) -> Result<String, String> {
+    if !out.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let detail = if stderr.is_empty() { "Unknown error" } else { &stderr };
+        return Err(format!("Error: Failed to create gist: {detail}"));
+    }
+    let gist_url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let gist_id = gist_url
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Error: Failed to parse gist ID from gh output".to_string())?;
+    let preview = crate::export_html::share_viewer_url(&|k| (env.var)(k), gist_id);
+    Ok(format!(
+        "Share URL: {}\nGist: {}",
+        tui::hyperlink(&preview, &preview),
+        tui::hyperlink(&gist_url, &gist_url)
+    ))
+}
+
+fn upload_share_gist(
+    link: &Link,
+    send: &dyn Fn(LaneEvent),
+    cancel: &kernel::Signal,
+    theme: Option<&str>,
+    env: &Env,
+    file: &std::path::Path,
+) -> Result<Option<String>, String> {
+    export_session(link, Some(&file.display().to_string()), theme, env)
+        .map_err(|e| format!("Error: Failed to export session: {e}"))?;
+    send(LaneEvent::ShareLoader(true));
+    let out = gist_create(file, cancel);
+    send(LaneEvent::ShareLoader(false));
+    let Some(out) = out.map_err(|e| format!("Error: Failed to create gist: {e}"))? else {
+        return Ok(None);
+    };
+    parse_gist_output(&out, env).map(Some)
+}
+
 /// Pi's `/share`: the session as HTML in a secret gist (`gh gist create --public=false`), then the viewer and gist
 /// URLs.
 pub(super) fn share_session(
@@ -254,60 +307,15 @@ pub(super) fn share_session(
     env: &Env,
 ) {
     let status = |text: String| send(LaneEvent::Status(text));
-    let auth = std::process::Command::new("gh")
-        .args(["auth", "status"])
-        .stdin(std::process::Stdio::null())
-        .output();
-    match auth {
-        Err(_) => {
-            return status("Error: GitHub CLI (gh) is not installed. Install it from https://cli.github.com/".into());
-        }
-        Ok(out) if !out.status.success() => {
-            return status("Error: GitHub CLI is not logged in. Run 'gh auth login' first.".into());
-        }
-        Ok(_) => {}
+    if let Err(error) = check_gh_auth() {
+        return status(error);
     }
     let dir = std::env::temp_dir().join(format!("ultron-share-{}", jsrt::random::uuid_v4()));
     if let Err(error) = std::fs::create_dir_all(&dir) {
         return status(format!("Error: Failed to export session: {error}"));
     }
     let file = dir.join("session.html");
-    let result = (|| {
-        export_session(link, Some(&file.display().to_string()), theme, env)
-            .map_err(|e| format!("Error: Failed to export session: {e}"))?;
-        send(LaneEvent::ShareLoader(true));
-        let out = gist_create(&file, cancel);
-        send(LaneEvent::ShareLoader(false));
-        let Some(out) = out.map_err(|e| format!("Error: Failed to create gist: {e}"))? else {
-            return Ok(None);
-        };
-        if !out.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            return Err(format!(
-                "Error: Failed to create gist: {}",
-                if stderr.is_empty() {
-                    "Unknown error".into()
-                } else {
-                    stderr
-                }
-            ));
-        }
-        let gist_url = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        let gist_id = gist_url
-            .rsplit('/')
-            .next()
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
-        let Some(gist_id) = gist_id else {
-            return Err("Error: Failed to parse gist ID from gh output".into());
-        };
-        let preview = crate::export_html::share_viewer_url(&|k| (env.var)(k), &gist_id);
-        Ok(Some(format!(
-            "Share URL: {}\nGist: {}",
-            tui::hyperlink(&preview, &preview),
-            tui::hyperlink(&gist_url, &gist_url)
-        )))
-    })();
+    let result = upload_share_gist(link, send, cancel, theme, env, &file);
     let _ = std::fs::remove_dir_all(&dir);
     match result {
         Ok(Some(text)) | Err(text) => status(text),
@@ -358,28 +366,18 @@ pub(super) fn credentials_saved(
     send(LaneEvent::Status(format!("{done}{hint}")));
 }
 
-/// `loginProviderOptions`: every built-in provider's sign-in options with what is configured (a stored credential,
-/// else the variables that supply a key), sorted by name.
-pub fn login_options(env: &Env, auth: &std::path::Path) -> Vec<interactive::selectors::AuthProvider> {
+fn builtin_login_options(
+    stored: &std::collections::HashMap<String, String>,
+    source: &ai::env::EnvSource<'_>,
+) -> Vec<interactive::selectors::AuthProvider> {
     use interactive::selectors::{AuthProvider, provider_logins};
-    let stored: std::collections::HashMap<String, String> = config::auth::AuthStorage::create(auth.to_path_buf())
-        .list()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(id, c)| (id, c["type"].as_str().unwrap_or("api_key").to_string()))
-        .collect();
-    let source = ai::env::EnvSource {
-        lookup: &*env.var,
-        exists: &|p: &std::path::Path| p.exists(),
-        home: Some(env.home.clone()),
-    };
     let mut options = Vec::new();
     for p in provider_logins() {
         let status = match stored.get(&p.id) {
             Some(kind) => Some((kind.clone(), Some("stored credential".to_string()))),
-            None if p.id == ai::claude_code::PROVIDER => ai::claude_code::configured(&source)
+            None if p.id == ai::claude_code::PROVIDER => ai::claude_code::configured(source)
                 .then(|| ("api_key".to_string(), Some(ai::claude_code::AUTH_SOURCE.to_string()))),
-            None => ai::env::find_env_keys_in(&p.id, &source)
+            None => ai::env::find_env_keys_in(&p.id, source)
                 .filter(|keys| !keys.is_empty())
                 .map(|keys| ("api_key".to_string(), Some(keys.join(", ")))),
         };
@@ -405,7 +403,16 @@ pub fn login_options(env: &Env, auth: &std::path::Path) -> Vec<interactive::sele
             });
         }
     }
-    let registry = session_core::lane::registry(env);
+    options
+}
+
+fn radius_login_options(
+    registry: &ai::model_registry::ModelRegistry,
+    stored: &std::collections::HashMap<String, String>,
+    source: &ai::env::EnvSource<'_>,
+) -> Vec<interactive::selectors::AuthProvider> {
+    use interactive::selectors::{AuthProvider, provider_logins};
+    let mut options = Vec::new();
     let radius = provider_logins().into_iter().find(|p| p.id == "radius");
     for id in registry.config().provider_ids() {
         let builtin = ai::models::builtin_providers().any(|p| p == id);
@@ -414,7 +421,7 @@ pub fn login_options(env: &Env, auth: &std::path::Path) -> Vec<interactive::sele
         };
         let status = match stored.get(id) {
             Some(kind) => Some((kind.clone(), Some("stored credential".to_string()))),
-            None => ai::env::find_env_keys_in("radius", &source)
+            None => ai::env::find_env_keys_in("radius", source)
                 .filter(|keys| !keys.is_empty())
                 .map(|keys| ("api_key".to_string(), Some(keys.join(", ")))),
         };
@@ -434,6 +441,16 @@ pub fn login_options(env: &Env, auth: &std::path::Path) -> Vec<interactive::sele
         options.push(base);
         options.extend(api_key);
     }
+    options
+}
+
+fn custom_login_options(
+    registry: &ai::model_registry::ModelRegistry,
+    stored: &std::collections::HashMap<String, String>,
+    env: &Env,
+) -> Vec<interactive::selectors::AuthProvider> {
+    use interactive::selectors::AuthProvider;
+    let mut options = Vec::new();
     for id in registry.config().provider_ids() {
         let builtin = ai::models::builtin_providers().any(|p| p == id);
         if builtin || registry.radius_gateway(id).is_some() {
@@ -462,6 +479,27 @@ pub fn login_options(env: &Env, auth: &std::path::Path) -> Vec<interactive::sele
             generic_login: true,
         });
     }
+    options
+}
+
+/// `loginProviderOptions`: every built-in provider's sign-in options with what is configured (a stored credential,
+/// else the variables that supply a key), sorted by name.
+pub fn login_options(env: &Env, auth: &std::path::Path) -> Vec<interactive::selectors::AuthProvider> {
+    let stored: std::collections::HashMap<String, String> = config::auth::AuthStorage::create(auth.to_path_buf())
+        .list()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, c)| (id, c["type"].as_str().unwrap_or("api_key").to_string()))
+        .collect();
+    let source = ai::env::EnvSource {
+        lookup: &*env.var,
+        exists: &|p: &std::path::Path| p.exists(),
+        home: Some(env.home.clone()),
+    };
+    let registry = session_core::lane::registry(env);
+    let mut options = builtin_login_options(&stored, &source);
+    options.extend(radius_login_options(&registry, &stored, &source));
+    options.extend(custom_login_options(&registry, &stored, env));
     options.sort_by(|a, b| jsrt::collate::locale_compare(&a.name, &b.name));
     options
 }
@@ -537,6 +575,29 @@ pub(super) fn fork_to(link: &mut Link, fork_path: Value) -> Result<(), String> {
     link.attach(&created)
 }
 
+fn session_file_stem(described: &Value, session_id: &str) -> String {
+    described["sessionFile"]
+        .as_str()
+        .and_then(|f| std::path::Path::new(f).file_name())
+        .map_or_else(
+            || session_id.to_string(),
+            |n| {
+                let name = n.to_string_lossy();
+                match name.rfind('.') {
+                    Some(dot) if dot > 0 => name[..dot].to_string(),
+                    _ => name.into_owned(),
+                }
+            },
+        )
+}
+
+fn export_jsonl(cwd: &std::path::Path, path: &str, header: &Value, entries: &[Value]) -> Result<String, String> {
+    let path = config::paths::normalize(&cwd.join(path));
+    let lines: Vec<String> = std::iter::once(header).chain(entries).map(Value::to_string).collect();
+    std::fs::write(&path, format!("{}\n", lines.join("\n"))).map_err(|e| e.to_string())?;
+    Ok(path.display().to_string())
+}
+
 /// Pi's `/export` (`exportSession`): HTML through the exporter, or the Pi-format JSONL, from the session's entries
 /// as Pi entries; returns the path written.
 pub(super) fn export_session(
@@ -556,25 +617,10 @@ pub(super) fn export_session(
         .map_or_else(|| jsrt::date::iso_string(jsrt::date::now_ms()), str::to_string);
     let header = json!({"type": "session", "version": 3, "id": session_id, "timestamp": timestamp,
         "cwd": cwd.display().to_string()});
-    let stem = described["sessionFile"]
-        .as_str()
-        .and_then(|f| std::path::Path::new(f).file_name())
-        .map_or_else(
-            || session_id.clone(),
-            |n| {
-                let name = n.to_string_lossy();
-                match name.rfind('.') {
-                    Some(dot) if dot > 0 => name[..dot].to_string(),
-                    _ => name.into_owned(),
-                }
-            },
-        );
     if let Some(path) = output.filter(|p| p.ends_with(".jsonl")) {
-        let path = config::paths::normalize(&cwd.join(path));
-        let lines: Vec<String> = std::iter::once(&header).chain(&entries).map(Value::to_string).collect();
-        std::fs::write(&path, format!("{}\n", lines.join("\n"))).map_err(|e| e.to_string())?;
-        return Ok(path.display().to_string());
+        return export_jsonl(&cwd, path, &header, &entries);
     }
+    let stem = session_file_stem(&described, &session_id);
     let data = json!({"header": header, "entries": entries, "leafId": read["leafId"]});
     let html = crate::export_html::export_page(&data, theme, env)?;
     let path = config::paths::normalize(

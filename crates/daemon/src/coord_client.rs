@@ -66,6 +66,37 @@ pub struct CoordinatorConnection {
 }
 
 impl CoordinatorConnection {
+    fn decode_event(&self, message: &Value) -> Option<Event> {
+        match message["type"].as_str() {
+            Some("peer_connected") => message["peerId"].as_str().map(|p| {
+                self.peers().insert(p.to_string());
+                Event::PeerConnected(p.to_string())
+            }),
+            Some("peer_disconnected") => message["peerId"].as_str().map(|p| {
+                self.peers().remove(p);
+                Event::PeerDisconnected(p.to_string())
+            }),
+            Some("message") => message["from"].as_str().map(|from| Event::Message {
+                from: from.to_string(),
+                payload: message.get("payload").cloned().unwrap_or(Value::Null),
+            }),
+            _ => None,
+        }
+    }
+
+    fn spawn_reader(self: &Arc<Self>, mut reader: LineReader<UnixStream>, on_event: Box<dyn Fn(Event) + Send>) {
+        let reading = self.clone();
+        std::thread::spawn(move || {
+            while let Ok(Some(message)) = reader.read_value() {
+                match reading.decode_event(&message) {
+                    Some(event) => on_event(event),
+                    None => break,
+                }
+            }
+            reading.mark_lost();
+        });
+    }
+
     /// Register as a server with `endpoint`; events go to `on_event` on the connection's reader thread.
     pub fn connect(
         control_path: &Path,
@@ -105,31 +136,7 @@ impl CoordinatorConnection {
             lost: (Mutex::new(false), Condvar::new()),
             closed: Mutex::new(false),
         });
-        let reading = connection.clone();
-        std::thread::spawn(move || {
-            while let Ok(Some(message)) = reader.read_value() {
-                let event = match message["type"].as_str() {
-                    Some("peer_connected") => message["peerId"].as_str().map(|p| {
-                        reading.peers().insert(p.to_string());
-                        Event::PeerConnected(p.to_string())
-                    }),
-                    Some("peer_disconnected") => message["peerId"].as_str().map(|p| {
-                        reading.peers().remove(p);
-                        Event::PeerDisconnected(p.to_string())
-                    }),
-                    Some("message") => message["from"].as_str().map(|from| Event::Message {
-                        from: from.to_string(),
-                        payload: message.get("payload").cloned().unwrap_or(Value::Null),
-                    }),
-                    _ => None,
-                };
-                match event {
-                    Some(event) => on_event(event),
-                    None => break,
-                }
-            }
-            reading.mark_lost();
-        });
+        connection.spawn_reader(reader, on_event);
         Ok(connection)
     }
 

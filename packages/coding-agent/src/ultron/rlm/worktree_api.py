@@ -15,6 +15,22 @@ from typing import Any
 _ANNOUNCED: set[str] = set()
 
 
+def _resolve_mapped_path(
+    path: Path, worktree: str, parent: str
+) -> tuple[Path, Path] | None:
+    resolved = Path(os.path.abspath(path))
+    root = Path(os.path.abspath(worktree))
+    repo = Path(os.path.abspath(parent))
+    if resolved == root or root in resolved.parents:
+        return None
+    if resolved != repo and repo not in resolved.parents:
+        return None
+    relative = resolved.relative_to(repo)
+    if relative.parts[:1] == (".git",):
+        return None
+    return resolved, root / relative
+
+
 def worktree_path(path: Path) -> Path:
     """`path` itself, or its counterpart in this kernel's worktree when it points into the parent's checkout."""
     worktree = os.environ.get("ULTRON_WORKTREE", "").strip()
@@ -22,23 +38,19 @@ def worktree_path(path: Path) -> Path:
     if not worktree or not parent or not path.is_absolute():
         return path
     try:
-        resolved = Path(os.path.abspath(path))
-        root = Path(os.path.abspath(worktree))
-        repo = Path(os.path.abspath(parent))
-        if resolved == root or root in resolved.parents:
-            return path
-        if resolved != repo and repo not in resolved.parents:
-            return path
-        relative = resolved.relative_to(repo)
-        if relative.parts[:1] == (".git",):
-            return path
+        mapped_pair = _resolve_mapped_path(path, worktree, parent)
     except (OSError, ValueError):
         return path
-    mapped = root / relative
+    if mapped_pair is None:
+        return path
+    resolved, mapped = mapped_pair
     key = str(resolved)
     if key not in _ANNOUNCED:
         _ANNOUNCED.add(key)
-        print(f"[worktree] {path} is in your parent's checkout; using your worktree's copy {mapped}")
+        print(
+            f"[worktree] {path} is in your parent's checkout; "
+            f"using your worktree's copy {mapped}"
+        )
     return mapped
 
 

@@ -178,7 +178,7 @@ fn acceptance_a52_ctx_history_summarize_guards_pin_note_and_state_follow_the_bra
     assert!(!joined.contains("SECRET_ONE"));
     assert!(!joined.contains("first answer"));
     assert!(third[0].contains("They asked one thing."));
-    assert!(third.contains(&"answer 1".to_string()));
+    assert!(third.iter().any(|i: &String| i == "answer 1"));
     let events = events.lock().unwrap().clone();
     let sources: Vec<&str> = events.iter().map(|e| e["source"].as_str().unwrap()).collect();
     assert_eq!(sources, ["ctx.summarize"]);

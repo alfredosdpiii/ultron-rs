@@ -110,6 +110,47 @@ pub fn amz_date(epoch_ms: i64) -> String {
     )
 }
 
+fn ensure_payload_hash(request: &mut SignableRequest) -> String {
+    if let Some((_, existing)) = request
+        .headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("x-amz-content-sha256"))
+    {
+        return existing.clone();
+    }
+    let hash = jsrt::hash::sha256_hex(&request.body);
+    request.headers.push(("x-amz-content-sha256".into(), hash.clone()));
+    hash
+}
+
+fn canonical_headers(headers: &[(String, String)]) -> BTreeMap<String, String> {
+    let mut canonical = BTreeMap::new();
+    let mut names: Vec<&(String, String)> = headers.iter().collect();
+    names.sort_by(|a, b| a.0.cmp(&b.0));
+    for (name, value) in names {
+        let lower = name.to_ascii_lowercase();
+        if ALWAYS_UNSIGNABLE.contains(&lower.as_str()) || lower.starts_with("proxy-") || lower.starts_with("sec-") {
+            continue;
+        }
+        canonical.insert(lower, jsrt::string::flatten(value));
+    }
+    canonical
+}
+
+fn sigv4_signature(
+    secret_access_key: &str,
+    short_date: &str,
+    region: &str,
+    service: &str,
+    string_to_sign: &str,
+) -> String {
+    let mut key = jsrt::hash::hmac_sha256(format!("AWS4{secret_access_key}").as_bytes(), short_date.as_bytes());
+    for part in [region, service, "aws4_request"] {
+        key = jsrt::hash::hmac_sha256(&key, part.as_bytes());
+    }
+    jsrt::hash::hex(&jsrt::hash::hmac_sha256(&key, string_to_sign.as_bytes()))
+}
+
 /// `SignatureV4.signRequest`: adds `x-amz-date`, `x-amz-security-token`, `x-amz-content-sha256` and `authorization`
 /// to `request.headers` (lower-case names).
 pub fn sign_request(
@@ -130,30 +171,8 @@ pub fn sign_request(
     if let Some(token) = &credentials.session_token {
         request.headers.push(("x-amz-security-token".into(), token.clone()));
     }
-    let existing_hash = request
-        .headers
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("x-amz-content-sha256"))
-        .map(|(_, v)| v.clone());
-    let payload_hash = existing_hash
-        .clone()
-        .unwrap_or_else(|| jsrt::hash::sha256_hex(&request.body));
-    if existing_hash.is_none() {
-        request
-            .headers
-            .push(("x-amz-content-sha256".into(), payload_hash.clone()));
-    }
-    let mut canonical: BTreeMap<String, String> = BTreeMap::new();
-    let mut names: Vec<&(String, String)> = request.headers.iter().collect();
-    names.sort_by(|a, b| a.0.cmp(&b.0));
-    for (name, value) in names {
-        let lower = name.to_ascii_lowercase();
-        if ALWAYS_UNSIGNABLE.contains(&lower.as_str()) || lower.starts_with("proxy-") || lower.starts_with("sec-") {
-            continue;
-        }
-        let collapsed = jsrt::string::flatten(value);
-        canonical.insert(lower, collapsed);
-    }
+    let payload_hash = ensure_payload_hash(request);
+    let canonical = canonical_headers(&request.headers);
     let signed_headers = canonical.keys().cloned().collect::<Vec<_>>().join(";");
     let canonical_request = format!(
         "{}\n{}\n{}\n{}\n\n{}\n{}",
@@ -172,14 +191,13 @@ pub fn sign_request(
         "AWS4-HMAC-SHA256\n{long_date}\n{scope}\n{}",
         jsrt::hash::sha256_hex(canonical_request.as_bytes())
     );
-    let mut key = jsrt::hash::hmac_sha256(
-        format!("AWS4{}", credentials.secret_access_key).as_bytes(),
-        short_date.as_bytes(),
+    let signature = sigv4_signature(
+        &credentials.secret_access_key,
+        short_date,
+        region,
+        service,
+        &string_to_sign,
     );
-    for part in [region, service, "aws4_request"] {
-        key = jsrt::hash::hmac_sha256(&key, part.as_bytes());
-    }
-    let signature = jsrt::hash::hex(&jsrt::hash::hmac_sha256(&key, string_to_sign.as_bytes()));
     request.headers.push((
         "authorization".into(),
         format!(
@@ -265,34 +283,54 @@ fn decode_message(message: &[u8]) -> Result<EventMessage, String> {
     })
 }
 
+fn malformed_header() -> String {
+    "Malformed event stream header".to_string()
+}
+
+fn take_bytes<'a>(bytes: &mut &'a [u8], n: usize) -> Result<&'a [u8], String> {
+    let value = bytes.get(..n).ok_or_else(malformed_header)?;
+    *bytes = &bytes[n..];
+    Ok(value)
+}
+
+fn take_array<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], String> {
+    take_bytes(bytes, N)?.try_into().map_err(|_| malformed_header())
+}
+
+fn decode_int_header(kind: u8, bytes: &mut &[u8]) -> Result<String, String> {
+    match kind {
+        2 => take_array::<1>(bytes).map(|b| (b[0] as i8).to_string()),
+        3 => take_array::<2>(bytes).map(|b| i16::from_be_bytes(b).to_string()),
+        4 => take_array::<4>(bytes).map(|b| i32::from_be_bytes(b).to_string()),
+        5 | 8 => take_array::<8>(bytes).map(|b| i64::from_be_bytes(b).to_string()),
+        _ => Err(malformed_header()),
+    }
+}
+
+fn decode_len_prefixed_header(bytes: &mut &[u8]) -> Result<String, String> {
+    let length = u16::from_be_bytes(take_array::<2>(bytes)?) as usize;
+    Ok(String::from_utf8_lossy(take_bytes(bytes, length)?).into_owned())
+}
+
+fn decode_header_value(kind: u8, bytes: &mut &[u8]) -> Result<String, String> {
+    match kind {
+        0 => Ok("true".to_string()),
+        1 => Ok("false".to_string()),
+        2..=5 | 8 => decode_int_header(kind, bytes),
+        6 | 7 => decode_len_prefixed_header(bytes),
+        9 => take_bytes(bytes, 16).map(jsrt::hash::hex),
+        _ => Err(malformed_header()),
+    }
+}
+
 fn decode_headers(mut bytes: &[u8]) -> Result<BTreeMap<String, String>, String> {
     let mut headers = BTreeMap::new();
-    let malformed = || "Malformed event stream header".to_string();
     while !bytes.is_empty() {
         let name_length = bytes[0] as usize;
-        let name = String::from_utf8_lossy(bytes.get(1..1 + name_length).ok_or_else(malformed)?).into_owned();
-        bytes = &bytes[1 + name_length..];
-        let kind = *bytes.first().ok_or_else(malformed)?;
         bytes = &bytes[1..];
-        let take = |bytes: &mut &[u8], n: usize| -> Result<Vec<u8>, String> {
-            let value = bytes.get(..n).ok_or_else(malformed)?.to_vec();
-            *bytes = &bytes[n..];
-            Ok(value)
-        };
-        let value = match kind {
-            0 => "true".to_string(),
-            1 => "false".to_string(),
-            2 => (take(&mut bytes, 1)?[0] as i8).to_string(),
-            3 => i16::from_be_bytes(take(&mut bytes, 2)?.try_into().map_err(|_| malformed())?).to_string(),
-            4 => i32::from_be_bytes(take(&mut bytes, 4)?.try_into().map_err(|_| malformed())?).to_string(),
-            5 | 8 => i64::from_be_bytes(take(&mut bytes, 8)?.try_into().map_err(|_| malformed())?).to_string(),
-            6 | 7 => {
-                let length = u16::from_be_bytes(take(&mut bytes, 2)?.try_into().map_err(|_| malformed())?) as usize;
-                String::from_utf8_lossy(&take(&mut bytes, length)?).into_owned()
-            }
-            9 => jsrt::hash::hex(&take(&mut bytes, 16)?),
-            _ => return Err(malformed()),
-        };
+        let name = String::from_utf8_lossy(take_bytes(&mut bytes, name_length)?).into_owned();
+        let kind = take_bytes(&mut bytes, 1)?[0];
+        let value = decode_header_value(kind, &mut bytes)?;
         headers.insert(name, value);
     }
     Ok(headers)

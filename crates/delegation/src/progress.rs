@@ -65,42 +65,53 @@ impl Activity {
     pub fn of(messages: &[Value]) -> Activity {
         let mut activity = Activity::default();
         for message in messages {
-            if let Some(at) = message["timestamp"].as_f64().filter(|at| *at > 0.0) {
-                activity.last_at = Some(activity.last_at.map_or(at, |last| last.max(at)));
-            }
-            match message["role"].as_str() {
-                Some("assistant") => {
-                    activity.responses += 1;
-                    activity.cost_usd += message["usage"]["cost"]["total"].as_f64().unwrap_or(0.0);
-                    for block in message["content"].as_array().into_iter().flatten() {
-                        if block["type"] != "toolCall" {
-                            continue;
-                        }
-                        let code = block["arguments"]["code"].as_str().unwrap_or_default();
-                        let index = activity.cells;
-                        activity.cells += 1;
-                        if CHANGES.iter().any(|c| code.contains(c)) {
-                            activity.last_change = Some(index);
-                        }
-                        if CHECKS.iter().any(|c| code.contains(c)) {
-                            activity.last_check = Some(index);
-                        }
-                        if code.contains("rlm.finish(") {
-                            activity.finished = true;
-                        }
-                    }
-                }
-                Some("toolResult") => {
-                    if message["isError"] == true {
-                        activity.failed_in_row += 1;
-                    } else {
-                        activity.failed_in_row = 0;
-                    }
-                }
-                _ => {}
-            }
+            activity.record_message(message);
         }
         activity
+    }
+
+    fn record_message(&mut self, message: &Value) {
+        if let Some(at) = message["timestamp"].as_f64().filter(|at| *at > 0.0) {
+            self.last_at = Some(self.last_at.map_or(at, |last| last.max(at)));
+        }
+        match message["role"].as_str() {
+            Some("assistant") => self.record_assistant(message),
+            Some("toolResult") => self.record_tool_result(message),
+            _ => {}
+        }
+    }
+
+    fn record_assistant(&mut self, message: &Value) {
+        self.responses += 1;
+        self.cost_usd += message["usage"]["cost"]["total"].as_f64().unwrap_or(0.0);
+        for block in message["content"].as_array().into_iter().flatten() {
+            if block["type"] != "toolCall" {
+                continue;
+            }
+            self.record_tool_call(block["arguments"]["code"].as_str().unwrap_or_default());
+        }
+    }
+
+    fn record_tool_call(&mut self, code: &str) {
+        let index = self.cells;
+        self.cells += 1;
+        if CHANGES.iter().any(|c| code.contains(c)) {
+            self.last_change = Some(index);
+        }
+        if CHECKS.iter().any(|c| code.contains(c)) {
+            self.last_check = Some(index);
+        }
+        if code.contains("rlm.finish(") {
+            self.finished = true;
+        }
+    }
+
+    fn record_tool_result(&mut self, message: &Value) {
+        if message["isError"] == true {
+            self.failed_in_row += 1;
+        } else {
+            self.failed_in_row = 0;
+        }
     }
 
     /// The level it is at and what that means.
@@ -137,7 +148,7 @@ pub fn report(messages: &[Value], now_ms: f64, elapsed_ms: f64, timeout_ms: Opti
     let activity = Activity::of(messages);
     let (level, description) = activity.level(now_ms);
     let minutes = elapsed_ms / 60_000.0;
-    let rate = (minutes > 0.0).then(|| activity.cost_usd / minutes);
+    let rate = (minutes > 0.0).then_some(activity.cost_usd / minutes);
     let left_ms = timeout_ms.map(|limit| (limit as f64 - elapsed_ms).max(0.0));
     json!({
         "level": level,

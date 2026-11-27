@@ -367,6 +367,38 @@ fn is_empty_like(value: &Value) -> bool {
     }
 }
 
+fn assistant_diagnostic_entry(entry: &Value, message: &Value) -> Option<Value> {
+    let diagnostics = match message.get("diagnostics") {
+        None | Some(Value::Null) => Value::Array(Vec::new()),
+        Some(value) => value.clone(),
+    };
+    let stop_reason = message.get("stopReason").and_then(Value::as_str);
+    if is_empty_like(&diagnostics)
+        && stop_reason != Some("error")
+        && stop_reason != Some("aborted")
+        && !jsrt::value::truthy(message.get("errorMessage"))
+    {
+        return None;
+    }
+    let mut out = Map::new();
+    if let Some(id) = entry.get("id") {
+        out.insert("entryId".into(), id.clone());
+    }
+    copy(&mut out, entry, "timestamp");
+    for key in [
+        "provider",
+        "model",
+        "api",
+        "stopReason",
+        "rawStopReason",
+        "errorMessage",
+    ] {
+        copy(&mut out, message, key);
+    }
+    out.insert("diagnostics".into(), diagnostics);
+    Some(Value::Object(out))
+}
+
 /// `collectBugReportDiagnostics`: failed or diagnosed assistant turns and recent crashes, without conversation content.
 pub fn collect_bug_report_diagnostics(session_id: &str, entries: &[Value], crashes: &[CrashRecord]) -> Value {
     let mut assistant = Vec::new();
@@ -379,35 +411,9 @@ pub fn collect_bug_report_diagnostics(session_id: &str, entries: &[Value], crash
             continue;
         }
         assistant_count += 1;
-        let diagnostics = match message.get("diagnostics") {
-            None | Some(Value::Null) => Value::Array(Vec::new()),
-            Some(value) => value.clone(),
-        };
-        let stop_reason = message.get("stopReason").and_then(Value::as_str);
-        if is_empty_like(&diagnostics)
-            && stop_reason != Some("error")
-            && stop_reason != Some("aborted")
-            && !jsrt::value::truthy(message.get("errorMessage"))
-        {
-            continue;
+        if let Some(diagnostic) = assistant_diagnostic_entry(entry, message) {
+            assistant.push(diagnostic);
         }
-        let mut out = Map::new();
-        if let Some(id) = entry.get("id") {
-            out.insert("entryId".into(), id.clone());
-        }
-        copy(&mut out, entry, "timestamp");
-        for key in [
-            "provider",
-            "model",
-            "api",
-            "stopReason",
-            "rawStopReason",
-            "errorMessage",
-        ] {
-            copy(&mut out, message, key);
-        }
-        out.insert("diagnostics".into(), diagnostics);
-        assistant.push(Value::Object(out));
     }
     let crashes: Vec<Value> = crashes
         .iter()

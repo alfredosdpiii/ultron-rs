@@ -201,6 +201,41 @@ impl TuiReport {
         self.send_metadata(&track);
     }
 
+    fn on_tool_start(&self, event: &Value) {
+        if let Some(id) = event["toolCallId"].as_str().filter(|s| !s.is_empty()) {
+            let tool = event["toolName"].as_str().unwrap_or("rlm");
+            self.reporter
+                .task_state(&format!("tool/{id}"), State::Working, None, Some(tool), None);
+        }
+    }
+
+    fn on_tool_end(&self, event: &Value) {
+        if let Some(id) = event["toolCallId"].as_str().filter(|s| !s.is_empty()) {
+            self.reporter.task_clear(&format!("tool/{id}"));
+        }
+    }
+
+    fn on_message_end(&self, track: &mut Track, message: &Value) {
+        if message["role"] == "assistant" {
+            track.final_text = protocol::pi_message::text(message);
+            track.cost += message_cost(message);
+        }
+        if message["role"] == "user" && track.first_prompt.is_none() {
+            let text = first_line(&protocol::pi_message::text(message));
+            track.first_prompt = (!text.is_empty()).then_some(text);
+        }
+        track.transcript.push(message.clone());
+        self.send_metadata(track);
+    }
+
+    fn on_entry_added(&self, track: &mut Track, event: &Value) {
+        if event["entry"]["type"] == "compaction" {
+            track.transcript.clear();
+            track.compacted = true;
+            self.send_metadata(track);
+        }
+    }
+
     /// One lane-watch event of the attached session (the link's watch thread).
     pub fn lane_event(&self, event: &Value) {
         let mut track = self.track();
@@ -209,31 +244,9 @@ impl TuiReport {
                 track.final_text.clear();
                 self.reporter.state(State::Working, None);
             }
-            Some("tool_execution_start") => {
-                if let Some(id) = event["toolCallId"].as_str().filter(|s| !s.is_empty()) {
-                    let tool = event["toolName"].as_str().unwrap_or("rlm");
-                    self.reporter
-                        .task_state(&format!("tool/{id}"), State::Working, None, Some(tool), None);
-                }
-            }
-            Some("tool_execution_end") => {
-                if let Some(id) = event["toolCallId"].as_str().filter(|s| !s.is_empty()) {
-                    self.reporter.task_clear(&format!("tool/{id}"));
-                }
-            }
-            Some("message_end") => {
-                let message = &event["message"];
-                if message["role"] == "assistant" {
-                    track.final_text = protocol::pi_message::text(message);
-                    track.cost += message_cost(message);
-                }
-                if message["role"] == "user" && track.first_prompt.is_none() {
-                    let text = first_line(&protocol::pi_message::text(message));
-                    track.first_prompt = (!text.is_empty()).then_some(text);
-                }
-                track.transcript.push(message.clone());
-                self.send_metadata(&track);
-            }
+            Some("tool_execution_start") => self.on_tool_start(event),
+            Some("tool_execution_end") => self.on_tool_end(event),
+            Some("message_end") => self.on_message_end(&mut track, &event["message"]),
             Some("run_end") => {
                 let (state, kind, message) = run_end_report(event, &track.final_text);
                 self.reporter.state_with_kind(state, kind, message);
@@ -242,11 +255,7 @@ impl TuiReport {
                 track.name = event["name"].as_str().map(str::to_string);
                 self.send_metadata(&track);
             }
-            Some("entry_added") if event["entry"]["type"] == "compaction" => {
-                track.transcript.clear();
-                track.compacted = true;
-                self.send_metadata(&track);
-            }
+            Some("entry_added") => self.on_entry_added(&mut track, event),
             _ => {}
         }
     }

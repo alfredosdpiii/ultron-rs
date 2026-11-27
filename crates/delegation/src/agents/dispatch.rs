@@ -32,142 +32,244 @@ impl Agents {
             return Err("Ultron task host is closed".into());
         }
         let parent = self.caller_task(lane);
-        let parent = parent.as_deref();
         let records = self.state().journal.list()?;
-        let visible = |id: &str| Self::visible(&records, id, parent);
-        if ["ping", "agents.list", "agents.tasks"].contains(&kind) {
-            jsrt::payload::fields(&payload, &[])?;
-        }
-        if kind == "agents.status" {
-            jsrt::payload::fields(&payload, &["graph"])?;
-        }
+        validate_header_fields(kind, &payload)?;
         let Some(request) = Request::of(kind) else {
             return Err(kernel::ops::not_wired(kind));
         };
+        let ctx = DispatchCtx {
+            kind,
+            payload,
+            lane,
+            cell,
+            parent: parent.as_deref(),
+            records: &records,
+        };
+        self.dispatch_request(request, ctx)
+    }
+
+    fn dispatch_request(&self, request: Request, ctx: DispatchCtx<'_>) -> Result<Value, String> {
+        match request {
+            Request::Ping
+            | Request::List
+            | Request::Status
+            | Request::Register
+            | Request::Finish
+            | Request::BudgetEstimate => self.dispatch_core(request, ctx),
+            Request::BackgroundStart
+            | Request::BackgroundList
+            | Request::BackgroundJob
+            | Request::Start
+            | Request::Task => self.dispatch_tasks(request, ctx),
+            Request::WorkflowsRun
+            | Request::WorkflowsStart
+            | Request::WorkflowsStatus
+            | Request::WorkflowsStop
+            | Request::WorkflowsResume => self.dispatch_workflows(request, ctx),
+        }
+    }
+
+    fn dispatch_core(&self, request: Request, ctx: DispatchCtx<'_>) -> Result<Value, String> {
         match request {
             Request::Ping => Ok(json!({ "ok": true })),
             Request::List => Ok(Value::from(self.state().registry.list())),
-            Request::Status => self.status(&payload, lane, parent, &records),
+            Request::Status => self.status(&ctx.payload, ctx.lane, ctx.parent, ctx.records),
             Request::Register => {
-                jsrt::payload::fields(&payload, &["definition"])?;
+                jsrt::payload::fields(&ctx.payload, &["definition"])?;
                 self.state()
                     .registry
-                    .register(payload.get("definition").unwrap_or(&Value::Null))
+                    .register(ctx.payload.get("definition").unwrap_or(&Value::Null))
             }
-            Request::BackgroundStart => {
-                jsrt::payload::fields(&payload, &["prompt", "model", "key", "timeout_ms"])?;
-                let prompt = nonempty_string(payload.get("prompt"), "prompt")?;
-                if utf16::len(&prompt) > 65_536 {
-                    return Err("Background prompt exceeds 65536 characters".into());
-                }
-                let key = payload
-                    .get("key")
-                    .and_then(Value::as_str)
-                    .map(|k| format!("background:{k}"));
-                if key.as_ref().is_some_and(|k| utf16::len(k) > 264) {
-                    return Err("Background key is too long".into());
-                }
-                let request = TaskRequest {
-                    definition: "background-job@1".into(),
-                    input: json!({ "prompt": prompt }),
-                    model: payload.get("model").and_then(Value::as_str).map(String::from),
-                    key,
-                    timeout_ms: payload
-                        .get("timeout_ms")
-                        .and_then(Value::as_f64)
-                        .map_or(DEFAULT_TIMEOUT_MS, |t| t as u64),
-                    ..TaskRequest::default()
-                };
-                let (_, admitted) = self.spawn_task_with_record(request, cell, parent, Some("task_done"))?;
-                Ok(public_task(&admitted))
-            }
-            Request::BackgroundList => {
-                jsrt::payload::fields(&payload, &[])?;
-                Ok(Value::from(
-                    records
-                        .iter()
-                        .filter(|r| r["definition"] == "background-job@1")
-                        .filter(|r| visible(r["id"].as_str().unwrap_or_default()))
-                        .map(public_task)
-                        .collect::<Vec<_>>(),
-                ))
-            }
-            Request::BackgroundJob => {
-                jsrt::payload::fields(&payload, &["id"])?;
-                let id = nonempty_string(payload.get("id"), "id")?;
-                let stored = records
-                    .iter()
-                    .find(|r| r["id"] == id.as_str() && r["definition"] == "background-job@1");
-                let Some(stored) = stored.filter(|_| visible(&id)) else {
-                    return Err("Unknown background job".into());
-                };
-                match kind {
-                    "background.inspect" => Ok(public_task(&self.record(&id))),
-                    "background.stop" => {
-                        let result = self.cancel(&id, "Background job stopped")?;
-                        Ok(json!({ "cancelled": result["status"] == "cancelled" }))
-                    }
-                    _ => match self.is_live(&id) {
-                        true => self.wait_outcome(&id, cell.map(|c| (c, false))),
-                        false => Ok(stored.get("result").cloned().unwrap_or(Value::Null)),
-                    },
-                }
-            }
-            Request::Start => {
-                let spawn = kind == "agents.spawn";
-                let request = self.request(&payload, parent)?;
-                let (id, admitted) =
-                    self.spawn_task_with_record(request, cell, parent, spawn.then_some("task_done"))?;
-                if spawn {
-                    return Ok(json!({ "id": id, "state": admitted["state"] }));
-                }
-                self.result_of(&id, cell.map(|c| (c, true)))
-            }
-            Request::Task => {
-                jsrt::payload::fields(&payload, &["id"])?;
-                let id = nonempty_string(payload.get("id"), "id")?;
-                let stored = records.iter().find(|r| r["id"] == id.as_str());
-                let Some(stored) = stored.filter(|_| visible(&id)) else {
-                    if let Some(children) = self.inner.worktree_children.get()
-                        && let Some(answer) = children.agents_request(kind, &id, lane, cell)
-                    {
-                        return answer;
-                    }
-                    return Err("Unknown Ultron task".into());
-                };
-                match kind {
-                    "agents.inspect" => Ok(public_task(stored)),
-                    "agents.cancel" => {
-                        let result = self.cancel(&id, "Ultron task cancelled")?;
-                        Ok(json!({ "cancelled": result["status"] == "cancelled" }))
-                    }
-                    _ => match self.is_live(&id) {
-                        true => self.wait_outcome(&id, cell.map(|c| (c, false))),
-                        false => Ok(stored.get("result").cloned().unwrap_or(Value::Null)),
-                    },
-                }
-            }
-            Request::Finish => self.finish_request(payload, parent),
-            Request::WorkflowsRun => {
-                let mut nodes = self.workflow(&payload)?;
-                for node in &mut nodes {
-                    node.lane = lane.to_string();
-                }
-                self.run_workflow(nodes, cell, parent)
-            }
-            Request::WorkflowsStart => {
-                let mut nodes = self.workflow(&payload)?;
-                for node in &mut nodes {
-                    node.lane = lane.to_string();
-                }
-                self.start_workflow(nodes, parent)
-            }
-            Request::WorkflowsStatus => self.workflow_status(&payload),
-            Request::WorkflowsStop => self.stop_workflow(&payload),
-            Request::WorkflowsResume => self.resume_workflow(&payload),
-            Request::BudgetEstimate => self.estimate(&payload, parent),
+            Request::Finish => self.finish_request(ctx.payload, ctx.parent),
+            Request::BudgetEstimate => self.estimate(&ctx.payload, ctx.parent),
+            _ => unreachable!("routed by dispatch_request"),
         }
     }
+
+    fn dispatch_tasks(&self, request: Request, ctx: DispatchCtx<'_>) -> Result<Value, String> {
+        match request {
+            Request::BackgroundStart => self.handle_background_start(&ctx.payload, ctx.cell, ctx.parent),
+            Request::BackgroundList => self.handle_background_list(&ctx.payload, ctx.records, ctx.parent),
+            Request::BackgroundJob => {
+                self.handle_background_job(ctx.kind, &ctx.payload, ctx.records, ctx.cell, ctx.parent)
+            }
+            Request::Start => self.handle_start(ctx.kind, &ctx.payload, ctx.cell, ctx.parent),
+            Request::Task => self.handle_task(ctx.kind, &ctx.payload, ctx.records, ctx.lane, ctx.cell, ctx.parent),
+            _ => unreachable!("routed by dispatch_request"),
+        }
+    }
+
+    fn dispatch_workflows(&self, request: Request, ctx: DispatchCtx<'_>) -> Result<Value, String> {
+        match request {
+            Request::WorkflowsRun => {
+                let nodes = self.workflow_for_lane(&ctx.payload, ctx.lane)?;
+                self.run_workflow(nodes, ctx.cell, ctx.parent)
+            }
+            Request::WorkflowsStart => {
+                let nodes = self.workflow_for_lane(&ctx.payload, ctx.lane)?;
+                self.start_workflow(nodes, ctx.parent)
+            }
+            Request::WorkflowsStatus => self.workflow_status(&ctx.payload),
+            Request::WorkflowsStop => self.stop_workflow(&ctx.payload),
+            Request::WorkflowsResume => self.resume_workflow(&ctx.payload),
+            _ => unreachable!("routed by dispatch_request"),
+        }
+    }
+
+    fn workflow_for_lane(&self, payload: &Map<String, Value>, lane: &str) -> Result<Vec<Node>, String> {
+        let mut nodes = self.workflow(payload)?;
+        for node in &mut nodes {
+            node.lane = lane.to_string();
+        }
+        Ok(nodes)
+    }
+
+    fn handle_background_start(
+        &self,
+        payload: &Map<String, Value>,
+        cell: Option<&Signal>,
+        parent: Option<&str>,
+    ) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &["prompt", "model", "key", "timeout_ms"])?;
+        let prompt = nonempty_string(payload.get("prompt"), "prompt")?;
+        if utf16::len(&prompt) > 65_536 {
+            return Err("Background prompt exceeds 65536 characters".into());
+        }
+        let key = payload
+            .get("key")
+            .and_then(Value::as_str)
+            .map(|k| format!("background:{k}"));
+        if key.as_ref().is_some_and(|k| utf16::len(k) > 264) {
+            return Err("Background key is too long".into());
+        }
+        let request = TaskRequest {
+            definition: "background-job@1".into(),
+            input: json!({ "prompt": prompt }),
+            model: payload.get("model").and_then(Value::as_str).map(String::from),
+            key,
+            timeout_ms: payload
+                .get("timeout_ms")
+                .and_then(Value::as_f64)
+                .map_or(DEFAULT_TIMEOUT_MS, |t| t as u64),
+            ..TaskRequest::default()
+        };
+        let (_, admitted) = self.spawn_task_with_record(request, cell, parent, Some("task_done"))?;
+        Ok(public_task(&admitted))
+    }
+
+    fn handle_background_list(
+        &self,
+        payload: &Map<String, Value>,
+        records: &[Value],
+        parent: Option<&str>,
+    ) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &[])?;
+        Ok(Value::from(
+            records
+                .iter()
+                .filter(|r| r["definition"] == "background-job@1")
+                .filter(|r| Self::visible(records, r["id"].as_str().unwrap_or_default(), parent))
+                .map(public_task)
+                .collect::<Vec<_>>(),
+        ))
+    }
+
+    fn handle_background_job(
+        &self,
+        kind: &str,
+        payload: &Map<String, Value>,
+        records: &[Value],
+        cell: Option<&Signal>,
+        parent: Option<&str>,
+    ) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &["id"])?;
+        let id = nonempty_string(payload.get("id"), "id")?;
+        let stored = records
+            .iter()
+            .find(|r| r["id"] == id.as_str() && r["definition"] == "background-job@1");
+        let Some(stored) = stored.filter(|_| Self::visible(records, &id, parent)) else {
+            return Err("Unknown background job".into());
+        };
+        match kind {
+            "background.inspect" => Ok(public_task(&self.record(&id))),
+            "background.stop" => {
+                let result = self.cancel(&id, "Background job stopped")?;
+                Ok(json!({ "cancelled": result["status"] == "cancelled" }))
+            }
+            _ => match self.is_live(&id) {
+                true => self.wait_outcome(&id, cell.map(|c| (c, false))),
+                false => Ok(stored.get("result").cloned().unwrap_or(Value::Null)),
+            },
+        }
+    }
+
+    fn handle_start(
+        &self,
+        kind: &str,
+        payload: &Map<String, Value>,
+        cell: Option<&Signal>,
+        parent: Option<&str>,
+    ) -> Result<Value, String> {
+        let spawn = kind == "agents.spawn";
+        let request = self.request(payload, parent)?;
+        let (id, admitted) = self.spawn_task_with_record(request, cell, parent, spawn.then_some("task_done"))?;
+        if spawn {
+            return Ok(json!({ "id": id, "state": admitted["state"] }));
+        }
+        self.result_of(&id, cell.map(|c| (c, true)))
+    }
+
+    fn handle_task(
+        &self,
+        kind: &str,
+        payload: &Map<String, Value>,
+        records: &[Value],
+        lane: &str,
+        cell: Option<&Signal>,
+        parent: Option<&str>,
+    ) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &["id"])?;
+        let id = nonempty_string(payload.get("id"), "id")?;
+        let stored = records.iter().find(|r| r["id"] == id.as_str());
+        let Some(stored) = stored.filter(|_| Self::visible(records, &id, parent)) else {
+            if let Some(children) = self.inner.worktree_children.get()
+                && let Some(answer) = children.agents_request(kind, &id, lane, cell)
+            {
+                return answer;
+            }
+            return Err("Unknown Ultron task".into());
+        };
+        match kind {
+            "agents.inspect" => Ok(public_task(stored)),
+            "agents.cancel" => {
+                let result = self.cancel(&id, "Ultron task cancelled")?;
+                Ok(json!({ "cancelled": result["status"] == "cancelled" }))
+            }
+            _ => match self.is_live(&id) {
+                true => self.wait_outcome(&id, cell.map(|c| (c, false))),
+                false => Ok(stored.get("result").cloned().unwrap_or(Value::Null)),
+            },
+        }
+    }
+}
+
+struct DispatchCtx<'a> {
+    kind: &'a str,
+    payload: Map<String, Value>,
+    lane: &'a str,
+    cell: Option<&'a Signal>,
+    parent: Option<&'a str>,
+    records: &'a [Value],
+}
+
+fn validate_header_fields(kind: &str, payload: &Map<String, Value>) -> Result<(), String> {
+    if ["ping", "agents.list", "agents.tasks"].contains(&kind) {
+        jsrt::payload::fields(payload, &[])?;
+    }
+    if kind == "agents.status" {
+        jsrt::payload::fields(payload, &["graph"])?;
+    }
+    Ok(())
 }
 
 impl kernel_apis::TaskHost for Agents {
@@ -294,26 +396,35 @@ enum Request {
     BudgetEstimate,
 }
 
+const REQUEST_KINDS: &[(&str, Request)] = &[
+    ("ping", Request::Ping),
+    ("agents.list", Request::List),
+    ("agents.status", Request::Status),
+    ("agents.tasks", Request::Status),
+    ("agents.register", Request::Register),
+    ("background.start", Request::BackgroundStart),
+    ("background.list", Request::BackgroundList),
+    ("background.inspect", Request::BackgroundJob),
+    ("background.result", Request::BackgroundJob),
+    ("background.stop", Request::BackgroundJob),
+    ("agents.spawn", Request::Start),
+    ("agents.invoke", Request::Start),
+    ("agents.inspect", Request::Task),
+    ("agents.result", Request::Task),
+    ("agents.cancel", Request::Task),
+    ("rlm.finish", Request::Finish),
+    ("workflows.run", Request::WorkflowsRun),
+    ("workflows.start", Request::WorkflowsStart),
+    ("workflows.status", Request::WorkflowsStatus),
+    ("workflows.stop", Request::WorkflowsStop),
+    ("workflows.resume", Request::WorkflowsResume),
+    ("budget.estimate", Request::BudgetEstimate),
+];
+
 impl Request {
     fn of(kind: &str) -> Option<Request> {
-        Some(match kind {
-            "ping" => Request::Ping,
-            "agents.list" => Request::List,
-            "agents.status" | "agents.tasks" => Request::Status,
-            "agents.register" => Request::Register,
-            "background.start" => Request::BackgroundStart,
-            "background.list" => Request::BackgroundList,
-            "background.inspect" | "background.result" | "background.stop" => Request::BackgroundJob,
-            "agents.spawn" | "agents.invoke" => Request::Start,
-            "agents.inspect" | "agents.result" | "agents.cancel" => Request::Task,
-            "rlm.finish" => Request::Finish,
-            "workflows.run" => Request::WorkflowsRun,
-            "workflows.start" => Request::WorkflowsStart,
-            "workflows.status" => Request::WorkflowsStatus,
-            "workflows.stop" => Request::WorkflowsStop,
-            "workflows.resume" => Request::WorkflowsResume,
-            "budget.estimate" => Request::BudgetEstimate,
-            _ => return None,
-        })
+        REQUEST_KINDS
+            .iter()
+            .find_map(|(name, request)| (*name == kind).then_some(*request))
     }
 }

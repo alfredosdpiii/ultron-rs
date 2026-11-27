@@ -61,35 +61,41 @@ fn valid_section_name(name: &str) -> bool {
         && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
 
+fn add_rule(rules: &mut Vec<String>, rule: &str) {
+    let rule = rule.trim();
+    if !rule.is_empty() && !rules.iter().any(|r| r == rule) {
+        rules.push(rule.to_string());
+    }
+}
+
+fn shell_file_ops_rule(selected_tools: &[String]) -> Option<&'static str> {
+    let has = |name: &str| selected_tools.iter().any(|t| t == name);
+    if has("grep") || has("find") || has("ls") {
+        return None;
+    }
+    match (has("bash"), has("powershell")) {
+        (true, true) => Some("Use bash or PowerShell for file operations like listing, searching, and finding files"),
+        (false, true) => Some("Use PowerShell for file operations like listing, searching, and finding files"),
+        (true, false) => Some("Use bash for file operations like ls, rg, find"),
+        (false, false) => None,
+    }
+}
+
 fn build_rules(options: &BuildOptions) -> String {
     let mut rules: Vec<String> = Vec::new();
-    let mut add = |rule: &str| {
-        let rule = rule.trim();
-        if !rule.is_empty() && !rules.iter().any(|r| r == rule) {
-            rules.push(rule.to_string());
-        }
-    };
-    let has = |name: &str| options.selected_tools.iter().any(|t| t == name);
-    let (bash, pwsh) = (has("bash"), has("powershell"));
-    if (bash || pwsh) && !has("grep") && !has("find") && !has("ls") {
-        add(if bash && pwsh {
-            "Use bash or PowerShell for file operations like listing, searching, and finding files"
-        } else if pwsh {
-            "Use PowerShell for file operations like listing, searching, and finding files"
-        } else {
-            "Use bash for file operations like ls, rg, find"
-        });
+    if let Some(shell_rule) = shell_file_ops_rule(&options.selected_tools) {
+        add_rule(&mut rules, shell_rule);
     }
     for name in &options.selected_tools {
         for rule in lookup(&options.tool_guidelines, name).into_iter().flatten() {
-            add(rule);
+            add_rule(&mut rules, rule);
         }
     }
     for rule in &options.prompt_guidelines {
-        add(rule);
+        add_rule(&mut rules, rule);
     }
-    add("Be concise in your responses");
-    add("Show file paths clearly when working with files");
+    add_rule(&mut rules, "Be concise in your responses");
+    add_rule(&mut rules, "Show file paths clearly when working with files");
     rules
         .iter()
         .map(|rule| format!("- {rule}"))
@@ -105,98 +111,141 @@ fn set(sections: &mut Sections, name: &str, text: String) {
     }
 }
 
-/// `buildSystemPromptSections`. Errors on an invalid custom section name.
-pub fn build_system_prompt_sections(options: &BuildOptions) -> Result<Sections, String> {
-    for (name, _) in &options.sections {
+fn validate_section_names(sections: &[(String, String)]) -> Result<(), String> {
+    for (name, _) in sections {
         if !valid_section_name(name) || name == "preamble" {
             return Err(format!("Invalid system prompt section name: {name}"));
         }
     }
-    let skills: Vec<Skill> = if options.engineering {
-        options.skills.clone()
+    Ok(())
+}
+
+fn effective_skills(options: &BuildOptions) -> Vec<Skill> {
+    if options.engineering {
+        return options.skills.clone();
+    }
+    options
+        .skills
+        .iter()
+        .map(|s| Skill {
+            always_on_content: None,
+            ..s.clone()
+        })
+        .collect()
+}
+
+fn format_tools_section(options: &BuildOptions) -> String {
+    let visible: Vec<String> = options
+        .selected_tools
+        .iter()
+        .filter_map(|name| {
+            let snippet = lookup(&options.tool_snippets, name).filter(|s| !s.is_empty())?;
+            Some(format!("- {name}: {snippet}"))
+        })
+        .collect();
+    let tools = if visible.is_empty() {
+        "(none)".to_string()
     } else {
-        options
-            .skills
-            .iter()
-            .map(|s| Skill {
-                always_on_content: None,
-                ..s.clone()
-            })
-            .collect()
+        visible.join("\n")
     };
-    let mut out: Sections = Vec::new();
-    match options.custom_prompt.as_deref().filter(|p| !p.is_empty()) {
-        Some(custom) => set(&mut out, "preamble", custom.to_string()),
-        None => {
-            set(&mut out, "preamble", "You are an expert coding assistant operating inside Ultron, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.".to_string());
-            let visible: Vec<String> = options
-                .selected_tools
-                .iter()
-                .filter_map(|name| {
-                    let snippet = lookup(&options.tool_snippets, name).filter(|s| !s.is_empty())?;
-                    Some(format!("- {name}: {snippet}"))
-                })
-                .collect();
-            let tools = if visible.is_empty() {
-                "(none)".to_string()
-            } else {
-                visible.join("\n")
-            };
-            set(
-                &mut out,
-                "tools",
-                if options.include_harness_docs {
-                    format!(
-                        "{tools}\n\nIn addition to the tools above, you may have access to other custom tools depending on the project."
-                    )
-                } else {
-                    tools
-                },
-            );
-            set(&mut out, "rules", build_rules(options));
-            if options.include_harness_docs {
-                let DocPaths { readme, docs, examples } = &options.doc_paths;
-                set(&mut out, "docs", format!("Ultron documentation (read only when the user asks about Ultron itself, its SDK, extensions, themes, skills, or TUI):
+    if options.include_harness_docs {
+        format!(
+            "{tools}\n\nIn addition to the tools above, you may have access to other custom tools depending on the project."
+        )
+    } else {
+        tools
+    }
+}
+
+fn format_docs_section(doc_paths: &DocPaths) -> String {
+    let DocPaths { readme, docs, examples } = doc_paths;
+    format!(
+        "Ultron documentation (read only when the user asks about Ultron itself, its SDK, extensions, themes, skills, or TUI):
 - Main documentation: {readme}
 - Additional docs: {docs}
 - Examples: {examples} (extensions, custom tools, SDK)
 - When reading Ultron docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory
 - When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), Ultron packages (docs/packages.md), environment variables (docs/environment-variables.md)
 - When working on Ultron topics, read the docs and examples, and follow .md cross-references before implementing
-- Always read Ultron .md files completely and follow links to related docs (e.g., tui.md for TUI API details)"));
-            }
-        }
+- Always read Ultron .md files completely and follow links to related docs (e.g., tui.md for TUI API details)"
+    )
+}
+
+fn add_preamble_sections(out: &mut Sections, options: &BuildOptions) {
+    if let Some(custom) = options.custom_prompt.as_deref().filter(|p| !p.is_empty()) {
+        set(out, "preamble", custom.to_string());
+        return;
     }
+    set(
+        out,
+        "preamble",
+        "You are an expert coding assistant operating inside Ultron, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.".to_string(),
+    );
+    set(out, "tools", format_tools_section(options));
+    set(out, "rules", build_rules(options));
+    if options.include_harness_docs {
+        set(out, "docs", format_docs_section(&options.doc_paths));
+    }
+}
+
+fn format_context_files(files: &[ContextFile]) -> String {
+    let mut parts = vec!["Project-specific instructions and guidelines:".to_string()];
+    parts.extend(files.iter().map(|ContextFile { path, content }| {
+        format!("<project_instructions path=\"{path}\">\n{content}\n</project_instructions>")
+    }));
+    parts.join("\n\n")
+}
+
+fn format_skills_section(skills: &[Skill], options: &BuildOptions) -> Option<String> {
+    if skills.is_empty() {
+        return None;
+    }
+    let tool = ["read", "bash", "rlm"]
+        .into_iter()
+        .find(|tool| options.selected_tools.iter().any(|t| t == tool))?;
+    let parts = [
+        format_always_skills_for_prompt(skills),
+        format_skills_for_prompt(skills, tool).trim().to_string(),
+        bundled_skills_note(skills, options.bundled_skills_dir.as_deref(), options.proactive_skills),
+    ];
+    let text = parts
+        .into_iter()
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (!text.is_empty()).then_some(text)
+}
+
+fn wrap_section((name, text): (String, String)) -> (String, String) {
+    if name == "preamble" {
+        (name, text)
+    } else {
+        let wrapped = format!("<{name}>\n{text}\n</{name}>");
+        (name, wrapped)
+    }
+}
+
+/// `buildSystemPromptSections`. Errors on an invalid custom section name.
+pub fn build_system_prompt_sections(options: &BuildOptions) -> Result<Sections, String> {
+    validate_section_names(&options.sections)?;
+    let skills = effective_skills(options);
+    let mut out: Sections = Vec::new();
+    add_preamble_sections(&mut out, options);
     if !options.append_system_prompt.is_empty() {
         set(&mut out, "addendum", options.append_system_prompt.clone());
     }
     if !options.context_files.is_empty() {
-        let mut parts = vec!["Project-specific instructions and guidelines:".to_string()];
-        parts.extend(options.context_files.iter().map(|ContextFile { path, content }| {
-            format!("<project_instructions path=\"{path}\">\n{content}\n</project_instructions>")
-        }));
-        set(&mut out, "project_context", parts.join("\n\n"));
+        set(
+            &mut out,
+            "project_context",
+            format_context_files(&options.context_files),
+        );
     }
     if let Some(persona) = options.persona.as_deref().filter(|p| !p.is_empty()) {
         set(&mut out, "persona", crate::persona::section_text(persona));
     }
-    let read_tool = ["read", "bash", "rlm"]
-        .into_iter()
-        .find(|tool| options.selected_tools.iter().any(|t| t == tool));
-    if let Some(tool) = read_tool.filter(|_| !skills.is_empty()) {
-        let parts = [
-            format_always_skills_for_prompt(&skills),
-            format_skills_for_prompt(&skills, tool).trim().to_string(),
-            bundled_skills_note(&skills, options.bundled_skills_dir.as_deref(), options.proactive_skills),
-        ];
-        let text = parts
-            .into_iter()
-            .filter(|p| !p.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        if !text.is_empty() {
-            set(&mut out, "skills", text);
-        }
+    if let Some(text) = format_skills_section(&skills, options) {
+        set(&mut out, "skills", text);
     }
     set(&mut out, "cwd", options.cwd.replace('\\', "/"));
     for (name, content) in &options.sections {
@@ -204,17 +253,7 @@ pub fn build_system_prompt_sections(options: &BuildOptions) -> Result<Sections, 
             set(&mut out, name, content.clone());
         }
     }
-    Ok(out
-        .into_iter()
-        .map(|(name, text)| {
-            if name == "preamble" {
-                (name, text)
-            } else {
-                let wrapped = format!("<{name}>\n{text}\n</{name}>");
-                (name, wrapped)
-            }
-        })
-        .collect())
+    Ok(out.into_iter().map(wrap_section).collect())
 }
 
 /// `buildSystemPrompt`: a forced prompt as is, else the sections joined as the system message replays them.

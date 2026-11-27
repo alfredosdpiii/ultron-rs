@@ -3,19 +3,25 @@
 //! (Chord's consumer side), and `run_client` (experimental/client.ts `runClient`): list sessions, attach to one, or
 //! create one and prompt it, following its transcript until the run ends.
 
+mod runner;
+
+pub use runner::{
+    ClientCommand, ClientResult, EventListener, REJOIN_TIMEOUT, Reopen, RunOptions, rejoin, run_client, run_client_on,
+    run_client_reopening, run_client_with,
+};
+
 use chord_delta::{Decoder, Op};
-use protocol::Route;
 use protocol::json::{to_cbor, to_json};
 use protocol::{
-    ClientMessage, DEFAULT_MAX_FRAME_LENGTH, PROTOCOL_VERSION, ProtocolError, RpcTarget, ServerMessage, SessionTarget,
-    encode_client_message, is_server_id,
+    ClientMessage, DEFAULT_MAX_FRAME_LENGTH, PROTOCOL_VERSION, ProtocolError, RpcTarget, ServerMessage,
+    ServerMessageDecoder, SessionTarget, encode_client_message, is_server_id,
 };
 use serde_json::{Value as Json, json};
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 /// A failed call: a bounded server error, or a lost connection.
@@ -179,63 +185,8 @@ impl Replica {
 
     fn update(&mut self, update: &Json) -> Result<(), UpdateError> {
         match update["type"].as_str() {
-            Some("state") => {
-                let member = update["member"].as_str().unwrap_or_default();
-                let instance = &update["instance"];
-                let decoder = match instance.is_null() {
-                    true => self.decoders.get_mut(member),
-                    false => None,
-                };
-                let Some(decoder) = decoder else {
-                    let name = match instance.is_null() {
-                        true => member.to_string(),
-                        false => format!(
-                            "{}@{}.{member}",
-                            jsrt::value::string(Some(&instance["key"])),
-                            jsrt::value::string(Some(&instance["generation"]))
-                        ),
-                    };
-                    return Err(UpdateError::Fatal(format!("Unknown service state {name}")));
-                };
-                let ops = decoder
-                    .decode(wire_ops(update))
-                    .map_err(|e| UpdateError::Fatal(e.to_string()))?;
-                let sequence = update["sequence"].as_u64().unwrap_or_default();
-                let Some(slot) = self.slots.get_mut(member) else {
-                    return Err(UpdateError::Reported(format!(
-                        "Remote service update targets non-state member {}.{member}",
-                        self.service
-                    )));
-                };
-                let Some(value) = slot.value.take() else {
-                    return Err(UpdateError::Reported(
-                        "Replicated state received an update before hydration".into(),
-                    ));
-                };
-                if sequence != slot.sequence + 1 {
-                    return Err(UpdateError::Reported(
-                        "Replicated state update sequence has a gap".into(),
-                    ));
-                }
-                let next = chord_delta::apply(value, ops).map_err(|e| UpdateError::Reported(e.to_string()))?;
-                slot.sequence = sequence;
-                if let Some(listener) = &self.listener {
-                    listener(member, &next);
-                }
-                slot.value = Some(next);
-                Ok(())
-            }
-            Some("replaced") => {
-                self.decoders.clear();
-                let snapshot = &update["snapshot"];
-                let states = self.decode_instance(snapshot).map_err(UpdateError::Fatal)?;
-                if !snapshot["instance"].is_null() {
-                    return Err(UpdateError::Reported(
-                        "Singleton replacement has an instance address".into(),
-                    ));
-                }
-                self.install(snapshot, states).map_err(UpdateError::Reported)
-            }
+            Some("state") => self.apply_state_update(update),
+            Some("replaced") => self.apply_replaced(update),
             Some("unavailable") => {
                 self.decoders.clear();
                 for slot in self.slots.values_mut() {
@@ -246,6 +197,65 @@ impl Replica {
             Some("spawned" | "closed") => Ok(()),
             _ => Err(UpdateError::Fatal("Invalid service provider update".into())),
         }
+    }
+
+    fn state_decoder(&mut self, member: &str, instance: &Json) -> Result<&mut Decoder, UpdateError> {
+        if instance.is_null() {
+            return self
+                .decoders
+                .get_mut(member)
+                .ok_or_else(|| UpdateError::Fatal(format!("Unknown service state {member}")));
+        }
+        let name = format!(
+            "{}@{}.{member}",
+            jsrt::value::string(Some(&instance["key"])),
+            jsrt::value::string(Some(&instance["generation"]))
+        );
+        Err(UpdateError::Fatal(format!("Unknown service state {name}")))
+    }
+
+    fn apply_state_update(&mut self, update: &Json) -> Result<(), UpdateError> {
+        let member = update["member"].as_str().unwrap_or_default();
+        let decoder = self.state_decoder(member, &update["instance"])?;
+        let ops = decoder
+            .decode(wire_ops(update))
+            .map_err(|e| UpdateError::Fatal(e.to_string()))?;
+        let sequence = update["sequence"].as_u64().unwrap_or_default();
+        let Some(slot) = self.slots.get_mut(member) else {
+            return Err(UpdateError::Reported(format!(
+                "Remote service update targets non-state member {}.{member}",
+                self.service
+            )));
+        };
+        let Some(value) = slot.value.take() else {
+            return Err(UpdateError::Reported(
+                "Replicated state received an update before hydration".into(),
+            ));
+        };
+        if sequence != slot.sequence + 1 {
+            return Err(UpdateError::Reported(
+                "Replicated state update sequence has a gap".into(),
+            ));
+        }
+        let next = chord_delta::apply(value, ops).map_err(|e| UpdateError::Reported(e.to_string()))?;
+        slot.sequence = sequence;
+        if let Some(listener) = &self.listener {
+            listener(member, &next);
+        }
+        slot.value = Some(next);
+        Ok(())
+    }
+
+    fn apply_replaced(&mut self, update: &Json) -> Result<(), UpdateError> {
+        self.decoders.clear();
+        let snapshot = &update["snapshot"];
+        let states = self.decode_instance(snapshot).map_err(UpdateError::Fatal)?;
+        if !snapshot["instance"].is_null() {
+            return Err(UpdateError::Reported(
+                "Singleton replacement has an instance address".into(),
+            ));
+        }
+        self.install(snapshot, states).map_err(UpdateError::Reported)
     }
 
     /// Apply one update; a reported error stays with this replica, a fatal one is returned.
@@ -337,50 +347,29 @@ impl Connection {
             requests: AtomicU64::new(0),
             subscriptions: AtomicU64::new(0),
         });
-        connection.write(&ClientMessage::Hello {
-            version: PROTOCOL_VERSION,
-        })?;
-        let protocol::handshake::Connected { mut decoder, queued } =
-            match protocol::handshake::read_hello(&mut read, server_id) {
-                Ok(connected) => connected,
-                Err(error) => {
-                    connection.disconnect();
-                    return Err(match error {
-                        protocol::handshake::HelloError::Rejected(error) => CallError::Server(error),
-                        other => CallError::Disconnected(other.to_string()),
-                    });
-                }
-            };
-        let mut buffer = vec![0u8; 64 * 1024];
+        let protocol::handshake::Connected { decoder, queued } = connection.handshake(&mut read, server_id)?;
         let shared = connection.shared.clone();
         for message in queued {
             dispatch(&shared, message);
         }
-        std::thread::spawn(move || {
-            let reason = loop {
-                let n = match read.read(&mut buffer) {
-                    Ok(0) => break "Byte transport closed".to_string(),
-                    Ok(n) => n,
-                    Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                    Err(e) => break e.to_string(),
-                };
-                match decoder.push(&buffer[..n]) {
-                    Ok(messages) => {
-                        for message in messages {
-                            dispatch(&shared, message);
-                        }
-                    }
-                    Err(error) => break error.0,
-                }
-            };
-            let (lock, changed) = &*shared;
-            lock.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .closed
-                .get_or_insert(reason);
-            changed.notify_all();
-        });
+        spawn_reader_thread(read, decoder, shared);
         Ok(connection)
+    }
+
+    fn handshake(&self, read: &mut dyn Read, server_id: &str) -> Result<protocol::handshake::Connected, CallError> {
+        self.write(&ClientMessage::Hello {
+            version: PROTOCOL_VERSION,
+        })?;
+        match protocol::handshake::read_hello(read, server_id) {
+            Ok(connected) => Ok(connected),
+            Err(error) => {
+                self.disconnect();
+                Err(match error {
+                    protocol::handshake::HelloError::Rejected(error) => CallError::Server(error),
+                    other => CallError::Disconnected(other.to_string()),
+                })
+            }
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, Shared> {
@@ -662,635 +651,39 @@ fn dispatch(shared: &Arc<(Mutex<Shared>, Condvar)>, message: ServerMessage) {
     changed.notify_all();
 }
 
-/// What `runClient` is asked to do (`ClientCommand`).
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct ClientCommand {
-    pub session_id: Option<String>,
-    pub name: Option<String>,
-    pub continue_: bool,
-    pub prompt: Option<String>,
-    pub fork_from_session_id: Option<String>,
-    pub no_session: bool,
-    /// The prompt's images (`@file` images): `{type: "image", mimeType, data}`.
-    pub images: Option<Vec<Json>>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ClientResult {
-    List(Vec<(String, String)>),
-    Attached {
-        server_id: String,
-        session_id: String,
-    },
-    Prompted {
-        server_id: String,
-        session_id: String,
-        text: String,
-    },
-}
-
-impl ClientResult {
-    /// `JSON.stringify(result)`, as `--mode json` prints it.
-    pub fn to_json(&self) -> Json {
-        match self {
-            ClientResult::List(sessions) => json!({"kind": "list", "sessions": sessions.iter()
-                .map(|(server, session)| json!({"serverId": server, "sessionId": session})).collect::<Vec<_>>()}),
-            ClientResult::Attached { server_id, session_id } => {
-                json!({"kind": "attached", "serverId": server_id, "sessionId": session_id})
-            }
-            ClientResult::Prompted {
-                server_id,
-                session_id,
-                text,
-            } => json!({"kind": "prompted", "serverId": server_id, "sessionId": session_id, "text": text}),
-        }
-    }
-}
-
-fn fail(error: CallError) -> String {
-    crate::lost::message(&error)
-}
-
-/// Told every transcript event of a prompted session (`onEvent`).
-pub type EventListener = Arc<dyn Fn(&Json) + Send + Sync>;
-
-/// How a prompted client survives interruptions.
-#[derive(Clone, Default)]
-pub struct RunOptions {
-    /// Set when the user interrupts (SIGINT/SIGTERM): the prompted turn is aborted, and the client still waits for
-    /// it to end, as Pi's print mode does.
-    pub interrupt: Option<Arc<AtomicBool>>,
-    /// The server went away: reach it again (restarting it), for rejoining the session.
-    pub reconnect: Option<Arc<dyn Fn() -> Result<Route, String> + Send + Sync>>,
-    /// Every transcript event of the prompted session as it arrives (`onEvent`).
-    pub on_event: Option<EventListener>,
-    /// A Rust addition: the client's own session options (`ultron durable --model ...`), sent with each attach so
-    /// the session's worker starts on them on a server whose workers start on other options.
-    pub session_options: Option<Json>,
-}
-
-/// How long a client tries to rejoin its session after losing its worker or server.
-pub const REJOIN_TIMEOUT: Duration = Duration::from_secs(120);
-
-/// The call failed because the connection or the session's worker went away: the session is durable, rejoin it.
-/// Any disconnect counts here, also one [`crate::lost::is_lost`] would not describe as a lost server.
-fn must_rejoin(error: &CallError) -> bool {
-    match error {
-        CallError::Disconnected(_) => true,
-        CallError::Server(error) => protocol::names::is_lost_code(&error.code),
-    }
-}
-
-fn interrupted(options: &RunOptions) -> bool {
-    options.interrupt.as_ref().is_some_and(|i| i.load(Ordering::SeqCst))
-}
-
-fn ops(connection: &Connection, session: &RpcTarget, op: Json) -> Result<Option<Json>, CallError> {
-    connection.call(session.clone(), protocol::names::SESSION_OPS, "op", json!([op]))
-}
-
-/// Rejoin `session_id` after its worker or server went away: attach (the server re-attaches clients of a restarted
-/// worker by itself; attaching again is harmless), let the worker recover what was interrupted, follow the
-/// session until it is idle with nothing queued, and answer its last assistant text.
-pub fn rejoin(connection: &Connection, session_id: &str, options: &RunOptions) -> Result<String, CallError> {
-    let deadline = Instant::now() + REJOIN_TIMEOUT;
-    let server = connection.server_target();
-    let session = loop {
-        let attached = connection
-            .call(
-                server.clone(),
-                protocol::names::SESSION_MANAGEMENT,
-                "attach",
-                match &options.session_options {
-                    Some(session_options) => json!([session_id, session_options]),
-                    None => json!([session_id]),
-                },
-            )
-            .and_then(|_| {
-                connection.wait_attachment(|a| a.is_some_and(|a| a.session_id == session_id))?;
-                connection.session_target()
-            });
-        match attached {
-            Ok(session) => break session,
-            Err(CallError::Server(error)) if error.code == protocol::names::SESSION_NOT_FOUND_CODE => {
-                return Err(CallError::Server(error));
-            }
-            Err(error) if connection.is_closed() || Instant::now() >= deadline => return Err(error),
-            Err(_) => std::thread::sleep(Duration::from_millis(250)),
-        }
-    };
-    let (boundaries, boundary) = mpsc::channel::<()>();
-    let transcript = connection.subscribe(session.clone(), protocol::names::TRANSCRIPT)?;
-    connection.listen(
-        &transcript,
-        Box::new(move |_, value| {
-            if matches!(value["event"]["type"].as_str(), Some("run_end" | "run_suspend")) {
-                let _ = boundaries.send(());
-            }
-        }),
-    );
-    let idle = wait_idle(connection, &session, &boundary, deadline, options);
-    connection.unlisten(&transcript);
-    if let Ok(id) = connection.start_unsubscribe(session.clone(), &transcript) {
-        let _ = connection.wait(&id);
-    }
-    connection.forget(&transcript);
-    idle?;
-    let text = ops(connection, &session, json!({"op": "lastAssistantText"}))?;
-    Ok(text.and_then(|t| t.as_str().map(str::to_string)).unwrap_or_default())
-}
-
-/// Recover the rejoined session and wait until it is idle with nothing queued: its state is read again at each run
-/// boundary (`boundary`); an interrupt asks the run to abort.
-fn wait_idle(
-    connection: &Connection,
-    session: &RpcTarget,
-    boundary: &mpsc::Receiver<()>,
-    deadline: Instant,
-    options: &RunOptions,
-) -> Result<(), CallError> {
-    ops(connection, session, json!({"op": "recover"}))?;
-    let mut abort_sent = false;
-    loop {
-        let state = ops(connection, session, json!({"op": "state"}))?.unwrap_or_default();
-        let checking = state["isChecking"] == true;
-        let busy = checking || state["isStreaming"] == true || state["pendingMessageCount"].as_u64().unwrap_or(0) > 0;
-        if !busy || (abort_sent && state["isStreaming"] != true) {
-            return Ok(());
-        }
-        loop {
-            if interrupted(options) && !abort_sent {
-                abort_sent = true;
-                connection.call(
-                    session.clone(),
-                    protocol::names::AGENT_CONTROLLER,
-                    "requestAbort",
-                    json!([]),
-                )?;
-                break;
-            }
-            if Instant::now() >= deadline {
-                return Err(CallError::Disconnected(
-                    "The rejoined session did not become idle".into(),
-                ));
-            }
-            match boundary.recv_timeout(Duration::from_millis(100)) {
-                Ok(()) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) if connection.is_closed() || checking => break,
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(CallError::Disconnected("The transcript subscription ended".into()));
-                }
-            }
-        }
-    }
-}
-
-/// `runClient` against one server route.
-pub fn run_client(command: &ClientCommand, route: &Route) -> Result<ClientResult, String> {
-    run_client_with(command, route, &RunOptions::default())
-}
-
-/// [`run_client`] that aborts on interrupt and rejoins its session when the worker or the server goes away.
-pub fn run_client_with(command: &ClientCommand, route: &Route, options: &RunOptions) -> Result<ClientResult, String> {
-    let connection = Connection::connect(&route.path, &route.server_id).map_err(fail)?;
-    run_client_on(command, connection, options)
-}
-
-/// [`run_client_with`] over an established connection (a Unix socket's, or the Radius relay's); the connection is
-/// disconnected when the run ends.
-pub fn run_client_on(
-    command: &ClientCommand,
-    connection: Arc<Connection>,
-    options: &RunOptions,
-) -> Result<ClientResult, String> {
-    run_client_reopening(command, connection, options, None)
-}
-
-/// Opens a new connection to the server with the Session attached again, when the connection dropped mid-prompt
-/// (a Radius route's reconnector, [`crate::radius::RadiusReopen`]).
-pub type Reopen<'a> = &'a (dyn Fn(&str) -> Result<Arc<Connection>, String> + Send + Sync);
-
-/// [`run_client_on`] whose prompt survives its connection dropping: `reopen` brings the connection back, and the
-/// client rejoins the Session on it (follows it until idle and answers its last assistant text).
-pub fn run_client_reopening(
-    command: &ClientCommand,
-    connection: Arc<Connection>,
-    options: &RunOptions,
-    reopen: Option<Reopen<'_>>,
-) -> Result<ClientResult, String> {
-    let route_server_id = connection.server_id.clone();
-    let result = run_operation(command, &connection, options);
-    let mut cleanup = Vec::new();
-    if let (Ok(Some(created)), true) = (&result.1, command.no_session) {
-        let target = connection.server_target();
-        let attached = connection.attachment().is_some_and(|a| &a.session_id == created);
-        match connection.call(target, protocol::names::SESSION_MANAGEMENT, "remove", json!([created])) {
-            Ok(_) if attached => {
-                let _ = connection.wait_attachment(|a| a.is_none());
-            }
-            Ok(_) => {}
-            Err(error) => cleanup.push(error.to_string()),
-        }
-    }
-    let (subscriptions, outcome) = (result.0, result.2);
-    let outcome = match outcome {
-        Err(Failure::Lost { session_id, error }) => {
-            recover_lost(&connection, &route_server_id, &session_id, error, options, reopen)
-        }
-        Err(Failure::Other(error)) => Err(error),
-        Ok(result) => Ok(result),
-    };
-    let mut calls = Vec::new();
-    for (subscription, session) in &subscriptions {
-        let target = if *session {
-            connection.session_target()
-        } else {
-            Ok(connection.server_target())
-        };
-        if let Ok(target) = target {
-            calls.push((
-                target,
-                protocol::names::CHORD_SERVICE,
-                "unsubscribe",
-                json!([subscription]),
-            ));
-        }
-    }
-    for id in connection.start_all(calls).unwrap_or_default() {
-        let _ = connection.wait(&id);
-    }
-    connection.disconnect();
-    match (outcome, cleanup.first()) {
-        (Err(error), _) => Err(error),
-        (Ok(_), Some(error)) => Err(error.clone()),
-        (Ok(result), None) => Ok(result),
-    }
-}
-
-/// The prompted session's worker or server went away mid-prompt, or the operation failed.
-enum Failure {
-    Lost { session_id: String, error: CallError },
-    Other(String),
-}
-
-impl From<String> for Failure {
-    fn from(error: String) -> Self {
-        Failure::Other(error)
-    }
-}
-
-/// Rejoin after a lost prompt: on the same connection when it lives (the worker restarted), else on a new
-/// connection (`reopen`ed over the Radius relay, or to the restarted server). Answers the prompted result.
-fn recover_lost(
-    connection: &Arc<Connection>,
-    server_id: &str,
-    session_id: &str,
-    error: CallError,
-    options: &RunOptions,
-    reopen: Option<Reopen<'_>>,
-) -> Result<ClientResult, String> {
-    let rejoined = if !connection.is_closed() {
-        rejoin(connection, session_id, options)
-    } else if let Some(reopen) = reopen {
-        let fresh = reopen(session_id)?;
-        let rejoined = rejoin(&fresh, session_id, options);
-        fresh.disconnect();
-        rejoined
-    } else if let Some(reconnect) = &options.reconnect {
-        let route = reconnect()?;
-        let fresh = Connection::connect(&route.path, &route.server_id).map_err(fail)?;
-        let rejoined = rejoin(&fresh, session_id, options);
-        fresh.disconnect();
-        rejoined
-    } else {
-        Err(error)
-    };
-    rejoined
-        .map(|text| ClientResult::Prompted {
-            server_id: server_id.to_string(),
-            session_id: session_id.to_string(),
-            text,
-        })
-        .map_err(fail)
-}
-
-type Operation = (
-    Vec<(String, bool)>,
-    Result<Option<String>, String>,
-    Result<ClientResult, Failure>,
-);
-
-fn run_operation(command: &ClientCommand, connection: &Arc<Connection>, options: &RunOptions) -> Operation {
-    let mut subscriptions = Vec::new();
-    let mut created = Ok(None);
-    let outcome = operation(command, connection, &mut subscriptions, &mut created, options);
-    (subscriptions, created, outcome)
-}
-
-/// Wait for a prompt's response; an interrupt asks the worker to abort the run (once) and keeps waiting.
-fn await_prompt(
-    connection: &Connection,
-    session: &RpcTarget,
-    request: &str,
-    options: &RunOptions,
-) -> Result<Option<Json>, CallError> {
-    let mut abort_sent = false;
-    loop {
-        if let Some(result) = connection.wait_for(request, Duration::from_millis(100)) {
-            return result;
-        }
-        if interrupted(options) && !abort_sent {
-            abort_sent = true;
-            let _ = connection.start(
-                session.clone(),
-                protocol::names::AGENT_CONTROLLER,
-                "requestAbort",
-                json!([]),
-            );
-        }
-    }
-}
-
-fn operation(
-    command: &ClientCommand,
-    connection: &Arc<Connection>,
-    subscriptions: &mut Vec<(String, bool)>,
-    created: &mut Result<Option<String>, String>,
-    options: &RunOptions,
-) -> Result<ClientResult, Failure> {
-    let server = connection.server_target();
-    let server_id = connection.server_id.clone();
-    let mut started = Vec::new();
-    for service in [
-        protocol::names::SESSION_DIRECTORY,
-        protocol::names::SESSION_MANAGEMENT,
-        protocol::names::PRESENTATION_PLUGINS,
-    ] {
-        started.push(connection.start_subscribe(server.clone(), service).map_err(fail)?);
-    }
-    for (subscription, request) in &started {
-        connection.finish_subscribe(subscription, request).map_err(fail)?;
-        subscriptions.push((subscription.clone(), false));
-    }
-    let directory = &started[0].0;
-    let sessions = connection
-        .state(directory, "state")
-        .map_or_default(|s| s["sessions"].as_array().cloned().unwrap_or_default());
-    let management =
-        |member: &str, args: Json| connection.call(server.clone(), protocol::names::SESSION_MANAGEMENT, member, args);
-
-    let mut session_id = command.session_id.clone();
-    if session_id.is_none() && command.prompt.is_none() {
-        let mut list: Vec<(String, String)> = sessions
-            .iter()
-            .map(|s| {
-                (
-                    server_id.clone(),
-                    s["sessionId"].as_str().unwrap_or_default().to_string(),
-                )
-            })
-            .collect();
-        list.sort();
-        return Ok(ClientResult::List(list));
-    }
-    if session_id.is_none() && command.continue_ {
-        let mut candidates = sessions.clone();
-        candidates.sort_by(|a, b| {
-            let modified = |s: &Json| s["modifiedAt"].as_f64().unwrap_or(0.0);
-            modified(b)
-                .partial_cmp(&modified(a))
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a["sessionId"].as_str().cmp(&b["sessionId"].as_str()))
-        });
-        session_id = candidates
-            .first()
-            .and_then(|s| s["sessionId"].as_str())
-            .map(str::to_string);
-    }
-    let mut create_options = json!({});
-    if let Some(fork) = &command.fork_from_session_id {
-        create_options["forkFromSessionId"] = json!(fork);
-    }
-    if let Some(name) = &command.name {
-        create_options["name"] = json!(name);
-    }
-    let session_id = match session_id {
-        None => {
-            let summary = management("create", json!([create_options]))
-                .map_err(fail)?
-                .unwrap_or_default();
-            let id = summary["sessionId"].as_str().unwrap_or_default().to_string();
-            *created = Ok(Some(id.clone()));
-            id
-        }
-        Some(id) => {
-            if sessions.iter().any(|s| s["sessionId"] == json!(id)) {
-                if command.fork_from_session_id.is_some() {
-                    return Err(format!("Cannot fork into existing Session {id}").into());
-                }
-                if let Some(name) = &command.name {
-                    management("rename", json!([id, name])).map_err(fail)?;
-                }
-            } else {
-                if command.prompt.is_none() {
-                    return Err(format!("No discovered server contains session {id}").into());
-                }
-                create_options["id"] = json!(id);
-                let mut ordered = json!({"id": id});
-                for (key, value) in create_options.as_object().into_iter().flatten() {
-                    ordered[key] = value.clone();
-                }
-                management("create", json!([ordered])).map_err(fail)?;
-                *created = Ok(Some(id.clone()));
-            }
-            id
-        }
-    };
-    connection.prepare_session(&session_id).map_err(fail)?;
-    let attach = match &options.session_options {
-        Some(session_options) => json!([session_id, session_options]),
-        None => json!([session_id]),
-    };
-    management("attach", attach).map_err(fail)?;
-    connection
-        .wait_attachment(|a| a.is_some_and(|a| a.session_id == session_id))
-        .map_err(fail)?;
-    let session = connection.session_target().map_err(fail)?;
-    let catalogue = connection
-        .start(session.clone(), protocol::names::CHORD_SERVICE, "catalogue", json!([]))
-        .map_err(fail)?;
-    let mut started = Vec::new();
-    for service in [
-        protocol::names::MODELS,
-        protocol::names::AGENT_CONTROLLER,
-        protocol::names::TRANSCRIPT,
-    ] {
-        started.push(connection.start_subscribe(session.clone(), service).map_err(fail)?);
-    }
-    connection.wait(&catalogue).map_err(fail)?;
-    for (subscription, request) in &started {
-        connection.finish_subscribe(subscription, request).map_err(fail)?;
-        subscriptions.push((subscription.clone(), true));
-    }
-    let Some(prompt) = &command.prompt else {
-        return Ok(ClientResult::Attached { server_id, session_id });
-    };
-    let transcript = started[2].0.clone();
-    if connection
-        .state(&transcript, "state")
-        .is_none_or(|s| s["snapshot"].is_null())
-    {
-        return Err(Failure::Other("Transcript has no initialized snapshot".into()));
-    }
-    let (events, received) = mpsc::channel::<Json>();
-    let on_event = options.on_event.clone();
-    connection.listen(
-        &transcript,
-        Box::new(move |_, value| {
-            if !value["event"].is_null() {
-                if let Some(on_event) = &on_event {
-                    on_event(&value["event"]);
-                }
-                let _ = events.send(value["event"].clone());
-            }
-        }),
-    );
-    let images = command.images.clone().map_or(Json::Null, Json::Array);
-    let response = connection
-        .start(
-            session.clone(),
-            protocol::names::AGENT_CONTROLLER,
-            "prompt",
-            json!([{"message": prompt, "images": images}]),
-        )
-        .and_then(|request| await_prompt(connection, &session, &request, options));
-    let response = match response {
-        Err(error) if must_rejoin(&error) => {
-            connection.unlisten(&transcript);
-            return Err(Failure::Lost { session_id, error });
-        }
-        other => other.map_err(fail),
-    };
-    let response = response.and_then(|r| r.ok_or_else(|| "Agent prompt returned no response".to_string()));
-    let mut completed: HashMap<String, String> = HashMap::new();
-    let mut ended = Vec::new();
-    let absorb = |event: &Json, completed: &mut HashMap<String, String>, ended: &mut Vec<String>| {
-        let run = event["runId"].as_str().map(str::to_string);
-        if event["type"] == "message_end"
-            && event["message"]["role"] == "assistant"
-            && let Some(run) = &run
-        {
-            completed.insert(run.clone(), protocol::pi_message::text(&event["message"]));
-        }
-        if matches!(event["type"].as_str(), Some("run_end" | "run_suspend"))
-            && let Some(run) = run
-        {
-            ended.push(run);
-        }
-    };
-    let response = match response {
-        Ok(response) => response,
-        Err(error) => {
-            connection.unlisten(&transcript);
-            return Err(Failure::Other(error));
-        }
-    };
-    if response["command"].is_string() {
-        connection.unlisten(&transcript);
-        return Ok(ClientResult::Prompted {
-            server_id,
-            session_id,
-            text: response["text"].as_str().unwrap_or_default().to_string(),
-        });
-    }
-    if response["accepted"] == true {
-        let operation = response["operationId"].as_str().unwrap_or_default().to_string();
-        while !ended.contains(&operation) {
-            match received.recv_timeout(std::time::Duration::from_millis(200)) {
-                Ok(event) => absorb(&event, &mut completed, &mut ended),
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if let Err(error) = connection.wait_attachment(|_| true) {
-                        connection.unlisten(&transcript);
-                        return Err(Failure::Lost { session_id, error });
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-        }
-        let mut final_run = operation.clone();
-        if response["error"].is_null() {
-            follow_event_runs(connection, &session, &received, &mut |e| {
-                absorb(e, &mut completed, &mut ended);
-            });
-            if let Some(index) = ended.iter().position(|r| *r == operation)
-                && let Some(last) = ended[index + 1..].last()
-            {
-                final_run = last.clone();
-            }
-        }
-        connection.unlisten(&transcript);
-        while let Ok(event) = received.try_recv() {
-            absorb(&event, &mut completed, &mut ended);
-        }
-        if let Some(message) = response["error"]["message"].as_str() {
-            return Err(Failure::Other(message.to_string()));
-        }
-        return Ok(ClientResult::Prompted {
-            server_id,
-            session_id,
-            text: completed.get(&final_run).cloned().unwrap_or_default(),
-        });
-    }
-    connection.unlisten(&transcript);
-    Err(Failure::Other(
-        response["error"]["message"]
-            .as_str()
-            .unwrap_or("Prompt was not accepted")
-            .to_string(),
-    ))
-}
-
-/// `followEventRuns`: while the worker reports root-owned work that can re-invoke the model, keep waiting.
-fn follow_event_runs(
-    connection: &Arc<Connection>,
-    session: &RpcTarget,
-    received: &mpsc::Receiver<Json>,
-    absorb: &mut dyn FnMut(&Json),
+fn spawn_reader_thread(
+    mut read: Box<dyn Read + Send>,
+    mut decoder: ServerMessageDecoder,
+    shared: Arc<(Mutex<Shared>, Condvar)>,
 ) {
-    let Ok(control) = connection.subscribe(session.clone(), protocol::names::SESSION_CONTROL) else {
-        return;
-    };
-    let mut running: Option<String> = None;
-    let mut take = |event: Json, running: &mut Option<String>| {
-        match event["type"].as_str() {
-            Some("run_start") => *running = event["runId"].as_str().map(str::to_string),
-            Some("run_end" | "run_suspend") => *running = None,
-            _ => {}
-        }
-        absorb(&event);
-    };
+    std::thread::spawn(move || {
+        let reason = read_until_closed(&mut *read, &mut decoder, &shared);
+        let (lock, changed) = &*shared;
+        jsrt::sync::lock(lock).closed.get_or_insert(reason);
+        changed.notify_all();
+    });
+}
+
+fn read_until_closed(
+    read: &mut dyn Read,
+    decoder: &mut ServerMessageDecoder,
+    shared: &Arc<(Mutex<Shared>, Condvar)>,
+) -> String {
+    let mut buffer = vec![0u8; 64 * 1024];
     loop {
-        while let Ok(event) = received.try_recv() {
-            take(event, &mut running);
-        }
-        if running.is_none() {
-            let status = connection.call(
-                session.clone(),
-                protocol::names::SESSION_CONTROL,
-                "inspect",
-                json!(["async.pending", {}]),
-            );
-            if !matches!(status, Ok(Some(status)) if status["pending"] == true) {
-                break;
+        let n = match read.read(&mut buffer) {
+            Ok(0) => return "Byte transport closed".to_string(),
+            Ok(n) => n,
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) => return e.to_string(),
+        };
+        match decoder.push(&buffer[..n]) {
+            Ok(messages) => {
+                for message in messages {
+                    dispatch(shared, message);
+                }
             }
-        }
-        if let Ok(event) = received.recv_timeout(std::time::Duration::from_millis(200)) {
-            take(event, &mut running);
+            Err(error) => return error.0,
         }
     }
-    if let Ok(id) = connection.start_unsubscribe(session.clone(), &control) {
-        let _ = connection.wait(&id);
-    }
-    connection.forget(&control);
 }

@@ -29,6 +29,27 @@ fn io(path: &Path) -> impl Fn(std::io::Error) -> String + '_ {
     move |e| format!("{}: {e}", path.display())
 }
 
+fn read_variants(path: &Path) -> Result<Map<String, Value>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
+        Err(e) => Err(io(path)(e)),
+    }
+}
+
+fn matching_version(versions: &[Value], config: &Value, path: &Path, name: &str) -> Result<Option<u64>, String> {
+    let Some(latest) = versions.last() else {
+        return Ok(None);
+    };
+    if latest["config"] != *config {
+        return Ok(None);
+    }
+    latest["version"]
+        .as_u64()
+        .map(Some)
+        .ok_or_else(|| format!("{}: {name} has no version", path.display()))
+}
+
 impl Store {
     /// The store under `dir` (`<agent dir>/optimize`).
     pub fn new(dir: impl Into<PathBuf>) -> Store {
@@ -49,22 +70,14 @@ impl Store {
             ));
         }
         let path = self.pipeline(pipeline)?.join("variants.json");
-        let mut all: Map<String, Value> = match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Map::new(),
-            Err(e) => return Err(io(&path)(e)),
-        };
+        let mut all = read_variants(&path)?;
         let versions = all
             .entry(name)
             .or_insert_with(|| json!([]))
             .as_array_mut()
             .ok_or_else(|| format!("{}: {name} is not a list", path.display()))?;
-        if let Some(latest) = versions.last()
-            && latest["config"] == *config
-        {
-            return latest["version"]
-                .as_u64()
-                .ok_or_else(|| format!("{}: {name} has no version", path.display()));
+        if let Some(version) = matching_version(versions, config, &path, name)? {
+            return Ok(version);
         }
         let version = versions.len() as u64 + 1;
         versions.push(json!({"version": version, "config": config, "createdAt": at}));

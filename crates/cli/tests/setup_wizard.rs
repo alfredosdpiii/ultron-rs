@@ -165,9 +165,9 @@ fn cli_setup_core_hindsight_docker_args_pass_the_key_by_name_only() {
         base_url: Some("http://host.docker.internal:11434/v1".into()),
         has_api_key: false,
     });
-    assert!(args.contains(&"9000:8888".to_string()));
-    assert!(!args.contains(&"HINDSIGHT_API_LLM_API_KEY".to_string()));
-    assert!(args.contains(&"host.docker.internal:host-gateway".to_string()));
+    assert!(args.iter().any(|i| i == "9000:8888"));
+    assert!(!args.iter().any(|i| i == "HINDSIGHT_API_LLM_API_KEY"));
+    assert!(args.iter().any(|i| i == "host.docker.internal:host-gateway"));
     assert_eq!(setup_core::hindsight_port("http://localhost:9000"), 9000);
     assert_eq!(setup_core::hindsight_port("https://mem"), 443);
     assert_eq!(setup_core::hindsight_port("nope"), 8888);
@@ -661,8 +661,11 @@ fn cli_setup_wizard_installs_hindsight_with_docker_passing_the_key_through_the_e
     let result = run_setup_wizard(&mut ui, &mut deps);
     assert!(ui.steps.is_empty());
     let (args, env) = calls.lock().unwrap()[0].clone();
-    assert!(args.contains(&"HINDSIGHT_API_LLM_PROVIDER=anthropic".to_string()));
-    assert!(args.contains(&"HINDSIGHT_API_LLM_API_KEY".to_string()));
+    assert!(
+        args.iter()
+            .any(|i: &String| i == "HINDSIGHT_API_LLM_PROVIDER=anthropic")
+    );
+    assert!(args.iter().any(|i: &String| i == "HINDSIGHT_API_LLM_API_KEY"));
     assert!(!args.join(" ").contains("sk-ant-hindsight"));
     assert_eq!(
         env,

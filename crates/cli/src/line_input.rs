@@ -28,6 +28,76 @@ pub enum LineRead {
     Stopped,
 }
 
+fn skip_escape_sequence(bytes: &[u8], i: &mut usize) -> bool {
+    match bytes.get(*i) {
+        Some(b'[') => {
+            *i += 1;
+            while *i < bytes.len() && !(0x40..=0x7e).contains(&bytes[*i]) {
+                *i += 1;
+            }
+            *i += 1;
+            true
+        }
+        Some(b'O') => {
+            *i += 2;
+            true
+        }
+        _ => false,
+    }
+}
+
+fn pop_utf8_char(line: &mut Vec<u8>, echo: &mut dyn Write) {
+    while line.last().is_some_and(|b| b & 0xc0 == 0x80) {
+        line.pop();
+    }
+    if line.pop().is_some() {
+        let _ = echo.write_all(b"\x08 \x08");
+    }
+}
+
+fn handle_control_byte(
+    byte: u8,
+    bytes: &[u8],
+    i: &mut usize,
+    line: &mut Vec<u8>,
+    echo: &mut dyn Write,
+) -> Option<LineRead> {
+    match byte {
+        b'\r' | b'\n' => {
+            let _ = echo.write_all(b"\r\n");
+            let _ = echo.flush();
+            Some(LineRead::Line(String::from_utf8_lossy(line).into_owned()))
+        }
+        0x03 => Some(LineRead::Cancelled),
+        0x1b if !skip_escape_sequence(bytes, i) => Some(LineRead::Cancelled),
+        0x08 => {
+            pop_utf8_char(line, echo);
+            None
+        }
+        0x04 if line.is_empty() => Some(LineRead::Closed),
+        _ => None,
+    }
+}
+
+fn process_bytes(bytes: &[u8], line: &mut Vec<u8>, echo: &mut dyn Write) -> Option<LineRead> {
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        i += 1;
+        if byte == 0x7f {
+            pop_utf8_char(line, echo);
+        } else if byte < 0x20 {
+            if let Some(done) = handle_control_byte(byte, bytes, &mut i, line, echo) {
+                return Some(done);
+            }
+        } else {
+            line.push(byte);
+            let _ = echo.write_all(&[byte]);
+        }
+    }
+    None
+}
+
 /// Read one line from `input`, echoing it to `echo`, until Enter, Esc/Ctrl+C, the end of the input or `stop()`.
 pub fn read_line(input: &mut dyn Input, echo: &mut dyn Write, stop: &dyn Fn() -> bool) -> LineRead {
     let mut line: Vec<u8> = Vec::new();
@@ -41,43 +111,8 @@ pub fn read_line(input: &mut dyn Input, echo: &mut dyn Write, stop: &dyn Fn() ->
             Ok(Some(bytes)) => bytes,
             Err(_) => return LineRead::Closed,
         };
-        let mut i = 0;
-        while i < bytes.len() {
-            let byte = bytes[i];
-            i += 1;
-            match byte {
-                b'\r' | b'\n' => {
-                    let _ = echo.write_all(b"\r\n");
-                    let _ = echo.flush();
-                    return LineRead::Line(String::from_utf8_lossy(&line).into_owned());
-                }
-                0x03 => return LineRead::Cancelled,
-                0x1b => match bytes.get(i) {
-                    Some(b'[') => {
-                        i += 1;
-                        while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
-                            i += 1;
-                        }
-                        i += 1;
-                    }
-                    Some(b'O') => i += 2,
-                    _ => return LineRead::Cancelled,
-                },
-                0x7f | 0x08 => {
-                    while line.last().is_some_and(|b| b & 0xc0 == 0x80) {
-                        line.pop();
-                    }
-                    if line.pop().is_some() {
-                        let _ = echo.write_all(b"\x08 \x08");
-                    }
-                }
-                0x04 if line.is_empty() => return LineRead::Closed,
-                byte if byte < 0x20 => {}
-                byte => {
-                    line.push(byte);
-                    let _ = echo.write_all(&[byte]);
-                }
-            }
+        if let Some(done) = process_bytes(&bytes, &mut line, echo) {
+            return done;
         }
         let _ = echo.flush();
     }

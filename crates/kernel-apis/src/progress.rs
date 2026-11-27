@@ -46,6 +46,36 @@ fn valid_sha256(text: &str) -> bool {
     text.len() == 64 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+fn parse_optional_sha256(index: usize, entry: &Map<String, Value>) -> Result<Option<String>, String> {
+    match entry.get("sha256").filter(|sha| !sha.is_null()) {
+        None => Ok(None),
+        Some(sha) => sha
+            .as_str()
+            .filter(|sha| valid_sha256(sha))
+            .map(|sha| Some(sha.to_string()))
+            .ok_or_else(|| format!("evidence[{index}].sha256 must be a lowercase SHA-256 hex string")),
+    }
+}
+
+fn parse_evidence_entry(index: usize, item: &Value) -> Result<Value, String> {
+    let entry = plain_object(item, &format!("evidence[{index}]"))?;
+    jsrt::payload::fields(entry, &["kind", "ref", "sha256"])?;
+    let kind = entry
+        .get("kind")
+        .and_then(Value::as_str)
+        .filter(|kind| valid_kind(kind))
+        .ok_or_else(|| format!("evidence[{index}].kind must be a short lowercase identifier"))?;
+    let reference = entry
+        .get("ref")
+        .and_then(Value::as_str)
+        .filter(|r| !jsrt::string::trim(r).is_empty() && jsrt::utf16::len(r) <= MAX_REF)
+        .ok_or_else(|| format!("evidence[{index}].ref must be a nonempty string of at most {MAX_REF} characters"))?;
+    match parse_optional_sha256(index, entry)? {
+        Some(sha) => Ok(json!({"kind": kind, "ref": reference, "sha256": sha})),
+        None => Ok(json!({"kind": kind, "ref": reference})),
+    }
+}
+
 fn evidence_list(value: Option<&Value>) -> Result<Vec<Value>, String> {
     let items = value
         .and_then(Value::as_array)
@@ -54,32 +84,7 @@ fn evidence_list(value: Option<&Value>) -> Result<Vec<Value>, String> {
     items
         .iter()
         .enumerate()
-        .map(|(index, item)| {
-            let entry = plain_object(item, &format!("evidence[{index}]"))?;
-            jsrt::payload::fields(entry, &["kind", "ref", "sha256"])?;
-            let kind = entry
-                .get("kind")
-                .and_then(Value::as_str)
-                .filter(|kind| valid_kind(kind))
-                .ok_or_else(|| format!("evidence[{index}].kind must be a short lowercase identifier"))?;
-            let reference = entry
-                .get("ref")
-                .and_then(Value::as_str)
-                .filter(|r| !jsrt::string::trim(r).is_empty() && jsrt::utf16::len(r) <= MAX_REF)
-                .ok_or_else(|| {
-                    format!("evidence[{index}].ref must be a nonempty string of at most {MAX_REF} characters")
-                })?;
-            match entry.get("sha256").filter(|sha| !sha.is_null()) {
-                Some(sha) => {
-                    let sha = sha
-                        .as_str()
-                        .filter(|sha| valid_sha256(sha))
-                        .ok_or_else(|| format!("evidence[{index}].sha256 must be a lowercase SHA-256 hex string"))?;
-                    Ok(json!({"kind": kind, "ref": reference, "sha256": sha}))
-                }
-                None => Ok(json!({"kind": kind, "ref": reference})),
-            }
-        })
+        .map(|(index, item)| parse_evidence_entry(index, item))
         .collect()
 }
 
@@ -129,6 +134,19 @@ fn exact(map: &Map<String, Value>, keys: &[&str]) -> bool {
     map.keys().all(|key| keys.contains(&key.as_str()))
 }
 
+fn valid_receipt_evidence(value: Option<&Value>) -> bool {
+    value.and_then(Value::as_array).is_some_and(|items| {
+        items.iter().all(|e| {
+            e.as_object().is_some_and(|e| {
+                exact(e, &["kind", "ref", "sha256"])
+                    && e.get("kind").is_some_and(Value::is_string)
+                    && e.get("ref").is_some_and(Value::is_string)
+                    && e.get("sha256").is_none_or(Value::is_string)
+            })
+        })
+    })
+}
+
 fn valid_receipt(receipt: &Value) -> bool {
     let Some(r) = receipt.as_object() else {
         return false;
@@ -150,42 +168,36 @@ fn valid_receipt(receipt: &Value) -> bool {
         && text_or_null(r.get("reporter_task_id"))
         && r.get("at").is_some_and(Value::is_number)
         && r.get("summary").is_some_and(Value::is_string)
-        && r.get("evidence").and_then(Value::as_array).is_some_and(|items| {
-            items.iter().all(|e| {
-                e.as_object().is_some_and(|e| {
-                    exact(e, &["kind", "ref", "sha256"])
-                        && e.get("kind").is_some_and(Value::is_string)
-                        && e.get("ref").is_some_and(Value::is_string)
-                        && e.get("sha256").is_none_or(Value::is_string)
-                })
-            })
-        })
+        && valid_receipt_evidence(r.get("evidence"))
         && r.get("metrics")
             .is_none_or(|m| m.as_object().is_some_and(|m| m.values().all(Value::is_number)))
         && strings(r.get("new_evidence"))
 }
 
-fn valid_decision(decision: &Value) -> bool {
-    let Some(d) = decision.as_object() else {
-        return false;
-    };
-    let assessment = d.get("assessment").and_then(Value::as_object).is_some_and(|a| {
+fn valid_assessment(value: Option<&Value>) -> bool {
+    value.and_then(Value::as_object).is_some_and(|a| {
         exact(a, &["classification", "reasons", "receipts"])
             && a.get("classification")
                 .and_then(Value::as_str)
                 .is_some_and(|c| CLASSIFICATIONS.contains(&c))
             && strings(a.get("reasons"))
             && strings(a.get("receipts"))
-    });
-    let budget = d.get("budget").is_none_or(|b| {
+    })
+}
+
+fn valid_budget(value: Option<&Value>) -> bool {
+    value.is_none_or(|b| {
         b.as_object().is_some_and(|b| {
             exact(b, &["requested", "decision", "reason"])
                 && b.contains_key("requested")
                 && b.get("decision") == Some(&json!("denied"))
                 && b.get("reason").is_some_and(Value::is_string)
         })
-    });
-    let claim = d.get("claim").is_none_or(|c| {
+    })
+}
+
+fn valid_claim(value: Option<&Value>) -> bool {
+    value.is_none_or(|c| {
         c.as_object().is_some_and(|c| {
             exact(
                 c,
@@ -206,7 +218,13 @@ fn valid_decision(decision: &Value) -> bool {
                     .iter()
                     .all(|key| c.get(*key).is_none_or(Value::is_string))
         })
-    });
+    })
+}
+
+fn valid_decision(decision: &Value) -> bool {
+    let Some(d) = decision.as_object() else {
+        return false;
+    };
     exact(
         d,
         &[
@@ -222,9 +240,9 @@ fn valid_decision(decision: &Value) -> bool {
         && nonempty_text(d.get("task_id"))
         && text_or_null(d.get("requester_task_id"))
         && d.get("at").is_some_and(Value::is_number)
-        && assessment
-        && budget
-        && claim
+        && valid_assessment(d.get("assessment"))
+        && valid_budget(d.get("budget"))
+        && valid_claim(d.get("claim"))
 }
 
 fn valid_document(document: &Value) -> bool {
@@ -456,64 +474,30 @@ impl ProgressModule {
     }
 
     fn report(&self, request: &Request<'_>) -> Result<Value, String> {
-        let payload = request.payload;
-        kernel::ops::fields(request.kind, payload)?;
+        let input = parse_report_input(request)?;
         let caller = request.caller_task;
-        let task_id = match payload.get("task_id").filter(|value| !value.is_null()) {
-            None => caller.map(str::to_string),
-            value => Some(task_id_field(value)?),
-        };
-        let task_id = task_id.ok_or("The root agent must name the task_id it reports for")?;
-        let summary = payload
-            .get("summary")
-            .and_then(Value::as_str)
-            .filter(|s| !jsrt::string::trim(s).is_empty() && jsrt::utf16::len(s) <= MAX_SUMMARY)
-            .ok_or_else(|| format!("summary must be a nonempty string of at most {MAX_SUMMARY} characters"))?;
-        let evidence = evidence_list(payload.get("evidence"))?;
-        let metrics = metrics_field(payload.get("metrics"))?;
-        let (task, _) = Self::find_task(request.host, &task_id)?;
+        let (task, _) = Self::find_task(request.host, &input.task_id)?;
         if task["id"] != caller.map_or(Value::Null, Value::from) && task["parentId"].as_str() != caller {
             return Err("Caller may only report progress for itself or its direct children".into());
         }
         self.enqueue(|state| {
-            let previous = Self::receipts_of(&state.document, &task_id);
+            let previous = Self::receipts_of(&state.document, &input.task_id);
             if previous.len() >= self.max_receipts {
                 return Err(format!(
-                    "Task {task_id} already has the maximum of {} progress receipts",
-                    self.max_receipts
+                    "Task {} already has the maximum of {} progress receipts",
+                    input.task_id, self.max_receipts
                 ));
             }
-            let mut known: Vec<(String, Option<String>)> = Vec::new();
-            for receipt in &previous {
-                for entry in receipt["evidence"].as_array().into_iter().flatten() {
-                    let key = evidence_key(entry);
-                    let sha = entry["sha256"].as_str().map(str::to_string);
-                    match known.iter_mut().find(|(k, _)| *k == key) {
-                        Some(slot) => slot.1 = sha.or(slot.1.take()),
-                        None => known.push((key, sha)),
-                    }
-                }
-            }
-            let mut fresh: Vec<String> = Vec::new();
-            for entry in &evidence {
-                let key = evidence_key(entry);
-                let seen = known.iter().find(|(k, _)| *k == key);
-                let changed = entry["sha256"]
-                    .as_str()
-                    .is_some_and(|sha| seen.and_then(|(_, known)| known.as_deref()) != Some(sha));
-                if (seen.is_none() || changed) && !fresh.contains(&key) {
-                    fresh.push(key);
-                }
-            }
+            let fresh = compute_fresh_evidence(&previous, &input.evidence);
             let mut receipt = json!({
                 "id": format!("progress-receipt-{}", jsrt::random::uuid_v4()),
-                "task_id": task_id,
+                "task_id": input.task_id,
                 "reporter_task_id": caller,
                 "at": request.host.now(),
-                "summary": summary,
-                "evidence": evidence,
+                "summary": input.summary,
+                "evidence": input.evidence,
             });
-            if let Some(metrics) = metrics {
+            if let Some(metrics) = input.metrics {
                 receipt["metrics"] = metrics;
             }
             receipt["new_evidence"] = json!(fresh);
@@ -588,92 +572,22 @@ impl ProgressModule {
         claim
     }
 
-    fn reassess(&self, request: &Request<'_>) -> Result<Value, String> {
-        let payload = request.payload;
-        kernel::ops::fields(request.kind, payload)?;
-        let task_id = task_id_field(payload.get("task_id"))?;
-        let present = |key: &str| payload.get(key).filter(|value| !value.is_null());
-        let extend = present("extend_budget");
-        if extend.is_some_and(|e| !e.is_boolean() && !e.is_object()) {
-            return Err("extend_budget must be a boolean or a JSON object".into());
+    fn build_verifier_input(&self, task_id: &str, task: &Value, verifier_input: Option<&Value>) -> Value {
+        if let Some(input) = verifier_input {
+            return input.clone();
         }
-        let claim = present("claim");
-        if claim.is_some_and(|c| c != "complete") {
-            return Err("claim must be \"complete\"".into());
-        }
-        let verifier = present("verifier");
-        if verifier.is_some_and(|v| !v.as_str().is_some_and(crate::util::valid_definition)) {
-            return Err("verifier must be id@version".into());
-        }
-        let verifier = verifier.and_then(Value::as_str);
-        let verifier_input = present("verifier_input");
-        if (verifier.is_some() || verifier_input.is_some()) && claim.is_none() {
-            return Err("verifier and verifier_input require claim".into());
-        }
-        let caller = request.caller_task;
-        let (task, all) = Self::find_task(request.host, &task_id)?;
-        Self::owner_or_ancestor(caller, &task, &all)?;
-        let assessment = self.enqueue(|state| Ok(self.assess(&state.document, &task, request.host.now())))?;
-        let mut decision = json!({
-            "id": format!("progress-decision-{}", jsrt::random::uuid_v4()),
-            "task_id": task_id,
-            "requester_task_id": caller,
-            "at": request.host.now(),
-            "assessment": {
-                "classification": assessment["classification"],
-                "reasons": assessment["reasons"],
-                "receipts": assessment["receipts"],
-            },
-        });
-        if let Some(extend) = extend.filter(|e| **e != Value::Bool(false)) {
-            decision["budget"] = json!({
-                "requested": extend,
-                "decision": "denied",
-                "reason": "Budgets are fixed at admission; progress reassessment cannot extend them",
-            });
-        }
-        if claim.is_none() {
-            self.record_decision(&decision)?;
-            return Ok(decision);
-        }
-        let state = task["state"].as_str().unwrap_or_default();
-        if state != "completed" || task["result"]["status"] != "succeeded" {
-            decision["claim"] = json!({
-                "claim": "complete",
-                "decision": "rejected",
-                "reason": format!("Task is {state}; only a succeeded task can be claimed complete"),
-            });
-            self.record_decision(&decision)?;
-            return Ok(decision);
-        }
-        let Some(verifier) = verifier else {
-            decision["claim"] = json!({
-                "claim": "complete",
-                "decision": "unverified",
-                "reason": "No verifier was named; a task result alone is not verification",
-            });
-            self.record_decision(&decision)?;
-            return Ok(decision);
+        let evidence: Vec<Value> = {
+            let state = jsrt::sync::lock(&self.state);
+            Self::receipts_of(&state.document, task_id)
+                .iter()
+                .flat_map(|receipt| receipt["evidence"].as_array().cloned().unwrap_or_default())
+                .collect()
         };
-        decision["claim"] =
-            json!({"claim": "complete", "decision": "pending", "reason": "Verifier running", "verifier": verifier});
-        self.record_decision(&decision)?;
-        let input = match verifier_input {
-            Some(input) => input.clone(),
-            None => {
-                let evidence: Vec<Value> = {
-                    let state = jsrt::sync::lock(&self.state);
-                    Self::receipts_of(&state.document, &task_id)
-                        .iter()
-                        .flat_map(|receipt| receipt["evidence"].as_array().cloned().unwrap_or_default())
-                        .collect()
-                };
-                let result = task["result"].get("value").cloned().unwrap_or(Value::Null);
-                json!({"task_id": task_id, "result": result, "evidence": evidence})
-            }
-        };
-        let outcome = Self::verify(request, &task, verifier, input, caller);
-        let id = decision["id"].clone();
+        let result = task["result"].get("value").cloned().unwrap_or(Value::Null);
+        json!({"task_id": task_id, "result": result, "evidence": evidence})
+    }
+
+    fn settle_verified_claim(&self, id: Value, outcome: Value) -> Result<Value, String> {
         self.enqueue(|state| {
             let mut next = state.document.clone();
             let mut updated = Value::Null;
@@ -686,6 +600,71 @@ impl ProgressModule {
             self.write(state, next)?;
             Ok(updated)
         })
+    }
+
+    fn reassess_claim(
+        &self,
+        request: &Request<'_>,
+        task: &Value,
+        input: &ReassessInput<'_>,
+        mut decision: Value,
+    ) -> Result<Value, String> {
+        let state = task["state"].as_str().unwrap_or_default();
+        if state != "completed" || task["result"]["status"] != "succeeded" {
+            decision["claim"] = json!({
+                "claim": "complete",
+                "decision": "rejected",
+                "reason": format!("Task is {state}; only a succeeded task can be claimed complete"),
+            });
+            self.record_decision(&decision)?;
+            return Ok(decision);
+        }
+        let Some(verifier) = input.verifier else {
+            decision["claim"] = json!({
+                "claim": "complete",
+                "decision": "unverified",
+                "reason": "No verifier was named; a task result alone is not verification",
+            });
+            self.record_decision(&decision)?;
+            return Ok(decision);
+        };
+        decision["claim"] =
+            json!({"claim": "complete", "decision": "pending", "reason": "Verifier running", "verifier": verifier});
+        self.record_decision(&decision)?;
+        let verifier_input = self.build_verifier_input(&input.task_id, task, input.verifier_input);
+        let outcome = Self::verify(request, task, verifier, verifier_input, request.caller_task);
+        self.settle_verified_claim(decision["id"].clone(), outcome)
+    }
+
+    fn reassess(&self, request: &Request<'_>) -> Result<Value, String> {
+        let input = parse_reassess_input(request)?;
+        let caller = request.caller_task;
+        let (task, all) = Self::find_task(request.host, &input.task_id)?;
+        Self::owner_or_ancestor(caller, &task, &all)?;
+        let assessment = self.enqueue(|state| Ok(self.assess(&state.document, &task, request.host.now())))?;
+        let mut decision = json!({
+            "id": format!("progress-decision-{}", jsrt::random::uuid_v4()),
+            "task_id": input.task_id,
+            "requester_task_id": caller,
+            "at": request.host.now(),
+            "assessment": {
+                "classification": assessment["classification"],
+                "reasons": assessment["reasons"],
+                "receipts": assessment["receipts"],
+            },
+        });
+        if let Some(extend) = input.extend.filter(|e| **e != Value::Bool(false)) {
+            decision["budget"] = json!({
+                "requested": extend,
+                "decision": "denied",
+                "reason": "Budgets are fixed at admission; progress reassessment cannot extend them",
+            });
+        }
+        if !input.claim {
+            self.record_decision(&decision)?;
+            return Ok(decision);
+        }
+        self.reassess_claim(request, &task, &input, decision)
     }
 
     fn history(&self, request: &Request<'_>) -> Result<Value, String> {
@@ -721,6 +700,101 @@ impl ProgressModule {
     pub fn document(&self) -> Result<Value, String> {
         self.enqueue(|state| Ok(state.document.clone()))
     }
+}
+
+struct ReassessInput<'a> {
+    task_id: String,
+    extend: Option<&'a Value>,
+    claim: bool,
+    verifier: Option<&'a str>,
+    verifier_input: Option<&'a Value>,
+}
+
+struct ReportInput<'a> {
+    task_id: String,
+    summary: &'a str,
+    evidence: Vec<Value>,
+    metrics: Option<Value>,
+}
+
+fn parse_report_input<'a>(request: &'a Request<'_>) -> Result<ReportInput<'a>, String> {
+    let payload = request.payload;
+    kernel::ops::fields(request.kind, payload)?;
+    let task_id = match payload.get("task_id").filter(|value| !value.is_null()) {
+        None => request.caller_task.map(str::to_string),
+        value => Some(task_id_field(value)?),
+    };
+    let task_id = task_id.ok_or("The root agent must name the task_id it reports for")?;
+    let summary = payload
+        .get("summary")
+        .and_then(Value::as_str)
+        .filter(|s| !jsrt::string::trim(s).is_empty() && jsrt::utf16::len(s) <= MAX_SUMMARY)
+        .ok_or_else(|| format!("summary must be a nonempty string of at most {MAX_SUMMARY} characters"))?;
+    let evidence = evidence_list(payload.get("evidence"))?;
+    let metrics = metrics_field(payload.get("metrics"))?;
+    Ok(ReportInput {
+        task_id,
+        summary,
+        evidence,
+        metrics,
+    })
+}
+
+fn compute_fresh_evidence(previous: &[Value], evidence: &[Value]) -> Vec<String> {
+    let mut known: Vec<(String, Option<String>)> = Vec::new();
+    for receipt in previous {
+        for entry in receipt["evidence"].as_array().into_iter().flatten() {
+            let key = evidence_key(entry);
+            let sha = entry["sha256"].as_str().map(str::to_string);
+            match known.iter_mut().find(|(k, _)| *k == key) {
+                Some(slot) => slot.1 = sha.or(slot.1.take()),
+                None => known.push((key, sha)),
+            }
+        }
+    }
+    let mut fresh: Vec<String> = Vec::new();
+    for entry in evidence {
+        let key = evidence_key(entry);
+        let seen = known.iter().find(|(k, _)| *k == key);
+        let changed = entry["sha256"]
+            .as_str()
+            .is_some_and(|sha| seen.and_then(|(_, known)| known.as_deref()) != Some(sha));
+        if (seen.is_none() || changed) && !fresh.contains(&key) {
+            fresh.push(key);
+        }
+    }
+    fresh
+}
+
+fn parse_reassess_input<'a>(request: &'a Request<'_>) -> Result<ReassessInput<'a>, String> {
+    let payload = request.payload;
+    kernel::ops::fields(request.kind, payload)?;
+    let task_id = task_id_field(payload.get("task_id"))?;
+    let present = |key: &str| payload.get(key).filter(|value| !value.is_null());
+    let extend = present("extend_budget");
+    if extend.is_some_and(|e| !e.is_boolean() && !e.is_object()) {
+        return Err("extend_budget must be a boolean or a JSON object".into());
+    }
+    let claim = present("claim");
+    if claim.is_some_and(|c| c != "complete") {
+        return Err("claim must be \"complete\"".into());
+    }
+    let verifier = present("verifier");
+    if verifier.is_some_and(|v| !v.as_str().is_some_and(crate::util::valid_definition)) {
+        return Err("verifier must be id@version".into());
+    }
+    let verifier = verifier.and_then(Value::as_str);
+    let verifier_input = present("verifier_input");
+    if (verifier.is_some() || verifier_input.is_some()) && claim.is_none() {
+        return Err("verifier and verifier_input require claim".into());
+    }
+    Ok(ReassessInput {
+        task_id,
+        extend,
+        claim: claim.is_some(),
+        verifier,
+        verifier_input,
+    })
 }
 
 impl ApiModule for ProgressModule {

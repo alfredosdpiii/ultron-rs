@@ -59,6 +59,32 @@ pub struct RetryingTransport {
     pub policy: ai::retry::RetryPolicy,
 }
 
+enum AttemptOutcome {
+    Done(Result<ai::HttpResponse, String>),
+    Retry,
+}
+
+async fn classify_attempt(outcome: Result<ai::HttpResponse, String>, retries_left: bool) -> AttemptOutcome {
+    match outcome {
+        Ok(response) if (200..300).contains(&response.status) || !retries_left => AttemptOutcome::Done(Ok(response)),
+        Ok(mut response) => {
+            let mut body = Vec::new();
+            while let Ok(Some(chunk)) = response.body.next_chunk().await {
+                body.extend(chunk);
+            }
+            let text = format!("{} {}", response.status, String::from_utf8_lossy(&body));
+            if ai::retry::is_retryable_text(&text) {
+                AttemptOutcome::Retry
+            } else {
+                response.body = Box::new(Buffered(Some(body)));
+                AttemptOutcome::Done(Ok(response))
+            }
+        }
+        Err(error) if !retries_left || !ai::retry::is_retryable_text(&error) => AttemptOutcome::Done(Err(error)),
+        Err(_) => AttemptOutcome::Retry,
+    }
+}
+
 impl ai::Transport for RetryingTransport {
     fn send(
         &self,
@@ -73,28 +99,10 @@ impl ai::Transport for RetryingTransport {
                     headers: request.headers.clone(),
                     body: request.body.clone(),
                 };
-                let outcome = self.inner.send(copy).await;
                 let retries_left = self.policy.enabled && attempt < self.policy.max_retries;
-                let outcome = match outcome {
-                    Ok(response) if (200..300).contains(&response.status) || !retries_left => Ok(response),
-                    Ok(mut response) => {
-                        let mut body = Vec::new();
-                        while let Ok(Some(chunk)) = response.body.next_chunk().await {
-                            body.extend(chunk);
-                        }
-                        let text = format!("{} {}", response.status, String::from_utf8_lossy(&body));
-                        if !ai::retry::is_retryable_text(&text) {
-                            response.body = Box::new(Buffered(Some(body)));
-                            return Ok(response);
-                        }
-                        Err(text)
-                    }
-                    Err(error) if !retries_left || !ai::retry::is_retryable_text(&error) => return Err(error),
-                    Err(error) => Err(error),
-                };
-                match outcome {
-                    Ok(response) => return Ok(response),
-                    Err(_) => {
+                match classify_attempt(self.inner.send(copy).await, retries_left).await {
+                    AttemptOutcome::Done(result) => return result,
+                    AttemptOutcome::Retry => {
                         attempt += 1;
                         tokio::time::sleep(Duration::from_millis(self.policy.delay_ms(attempt))).await;
                     }

@@ -112,7 +112,7 @@ fn claude_root_launcher_argument_parsing_and_flag_detection() {
         _ => None,
     };
     let built = build(&["mcp-config"], &launch_options(), &var, Vec::new());
-    assert!(built.args.contains(&"--system-prompt".to_string()));
+    assert!(built.args.iter().any(|i| i == "--system-prompt"));
     assert!(built.env.is_empty());
     let mut files: Vec<String> = built.files.iter().map(|(p, _)| p.display().to_string()).collect();
     files.sort();
@@ -129,7 +129,7 @@ fn claude_root_launcher_runs_claude_with_the_repl_as_the_only_tool() {
     assert_eq!(value("--allowedTools"), "mcp__ultron__rlm");
     assert_eq!(value("--setting-sources"), "");
     assert_eq!(value("--system-prompt-file"), "/tmp/x/system-prompt.md");
-    assert!(built.args.contains(&"--strict-mcp-config".to_string()));
+    assert!(built.args.iter().any(|i| i == "--strict-mcp-config"));
     // --model given: no default model is added; the claude args come last.
     assert_eq!(built.args.iter().filter(|a| *a == "--model").count(), 1);
     assert_eq!(
@@ -163,8 +163,8 @@ fn claude_root_launcher_runs_claude_with_the_repl_as_the_only_tool() {
     kept.keep_settings = true;
     kept.hooks = false;
     let built = build(&["mcp-config"], &kept, &no_env, Vec::new());
-    assert!(!built.args.contains(&"--strict-mcp-config".to_string()));
-    assert!(!built.args.contains(&"--setting-sources".to_string()));
+    assert!(!built.args.iter().any(|i| i == "--strict-mcp-config"));
+    assert!(!built.args.iter().any(|i| i == "--setting-sources"));
     let settings: Value = serde_json::from_str(&built.files[1].1).unwrap();
     assert_eq!(settings, json!({"permissions": {"allow": ["mcp__ultron__rlm"]}}));
 }
@@ -214,7 +214,11 @@ fn claude_root_skip_permissions_by_default_except_as_root_or_turned_off() {
         expected
     );
     // A claude without the flag is not given it.
-    assert!(!launch(&["mcp-config"]).contains(&"--dangerously-skip-permissions".to_string()));
+    assert!(
+        !launch(&["mcp-config"])
+            .iter()
+            .any(|i: &String| i == "--dangerously-skip-permissions")
+    );
     // Subagents get it too.
     let child = child_claude_args("m", "{}", "/p", &expected);
     assert_eq!(
@@ -654,8 +658,8 @@ fn claude_root_child_has_only_the_repl_tool_and_its_own_prompt() {
     assert_eq!(value("--allowedTools"), "mcp__ultron__rlm");
     assert_eq!(value("--setting-sources"), "");
     assert_eq!(value("--system-prompt-file"), "/tmp/p.md");
-    assert!(args.contains(&"--strict-mcp-config".to_string()));
-    assert!(args.contains(&"--no-session-persistence".to_string()));
+    assert!(args.iter().any(|i| i == "--strict-mcp-config"));
+    assert!(args.iter().any(|i| i == "--no-session-persistence"));
 }
 
 #[test]

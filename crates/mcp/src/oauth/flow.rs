@@ -210,6 +210,26 @@ impl ServerInfo {
     }
 }
 
+fn fetch_explicit_auth_server_info(
+    url: &str,
+    fetch: &Fetcher,
+    resource_metadata: Option<Value>,
+) -> Result<ServerInfo, OAuthError> {
+    let response = fetch.metadata(url, LATEST_PROTOCOL_VERSION)?;
+    if !ok(response.status) {
+        return Err(OAuthError::Other(format!(
+            "HTTP {} loading authorization server metadata from {url}",
+            response.status
+        )));
+    }
+    let metadata = parse_authorization_server_metadata(&json_body(&response)?).map_err(OAuthError::Other)?;
+    Ok(ServerInfo {
+        authorization_server_url: metadata["issuer"].as_str().unwrap_or_default().into(),
+        metadata: Some(metadata),
+        resource_metadata,
+    })
+}
+
 pub fn discover_oauth_server_info(
     server_url: &str,
     resource_metadata_url: Option<&str>,
@@ -223,19 +243,7 @@ pub fn discover_oauth_server_info(
         Err(_) => None,
     };
     if let Some(url) = authorization_server_metadata_url {
-        let response = fetch.metadata(url, LATEST_PROTOCOL_VERSION)?;
-        if !ok(response.status) {
-            return Err(OAuthError::Other(format!(
-                "HTTP {} loading authorization server metadata from {url}",
-                response.status
-            )));
-        }
-        let metadata = parse_authorization_server_metadata(&json_body(&response)?).map_err(OAuthError::Other)?;
-        return Ok(ServerInfo {
-            authorization_server_url: metadata["issuer"].as_str().unwrap_or_default().into(),
-            metadata: Some(metadata),
-            resource_metadata,
-        });
+        return fetch_explicit_auth_server_info(url, fetch, resource_metadata);
     }
     let authorization_server_url = match resource_metadata
         .as_ref()
@@ -499,17 +507,19 @@ pub enum FlowResult {
     Redirect,
 }
 
+fn hinted_client_auth_method(information: &Value, supported: &[String]) -> Option<&'static str> {
+    let hinted = information["token_endpoint_auth_method"].as_str()?;
+    let method = ["client_secret_basic", "client_secret_post", "none"]
+        .into_iter()
+        .find(|m| *m == hinted)?;
+    (supported.is_empty() || supported.iter().any(|s| s == method)).then_some(method)
+}
+
 fn select_client_auth_method(information: &Value, supported: &[String]) -> &'static str {
-    let secret = information["client_secret"].as_str().is_some_and(|s| !s.is_empty());
-    let hinted = information["token_endpoint_auth_method"].as_str();
-    if let Some(hinted) = hinted
-        && let Some(method) = ["client_secret_basic", "client_secret_post", "none"]
-            .into_iter()
-            .find(|m| *m == hinted)
-        && (supported.is_empty() || supported.iter().any(|s| s == method))
-    {
+    if let Some(method) = hinted_client_auth_method(information, supported) {
         return method;
     }
+    let secret = information["client_secret"].as_str().is_some_and(|s| !s.is_empty());
     let has = |m: &str| supported.iter().any(|s| s == m);
     if supported.is_empty() {
         return if secret { "client_secret_basic" } else { "none" };
@@ -532,6 +542,63 @@ fn string_list(value: &Value) -> Vec<String> {
         .map_or_default(|items| items.iter().filter_map(Value::as_str).map(String::from).collect())
 }
 
+fn set_param(params: &mut Vec<(String, String)>, key: &str, value: &str) {
+    match params.iter_mut().find(|(k, _)| k == key) {
+        Some(entry) => entry.1 = value.to_string(),
+        None => params.push((key.into(), value.into())),
+    }
+}
+
+fn apply_client_auth(
+    client: &Value,
+    supported: &[String],
+    headers: &mut Vec<(&'static str, String)>,
+    params: &mut Vec<(String, String)>,
+) -> Result<(), OAuthError> {
+    let client_id = client["client_id"].as_str().unwrap_or_default();
+    match select_client_auth_method(client, supported) {
+        "client_secret_basic" => {
+            let secret = client["client_secret"].as_str().unwrap_or_default();
+            if secret.is_empty() {
+                return Err(OAuthError::Other("client_secret_basic requires a client secret".into()));
+            }
+            let encoded = jsrt::base64::encode(format!("{client_id}:{secret}"));
+            headers.push(("Authorization", format!("Basic {encoded}")));
+        }
+        method => {
+            set_param(params, "client_id", client_id);
+            if method == "client_secret_post"
+                && let Some(secret) = client["client_secret"].as_str().filter(|s| !s.is_empty())
+            {
+                set_param(params, "client_secret", secret);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse_token_endpoint_response(response: &Fetched) -> Result<Value, OAuthError> {
+    let value: Option<Value> = serde_json::from_str(&response.body).ok();
+    if let Some(error) = value.as_ref().and_then(|v| v["error"].as_str()) {
+        let message = value
+            .as_ref()
+            .and_then(|v| v["error_description"].as_str())
+            .filter(|m| !m.is_empty())
+            .unwrap_or(error);
+        return Err(OAuthError::OAuth {
+            code: error.into(),
+            message: message.into(),
+        });
+    }
+    if !ok(response.status) {
+        return Err(OAuthError::OAuth {
+            code: "server_error".into(),
+            message: format!("HTTP {}: {}", response.status, response.body),
+        });
+    }
+    parse_tokens(&value.unwrap_or(Value::Null)).map_err(OAuthError::Other)
+}
+
 /// A token endpoint request (`tokenRequest`): OAuth errors are read from the body before the status.
 fn token_request(
     authorization_server_url: &str,
@@ -549,62 +616,19 @@ fn token_request(
             .to_string(),
     };
     let url = secure_endpoint(&endpoint)?;
-    let mut set = |key: &str, value: &str| match params.iter_mut().find(|(k, _)| k == key) {
-        Some(entry) => entry.1 = value.to_string(),
-        None => params.push((key.into(), value.into())),
-    };
     if let Some(resource) = resource {
-        set("resource", resource);
+        set_param(&mut params, "resource", resource);
     }
     let mut headers = vec![
         ("Accept", "application/json".to_string()),
         ("content-type", "application/x-www-form-urlencoded".to_string()),
     ];
     let supported = metadata.map_or_default(|m| string_list(&m["token_endpoint_auth_methods_supported"]));
-    let client_id = client["client_id"].as_str().unwrap_or_default();
-    match select_client_auth_method(client, &supported) {
-        "client_secret_basic" => {
-            let secret = client["client_secret"].as_str().unwrap_or_default();
-            if secret.is_empty() {
-                return Err(OAuthError::Other("client_secret_basic requires a client secret".into()));
-            }
-            let encoded = jsrt::base64::encode(format!("{client_id}:{secret}"));
-            headers.push(("Authorization", format!("Basic {encoded}")));
-        }
-        method => {
-            set("client_id", client_id);
-            if method == "client_secret_post"
-                && let Some(secret) = client["client_secret"].as_str().filter(|s| !s.is_empty())
-            {
-                set("client_secret", secret);
-            }
-        }
-    }
+    apply_client_auth(client, &supported, &mut headers, &mut params)?;
     let pairs: Vec<(&str, &str)> = params.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let body = ai::oauth_flow::form_urlencode(&pairs);
     let response = fetch.send(reqwest::Method::POST, url.as_str(), &headers, Some(body))?;
-    let value: Option<Value> = serde_json::from_str(&response.body).ok();
-    if let Some(error) = value.as_ref().and_then(|v| v["error"].as_str()) {
-        let message = value
-            .as_ref()
-            .and_then(|v| v["error_description"].as_str())
-            .unwrap_or(error);
-        return Err(OAuthError::OAuth {
-            code: error.into(),
-            message: if message.is_empty() {
-                error.into()
-            } else {
-                message.into()
-            },
-        });
-    }
-    if !ok(response.status) {
-        return Err(OAuthError::OAuth {
-            code: "server_error".into(),
-            message: format!("HTTP {}: {}", response.status, response.body),
-        });
-    }
-    parse_tokens(&value.unwrap_or(Value::Null)).map_err(OAuthError::Other)
+    parse_token_endpoint_response(&response)
 }
 
 /// `registerClient`: dynamic client registration.
@@ -650,6 +674,56 @@ fn register_client(
     parse_client_information(&json_body(&response)?).map_err(OAuthError::Other)
 }
 
+fn validate_authorization_metadata(metadata: &Value) -> Result<(), OAuthError> {
+    if !string_list(&metadata["response_types_supported"])
+        .iter()
+        .any(|t| t == "code")
+    {
+        return Err(OAuthError::Other(
+            "Authorization server does not support authorization codes".into(),
+        ));
+    }
+    if metadata["code_challenge_methods_supported"].is_array()
+        && !string_list(&metadata["code_challenge_methods_supported"])
+            .iter()
+            .any(|m| m == "S256")
+    {
+        return Err(OAuthError::Other(
+            "Authorization server does not support PKCE S256".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn authorization_endpoint_url(authorization_server_url: &str, metadata: Option<&Value>) -> Result<Url, OAuthError> {
+    match metadata.and_then(|m| m["authorization_endpoint"].as_str()) {
+        Some(endpoint) => parse_url(endpoint),
+        None => parse_url(authorization_server_url)?
+            .join("/authorize")
+            .map_err(|e| OAuthError::Other(e.to_string())),
+    }
+}
+
+fn apply_optional_auth_params(
+    pairs: &mut Vec<(String, String)>,
+    state: Option<&str>,
+    scope: Option<&str>,
+    resource: Option<&str>,
+) {
+    if let Some(state) = state.filter(|s| !s.is_empty()) {
+        set_param(pairs, "state", state);
+    }
+    if let Some(scope) = scope.filter(|s| !s.is_empty()) {
+        set_param(pairs, "scope", scope);
+        if scope.split_whitespace().any(|s| s == "offline_access") {
+            set_param(pairs, "prompt", "consent");
+        }
+    }
+    if let Some(resource) = resource {
+        set_param(pairs, "resource", resource);
+    }
+}
+
 /// `startAuthorization`: the authorization URL (PKCE S256) and the code verifier.
 fn start_authorization(
     authorization_server_url: &str,
@@ -661,53 +735,21 @@ fn start_authorization(
     resource: Option<&str>,
 ) -> Result<(String, String), OAuthError> {
     if let Some(metadata) = metadata {
-        if !string_list(&metadata["response_types_supported"])
-            .iter()
-            .any(|t| t == "code")
-        {
-            return Err(OAuthError::Other(
-                "Authorization server does not support authorization codes".into(),
-            ));
-        }
-        if metadata["code_challenge_methods_supported"].is_array()
-            && !string_list(&metadata["code_challenge_methods_supported"])
-                .iter()
-                .any(|m| m == "S256")
-        {
-            return Err(OAuthError::Other(
-                "Authorization server does not support PKCE S256".into(),
-            ));
-        }
+        validate_authorization_metadata(metadata)?;
     }
-    let mut url = match metadata.and_then(|m| m["authorization_endpoint"].as_str()) {
-        Some(endpoint) => parse_url(endpoint)?,
-        None => parse_url(authorization_server_url)?
-            .join("/authorize")
-            .map_err(|e| OAuthError::Other(e.to_string()))?,
-    };
+    let mut url = authorization_endpoint_url(authorization_server_url, metadata)?;
     let (verifier, challenge) = ai::oauth_flow::generate_pkce();
     let mut pairs: Vec<(String, String)> = url.query_pairs().into_owned().collect();
-    let mut set = |key: &str, value: &str| match pairs.iter_mut().find(|(k, _)| k == key) {
-        Some(entry) => entry.1 = value.into(),
-        None => pairs.push((key.into(), value.into())),
-    };
-    set("response_type", "code");
-    set("client_id", client["client_id"].as_str().unwrap_or_default());
-    set("code_challenge", &challenge);
-    set("code_challenge_method", "S256");
-    set("redirect_uri", redirect_url);
-    if let Some(state) = state.filter(|s| !s.is_empty()) {
-        set("state", state);
-    }
-    if let Some(scope) = scope.filter(|s| !s.is_empty()) {
-        set("scope", scope);
-        if scope.split_whitespace().any(|s| s == "offline_access") {
-            set("prompt", "consent");
-        }
-    }
-    if let Some(resource) = resource {
-        set("resource", resource);
-    }
+    set_param(&mut pairs, "response_type", "code");
+    set_param(
+        &mut pairs,
+        "client_id",
+        client["client_id"].as_str().unwrap_or_default(),
+    );
+    set_param(&mut pairs, "code_challenge", &challenge);
+    set_param(&mut pairs, "code_challenge_method", "S256");
+    set_param(&mut pairs, "redirect_uri", redirect_url);
+    apply_optional_auth_params(&mut pairs, state, scope, resource);
     url.query_pairs_mut().clear().extend_pairs(pairs.iter());
     Ok((url.to_string(), verifier))
 }
@@ -734,7 +776,7 @@ pub fn step_up_scope(granted: Option<&str>, challenged: Option<&str>) -> Option<
     Some(scopes.join(" "))
 }
 
-fn run_flow(provider: &Provider<'_>, options: &FlowOptions) -> Result<FlowResult, OAuthError> {
+fn discover_or_cached_server(provider: &Provider<'_>, options: &FlowOptions) -> Result<ServerInfo, OAuthError> {
     let metadata_url = options
         .authorization_server_metadata_url
         .as_deref()
@@ -771,6 +813,111 @@ fn run_flow(provider: &Provider<'_>, options: &FlowOptions) -> Result<FlowResult
     if metadata_url.is_none() {
         provider.save_discovery_state(discovered.state(options.resource_metadata_url.as_deref()))?;
     }
+    Ok(discovered)
+}
+
+fn resolve_or_register_client(
+    provider: &Provider<'_>,
+    options: &FlowOptions,
+    discovered: &ServerInfo,
+    scope: Option<&str>,
+) -> Result<Value, OAuthError> {
+    if let Some(client) = provider.client_information()? {
+        return Ok(client);
+    }
+    if options.authorization_code.is_some() {
+        return Err(OAuthError::Other(
+            "OAuth client information is missing during code exchange".into(),
+        ));
+    }
+    let client = register_client(
+        &discovered.authorization_server_url,
+        discovered.metadata.as_ref(),
+        &provider.client_metadata,
+        scope,
+        &options.fetch,
+    )?;
+    provider.save_client_information(&client)?;
+    Ok(client)
+}
+
+fn exchange_authorization_code(
+    provider: &Provider<'_>,
+    options: &FlowOptions,
+    discovered: &ServerInfo,
+    client: &Value,
+    resource: Option<&str>,
+    scope: Option<&str>,
+    code: &str,
+) -> Result<FlowResult, OAuthError> {
+    let metadata = discovered.metadata.as_ref();
+    if let Some(metadata) = metadata
+        && (options.iss.is_some() || metadata["authorization_response_iss_parameter_supported"] == true)
+    {
+        let issuer = metadata["issuer"].as_str().unwrap_or_default();
+        if options.iss.as_deref() != Some(issuer) {
+            return Err(issuer_mismatch(issuer, options.iss.as_deref()));
+        }
+    }
+    let verifier = provider.code_verifier()?;
+    let tokens = token_request(
+        &discovered.authorization_server_url,
+        metadata,
+        client,
+        resource,
+        vec![
+            ("grant_type".into(), "authorization_code".into()),
+            ("code".into(), code.to_string()),
+            ("code_verifier".into(), verifier),
+            ("redirect_uri".into(), provider.redirect_url.clone()),
+        ],
+        &options.fetch,
+    )?;
+    provider.save_tokens(&with_scope(tokens, scope))?;
+    Ok(FlowResult::Authorized)
+}
+
+fn try_refresh_tokens(
+    provider: &Provider<'_>,
+    options: &FlowOptions,
+    discovered: &ServerInfo,
+    client: &Value,
+    resource: Option<&str>,
+) -> Result<bool, OAuthError> {
+    let existing = if options.skip_refresh { None } else { provider.tokens()? };
+    let Some(refresh_token) = existing.as_ref().and_then(|t| t["refresh_token"].as_str()) else {
+        return Ok(false);
+    };
+    let refreshed = token_request(
+        &discovered.authorization_server_url,
+        discovered.metadata.as_ref(),
+        client,
+        resource,
+        vec![
+            ("grant_type".into(), "refresh_token".into()),
+            ("refresh_token".into(), refresh_token.into()),
+        ],
+        &options.fetch,
+    );
+    match refreshed {
+        Ok(tokens) => {
+            let mut merged = Map::new();
+            merged.insert("refresh_token".into(), json!(refresh_token));
+            if let Value::Object(tokens) = tokens {
+                merged.extend(tokens);
+            }
+            let granted = existing.as_ref().and_then(|t| t["scope"].as_str());
+            provider.save_tokens(&with_scope(Value::Object(merged), granted))?;
+            Ok(true)
+        }
+        Err(error @ OAuthError::Refused(_)) => Err(error),
+        Err(OAuthError::OAuth { code, message }) if code != "server_error" => Err(OAuthError::OAuth { code, message }),
+        Err(_) => Ok(false),
+    }
+}
+
+fn run_flow(provider: &Provider<'_>, options: &FlowOptions) -> Result<FlowResult, OAuthError> {
+    let discovered = discover_or_cached_server(provider, options)?;
     let metadata = discovered.metadata.as_ref();
     let resource = select_resource(&options.server_url, discovered.resource_metadata.as_ref())?;
     let resource_scopes = discovered
@@ -789,81 +936,20 @@ fn run_flow(provider: &Provider<'_>, options: &FlowOptions) -> Result<FlowResult
     .into_iter()
     .flatten()
     .find(|s| !s.is_empty());
-    let client = match provider.client_information()? {
-        Some(client) => client,
-        None => {
-            if options.authorization_code.is_some() {
-                return Err(OAuthError::Other(
-                    "OAuth client information is missing during code exchange".into(),
-                ));
-            }
-            let client = register_client(
-                &discovered.authorization_server_url,
-                metadata,
-                &provider.client_metadata,
-                scope.as_deref(),
-                &options.fetch,
-            )?;
-            provider.save_client_information(&client)?;
-            client
-        }
-    };
+    let client = resolve_or_register_client(provider, options, &discovered, scope.as_deref())?;
     if let Some(code) = &options.authorization_code {
-        if let Some(metadata) = metadata
-            && (options.iss.is_some() || metadata["authorization_response_iss_parameter_supported"] == true)
-        {
-            let issuer = metadata["issuer"].as_str().unwrap_or_default();
-            if options.iss.as_deref() != Some(issuer) {
-                return Err(issuer_mismatch(issuer, options.iss.as_deref()));
-            }
-        }
-        let verifier = provider.code_verifier()?;
-        let tokens = token_request(
-            &discovered.authorization_server_url,
-            metadata,
+        return exchange_authorization_code(
+            provider,
+            options,
+            &discovered,
             &client,
             resource.as_deref(),
-            vec![
-                ("grant_type".into(), "authorization_code".into()),
-                ("code".into(), code.clone()),
-                ("code_verifier".into(), verifier),
-                ("redirect_uri".into(), provider.redirect_url.clone()),
-            ],
-            &options.fetch,
-        )?;
-        provider.save_tokens(&with_scope(tokens, scope.as_deref()))?;
-        return Ok(FlowResult::Authorized);
-    }
-    let existing = if options.skip_refresh { None } else { provider.tokens()? };
-    if let Some(refresh_token) = existing.as_ref().and_then(|t| t["refresh_token"].as_str()) {
-        let refreshed = token_request(
-            &discovered.authorization_server_url,
-            metadata,
-            &client,
-            resource.as_deref(),
-            vec![
-                ("grant_type".into(), "refresh_token".into()),
-                ("refresh_token".into(), refresh_token.into()),
-            ],
-            &options.fetch,
+            scope.as_deref(),
+            code,
         );
-        match refreshed {
-            Ok(tokens) => {
-                let mut merged = Map::new();
-                merged.insert("refresh_token".into(), json!(refresh_token));
-                if let Value::Object(tokens) = tokens {
-                    merged.extend(tokens);
-                }
-                let granted = existing.as_ref().and_then(|t| t["scope"].as_str());
-                provider.save_tokens(&with_scope(Value::Object(merged), granted))?;
-                return Ok(FlowResult::Authorized);
-            }
-            Err(error @ OAuthError::Refused(_)) => return Err(error),
-            Err(OAuthError::OAuth { code, message }) if code != "server_error" => {
-                return Err(OAuthError::OAuth { code, message });
-            }
-            Err(_) => {}
-        }
+    }
+    if try_refresh_tokens(provider, options, &discovered, &client, resource.as_deref())? {
+        return Ok(FlowResult::Authorized);
     }
     let state = provider.state()?;
     let (url, verifier) = start_authorization(

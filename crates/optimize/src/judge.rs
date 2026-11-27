@@ -327,32 +327,82 @@ fn percentile(sorted: &[f64], q: f64) -> f64 {
     sorted[index]
 }
 
-/// The point of `verdicts` (one per case of `set`) of a variant with `config`; `ms` are the calls' latencies.
-pub fn point(set: &JudgeSet, config: &Value, verdicts: &[Verdict], ms: &[f64]) -> Point {
-    let (mut correct, mut wrong, mut review, mut abstained, mut escalated) = (0, 0, 0, 0, 0);
-    let mut kinds: BTreeMap<String, [usize; 4]> = BTreeMap::new();
-    let mut failures = Vec::new();
-    let (mut tokens, mut cost, mut escalation_cost) = (0u64, Some(0.0), Some(0.0));
-    let escalate_model = config["escalateModel"].as_str();
-    let rates = escalate_model.and_then(catalog_rates);
+struct VerdictTally {
+    correct: u32,
+    wrong: u32,
+    review: u32,
+    abstained: u32,
+    escalated: usize,
+    kinds: BTreeMap<String, [usize; 4]>,
+    failures: Vec<Value>,
+    tokens: u64,
+    cost: Option<f64>,
+    escalation_cost: Option<f64>,
+}
+
+fn escalation_call_cost(verdict: &Verdict, escalate_model: Option<&str>, rates: Option<Rates>) -> Option<f64> {
+    let input = verdict.receipts.iter().find_map(|r| r.spend.input_tokens);
+    let unit = Unit {
+        input_tokens: input.map(|n| n as f64),
+        ..Unit::new("judge", 1, escalate_model.map(str::to_string))
+    };
+    let priced = Priced {
+        model: unit.model.clone(),
+        rates,
+    };
+    call_cost(&unit, &priced)
+}
+
+fn latency_summary(ms: &[f64]) -> Value {
+    let mut sorted = ms.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    if sorted.is_empty() {
+        Value::Null
+    } else {
+        json!({
+            "p50": percentile(&sorted, 0.5).round(),
+            "p95": percentile(&sorted, 0.95).round(),
+            "max": sorted[sorted.len() - 1].round(),
+        })
+    }
+}
+
+fn tally_verdicts(
+    set: &JudgeSet,
+    verdicts: &[Verdict],
+    escalate_model: Option<&str>,
+    rates: Option<Rates>,
+) -> VerdictTally {
+    let mut tally = VerdictTally {
+        correct: 0,
+        wrong: 0,
+        review: 0,
+        abstained: 0,
+        escalated: 0,
+        kinds: BTreeMap::new(),
+        failures: Vec::new(),
+        tokens: 0,
+        cost: Some(0.0),
+        escalation_cost: Some(0.0),
+    };
     for (index, (case, verdict)) in set.bench.cases.iter().zip(verdicts).enumerate() {
-        let tally = kinds.entry(case.kind.clone()).or_default();
-        tally[0] += 1;
+        let bucket = tally.kinds.entry(case.kind.clone()).or_default();
+        bucket[0] += 1;
         for receipt in verdict.receipts.iter().filter(|r| r.sent()) {
-            tokens += receipt.spend.input_tokens.unwrap_or(0) + receipt.spend.output_tokens.unwrap_or(0);
-            cost = cost.zip(receipt.spend.cost).map(|(a, b)| a + b);
+            tally.tokens += receipt.spend.input_tokens.unwrap_or(0) + receipt.spend.output_tokens.unwrap_or(0);
+            tally.cost = tally.cost.zip(receipt.spend.cost).map(|(a, b)| a + b);
         }
         match verdict.rung {
             Rung::First | Rung::Escalated => {
-                escalated += usize::from(verdict.rung == Rung::Escalated);
+                tally.escalated += usize::from(verdict.rung == Rung::Escalated);
                 let answer = &verdict.answers[0].1;
                 if answer.value == case.gold {
-                    correct += 1;
-                    tally[1] += 1;
+                    tally.correct += 1;
+                    bucket[1] += 1;
                 } else {
-                    wrong += 1;
-                    tally[2] += 1;
-                    failures.push(json!({
+                    tally.wrong += 1;
+                    bucket[2] += 1;
+                    tally.failures.push(json!({
                         "case": index, "kind": case.kind, "failure": "accepted a wrong answer",
                         "gold": case.gold, "got": answer.value, "confidence": answer.confidence,
                         "backend": verdict.backend, "rung": verdict.rung.name(),
@@ -360,54 +410,49 @@ pub fn point(set: &JudgeSet, config: &Value, verdicts: &[Verdict], ms: &[f64]) -
                 }
             }
             Rung::Review => {
-                review += 1;
-                tally[3] += 1;
+                tally.review += 1;
+                bucket[3] += 1;
                 if escalate_model.is_some() {
-                    let input = verdict.receipts.iter().find_map(|r| r.spend.input_tokens);
-                    let unit = Unit {
-                        input_tokens: input.map(|n| n as f64),
-                        ..Unit::new("judge", 1, escalate_model.map(str::to_string))
-                    };
-                    let priced = Priced {
-                        model: unit.model.clone(),
-                        rates,
-                    };
-                    escalation_cost = escalation_cost.zip(call_cost(&unit, &priced)).map(|(a, b)| a + b);
+                    let est = escalation_call_cost(verdict, escalate_model, rates);
+                    tally.escalation_cost = tally.escalation_cost.zip(est).map(|(a, b)| a + b);
                 }
             }
             Rung::Abstained => {
-                abstained += 1;
-                failures.push(json!({
+                tally.abstained += 1;
+                tally.failures.push(json!({
                     "case": index, "kind": case.kind, "failure": "abstained", "reason": verdict.reason,
                 }));
             }
         }
     }
+    tally
+}
+
+/// The point of `verdicts` (one per case of `set`) of a variant with `config`; `ms` are the calls' latencies.
+pub fn point(set: &JudgeSet, config: &Value, verdicts: &[Verdict], ms: &[f64]) -> Point {
+    let escalate_model = config["escalateModel"].as_str();
+    let rates = escalate_model.and_then(catalog_rates);
+    let tally = tally_verdicts(set, verdicts, escalate_model, rates);
     let cases = set.bench.cases.len().max(1) as f64;
-    let mut sorted = ms.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    let latency = if sorted.is_empty() {
-        Value::Null
-    } else {
-        json!({"p50": percentile(&sorted, 0.5).round(), "p95": percentile(&sorted, 0.95).round(), "max": sorted[sorted.len() - 1].round()})
-    };
-    let kinds: Map<String, Value> = kinds
+    let kinds: Map<String, Value> = tally
+        .kinds
         .into_iter()
         .map(|(kind, [n, c, w, r])| (kind, json!({"cases": n, "correct": c, "wrong": w, "review": r})))
         .collect();
     let mut metrics = json!({
         "quality": "settled correctly", "penalty": "left unsettled",
-        "cases": set.bench.cases.len(), "correct": correct, "wrong": wrong, "review": review,
-        "abstained": abstained, "escalated": escalated, "kinds": kinds, "tokens": tokens, "latencyMs": latency,
+        "cases": set.bench.cases.len(), "correct": tally.correct, "wrong": tally.wrong, "review": tally.review,
+        "abstained": tally.abstained, "escalated": tally.escalated, "kinds": kinds, "tokens": tally.tokens,
+        "latencyMs": latency_summary(ms),
     });
-    let mut total = cost;
+    let mut total = tally.cost;
     if let Some(model) = escalate_model {
         metrics["escalation"] = json!({
-            "model": model, "wouldEscalate": review, "estimatedCostUsd": escalation_cost,
+            "model": model, "wouldEscalate": tally.review, "estimatedCostUsd": tally.escalation_cost,
             "answers": "not replayed: these verdicts count as unsettled",
         });
-        metrics["note"] = json!(format!("{review} would escalate to {model}"));
-        total = total.zip(escalation_cost).map(|(a, b)| a + b);
+        metrics["note"] = json!(format!("{} would escalate to {model}", tally.review));
+        total = total.zip(tally.escalation_cost).map(|(a, b)| a + b);
     }
     Point {
         pipeline: "judge",
@@ -415,18 +460,18 @@ pub fn point(set: &JudgeSet, config: &Value, verdicts: &[Verdict], ms: &[f64]) -
         version: 0,
         set_hash: set.hash.clone(),
         mode: "offline",
-        outcome: if wrong > 0 {
+        outcome: if tally.wrong > 0 {
             Outcome::Failed
-        } else if abstained > 0 {
+        } else if tally.abstained > 0 {
             Outcome::Incomplete
         } else {
             Outcome::Passed
         },
-        quality: f64::from(correct) / cases,
-        penalty: f64::from(review + abstained) / cases,
+        quality: f64::from(tally.correct) / cases,
+        penalty: f64::from(tally.review + tally.abstained) / cases,
         cost_usd: total,
         metrics,
-        failures,
+        failures: tally.failures,
     }
 }
 

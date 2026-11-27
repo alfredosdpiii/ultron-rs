@@ -154,29 +154,88 @@ fn integer(value: &Value) -> Option<i64> {
         .or_else(|| value.as_f64().filter(|v| v.fract() == 0.0).map(|v| v as i64))
 }
 
+fn expect_error(at: &str) -> String {
+    format!(
+        "{at}.expect must be \"exit 0\" (or \"exit N\"), {{\"exit\": N}}, \"fail\" or {{\"stdout_contains\": \"text\"}}"
+    )
+}
+
+fn parse_expect_object(map: &Map<String, Value>, at: &str) -> Result<Expect, String> {
+    if map.len() != 1 {
+        return Err(expect_error(at));
+    }
+    match (map.get("exit"), map.get("stdout_contains")) {
+        (Some(code), None) => integer(code)
+            .and_then(|code| i32::try_from(code).ok())
+            .map(Expect::Exit)
+            .ok_or_else(|| expect_error(at)),
+        (None, Some(Value::String(part))) if !part.is_empty() => Ok(Expect::StdoutContains(part.clone())),
+        _ => Err(expect_error(at)),
+    }
+}
+
 fn parse_expect(value: Option<&Value>, at: &str) -> Result<Expect, String> {
-    let wrong = || {
-        format!(
-            "{at}.expect must be \"exit 0\" (or \"exit N\"), {{\"exit\": N}}, \"fail\" or {{\"stdout_contains\": \"text\"}}"
-        )
-    };
     match value {
         None | Some(Value::Null) => Ok(Expect::Exit(0)),
         Some(Value::String(text)) if text.trim() == "fail" => Ok(Expect::Fail),
         Some(Value::String(text)) => {
-            let code = text.trim().strip_prefix("exit").map(str::trim).ok_or_else(wrong)?;
-            code.parse::<i32>().map(Expect::Exit).map_err(|_| wrong())
+            let code = text
+                .trim()
+                .strip_prefix("exit")
+                .map(str::trim)
+                .ok_or_else(|| expect_error(at))?;
+            code.parse::<i32>().map(Expect::Exit).map_err(|_| expect_error(at))
         }
-        Some(Value::Object(map)) if map.len() == 1 => match (map.get("exit"), map.get("stdout_contains")) {
-            (Some(code), None) => integer(code)
-                .and_then(|code| i32::try_from(code).ok())
-                .map(Expect::Exit)
-                .ok_or_else(wrong),
-            (None, Some(Value::String(part))) if !part.is_empty() => Ok(Expect::StdoutContains(part.clone())),
-            _ => Err(wrong()),
-        },
-        Some(_) => Err(wrong()),
+        Some(Value::Object(map)) => parse_expect_object(map, at),
+        Some(_) => Err(expect_error(at)),
     }
+}
+
+fn parse_run_check(map: &Map<String, Value>, at: &str) -> Result<HostCheck, String> {
+    only(map, &["run", "expect", "timeout_ms"], "contract check")?;
+    let timeout_ms = match map.get("timeout_ms") {
+        None | Some(Value::Null) => DEFAULT_CHECK_TIMEOUT_MS,
+        Some(value) => integer(value)
+            .filter(|ms| (1..=MAX_CHECK_TIMEOUT_MS as i64).contains(ms))
+            .ok_or_else(|| format!("{at}.timeout_ms must be an integer from 1 to {MAX_CHECK_TIMEOUT_MS}"))?
+            as u64,
+    };
+    Ok(HostCheck::Run {
+        command: text(&map["run"], &format!("{at}.run"))?,
+        expect: parse_expect(map.get("expect"), at)?,
+        timeout_ms,
+    })
+}
+
+fn parse_changed_files_check(map: &Map<String, Value>, globs: &Value, at: &str) -> Result<HostCheck, String> {
+    only(map, &["changed_files_within"], "contract check")?;
+    let globs = strings(globs, &format!("{at}.changed_files_within"))?;
+    if let Some(bad) = globs.iter().find(|glob| Glob::new(glob).is_err()) {
+        return Err(format!("{at}.changed_files_within has an invalid glob: {bad}"));
+    }
+    Ok(HostCheck::ChangedFilesWithin(globs))
+}
+
+fn parse_no_deps_check(map: &Map<String, Value>, flag: &Value, at: &str) -> Result<HostCheck, String> {
+    only(map, &["no_new_dependencies"], "contract check")?;
+    if flag != &Value::Bool(true) {
+        return Err(format!("{at}.no_new_dependencies must be true"));
+    }
+    Ok(HostCheck::NoNewDependencies)
+}
+
+fn parse_files_exist_check(map: &Map<String, Value>, paths: &Value, at: &str) -> Result<HostCheck, String> {
+    only(map, &["files_exist"], "contract check")?;
+    let paths = strings(paths, &format!("{at}.files_exist"))?;
+    if let Some(bad) = paths
+        .iter()
+        .find(|p| p.starts_with('/') || p.split('/').any(|s| s == ".."))
+    {
+        return Err(format!(
+            "{at}.files_exist paths are relative to the child's working directory, not {bad}"
+        ));
+    }
+    Ok(HostCheck::FilesExist(paths))
 }
 
 impl HostCheck {
@@ -185,47 +244,16 @@ impl HostCheck {
         let at = format!("contract.checks[{index}]");
         let map = value.as_object().ok_or_else(|| format!("{at} must be an object"))?;
         if map.contains_key("run") {
-            only(map, &["run", "expect", "timeout_ms"], "contract check")?;
-            let timeout_ms = match map.get("timeout_ms") {
-                None | Some(Value::Null) => DEFAULT_CHECK_TIMEOUT_MS,
-                Some(value) => integer(value)
-                    .filter(|ms| (1..=MAX_CHECK_TIMEOUT_MS as i64).contains(ms))
-                    .ok_or_else(|| format!("{at}.timeout_ms must be an integer from 1 to {MAX_CHECK_TIMEOUT_MS}"))?
-                    as u64,
-            };
-            return Ok(HostCheck::Run {
-                command: text(&map["run"], &format!("{at}.run"))?,
-                expect: parse_expect(map.get("expect"), &at)?,
-                timeout_ms,
-            });
+            return parse_run_check(map, &at);
         }
         if let Some(globs) = map.get("changed_files_within") {
-            only(map, &["changed_files_within"], "contract check")?;
-            let globs = strings(globs, &format!("{at}.changed_files_within"))?;
-            if let Some(bad) = globs.iter().find(|glob| Glob::new(glob).is_err()) {
-                return Err(format!("{at}.changed_files_within has an invalid glob: {bad}"));
-            }
-            return Ok(HostCheck::ChangedFilesWithin(globs));
+            return parse_changed_files_check(map, globs, &at);
         }
         if let Some(flag) = map.get("no_new_dependencies") {
-            only(map, &["no_new_dependencies"], "contract check")?;
-            if flag != &Value::Bool(true) {
-                return Err(format!("{at}.no_new_dependencies must be true"));
-            }
-            return Ok(HostCheck::NoNewDependencies);
+            return parse_no_deps_check(map, flag, &at);
         }
         if let Some(paths) = map.get("files_exist") {
-            only(map, &["files_exist"], "contract check")?;
-            let paths = strings(paths, &format!("{at}.files_exist"))?;
-            if let Some(bad) = paths
-                .iter()
-                .find(|p| p.starts_with('/') || p.split('/').any(|s| s == ".."))
-            {
-                return Err(format!(
-                    "{at}.files_exist paths are relative to the child's working directory, not {bad}"
-                ));
-            }
-            return Ok(HostCheck::FilesExist(paths));
+            return parse_files_exist_check(map, paths, &at);
         }
         Err(format!(
             "{at} must be one of {{\"run\": cmd, \"expect\": ...}}, {{\"changed_files_within\": [globs]}}, {{\"no_new_dependencies\": true}}, {{\"files_exist\": [paths]}}"
@@ -306,6 +334,48 @@ impl Hop {
     }
 }
 
+fn parse_contract_checks(value: Option<&Value>) -> Result<Vec<HostCheck>, String> {
+    match value {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(items)) if items.len() <= MAX_CHECKS => items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| HostCheck::parse(item, index))
+            .collect(),
+        Some(_) => Err(format!("contract.checks must be a list of at most {MAX_CHECKS} checks")),
+    }
+}
+
+fn parse_contract_returns(value: Option<&Value>) -> Result<Option<Value>, String> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(schema @ Value::Object(_)) => {
+            validate_json_schema(schema, "contract.returns")?;
+            if let Some(keyword) = unchecked_keyword(schema, "contract.returns") {
+                return Err(format!("{keyword} is not supported"));
+            }
+            Ok(Some(schema.clone()))
+        }
+        Some(_) => Err("contract.returns must be a JSON schema object".into()),
+    }
+}
+
+fn parse_contract_spec(value: Option<&Value>) -> Result<(Vec<HostCheck>, Option<Value>), String> {
+    match value {
+        None | Some(Value::Null) => Ok((Vec::new(), None)),
+        Some(Value::Object(map)) => {
+            only(map, &["checks", "returns"], "contract")?;
+            Ok((
+                parse_contract_checks(map.get("checks"))?,
+                parse_contract_returns(map.get("returns"))?,
+            ))
+        }
+        Some(_) => {
+            Err("contract must be a dict: {\"checks\": [...], \"returns\": <JSON schema of rlm.finish outputs>}".into())
+        }
+    }
+}
+
 impl SpawnContract {
     /// The contract of a spawn's options (`role`, `contract`, `hop`); `None` when it names none of them.
     pub fn parse(kwargs: &Map<String, Value>) -> Result<Option<SpawnContract>, String> {
@@ -319,39 +389,7 @@ impl SpawnContract {
             None | Some(Value::Null) => None,
             Some(role) => Some(text(role, "role")?),
         };
-        let (checks, returns) = match kwargs.get("contract") {
-            None | Some(Value::Null) => (Vec::new(), None),
-            Some(Value::Object(map)) => {
-                only(map, &["checks", "returns"], "contract")?;
-                let checks = match map.get("checks") {
-                    None | Some(Value::Null) => Vec::new(),
-                    Some(Value::Array(items)) if items.len() <= MAX_CHECKS => items
-                        .iter()
-                        .enumerate()
-                        .map(|(index, item)| HostCheck::parse(item, index))
-                        .collect::<Result<_, _>>()?,
-                    Some(_) => return Err(format!("contract.checks must be a list of at most {MAX_CHECKS} checks")),
-                };
-                let returns = match map.get("returns") {
-                    None | Some(Value::Null) => None,
-                    Some(schema @ Value::Object(_)) => {
-                        validate_json_schema(schema, "contract.returns")?;
-                        if let Some(keyword) = unchecked_keyword(schema, "contract.returns") {
-                            return Err(format!("{keyword} is not supported"));
-                        }
-                        Some(schema.clone())
-                    }
-                    Some(_) => return Err("contract.returns must be a JSON schema object".into()),
-                };
-                (checks, returns)
-            }
-            Some(_) => {
-                return Err(
-                    "contract must be a dict: {\"checks\": [...], \"returns\": <JSON schema of rlm.finish outputs>}"
-                        .into(),
-                );
-            }
-        };
+        let (checks, returns) = parse_contract_spec(kwargs.get("contract"))?;
         let hop = Hop::parse(kwargs.get("hop"))?;
         if hop != Hop::Report && checks.is_empty() && returns.is_none() {
             return Err("hop needs a contract to fail: give contract={\"checks\": [...]}".into());
@@ -587,112 +625,137 @@ fn listed(paths: &[String]) -> String {
     }
 }
 
+fn no_diff_outcome() -> Value {
+    json!({ "ok": false, "evidence": "no working directory was snapshotted when the child started, so its changes are unknown" })
+}
+
+fn format_command_end(outcome: &CommandOutcome, timeout_ms: u64) -> String {
+    match (&outcome.error, outcome.timed_out, outcome.exit) {
+        (Some(error), _, _) => format!("could not run: {error}"),
+        (None, true, _) => format!("timed out after {timeout_ms} ms"),
+        (None, false, Some(code)) => format!("exit {code}"),
+        (None, false, None) => "stopped before it ended".to_string(),
+    }
+}
+
+fn evaluate_expect(expect: &Expect, outcome: &CommandOutcome, ended: String) -> (bool, String) {
+    match expect {
+        Expect::Exit(code) => (outcome.error.is_none() && outcome.exit == Some(*code), ended),
+        Expect::Fail => (
+            outcome.error.is_none() && outcome.exit.is_some_and(|code| code != 0),
+            format!("{ended} (expected to fail)"),
+        ),
+        Expect::StdoutContains(part) => {
+            let found = outcome.error.is_none() && outcome.exit.is_some() && outcome.stdout.contains(part);
+            let said = if found { "contains" } else { "does not contain" };
+            (found, format!("{ended}; stdout {said} {}", Value::from(part.as_str())))
+        }
+    }
+}
+
+fn run_command_check(
+    command: &str,
+    expect: &Expect,
+    timeout_ms: u64,
+    place: &CheckPlace<'_>,
+    runner: &CheckRunner,
+) -> Value {
+    let cwd = match place.cwd {
+        Some(cwd) => cwd.to_path_buf(),
+        None => match std::env::current_dir() {
+            Ok(cwd) => cwd,
+            Err(error) => return json!({ "ok": false, "evidence": format!("no working directory: {error}") }),
+        },
+    };
+    let outcome = runner(&CommandCheck {
+        command: command.to_string(),
+        cwd,
+        env: place.env.to_vec(),
+        timeout: Duration::from_millis(timeout_ms),
+        signal: place.signal.clone(),
+    });
+    let (stdout, stderr) = (tail(&outcome.stdout, OUTPUT_CHARS), tail(&outcome.stderr, OUTPUT_CHARS));
+    let ended = format_command_end(&outcome, timeout_ms);
+    let (ok, evidence) = evaluate_expect(expect, &outcome, ended);
+    let mut entry = json!({ "ok": ok, "evidence": evidence, "exit_code": outcome.exit, "stdout": stdout,
+                            "stderr": stderr });
+    if !ok {
+        let shown = if outcome.stderr.trim().is_empty() {
+            &outcome.stdout
+        } else {
+            &outcome.stderr
+        };
+        let shown = tail(shown.trim(), 500);
+        if !shown.is_empty() {
+            entry["evidence"] = json!(format!("{evidence}: {shown}"));
+        }
+    }
+    entry
+}
+
+fn run_changed_files_within(globs: &[String], place: &CheckPlace<'_>) -> Value {
+    let Some(diff) = place.diff else {
+        return no_diff_outcome();
+    };
+    let compiled: Vec<Glob> = globs.iter().filter_map(|g| Glob::new(g).ok()).collect();
+    let outside: Vec<String> = diff
+        .changed
+        .iter()
+        .filter(|path| !compiled.iter().any(|glob| glob.matches(path)))
+        .cloned()
+        .collect();
+    match outside.is_empty() {
+        true => {
+            json!({ "ok": true, "evidence": format!("{} changed file(s), all within {}", diff.changed.len(), json!(globs)), "changed": diff.changed })
+        }
+        false => {
+            json!({ "ok": false, "evidence": format!("changed outside {}: {}", json!(globs), listed(&outside)), "outside": outside })
+        }
+    }
+}
+
+fn run_no_new_dependencies(place: &CheckPlace<'_>) -> Value {
+    let Some(diff) = place.diff else {
+        return no_diff_outcome();
+    };
+    let touched: Vec<String> = diff.changed.iter().filter(|p| is_dependency_file(p)).cloned().collect();
+    match touched.is_empty() {
+        true => json!({ "ok": true, "evidence": "no dependency manifest or lockfile changed" }),
+        false => {
+            json!({ "ok": false, "evidence": format!("dependency files changed: {}", listed(&touched)), "files": touched })
+        }
+    }
+}
+
+fn run_files_exist(paths: &[String], place: &CheckPlace<'_>) -> Value {
+    let root = place
+        .cwd
+        .map(Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok());
+    let missing: Vec<String> = paths
+        .iter()
+        .filter(|path| !root.as_ref().is_some_and(|root| root.join(path).exists()))
+        .cloned()
+        .collect();
+    match missing.is_empty() {
+        true => json!({ "ok": true, "evidence": format!("{} file(s) exist", paths.len()) }),
+        false => {
+            json!({ "ok": false, "evidence": format!("missing: {}", listed(&missing)), "missing": missing })
+        }
+    }
+}
+
 /// One check's outcome: `{"ok", "evidence", ...}` (a `run` check adds `exit_code`, `stdout`, `stderr`).
 fn run_check(check: &HostCheck, place: &CheckPlace<'_>, runner: &CheckRunner) -> Value {
-    let no_diff = || json!({ "ok": false, "evidence": "no working directory was snapshotted when the child started, so its changes are unknown" });
     match check {
         HostCheck::Run {
             command,
             expect,
             timeout_ms,
-        } => {
-            let cwd = match place.cwd {
-                Some(cwd) => cwd.to_path_buf(),
-                None => match std::env::current_dir() {
-                    Ok(cwd) => cwd,
-                    Err(error) => return json!({ "ok": false, "evidence": format!("no working directory: {error}") }),
-                },
-            };
-            let outcome = runner(&CommandCheck {
-                command: command.clone(),
-                cwd,
-                env: place.env.to_vec(),
-                timeout: Duration::from_millis(*timeout_ms),
-                signal: place.signal.clone(),
-            });
-            let (stdout, stderr) = (tail(&outcome.stdout, OUTPUT_CHARS), tail(&outcome.stderr, OUTPUT_CHARS));
-            let ended = match (&outcome.error, outcome.timed_out, outcome.exit) {
-                (Some(error), _, _) => format!("could not run: {error}"),
-                (None, true, _) => format!("timed out after {timeout_ms} ms"),
-                (None, false, Some(code)) => format!("exit {code}"),
-                (None, false, None) => "stopped before it ended".to_string(),
-            };
-            let (ok, evidence) = match expect {
-                Expect::Exit(code) => (outcome.error.is_none() && outcome.exit == Some(*code), ended),
-                Expect::Fail => (
-                    outcome.error.is_none() && outcome.exit.is_some_and(|code| code != 0),
-                    format!("{ended} (expected to fail)"),
-                ),
-                Expect::StdoutContains(part) => {
-                    let found = outcome.error.is_none() && outcome.exit.is_some() && outcome.stdout.contains(part);
-                    let said = if found { "contains" } else { "does not contain" };
-                    (found, format!("{ended}; stdout {said} {}", Value::from(part.as_str())))
-                }
-            };
-            let mut entry = json!({ "ok": ok, "evidence": evidence, "exit_code": outcome.exit, "stdout": stdout,
-                                    "stderr": stderr });
-            if !ok {
-                let shown = if outcome.stderr.trim().is_empty() {
-                    &outcome.stdout
-                } else {
-                    &outcome.stderr
-                };
-                let shown = tail(shown.trim(), 500);
-                if !shown.is_empty() {
-                    entry["evidence"] = json!(format!("{evidence}: {shown}"));
-                }
-            }
-            entry
-        }
-        HostCheck::ChangedFilesWithin(globs) => {
-            let Some(diff) = place.diff else {
-                return no_diff();
-            };
-            let compiled: Vec<Glob> = globs.iter().filter_map(|g| Glob::new(g).ok()).collect();
-            let outside: Vec<String> = diff
-                .changed
-                .iter()
-                .filter(|path| !compiled.iter().any(|glob| glob.matches(path)))
-                .cloned()
-                .collect();
-            match outside.is_empty() {
-                true => {
-                    json!({ "ok": true, "evidence": format!("{} changed file(s), all within {}", diff.changed.len(), json!(globs)), "changed": diff.changed })
-                }
-                false => {
-                    json!({ "ok": false, "evidence": format!("changed outside {}: {}", json!(globs), listed(&outside)), "outside": outside })
-                }
-            }
-        }
-        HostCheck::NoNewDependencies => {
-            let Some(diff) = place.diff else {
-                return no_diff();
-            };
-            let touched: Vec<String> = diff.changed.iter().filter(|p| is_dependency_file(p)).cloned().collect();
-            match touched.is_empty() {
-                true => json!({ "ok": true, "evidence": "no dependency manifest or lockfile changed" }),
-                false => {
-                    json!({ "ok": false, "evidence": format!("dependency files changed: {}", listed(&touched)), "files": touched })
-                }
-            }
-        }
-        HostCheck::FilesExist(paths) => {
-            let root = place
-                .cwd
-                .map(Path::to_path_buf)
-                .or_else(|| std::env::current_dir().ok());
-            let missing: Vec<String> = paths
-                .iter()
-                .filter(|path| !root.as_ref().is_some_and(|root| root.join(path).exists()))
-                .cloned()
-                .collect();
-            match missing.is_empty() {
-                true => json!({ "ok": true, "evidence": format!("{} file(s) exist", paths.len()) }),
-                false => {
-                    json!({ "ok": false, "evidence": format!("missing: {}", listed(&missing)), "missing": missing })
-                }
-            }
-        }
+        } => run_command_check(command, expect, *timeout_ms, place, runner),
+        HostCheck::ChangedFilesWithin(globs) => run_changed_files_within(globs, place),
+        HostCheck::NoNewDependencies => run_no_new_dependencies(place),
+        HostCheck::FilesExist(paths) => run_files_exist(paths, place),
     }
 }
 

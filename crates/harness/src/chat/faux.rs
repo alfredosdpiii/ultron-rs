@@ -342,6 +342,147 @@ impl Faux {
         }
     }
 
+    fn emit_aborted(
+        partial: &AssistantMessage,
+        on_event: &mut (dyn FnMut(&AssistantMessageEvent) + Send),
+    ) -> AssistantMessage {
+        let aborted = Faux::aborted(partial);
+        on_event(&AssistantMessageEvent::Error {
+            reason: StopReason::Aborted,
+            error: aborted.clone(),
+        });
+        aborted
+    }
+
+    fn stream_thinking_block(
+        &self,
+        index: usize,
+        thinking: &ThinkingContent,
+        partial: &mut AssistantMessage,
+        signal: &Cancel,
+        on_event: &mut (dyn FnMut(&AssistantMessageEvent) + Send),
+    ) -> bool {
+        partial.content.push(AssistantContent::Thinking(ThinkingContent {
+            thinking: String::new(),
+            ..thinking.clone()
+        }));
+        on_event(&AssistantMessageEvent::ThinkingStart {
+            content_index: index,
+            partial: partial.clone(),
+        });
+        for chunk in self.chunks(&thinking.thinking) {
+            self.pace(&chunk, signal);
+            if signal.is_cancelled() {
+                return false;
+            }
+            if let Some(AssistantContent::Thinking(current)) = partial.content.get_mut(index) {
+                current.thinking.push_str(&chunk);
+            }
+            on_event(&AssistantMessageEvent::ThinkingDelta {
+                content_index: index,
+                delta: chunk,
+                partial: partial.clone(),
+            });
+        }
+        on_event(&AssistantMessageEvent::ThinkingEnd {
+            content_index: index,
+            content: thinking.thinking.clone(),
+            partial: partial.clone(),
+        });
+        true
+    }
+
+    fn stream_text_block(
+        &self,
+        index: usize,
+        text: &TextContent,
+        partial: &mut AssistantMessage,
+        signal: &Cancel,
+        on_event: &mut (dyn FnMut(&AssistantMessageEvent) + Send),
+    ) -> bool {
+        partial.content.push(text_block(""));
+        on_event(&AssistantMessageEvent::TextStart {
+            content_index: index,
+            partial: partial.clone(),
+        });
+        for chunk in self.chunks(&text.text) {
+            self.pace(&chunk, signal);
+            if signal.is_cancelled() {
+                return false;
+            }
+            if let Some(AssistantContent::Text(current)) = partial.content.get_mut(index) {
+                current.text.push_str(&chunk);
+            }
+            on_event(&AssistantMessageEvent::TextDelta {
+                content_index: index,
+                delta: chunk,
+                partial: partial.clone(),
+            });
+        }
+        on_event(&AssistantMessageEvent::TextEnd {
+            content_index: index,
+            content: text.text.clone(),
+            partial: partial.clone(),
+        });
+        true
+    }
+
+    fn stream_tool_call_block(
+        &self,
+        index: usize,
+        call: &ToolCall,
+        block: &AssistantContent,
+        partial: &mut AssistantMessage,
+        signal: &Cancel,
+        on_event: &mut (dyn FnMut(&AssistantMessageEvent) + Send),
+    ) -> bool {
+        partial.content.push(AssistantContent::ToolCall(ToolCall {
+            arguments: Value::Object(Map::new()),
+            ..call.clone()
+        }));
+        on_event(&AssistantMessageEvent::ToolCallStart {
+            content_index: index,
+            partial: partial.clone(),
+        });
+        for chunk in self.chunks(&call.arguments.to_string()) {
+            self.pace(&chunk, signal);
+            if signal.is_cancelled() {
+                return false;
+            }
+            on_event(&AssistantMessageEvent::ToolCallDelta {
+                content_index: index,
+                delta: chunk,
+                partial: partial.clone(),
+            });
+        }
+        partial.content[index] = block.clone();
+        on_event(&AssistantMessageEvent::ToolCallEnd {
+            content_index: index,
+            tool_call: call.clone(),
+            partial: partial.clone(),
+        });
+        true
+    }
+
+    fn stream_block(
+        &self,
+        index: usize,
+        block: &AssistantContent,
+        partial: &mut AssistantMessage,
+        signal: &Cancel,
+        on_event: &mut (dyn FnMut(&AssistantMessageEvent) + Send),
+    ) -> bool {
+        match block {
+            AssistantContent::Thinking(thinking) => {
+                self.stream_thinking_block(index, thinking, partial, signal, on_event)
+            }
+            AssistantContent::Text(text) => self.stream_text_block(index, text, partial, signal, on_event),
+            AssistantContent::ToolCall(call) => {
+                self.stream_tool_call_block(index, call, block, partial, signal, on_event)
+            }
+        }
+    }
+
     /// Stream `message` in deltas; an abort ends it with an aborted message.
     fn stream_deltas(
         &self,
@@ -354,107 +495,15 @@ impl Faux {
             stop_reason: StopReason::Pending,
             ..message.clone()
         };
-        let abort = |partial: &AssistantMessage, on_event: &mut (dyn FnMut(&AssistantMessageEvent) + Send)| {
-            let aborted = Faux::aborted(partial);
-            on_event(&AssistantMessageEvent::Error {
-                reason: StopReason::Aborted,
-                error: aborted.clone(),
-            });
-            aborted
-        };
         if signal.is_cancelled() {
-            return abort(&partial, on_event);
+            return Faux::emit_aborted(&partial, on_event);
         }
         on_event(&AssistantMessageEvent::Start {
             partial: partial.clone(),
         });
         for (index, block) in message.content.iter().enumerate() {
-            if signal.is_cancelled() {
-                return abort(&partial, on_event);
-            }
-            match block {
-                AssistantContent::Thinking(thinking) => {
-                    partial.content.push(AssistantContent::Thinking(ThinkingContent {
-                        thinking: String::new(),
-                        ..thinking.clone()
-                    }));
-                    on_event(&AssistantMessageEvent::ThinkingStart {
-                        content_index: index,
-                        partial: partial.clone(),
-                    });
-                    for chunk in self.chunks(&thinking.thinking) {
-                        self.pace(&chunk, signal);
-                        if signal.is_cancelled() {
-                            return abort(&partial, on_event);
-                        }
-                        if let Some(AssistantContent::Thinking(current)) = partial.content.get_mut(index) {
-                            current.thinking.push_str(&chunk);
-                        }
-                        on_event(&AssistantMessageEvent::ThinkingDelta {
-                            content_index: index,
-                            delta: chunk,
-                            partial: partial.clone(),
-                        });
-                    }
-                    on_event(&AssistantMessageEvent::ThinkingEnd {
-                        content_index: index,
-                        content: thinking.thinking.clone(),
-                        partial: partial.clone(),
-                    });
-                }
-                AssistantContent::Text(text) => {
-                    partial.content.push(text_block(""));
-                    on_event(&AssistantMessageEvent::TextStart {
-                        content_index: index,
-                        partial: partial.clone(),
-                    });
-                    for chunk in self.chunks(&text.text) {
-                        self.pace(&chunk, signal);
-                        if signal.is_cancelled() {
-                            return abort(&partial, on_event);
-                        }
-                        if let Some(AssistantContent::Text(current)) = partial.content.get_mut(index) {
-                            current.text.push_str(&chunk);
-                        }
-                        on_event(&AssistantMessageEvent::TextDelta {
-                            content_index: index,
-                            delta: chunk,
-                            partial: partial.clone(),
-                        });
-                    }
-                    on_event(&AssistantMessageEvent::TextEnd {
-                        content_index: index,
-                        content: text.text.clone(),
-                        partial: partial.clone(),
-                    });
-                }
-                AssistantContent::ToolCall(call) => {
-                    partial.content.push(AssistantContent::ToolCall(ToolCall {
-                        arguments: Value::Object(Map::new()),
-                        ..call.clone()
-                    }));
-                    on_event(&AssistantMessageEvent::ToolCallStart {
-                        content_index: index,
-                        partial: partial.clone(),
-                    });
-                    for chunk in self.chunks(&call.arguments.to_string()) {
-                        self.pace(&chunk, signal);
-                        if signal.is_cancelled() {
-                            return abort(&partial, on_event);
-                        }
-                        on_event(&AssistantMessageEvent::ToolCallDelta {
-                            content_index: index,
-                            delta: chunk,
-                            partial: partial.clone(),
-                        });
-                    }
-                    partial.content[index] = block.clone();
-                    on_event(&AssistantMessageEvent::ToolCallEnd {
-                        content_index: index,
-                        tool_call: call.clone(),
-                        partial: partial.clone(),
-                    });
-                }
+            if signal.is_cancelled() || !self.stream_block(index, block, &mut partial, signal, on_event) {
+                return Faux::emit_aborted(&partial, on_event);
             }
         }
         match message.stop_reason {

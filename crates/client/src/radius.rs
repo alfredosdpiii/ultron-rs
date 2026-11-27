@@ -69,7 +69,7 @@ impl Drop for RadiusClientTransport {
 pub fn connect_radius_client_transport(
     server_id: &str,
     auth: &dyn RelayAuthResolver,
-    mut handlers: Box<dyn ByteTransportHandlers>,
+    handlers: Box<dyn ByteTransportHandlers>,
 ) -> Result<RadiusClientTransport, String> {
     let auth = auth.resolve(true)?.ok_or("Radius authentication is required")?;
     let url = relay_web_socket_url(&auth.gateway, server_id)?;
@@ -79,62 +79,7 @@ pub fn connect_radius_client_transport(
     let thread_closed = closed.clone();
     let thread = std::thread::Builder::new()
         .name("radius-relay-client".into())
-        .spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-                Ok(runtime) => runtime,
-                Err(error) => {
-                    let _ = opened_tx.send(Err(error.to_string()));
-                    return;
-                }
-            };
-            runtime.block_on(async move {
-                let socket =
-                    radius_ws::connect(&url, RADIUS_RELAY_CLIENT_SUBPROTOCOL, &authorization, MAX_PENDING_BYTES).await;
-                let mut socket = match socket {
-                    Ok(socket) => socket,
-                    Err(error) => {
-                        let _ = opened_tx.send(Err(error));
-                        return;
-                    }
-                };
-                let _ = opened_tx.send(Ok(socket.writer.clone()));
-                loop {
-                    match socket.reader.next().await {
-                        WsEvent::Binary(bytes) => {
-                            if !thread_closed.load(Ordering::SeqCst) {
-                                handlers.on_data(&bytes);
-                            }
-                        }
-                        WsEvent::Text(_) => {
-                            if !thread_closed.swap(true, Ordering::SeqCst) {
-                                socket
-                                    .writer
-                                    .close_socket(LOCAL_TRANSPORT_ERROR_CLOSE_CODE, "Radius relay transport error");
-                                handlers.on_error("Radius relay client received a non-binary message");
-                            }
-                            break;
-                        }
-                        WsEvent::Closed { .. } => {
-                            if !thread_closed.swap(true, Ordering::SeqCst) {
-                                handlers.on_close();
-                            }
-                            break;
-                        }
-                        WsEvent::Error(error) => {
-                            if !thread_closed.swap(true, Ordering::SeqCst) {
-                                socket
-                                    .writer
-                                    .close_socket(LOCAL_TRANSPORT_ERROR_CLOSE_CODE, "Radius relay transport error");
-                                handlers.on_error(&error);
-                            }
-                            break;
-                        }
-                    }
-                }
-                socket.writer.close();
-                socket.finish().await;
-            });
-        })
+        .spawn(move || run_radius_transport_thread(url, authorization, opened_tx, thread_closed, handlers))
         .map_err(|e| e.to_string())?;
     let writer = match opened_rx.recv() {
         Ok(Ok(writer)) => writer,
@@ -152,6 +97,88 @@ pub fn connect_radius_client_transport(
         closed,
         thread: Mutex::new(Some(thread)),
     })
+}
+
+fn run_radius_transport_thread(
+    url: String,
+    authorization: String,
+    opened_tx: mpsc::Sender<Result<WsWriter, String>>,
+    thread_closed: Arc<AtomicBool>,
+    mut handlers: Box<dyn ByteTransportHandlers>,
+) {
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            let _ = opened_tx.send(Err(error.to_string()));
+            return;
+        }
+    };
+    runtime.block_on(async move {
+        let socket = radius_ws::connect(&url, RADIUS_RELAY_CLIENT_SUBPROTOCOL, &authorization, MAX_PENDING_BYTES).await;
+        let mut socket = match socket {
+            Ok(socket) => socket,
+            Err(error) => {
+                let _ = opened_tx.send(Err(error));
+                return;
+            }
+        };
+        let _ = opened_tx.send(Ok(socket.writer.clone()));
+        while handle_ws_event(
+            socket.reader.next().await,
+            &socket.writer,
+            &thread_closed,
+            handlers.as_mut(),
+        ) {}
+        socket.writer.close();
+        socket.finish().await;
+    });
+}
+
+fn handle_ws_event(
+    event: WsEvent,
+    writer: &WsWriter,
+    thread_closed: &AtomicBool,
+    handlers: &mut dyn ByteTransportHandlers,
+) -> bool {
+    match event {
+        WsEvent::Binary(bytes) => {
+            if !thread_closed.load(Ordering::SeqCst) {
+                handlers.on_data(&bytes);
+            }
+            true
+        }
+        WsEvent::Text(_) => {
+            report_transport_error(
+                writer,
+                thread_closed,
+                handlers,
+                "Radius relay client received a non-binary message",
+            );
+            false
+        }
+        WsEvent::Closed { .. } => {
+            if !thread_closed.swap(true, Ordering::SeqCst) {
+                handlers.on_close();
+            }
+            false
+        }
+        WsEvent::Error(error) => {
+            report_transport_error(writer, thread_closed, handlers, &error);
+            false
+        }
+    }
+}
+
+fn report_transport_error(
+    writer: &WsWriter,
+    thread_closed: &AtomicBool,
+    handlers: &mut dyn ByteTransportHandlers,
+    message: &str,
+) {
+    if !thread_closed.swap(true, Ordering::SeqCst) {
+        writer.close_socket(LOCAL_TRANSPORT_ERROR_CLOSE_CODE, "Radius relay transport error");
+        handlers.on_error(message);
+    }
 }
 
 enum Incoming {

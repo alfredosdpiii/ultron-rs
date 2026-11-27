@@ -72,23 +72,26 @@ impl RequestSettings {
             options.thinking_budgets = self.thinking_budgets;
         }
         if let Some(stream) = self.stream.clone()? {
-            let base = &mut options.base;
-            if base.timeout_ms.is_none() {
-                base.timeout_ms = stream["timeoutMs"]
-                    .as_f64()
-                    .filter(|t| t.is_finite() && *t >= 0.0)
-                    .map(|t| t.floor() as u64);
-            }
-            if base.max_retries.is_none() {
-                base.max_retries = stream["maxRetries"].as_u64().map(|n| n.min(u64::from(u32::MAX)) as u32);
-            }
-            if base.max_retry_delay_ms.is_none() {
-                base.max_retry_delay_ms = stream["maxRetryDelayMs"].as_f64();
-            }
+            apply_stream_defaults(&mut options.base, &stream);
         }
         if options.base.transport.is_none() {
             options.base.transport = self.transport.clone();
         }
         Ok(())
+    }
+}
+
+fn apply_stream_defaults(base: &mut ai::StreamOptions, stream: &Value) {
+    if base.timeout_ms.is_none() {
+        base.timeout_ms = stream["timeoutMs"]
+            .as_f64()
+            .filter(|t| t.is_finite() && *t >= 0.0)
+            .map(|t| t.floor() as u64);
+    }
+    if base.max_retries.is_none() {
+        base.max_retries = stream["maxRetries"].as_u64().map(|n| n.min(u64::from(u32::MAX)) as u32);
+    }
+    if base.max_retry_delay_ms.is_none() {
+        base.max_retry_delay_ms = stream["maxRetryDelayMs"].as_f64();
     }
 }

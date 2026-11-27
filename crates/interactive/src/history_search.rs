@@ -79,25 +79,27 @@ impl PromptHistorySearch {
         self.matches.get(self.selected).map(String::as_str)
     }
 
+    fn matches_any(&self, data: &str, ids: &[&str]) -> bool {
+        ids.iter().any(|id| self.keys.matches(data, id))
+    }
+
     pub fn handle_input(&mut self, data: &str) -> HistorySearchEvent {
-        let k = &self.keys;
-        if k.matches(data, "tui.select.cancel") {
+        if self.keys.matches(data, "tui.select.cancel") {
             return HistorySearchEvent::Cancel;
         }
-        if k.matches(data, "tui.select.confirm") || k.matches(data, "tui.input.tab") {
-            return match self.selected() {
-                Some(s) => HistorySearchEvent::Accept(s.to_string()),
-                None => HistorySearchEvent::Cancel,
-            };
+        if self.matches_any(data, &["tui.select.confirm", "tui.input.tab"]) {
+            return self.selected().map_or(HistorySearchEvent::Cancel, |s| {
+                HistorySearchEvent::Accept(s.to_string())
+            });
         }
-        if k.matches(data, "app.history.search")
-            || k.matches(data, "app.historySearch.older")
-            || k.matches(data, "tui.select.up")
-        {
+        if self.matches_any(
+            data,
+            &["app.history.search", "app.historySearch.older", "tui.select.up"],
+        ) {
             self.step(1);
             return HistorySearchEvent::None;
         }
-        if k.matches(data, "app.historySearch.newer") || k.matches(data, "tui.select.down") {
+        if self.matches_any(data, &["app.historySearch.newer", "tui.select.down"]) {
             self.step(-1);
             return HistorySearchEvent::None;
         }
@@ -125,32 +127,8 @@ impl PromptHistorySearch {
             return base(text);
         }
         let chars: Vec<char> = text.chars().collect();
-        let lower: Vec<char> = chars
-            .iter()
-            .map(|c| {
-                let mut l = c.to_lowercase();
-                match (l.next(), l.next()) {
-                    (Some(one), None) => one,
-                    _ => *c,
-                }
-            })
-            .collect();
-        let mut marks = vec![false; chars.len()];
-        for term in terms {
-            let term: Vec<char> = term.chars().collect();
-            if term.is_empty() || term.len() > lower.len() {
-                continue;
-            }
-            let mut from = 0;
-            while from + term.len() <= lower.len() {
-                if lower[from..from + term.len()] == term[..] {
-                    marks[from..from + term.len()].fill(true);
-                    from += term.len();
-                } else {
-                    from += 1;
-                }
-            }
-        }
+        let lower = lowercase_chars(&chars);
+        let marks = mark_term_matches(&lower, terms);
         let mut out = String::new();
         let mut run = String::new();
         let mut run_marked = marks.first().copied().unwrap_or(false);
@@ -175,6 +153,39 @@ impl PromptHistorySearch {
         flush(&mut run, run_marked, &mut out);
         out
     }
+}
+
+fn lowercase_chars(chars: &[char]) -> Vec<char> {
+    chars
+        .iter()
+        .map(|c| {
+            let mut l = c.to_lowercase();
+            match (l.next(), l.next()) {
+                (Some(one), None) => one,
+                _ => *c,
+            }
+        })
+        .collect()
+}
+
+fn mark_term_matches(lower: &[char], terms: &[String]) -> Vec<bool> {
+    let mut marks = vec![false; lower.len()];
+    for term in terms {
+        let term: Vec<char> = term.chars().collect();
+        if term.is_empty() || term.len() > lower.len() {
+            continue;
+        }
+        let mut from = 0;
+        while from + term.len() <= lower.len() {
+            if lower[from..from + term.len()] == term[..] {
+                marks[from..from + term.len()].fill(true);
+                from += term.len();
+            } else {
+                from += 1;
+            }
+        }
+    }
+    marks
 }
 
 impl Component for PromptHistorySearch {

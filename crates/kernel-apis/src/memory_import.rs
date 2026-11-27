@@ -155,23 +155,26 @@ impl Source {
     }
 }
 
+fn visit_markdown_entry(entry: std::io::Result<std::fs::DirEntry>, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entry = entry.map_err(|e| e.to_string())?;
+    let name = entry.file_name().to_string_lossy().into_owned();
+    let file_type = entry.file_type().map_err(|e| e.to_string())?;
+    if name.starts_with('.') || file_type.is_symlink() {
+        return Ok(());
+    }
+    if file_type.is_dir() && name != "old" {
+        return collect_markdown(&entry.path(), out);
+    }
+    if file_type.is_file() && name.ends_with(".md") && name != "MEMORY.md" {
+        out.push(entry.path());
+    }
+    Ok(())
+}
+
 fn collect_markdown(directory: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     let entries = std::fs::read_dir(directory).map_err(|e| format!("{}: {e}", directory.display()))?;
     for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let file_type = entry.file_type().map_err(|e| e.to_string())?;
-        if name.starts_with('.') || file_type.is_symlink() {
-            continue;
-        }
-        if file_type.is_dir() {
-            if name != "old" {
-                collect_markdown(&path, out)?;
-            }
-        } else if file_type.is_file() && name.ends_with(".md") && name != "MEMORY.md" {
-            out.push(path);
-        }
+        visit_markdown_entry(entry, out)?;
     }
     Ok(())
 }
@@ -521,6 +524,76 @@ pub struct Planned {
 /// `worker_scope_tags`): computed by the caller, which knows the server's tagging.
 pub type ScopeTags<'a> = &'a dyn Fn(Option<&Path>) -> Map<String, Value>;
 
+fn decide_plan_action(
+    key: &str,
+    scope: &str,
+    filters: &Map<String, Value>,
+    content: &str,
+    note_kind: &str,
+    typed: &Typed,
+    index: &RecordIndex,
+) -> Result<Action, String> {
+    if content.len() > content_cap(note_kind) {
+        return Ok(Action::Refuse(format!(
+            "over the {}-byte cap of a {} record",
+            content_cap(note_kind),
+            note_kind
+        )));
+    }
+    if host::secrets::contains_sensitive_memory(content) || host::secrets::contains_sensitive_memory(&typed.screened())
+    {
+        return Ok(Action::Refuse("holds a secret or personal identifier".into()));
+    }
+    Ok(match index.by_key(key, scope, filters)? {
+        Some(entry) if entry.text_hash == jsrt::hash::sha256_hex(content.as_bytes()) && entry.typed == *typed => {
+            Action::Unchanged(entry.id)
+        }
+        Some(entry) => Action::Replace(entry.id),
+        None => Action::Add,
+    })
+}
+
+fn plan_note(
+    source: &Source,
+    note: &Note,
+    count: usize,
+    home: &Path,
+    scope: &'static str,
+    filters: &Map<String, Value>,
+    index: &RecordIndex,
+) -> Result<Planned, String> {
+    let key = note_key(source.harness, note, count);
+    let situation = clean(&note.situation).replace(['\n', '\t'], " ");
+    let situation = match truncate_bytes(&situation, MAX_SITUATION_BYTES).trim() {
+        "" => "from the user's imported notes".to_string(),
+        text => text.to_string(),
+    };
+    let content = clean(&note.content);
+    let typed = Typed {
+        kind: note.kind.to_string(),
+        key: Some(key.clone()),
+        situation,
+        path_globs: Vec::new(),
+        source: Some(format!(
+            "{} {}",
+            source.harness.label(),
+            home_relative(&note.file, home)
+        )),
+    };
+    let file_sha = std::fs::read(&note.file)
+        .map(|bytes| jsrt::hash::sha256_hex(&bytes))
+        .map_err(|e| format!("{}: {e}", note.file.display()))?;
+    let action = decide_plan_action(&key, scope, filters, &content, note.kind, &typed, index)?;
+    Ok(Planned {
+        typed,
+        content,
+        scope,
+        project: source.project.clone(),
+        file_sha,
+        action,
+    })
+}
+
 /// The plan for `sources`: every note with its key, scope and action against `index`.
 pub fn plan(sources: &[Source], home: &Path, index: &RecordIndex, tags: ScopeTags<'_>) -> Result<Vec<Planned>, String> {
     let mut planned = Vec::new();
@@ -532,56 +605,7 @@ pub fn plan(sources: &[Source], home: &Path, index: &RecordIndex, tags: ScopeTag
         for note in notes {
             let count = seen.entry(note_key(source.harness, &note, 1)).or_default();
             *count += 1;
-            let key = note_key(source.harness, &note, *count);
-            let situation = clean(&note.situation).replace(['\n', '\t'], " ");
-            let situation = match truncate_bytes(&situation, MAX_SITUATION_BYTES).trim() {
-                "" => "from the user's imported notes".to_string(),
-                text => text.to_string(),
-            };
-            let content = clean(&note.content);
-            let typed = Typed {
-                kind: note.kind.to_string(),
-                key: Some(key.clone()),
-                situation,
-                path_globs: Vec::new(),
-                source: Some(format!(
-                    "{} {}",
-                    source.harness.label(),
-                    home_relative(&note.file, home)
-                )),
-            };
-            let file_sha = std::fs::read(&note.file)
-                .map(|bytes| jsrt::hash::sha256_hex(&bytes))
-                .map_err(|e| format!("{}: {e}", note.file.display()))?;
-            let action = if content.len() > content_cap(note.kind) {
-                Action::Refuse(format!(
-                    "over the {}-byte cap of a {} record",
-                    content_cap(note.kind),
-                    note.kind
-                ))
-            } else if host::secrets::contains_sensitive_memory(&content)
-                || host::secrets::contains_sensitive_memory(&typed.screened())
-            {
-                Action::Refuse("holds a secret or personal identifier".into())
-            } else {
-                match index.by_key(&key, scope, &filters)? {
-                    Some(entry)
-                        if entry.text_hash == jsrt::hash::sha256_hex(content.as_bytes()) && entry.typed == typed =>
-                    {
-                        Action::Unchanged(entry.id)
-                    }
-                    Some(entry) => Action::Replace(entry.id),
-                    None => Action::Add,
-                }
-            };
-            planned.push(Planned {
-                typed,
-                content,
-                scope,
-                project: source.project.clone(),
-                file_sha,
-                action,
-            });
+            planned.push(plan_note(source, &note, *count, home, scope, &filters, index)?);
         }
     }
     Ok(planned)
@@ -629,6 +653,43 @@ pub enum Imported {
     Failed(String),
 }
 
+fn ensure_import_service<'a>(
+    service: &'a mut Option<(Option<PathBuf>, MemoryService)>,
+    project: &Option<PathBuf>,
+    journal: &Path,
+    index: &Arc<RecordIndex>,
+    backend_for: BackendFor<'_>,
+) -> Result<Option<&'a MemoryService>, String> {
+    if service.as_ref().is_none_or(|(current, _)| current != project) {
+        let memory = MemoryService::new(
+            Arc::new(FileDocumentStore::new(journal)),
+            backend_for(project.as_deref())?,
+            worker_gate(),
+        )
+        .map_err(|e| e.to_string())?
+        .with_records(index.clone());
+        *service = Some((project.clone(), memory));
+    }
+    Ok(service.as_ref().map(|(_, memory)| memory))
+}
+
+fn classify_import_outcome(action: &Action, result: Result<Value, MemoryError>) -> Imported {
+    match result {
+        Ok(op) if op["state"] == "sensitive" || op["state"] == "skipped" => {
+            Imported::Refused("holds a secret or personal identifier".into())
+        }
+        Ok(op) if op["phase"] == "backend" => {
+            let id = op["memoryId"].as_str().unwrap_or_default().to_string();
+            match action {
+                Action::Replace(_) => Imported::Replaced(id),
+                _ => Imported::Stored(id),
+            }
+        }
+        Ok(op) => Imported::NotStored(op["state"].as_str().unwrap_or("?").to_string()),
+        Err(error) => Imported::Failed(error.to_string()),
+    }
+}
+
 /// Import every planned note: one memory service per scope group, over the one import `journal` (each loads what
 /// the previous one wrote). `each` hears every note's outcome, in order.
 pub fn import_all(
@@ -644,33 +705,11 @@ pub fn import_all(
             Action::Unchanged(_) => Imported::Unchanged,
             Action::Refuse(reason) => Imported::Refused(reason.clone()),
             Action::Add | Action::Replace(_) => {
-                if service.as_ref().is_none_or(|(project, _)| *project != item.project) {
-                    let memory = MemoryService::new(
-                        Arc::new(FileDocumentStore::new(journal)),
-                        backend_for(item.project.as_deref())?,
-                        worker_gate(),
-                    )
-                    .map_err(|e| e.to_string())?
-                    .with_records(index.clone());
-                    service = Some((item.project.clone(), memory));
-                }
-                let Some((_, memory)) = &service else {
+                let Some(memory) = ensure_import_service(&mut service, &item.project, journal, &index, backend_for)?
+                else {
                     continue;
                 };
-                match import_one(memory, item) {
-                    Ok(op) if op["state"] == "sensitive" || op["state"] == "skipped" => {
-                        Imported::Refused("holds a secret or personal identifier".into())
-                    }
-                    Ok(op) if op["phase"] == "backend" => {
-                        let id = op["memoryId"].as_str().unwrap_or_default().to_string();
-                        match item.action {
-                            Action::Replace(_) => Imported::Replaced(id),
-                            _ => Imported::Stored(id),
-                        }
-                    }
-                    Ok(op) => Imported::NotStored(op["state"].as_str().unwrap_or("?").to_string()),
-                    Err(error) => Imported::Failed(error.to_string()),
-                }
+                classify_import_outcome(&item.action, import_one(memory, item))
             }
         };
         each(item, outcome)?;

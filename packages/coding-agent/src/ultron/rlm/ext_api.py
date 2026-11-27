@@ -60,16 +60,27 @@ def _line(item: dict[str, str]) -> str:
     return f"{line} - {item['description']}" if item["description"] else line
 
 
+def _extract_reply_text(reply: dict[str, Any]) -> str:
+    content = reply.get("content")
+    if not isinstance(content, list):
+        return ""
+    texts: list[str] = []
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == "text":
+            text = part.get("text", "")
+            if isinstance(text, str):
+                texts.append(text)
+    return "\n".join(texts)
+
+
 def _result(label: str, reply: Any) -> ToolResult:
     if not isinstance(reply, dict):
         return ToolResult("" if reply is None else str(reply), name=label)
-    content = reply.get("content")
-    texts = [part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text"] \
-        if isinstance(content, list) else []
-    text = "\n".join(t for t in texts if isinstance(t, str))
+    text = _extract_reply_text(reply)
     details = reply.get("details")
     if reply.get("isError"):
-        raise ToolError(f"{label} failed: {text or 'error'}", name=label, details=details, status="failed")
+        message = f"{label} failed: {text or 'error'}"
+        raise ToolError(message, name=label, details=details, status="failed")
     return ToolResult(text, details=details, name=label)
 
 

@@ -66,6 +66,15 @@ impl WorkKind {
             WorkKind::Cell => "cell",
         }
     }
+
+    fn rank(self) -> u8 {
+        match self {
+            WorkKind::Agent => 0,
+            WorkKind::Task => 1,
+            WorkKind::Job => 2,
+            WorkKind::Cell => 3,
+        }
+    }
 }
 
 /// One line of the panel.
@@ -106,80 +115,83 @@ fn definition_name(definition: &str) -> &str {
     }
 }
 
+fn task_work_item(task: &RlmTask, snapshot: &RlmSnapshot) -> RunningWork {
+    let child = task.definition == "rlm-child@1";
+    let mut detail: Vec<&str> = Vec::new();
+    if child {
+        detail.extend(task.name.as_deref());
+    } else {
+        detail.push(
+            task.workflow
+                .as_ref()
+                .map_or(definition_name(&task.definition), |w| w.node.as_str()),
+        );
+    }
+    detail.extend(task.model.as_deref());
+    detail.push(&task.state);
+    RunningWork {
+        kind: if child { WorkKind::Agent } else { WorkKind::Task },
+        id: short_id(&task.id),
+        detail: detail.join(" · "),
+        state: if task.state == "running" {
+            WorkState::Running
+        } else {
+            WorkState::Waiting
+        },
+        started_at: task
+            .started_at
+            .or_else(|| snapshot.timing.get(&task.id).and_then(|t| t.started_at)),
+    }
+}
+
+fn job_work_item(job: &RlmJob) -> RunningWork {
+    RunningWork {
+        kind: WorkKind::Job,
+        id: job.id.clone(),
+        detail: flat(&job.command, 200),
+        state: WorkState::Running,
+        started_at: job.started_at,
+    }
+}
+
+fn cell_work_item(cell: &DetachedCell) -> RunningWork {
+    let status = if cell.cancelling {
+        "cancelling"
+    } else if cell.parked {
+        "detached · waiting on the host"
+    } else {
+        "detached"
+    };
+    let mut detail = vec![status.to_string()];
+    if cell.lane != "main" {
+        detail.push(format!("lane {}", cell.lane));
+    }
+    let state = match (cell.cancelling, cell.parked) {
+        (true, _) => WorkState::Stopping,
+        (false, true) => WorkState::Waiting,
+        (false, false) => WorkState::Running,
+    };
+    RunningWork {
+        kind: WorkKind::Cell,
+        id: cell.id.clone(),
+        detail: detail.join(" · "),
+        state,
+        started_at: cell.started_at,
+    }
+}
+
 /// What runs, in panel order: subagents, other tasks, shell jobs, detached cells; each kind oldest first.
 pub fn running_work(snapshot: &RlmSnapshot, cells: &[DetachedCell]) -> Vec<RunningWork> {
-    let mut work = Vec::new();
-    for task in snapshot.tasks.iter().filter(|t| is_active_state(&t.state)) {
-        let child = task.definition == "rlm-child@1";
-        let mut detail: Vec<&str> = Vec::new();
-        if child {
-            detail.extend(task.name.as_deref());
-        } else {
-            detail.push(
-                task.workflow
-                    .as_ref()
-                    .map_or(definition_name(&task.definition), |w| w.node.as_str()),
-            );
-        }
-        detail.extend(task.model.as_deref());
-        detail.push(&task.state);
-        work.push(RunningWork {
-            kind: if child { WorkKind::Agent } else { WorkKind::Task },
-            id: short_id(&task.id),
-            detail: detail.join(" · "),
-            state: if task.state == "running" {
-                WorkState::Running
-            } else {
-                WorkState::Waiting
-            },
-            started_at: task
-                .started_at
-                .or_else(|| snapshot.timing.get(&task.id).and_then(|t| t.started_at)),
-        });
-    }
-    for job in snapshot.jobs.iter().filter(|j| running_job(j)) {
-        work.push(RunningWork {
-            kind: WorkKind::Job,
-            id: job.id.clone(),
-            detail: flat(&job.command, 200),
-            state: WorkState::Running,
-            started_at: job.started_at,
-        });
-    }
-    for cell in cells {
-        let mut detail = vec![
-            if cell.cancelling {
-                "cancelling"
-            } else if cell.parked {
-                "detached · waiting on the host"
-            } else {
-                "detached"
-            }
-            .to_string(),
-        ];
-        if cell.lane != "main" {
-            detail.push(format!("lane {}", cell.lane));
-        }
-        work.push(RunningWork {
-            kind: WorkKind::Cell,
-            id: cell.id.clone(),
-            detail: detail.join(" · "),
-            state: match (cell.cancelling, cell.parked) {
-                (true, _) => WorkState::Stopping,
-                (false, true) => WorkState::Waiting,
-                (false, false) => WorkState::Running,
-            },
-            started_at: cell.started_at,
-        });
-    }
-    let rank = |k: WorkKind| match k {
-        WorkKind::Agent => 0,
-        WorkKind::Task => 1,
-        WorkKind::Job => 2,
-        WorkKind::Cell => 3,
-    };
+    let mut work: Vec<RunningWork> = snapshot
+        .tasks
+        .iter()
+        .filter(|t| is_active_state(&t.state))
+        .map(|task| task_work_item(task, snapshot))
+        .chain(snapshot.jobs.iter().filter(|j| running_job(j)).map(job_work_item))
+        .chain(cells.iter().map(cell_work_item))
+        .collect();
     work.sort_by(|a, b| {
-        rank(a.kind).cmp(&rank(b.kind)).then(
+        a.kind.rank().cmp(&b.kind.rank()).then(
             a.started_at
                 .unwrap_or(f64::MAX)
                 .total_cmp(&b.started_at.unwrap_or(f64::MAX)),
@@ -210,17 +222,25 @@ pub fn render_running_work(
     lines
 }
 
-fn work_line(item: &RunningWork, width: usize, style: &RlmStyle, now: f64) -> String {
-    let width = width.max(1);
-    let (glyph, color) = match item.state {
+fn state_badge(state: WorkState) -> (&'static str, Fg) {
+    match state {
         WorkState::Running => ("●", Fg::Accent),
         WorkState::Waiting => ("○", Fg::Muted),
         WorkState::Stopping => ("●", Fg::Warning),
-    };
-    let elapsed = match item.started_at {
+    }
+}
+
+fn elapsed_label(started_at: Option<f64>, now: f64) -> String {
+    match started_at {
         Some(start) if now >= start => format_duration(now - start),
         _ => String::new(),
-    };
+    }
+}
+
+fn work_line(item: &RunningWork, width: usize, style: &RlmStyle, now: f64) -> String {
+    let width = width.max(1);
+    let (glyph, color) = state_badge(item.state);
+    let elapsed = elapsed_label(item.started_at, now);
     let kind = format!("{:<5}", item.kind.name());
     let head = format!(
         "{} {} {}",
@@ -238,14 +258,10 @@ fn work_line(item: &RunningWork, width: usize, style: &RlmStyle, now: f64) -> St
         return truncate_to_width(&head, width, "…", false);
     }
     let room = width - head_width - tail_width;
-    let detail = if room > 2 && !item.detail.is_empty() {
-        truncate_to_width(&style.fg(Fg::Muted, &item.detail), room - 2, "…", false)
-    } else {
-        String::new()
-    };
     let mut line = head;
     let mut used = head_width;
-    if !detail.is_empty() {
+    if room > 2 && !item.detail.is_empty() {
+        let detail = truncate_to_width(&style.fg(Fg::Muted, &item.detail), room - 2, "…", false);
         line.push_str("  ");
         line.push_str(&detail);
         used += 2 + visible_width(&detail);

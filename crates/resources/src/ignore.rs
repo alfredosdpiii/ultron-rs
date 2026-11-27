@@ -65,6 +65,82 @@ fn class_member(c: char) -> String {
     }
 }
 
+fn range_start(chars: &[char], index: usize, c: char, prev: Option<char>) -> Option<char> {
+    prev.filter(|_| c == '-' && chars.get(index + 1).is_some_and(|&next| next != ']'))
+}
+
+fn scan_bracket_range(chars: &[char], index: &mut usize, prev: char, body: &mut String) -> Option<()> {
+    *index += 1;
+    let mut to = chars[*index];
+    if to == '\\' {
+        *index += 1;
+        to = *chars.get(*index)?;
+    }
+    if prev <= to {
+        body.push('-');
+        body.push_str(&class_member(to));
+    }
+    Some(())
+}
+
+fn scan_posix_class(chars: &[char], start: usize) -> Option<Option<(&'static str, usize)>> {
+    let name_start = start + 2;
+    let end = (name_start..chars.len()).find(|&i| chars[i] == ']')?;
+    if end > name_start && chars[end - 1] == ':' {
+        let name: String = chars[name_start..end - 1].iter().collect();
+        let expanded = POSIX.iter().find(|(n, _)| *n == name)?.1;
+        return Some(Some((expanded, end)));
+    }
+    Some(None)
+}
+
+fn scan_bracket_escape(chars: &[char], index: &mut usize, prev: &mut Option<char>, body: &mut String) -> Option<()> {
+    let escaped = *chars.get(*index + 1)?;
+    body.push_str(&class_member(escaped));
+    *prev = Some(escaped);
+    *index += 1;
+    Some(())
+}
+
+fn scan_bracket_posix(chars: &[char], index: &mut usize, prev: &mut Option<char>, body: &mut String) -> Option<bool> {
+    if chars.get(*index + 1) != Some(&':') {
+        return Some(false);
+    }
+    let Some((expanded, end)) = scan_posix_class(chars, *index)? else {
+        return Some(false);
+    };
+    body.push_str(expanded);
+    *prev = None;
+    *index = end;
+    Some(true)
+}
+
+fn scan_bracket_step(chars: &[char], index: &mut usize, prev: &mut Option<char>, body: &mut String) -> Option<()> {
+    let c = *chars.get(*index)?;
+    if c == '\\' {
+        return scan_bracket_escape(chars, index, prev, body);
+    }
+    if let Some(from) = range_start(chars, *index, c, *prev) {
+        scan_bracket_range(chars, index, from, body)?;
+        *prev = None;
+        return Some(());
+    }
+    if c == '[' && scan_bracket_posix(chars, index, prev, body)? {
+        return Some(());
+    }
+    body.push_str(&class_member(c));
+    *prev = Some(c);
+    Some(())
+}
+
+fn format_bracket(body: &str, negated: bool) -> String {
+    if negated {
+        format!("[^/{body}]")
+    } else {
+        format!("[{body}&&[^/]]")
+    }
+}
+
 /// `scanBracket`: a `[...]` class at `start`, as a regex class that never matches `/`, and the index of its `]`.
 /// None: it never closes (the rule then matches nothing).
 fn scan_bracket(chars: &[char], start: usize) -> Option<(String, usize)> {
@@ -76,57 +152,32 @@ fn scan_bracket(chars: &[char], start: usize) -> Option<(String, usize)> {
     let mut body = String::new();
     let mut prev: Option<char> = None;
     loop {
-        let c = *chars.get(index)?;
-        if c == '\\' {
-            let escaped = *chars.get(index + 1)?;
-            body.push_str(&class_member(escaped));
-            prev = Some(escaped);
-            index += 1;
-        } else if c == '-' && prev.is_some() && index + 1 < chars.len() && chars[index + 1] != ']' {
-            index += 1;
-            let mut to = chars[index];
-            if to == '\\' {
-                index += 1;
-                to = *chars.get(index)?;
-            }
-            if prev.is_some_and(|p| p <= to) {
-                body.push('-');
-                body.push_str(&class_member(to));
-            }
-            prev = None;
-        } else if c == '[' && chars.get(index + 1) == Some(&':') {
-            let name_start = index + 2;
-            let mut end = name_start;
-            while end < chars.len() && chars[end] != ']' {
-                end += 1;
-            }
-            if end == chars.len() {
-                return None;
-            }
-            if end > name_start && chars[end - 1] == ':' {
-                let name: String = chars[name_start..end - 1].iter().collect();
-                let expanded = POSIX.iter().find(|(n, _)| *n == name)?.1;
-                body.push_str(expanded);
-                prev = None;
-                index = end;
-            } else {
-                body.push_str(&class_member('['));
-                prev = Some('[');
-                index = name_start - 2;
-            }
-        } else {
-            body.push_str(&class_member(c));
-            prev = Some(c);
-        }
+        scan_bracket_step(chars, &mut index, &mut prev, &mut body)?;
         index += 1;
         if chars.get(index) == Some(&']') {
-            let source = if negated {
-                format!("[^/{body}]")
-            } else {
-                format!("[{body}&&[^/]]")
-            };
-            return Some((source, index));
+            return Some((format_bracket(&body, negated), index));
         }
+    }
+}
+
+fn trailing_star(glob: &[char], i: usize, last_of_pattern: bool, after_slash: bool) -> Option<&'static str> {
+    if !last_of_pattern || !glob[i..].iter().all(|c| *c == '*') {
+        return None;
+    }
+    Some(if after_slash && i == 0 {
+        "[^/]+(?:$|/$)"
+    } else {
+        "[^/]*(?:$|/$)"
+    })
+}
+
+fn segment_token(glob: &[char], i: usize) -> Option<(String, usize)> {
+    match glob[i] {
+        '\\' if i + 1 < glob.len() => Some((regex::escape(&glob[i + 1].to_string()), i + 1)),
+        '*' => Some(("[^/]*".to_string(), i)),
+        '?' => Some(("[^/]".to_string(), i)),
+        '[' => scan_bracket(glob, i),
+        other => Some((regex::escape(&other.to_string()), i)),
     }
 }
 
@@ -135,31 +186,15 @@ fn segment(glob: &[char], last_of_pattern: bool, after_slash: bool) -> Option<St
     let mut out = String::new();
     let mut i = 0;
     while i < glob.len() {
-        let c = glob[i];
-        match c {
-            '\\' if i + 1 < glob.len() => {
-                out.push_str(&regex::escape(&glob[i + 1].to_string()));
-                i += 2;
-                continue;
-            }
-            '*' => {
-                let trailing = last_of_pattern && glob[i..].iter().all(|c| *c == '*');
-                if trailing {
-                    out.push_str(if after_slash && i == 0 { "[^/]+" } else { "[^/]*" });
-                    out.push_str("(?:$|/$)");
-                    return Some(out);
-                }
-                out.push_str("[^/]*");
-            }
-            '?' => out.push_str("[^/]"),
-            '[' => {
-                let (class, end) = scan_bracket(glob, i)?;
-                out.push_str(&class);
-                i = end;
-            }
-            other => out.push_str(&regex::escape(&other.to_string())),
+        if glob[i] == '*'
+            && let Some(tail) = trailing_star(glob, i, last_of_pattern, after_slash)
+        {
+            out.push_str(tail);
+            return Some(out);
         }
-        i += 1;
+        let (piece, end) = segment_token(glob, i)?;
+        out.push_str(&piece);
+        i = end + 1;
     }
     Some(out)
 }
@@ -169,25 +204,43 @@ fn never() -> Option<Regex> {
     Regex::new("[^\\s\\S]").ok()
 }
 
-/// `makeRegex` for one rule body (without its `!`).
-fn compile(body: &str) -> Option<Regex> {
-    let body = trim_trailing_spaces(body);
-    let mut rest: &str = &body;
-    let mut source = String::new();
+fn strip_anchor(body: &str) -> (&str, String) {
+    let mut rest = body;
     let inner_slash = rest.trim_end_matches('/').contains('/');
     if let Some(stripped) = rest.strip_prefix('/') {
-        source.push('^');
-        rest = stripped;
-    } else if rest.starts_with("**/") {
+        return (stripped, "^".to_string());
+    }
+    if rest.starts_with("**/") {
         while let Some(stripped) = rest.strip_prefix("**/") {
             rest = stripped;
         }
-        source.push_str("^(?:.*/)?");
-    } else if inner_slash {
-        source.push('^');
-    } else {
-        source.push_str("(?:^|/)");
+        return (rest, "^(?:.*/)?".to_string());
     }
+    let prefix = if inner_slash { "^" } else { "(?:^|/)" };
+    (rest, prefix.to_string())
+}
+
+fn push_globstar(source: &mut String, last: bool, dir_only: bool) -> bool {
+    if !last {
+        source.push_str("(?:/[^/]+)*");
+        return false;
+    }
+    source.push_str(if dir_only { "(?:/[^/]+)+" } else { "/.+" });
+    !dir_only
+}
+
+fn finish_source(source: &mut String, dir_only: bool) {
+    if dir_only {
+        source.push_str("/$");
+    } else if !source.ends_with("(?:$|/$)") {
+        source.push_str("(?:$|/$)");
+    }
+}
+
+/// `makeRegex` for one rule body (without its `!`).
+fn compile(body: &str) -> Option<Regex> {
+    let body = trim_trailing_spaces(body);
+    let (rest, mut source) = strip_anchor(&body);
     let dir_only = rest.ends_with('/');
     let core = rest.strip_suffix('/').unwrap_or(rest);
     let segments: Vec<&str> = core.split('/').collect();
@@ -195,13 +248,8 @@ fn compile(body: &str) -> Option<Regex> {
     for (index, seg) in segments.iter().enumerate() {
         let last = index + 1 == count;
         if *seg == "**" && index > 0 {
-            if last {
-                source.push_str(if dir_only { "(?:/[^/]+)+" } else { "/.+" });
-                if !dir_only {
-                    return Regex::new(&format!("(?i){source}")).ok();
-                }
-            } else {
-                source.push_str("(?:/[^/]+)*");
+            if push_globstar(&mut source, last, dir_only) {
+                return Regex::new(&format!("(?i){source}")).ok();
             }
             continue;
         }
@@ -209,16 +257,12 @@ fn compile(body: &str) -> Option<Regex> {
             source.push('/');
         }
         let glob: Vec<char> = seg.chars().collect();
-        match segment(&glob, last && !dir_only, index > 0) {
-            Some(s) => source.push_str(&s),
-            None => return never(),
-        }
+        let Some(compiled) = segment(&glob, last && !dir_only, index > 0) else {
+            return never();
+        };
+        source.push_str(&compiled);
     }
-    if dir_only {
-        source.push_str("/$");
-    } else if !source.ends_with("(?:$|/$)") {
-        source.push_str("(?:$|/$)");
-    }
+    finish_source(&mut source, dir_only);
     Regex::new(&format!("(?i){source}")).ok()
 }
 

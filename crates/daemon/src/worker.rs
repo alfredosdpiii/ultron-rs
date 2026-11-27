@@ -2,7 +2,9 @@
 //! holds the session file's lock, runs the session on its own thread, serves the session services
 //! to each attachment scope, and follows its owner's demand until it retires, is released or shut down.
 
-use crate::chord::{Call, Endpoint, Provider, Service, ServiceError, ServiceResult};
+mod services;
+
+use crate::chord::{Call, Endpoint, Provider, ServiceError, ServiceResult};
 use crate::control::{LineReader, LineWriter};
 use crate::coordinator::COORDINATOR_PROTOCOL_VERSION;
 use crate::lane::Lane;
@@ -19,7 +21,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub const CONTROL_ADDRESS_ENV: &str = "PI_SESSION_WORKER_CONTROL_ADDRESS";
 pub const CONTROL_TOKEN_ENV: &str = "PI_SESSION_WORKER_CONTROL_TOKEN";
@@ -376,301 +378,28 @@ struct Extensions {
     env: RunEnv,
 }
 
-/// The session services in their catalogue order, over the session actor `core`.
-fn services(
-    lane: &Lane,
-    models_state: Arc<crate::chord::State>,
-    name_state: Arc<crate::chord::State>,
-    core: Sender<Input>,
-    lifecycle: LifecycleRef,
-    watch: Watch,
-    extensions: Extensions,
-) -> Provider {
-    let navigate_core = core.clone();
-    let (prompt_core, abort_core, steer_core, follow_core, cancel_core, compact_core) = (
-        core.clone(),
-        core.clone(),
-        core.clone(),
-        core.clone(),
-        core.clone(),
-        core.clone(),
-    );
-    let next_core = core.clone();
-    let prompt_lifecycle = lifecycle;
-    let (resume_core, resume_progress) = (core.clone(), watch.progress.clone());
-    let agent = Service::new(protocol::names::AGENT_CONTROLLER)
-        .method("cancelQueued", move |args| {
-            let entry_id = args.first().and_then(Value::as_str).unwrap_or_default().to_string();
-            call_core(&cancel_core, Op::CancelQueued { entry_id })
-        })
-        .method("compact", move |args| {
-            let instructions = request(&args)["customInstructions"].as_str().map(str::to_string);
-            call_core(&compact_core, Op::Compact { instructions })
-        })
-        .method("followUp", move |args| queue(&follow_core, QueueKind::FollowUp, &args))
-        .method("navigate", move |args| {
-            let request = request(&args);
-            call_core(
-                &navigate_core,
-                Op::Navigate {
-                    target_id: request["targetId"].as_str().map(str::to_string),
-                    summarize: request["summarize"] == true,
-                    instructions: request["customInstructions"].as_str().map(str::to_string),
-                    label: request["label"].as_str().map(str::to_string),
-                },
-            )
-        })
-        .method("nextRun", move |args| queue(&next_core, QueueKind::NextRun, &args))
-        .method("prompt", move |args| {
-            let typed = request(&args)["message"]
-                .as_str()
-                .ok_or_else(|| ServiceError::internal("Invalid prompt request"))?;
-            if let Some((name, op)) = crate::session_commands::command(typed) {
-                return Ok(Some(crate::session_commands::answer(
-                    name,
-                    call_core(&prompt_core, op)?,
-                )));
-            }
-            let message = typed.to_string();
-            let images = request(&args)["images"].as_array().cloned().unwrap_or_default();
-            let lifecycle = prompt_lifecycle
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
-            let marker = format!("prompt-{}", jsrt::random::uuid_v4());
-            if let Some(lifecycle) = &lifecycle {
-                lifecycle.operation_started("run", "main", &marker);
-            }
-            let result = call_core(&prompt_core, Op::PromptAndWait { message, images });
-            if let Some(lifecycle) = &lifecycle {
-                lifecycle.operation_stopped("run", "main", &marker);
-            }
-            result
-        })
-        .method("requestAbort", move |_| call_core(&abort_core, Op::Abort))
-        .method("resume", move |_| {
-            let recovered = call_core(&resume_core, Op::Recover)?.unwrap_or_default();
-            let response = crate::session_control::resume_response(&recovered, resume_progress.run());
-            if let Some(run) = response["operationId"].as_str() {
-                resume_progress.wait_until_not(run, None);
-            }
-            Ok(Some(response))
-        })
-        .method("steer", move |args| queue(&steer_core, QueueKind::Steer, &args));
-    let plugins = Service::new(protocol::names::SESSION_PLUGINS).method("reload", |_| Ok(None));
-    let (list_mcp, run_mcp, run_ui) = (extensions.mcp.clone(), extensions.mcp.clone(), extensions.ui.clone());
-    let legacy = Service::new(protocol::names::LEGACY_EXTENSION_COMMANDS)
-        .method("list", move |_| {
-            let listed: Vec<Value> = list_mcp
-                .get()
-                .map(|_| session_core::commands::command_info(&session_core::commands::mcp_command()))
-                .into_iter()
-                .collect();
-            Ok(Some(listed.into()))
-        })
-        .method("run", move |args| {
-            let text = |i: usize| args.get(i).and_then(Value::as_str).map(str::to_string);
-            let (Some(name), Some(args)) = (text(0), text(1)) else {
-                return Err(ServiceError::internal("Extension command service is unavailable"));
-            };
-            match run_mcp.get() {
-                Some(gateway) if name == "mcp" => {
-                    gateway.run_command(&args, &crate::extension_ui::BridgeUi(run_ui.clone()));
-                    Ok(Some(json!({"notifications": []})))
-                }
-                _ => Err(ServiceError::internal(format!("Unknown extension command: /{name}"))),
-            }
-        });
-    let (stuck_core, health_progress) = (core.clone(), watch.progress.clone());
-    let (op_core, bash_core, abort_bash_core, name_core, forked_core, tree_core, inspect_core) = (
-        core.clone(),
-        core.clone(),
-        core.clone(),
-        core.clone(),
-        core.clone(),
-        core.clone(),
-        core.clone(),
-    );
-    let commands_core = core.clone();
-    let op_env = extensions.env.clone();
-    let control = Service::new(protocol::names::SESSION_CONTROL)
-        .method("abortBash", move |_| call_core(&abort_bash_core, Op::AbortBash))
-        .method("bash", move |args| {
-            let command = args.first().and_then(Value::as_str).unwrap_or_default().to_string();
-            let exclude = args.get(1) == Some(&Value::Bool(true));
-            let id = args.get(2).and_then(Value::as_str).map(str::to_string);
-            call_core(&bash_core, Op::Bash { command, exclude, id })
-        })
-        .method("forked", move |args| match args.first().and_then(Value::as_str) {
-            Some(target) => call_core(
-                &forked_core,
-                Op::Forked {
-                    target: target.to_string(),
-                },
-            ),
-            None => Ok(None),
-        })
-        .method("inspect", move |args| match args.first().and_then(Value::as_str) {
-            Some("async.pending") => call_core(&inspect_core, Op::AsyncPending),
-            other => call_core(
-                &inspect_core,
-                Op::Inspect {
-                    request: other.unwrap_or_default().to_string(),
-                    payload: args.get(1).cloned().unwrap_or(Value::Null),
-                },
-            ),
-        })
-        .method("readTree", move |_| {
-            let entries = call_core(&tree_core, Op::Entries { since: None })?.unwrap_or_default();
-            Ok(Some(
-                json!({"entries": entries["entries"], "leafId": entries["leafId"]}),
-            ))
-        })
-        .method("setName", move |args| {
-            let name = args.first().and_then(Value::as_str).unwrap_or_default().to_string();
-            call_core(&name_core, Op::SetName { name })
-        })
-        .method("listCommands", move |_| {
-            let commands = call_core(&commands_core, Op::Commands)?.unwrap_or_default();
-            let commands = commands.as_array().map_or(&[][..], Vec::as_slice);
-            Ok(Some(session_core::commands::session_command_infos(commands).into()))
-        });
-    let settings_core = core.clone();
-    let control = crate::session_control::members(
-        control,
-        Arc::new(move |op| session_core::core::call(&settings_core, op)),
-        extensions.control.clone(),
-    );
-    let (poll_ui, respond_ui) = (extensions.ui.clone(), extensions.ui);
-    let extension_ui = Service::new(protocol::names::EXTENSION_UI)
-        .method("poll", move |args| {
-            let after = args.first().and_then(Value::as_u64);
-            let wait = args.get(1).and_then(Value::as_u64).unwrap_or(0);
-            Ok(Some(poll_ui.poll(after, Duration::from_millis(wait))))
-        })
-        .method("respond", move |args| {
-            if let (Some(id), Some(answer)) = (args.first().and_then(Value::as_str), args.get(1)) {
-                respond_ui.respond(id, answer.clone());
-            }
-            Ok(None)
-        });
-    let (cycle_core, levels_core, select_core, thinking_core, models_core) =
-        (core.clone(), core.clone(), core.clone(), core.clone(), core);
-    let (select_state, thinking_state, refresh_state) =
-        (models_state.clone(), models_state.clone(), models_state.clone());
-    let (refresh_core, refresh_env, select_env) = (models_core, extensions.env.clone(), extensions.env);
-    let models = Service::new(protocol::names::MODELS)
-        .method("cycleThinking", move |_| call_core(&cycle_core, Op::CycleThinking))
-        .method("getThinkingLevels", move |_| {
-            call_core(&levels_core, Op::ThinkingLevels)
-        })
-        .method("refresh", move |_| {
-            let session = call_core(&refresh_core, Op::State)?.unwrap_or_default();
-            let env = refresh_env.clone();
-            crate::session_control::refresh_models(
-                &refresh_state,
-                || session_core::model_refresh::refresh_catalogs(&env),
-                || {
-                    session_core::lane::available_models(&refresh_env)
-                        .iter()
-                        .filter_map(|m| serde_json::to_value(m).ok())
-                        .collect()
-                },
-                &session,
-            )
-        })
-        .method("select", move |args| {
-            let target = request(&args);
-            let provider = target["provider"].as_str().unwrap_or_default().to_string();
-            let model_id = target["modelId"].as_str().unwrap_or_default().to_string();
-            let model = call_core(&select_core, Op::SetModel { provider, model_id })?;
-            if let Some(model) = &model {
-                save_default_model(&select_env, model);
-                select_state.change(|state| {
-                    state["configuration"]["model"] = json!({"provider": model["provider"], "modelId": model["id"]});
-                });
-            }
-            Ok(model)
-        })
-        .method("selectThinking", move |args| {
-            let level = args.first().and_then(Value::as_str).unwrap_or_default().to_string();
-            call_core(&thinking_core, Op::SetThinking { level: level.clone() })?;
-            thinking_state.change(|state| state["configuration"]["thinkingLevel"] = json!(level));
-            Ok(None)
-        })
-        .state("state", models_state);
-    let transcript = Service::new(protocol::names::TRANSCRIPT).state("state", lane.transcript.clone());
-    let ops = Service::new(protocol::names::SESSION_OPS)
-        .method("op", move |args| {
-            let op = Op::from_json(request(&args)).map_err(ServiceError::internal)?;
-            if let Op::Prompt { message, .. } | Op::PromptAndWait { message, .. } = &op
-                && let Some((name, command)) = crate::session_commands::command(message)
-            {
-                return Ok(Some(crate::session_commands::answer(
-                    name,
-                    call_core(&op_core, command)?,
-                )));
-            }
-            let (selects, cycles) = (matches!(op, Op::SetModel { .. }), matches!(op, Op::CycleModel));
-            let answer = call_core(&op_core, op)?;
-            let chosen = match &answer {
-                Some(model) if selects => Some(model),
-                Some(cycled) if cycles => cycled.get("model"),
-                _ => None,
-            };
-            if let Some(model) = chosen {
-                save_default_model(&op_env, model);
-            }
-            Ok(answer)
-        })
-        .method("checkHealth", move |_| {
-            Ok(Some(health_progress.health(jsrt::date::now_ms(), watch.stuck_after)))
-        })
-        .method("abortStuck", move |_| {
-            let Some(run) = watch.progress.run() else {
-                return Ok(Some(json!({"aborted": false, "reason": "no run in progress"})));
-            };
-            call_core(&stuck_core, Op::Abort)?;
-            if watch
-                .progress
-                .wait_until_not(&run, Some(Instant::now() + watch.abort_grace))
-            {
-                return Ok(Some(json!({"aborted": true, "runId": run, "restarted": false})));
-            }
-            if let Some(shared) = watch.shared.get().and_then(Weak::upgrade) {
-                std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_millis(100));
-                    shared.close_and_exit(RESTART_EXIT_CODE)
-                });
-            }
-            Ok(Some(json!({"aborted": true, "runId": run, "restarted": true})))
-        })
-        .state("name", name_state)
-        .state("health", watch.health)
-        .unlisted();
-    Provider {
-        services: vec![agent, plugins, legacy, control, extension_ui, models, transcript, ops],
+type LifecycleRef = Arc<Mutex<Option<Arc<Lifecycle>>>>;
+
+fn apply_process_options(argument: &str) {
+    let Ok(Value::Object(raw)) = serde_json::from_str::<Value>(argument) else {
+        return;
+    };
+    if let Some(Value::Object(defaults)) = raw.get("settingsDefaults") {
+        config::settings::set_process_defaults(defaults.clone());
+    }
+    if raw.get("durable") == Some(&Value::Bool(true)) {
+        config::settings::set_durable_process();
     }
 }
 
-type LifecycleRef = Arc<Mutex<Option<Arc<Lifecycle>>>>;
+struct WorkerEnv {
+    address: String,
+    token: String,
+    peer_id: String,
+    session_key: String,
+}
 
-/// `runSessionWorkerWithHarness`: run until retirement, release or shutdown; never returns on success.
-pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
-    let [argument] = args else {
-        return Err("Session worker requires one options argument".into());
-    };
-    let options = parse_options(argument)?;
-    if let Ok(Value::Object(raw)) = serde_json::from_str::<Value>(argument)
-        && let Some(Value::Object(defaults)) = raw.get("settingsDefaults")
-    {
-        config::settings::set_process_defaults(defaults.clone());
-    }
-    if let Ok(Value::Object(raw)) = serde_json::from_str::<Value>(argument)
-        && raw.get("durable") == Some(&Value::Bool(true))
-    {
-        config::settings::set_durable_process();
-    }
+fn read_worker_env() -> Result<WorkerEnv, String> {
     let address = std::env::var(CONTROL_ADDRESS_ENV).ok();
     let token = std::env::var(CONTROL_TOKEN_ENV).ok();
     let encoded_key = std::env::var(SESSION_KEY_ENV).ok();
@@ -683,7 +412,19 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
         .ok()
         .and_then(|b| String::from_utf8(b).ok())
         .ok_or("Session worker received an invalid session key")?;
-    let stream = UnixStream::connect(&address).map_err(|e| e.to_string())?;
+    Ok(WorkerEnv {
+        address,
+        token,
+        peer_id,
+        session_key,
+    })
+}
+
+fn register_with_coordinator(
+    address: &str,
+    peer_id: &str,
+) -> Result<(LineWriter, LineReader<UnixStream>, Option<String>), String> {
+    let stream = UnixStream::connect(address).map_err(|e| e.to_string())?;
     let read = stream.try_clone().map_err(|e| e.to_string())?;
     let writer = LineWriter::new(stream);
     let mut reader = LineReader::new(read);
@@ -698,48 +439,81 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
         .ok()
         .filter(|o| !o.is_empty())
         .or_else(|| registered.and_then(|r| r["serverConnectionId"].as_str().map(str::to_string)));
-    let fail_coded = |code: Option<&str>, message: String| -> String {
-        let to = owner.clone().unwrap_or_else(|| "server".into());
-        let mut payload =
-            json!({"type": "worker_failed", "token": token, "sessionKey": session_key, "message": message});
-        if let Some(code) = code {
-            payload["code"] = json!(code);
+    Ok((writer, reader, owner))
+}
+
+fn send_worker_failed(
+    writer: &LineWriter,
+    owner: Option<&str>,
+    token: &str,
+    session_key: &str,
+    code: Option<&str>,
+    message: String,
+) -> String {
+    let to = owner.unwrap_or("server");
+    let mut payload = json!({"type": "worker_failed", "token": token, "sessionKey": session_key, "message": message});
+    if let Some(code) = code {
+        payload["code"] = json!(code);
+    }
+    let _ = writer.send(&json!({"type": "send", "to": to, "payload": payload}));
+    message
+}
+
+fn handle_core_event(
+    event: Value,
+    sink_shared: &OnceLock<Weak<Shared>>,
+    sink_progress: &Progress,
+    names: &crate::chord::State,
+    sink_lane: &OnceLock<Arc<Mutex<Lane>>>,
+    sink_core: &OnceLock<Sender<Input>>,
+) {
+    if event["type"] == "activity" {
+        if let Some(shared) = sink_shared.get().and_then(Weak::upgrade) {
+            shared.activity(event["active"] == true);
         }
-        let _ = writer.send(&json!({"type": "send", "to": to, "payload": payload}));
-        message
-    };
-    let fail = |message: String| fail_coded(None, message);
-    let metadata = options.metadata.clone();
-    let path = PathBuf::from(metadata["path"].as_str().unwrap_or_default());
-    let session_id = metadata["id"].as_str().unwrap_or_default().to_string();
-    let owner_lock = crate::owner::OwnerLock::acquire(&path, Duration::from_secs(30)).map_err(|error| match error {
-        crate::owner::OwnerError::InUse { pid } => {
-            fail_coded(Some("service_invalid_value"), session_in_use(&session_id, pid))
-        }
-        crate::owner::OwnerError::Io(error) => fail(error.to_string()),
-    })?;
-    let lock = crate::paths::lock(&path, Duration::from_millis(2_000), Duration::from_millis(8_000))
-        .map_err(|e| fail(e.to_string()))?;
-    let env = RunEnv::process(PathBuf::from(metadata["cwd"].as_str().unwrap_or_default()), package);
-    let run_env = env.clone();
-    let control_context = crate::session_control::context(&env, &path);
-    let session_metadata = session_journal::catalog::read_metadata(&path)
-        .ok_or_else(|| fail(format!("Not a session file: {}", path.display())))?;
-    let session_root = PathBuf::from(options.session_dir.clone());
-    let lane_slot: Arc<std::sync::OnceLock<Arc<Mutex<Lane>>>> = Arc::new(std::sync::OnceLock::new());
-    let sink_lane = lane_slot.clone();
-    let core_slot: Arc<OnceLock<Sender<Input>>> = Arc::new(OnceLock::new());
-    let sink_core = core_slot.clone();
-    let ui =
-        crate::extension_ui::ExtensionUiBridge::new(matches!(options.mode.as_str(), "interactive" | "tui" | "rpc"));
-    let gateway_slot: Arc<OnceLock<Arc<mcp::gateway::Gateway>>> = Arc::new(OnceLock::new());
-    let (notice_ui, slot) = (ui.clone(), gateway_slot.clone());
-    let shared_slot: Arc<OnceLock<Weak<Shared>>> = Arc::new(OnceLock::new());
-    let schedules_shared = shared_slot.clone();
-    let open = OpenOptions {
+        return;
+    }
+    let change = sink_progress.event(&event, jsrt::date::now_ms());
+    if change != Change::None
+        && let Some(shared) = sink_shared.get().and_then(Weak::upgrade)
+    {
+        shared.progress_changed(change);
+    }
+    if event["type"] == "session_name" {
+        names.replace(json!({"name": event["name"]}));
+        return;
+    }
+    let Some(lane) = sink_lane.get() else { return };
+    let ended = event["runId"].clone();
+    let reduction = jsrt::sync::lock(lane).publish(event);
+    if reduction.is_some()
+        && let Some(core) = sink_core.get()
+    {
+        let lane = lane.clone();
+        let _ = core.send(Input::Op(
+            Op::LaneSnapshot,
+            Box::new(move |result| {
+                if let Ok(Some(fresh)) = result {
+                    jsrt::sync::lock(&lane).rebase(fresh, &ended);
+                }
+            }),
+        ));
+    }
+}
+
+fn build_open_options(
+    env: RunEnv,
+    options: &WorkerOptions,
+    session_metadata: session_journal::Metadata,
+    ui: &Arc<crate::extension_ui::ExtensionUiBridge>,
+    gateway_slot: &Arc<OnceLock<Arc<mcp::gateway::Gateway>>>,
+    shared_slot: &Arc<OnceLock<Weak<Shared>>>,
+) -> OpenOptions {
+    let (notice_ui, slot, schedules_shared) = (ui.clone(), gateway_slot.clone(), shared_slot.clone());
+    OpenOptions {
         env,
         flags: options.session.clone(),
-        session_root,
+        session_root: PathBuf::from(options.session_dir.clone()),
         metadata: session_metadata,
         mode: options.mode.clone(),
         services: Services {
@@ -760,122 +534,27 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
             ..Services::default()
         },
         auto_name: !options.no_naming,
-    };
-    let name_state = crate::chord::State::new(json!({"name": null}));
-    let names = name_state.clone();
-    let progress = Arc::new(Progress::default());
-    let stuck_after = crate::watchdog::stuck_after(&|k| std::env::var(k).ok());
-    let health_state = crate::chord::State::new(progress.health(jsrt::date::now_ms(), stuck_after));
-    let (sink_progress, sink_shared) = (progress.clone(), shared_slot.clone());
-    let (core, _actor, summary) = session_core::core::spawn(
-        open,
-        Box::new(move |event| {
-            if event["type"] == "activity" {
-                if let Some(shared) = sink_shared.get().and_then(Weak::upgrade) {
-                    shared.activity(event["active"] == true);
-                }
-                return;
-            }
-            let change = sink_progress.event(&event, jsrt::date::now_ms());
-            if change != Change::None
-                && let Some(shared) = sink_shared.get().and_then(Weak::upgrade)
-            {
-                shared.progress_changed(change);
-            }
-            if event["type"] == "session_name" {
-                names.replace(json!({"name": event["name"]}));
-            } else if let Some(lane) = sink_lane.get() {
-                let ended = event["runId"].clone();
-                let reduction = lane
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .publish(event);
-                if reduction.is_some()
-                    && let Some(core) = sink_core.get()
-                {
-                    let lane = lane.clone();
-                    let _ = core.send(Input::Op(
-                        Op::LaneSnapshot,
-                        Box::new(move |result| {
-                            if let Ok(Some(fresh)) = result {
-                                lane.lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                    .rebase(fresh, &ended);
-                            }
-                        }),
-                    ));
-                }
-            }
-        }),
-    )
-    .map_err(fail)?;
-    let _ = core_slot.set(core.clone());
-    let lane = lane_slot
-        .get_or_init(|| Arc::new(Mutex::new(Lane::new(summary["snapshot"].clone()))))
-        .clone();
+    }
+}
+
+fn build_models_state(summary: &Value) -> Arc<crate::chord::State> {
     let model = &summary["model"];
-    let models_state = crate::chord::State::with_sequence(
+    crate::chord::State::with_sequence(
         json!({
             "catalog": {"revision": 1, "availableModels": [{"provider": model["provider"], "modelId": model["id"], "name": model["name"], "reasoning": model["reasoning"]}]},
             "configuration": {"model": {"provider": model["provider"], "modelId": model["id"]}, "thinkingLevel": summary["thinkingLevel"]},
             "refresh": {"status": "idle"},
         }),
         1,
-    );
-    let lifecycle_slot: LifecycleRef = Arc::new(Mutex::new(None));
-    if let Ok(Some(described)) = session_core::core::call(&core, Op::Describe) {
-        name_state.replace(json!({"name": described["name"]}));
-    }
-    let watch = Watch {
-        progress: progress.clone(),
-        health: health_state.clone(),
-        stuck_after,
-        abort_grace: lifecycle_delay(ABORT_GRACE_ENV, DEFAULT_ABORT_GRACE_MS)?,
-        shared: shared_slot.clone(),
-    };
-    let provider = Arc::new(services(
-        &lane.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
-        models_state,
-        name_state,
-        core.clone(),
-        lifecycle_slot.clone(),
-        watch,
-        Extensions {
-            ui,
-            mcp: gateway_slot,
-            control: control_context,
-            env: run_env,
-        },
-    ));
-    let (jobs, queue) = mpsc::channel::<Box<dyn FnOnce() + Send>>();
-    std::thread::spawn(move || {
-        for job in queue {
-            job();
-        }
-    });
-    let shared = Arc::new(Shared {
-        token: token.clone(),
-        session_key: session_key.clone(),
-        session_id,
-        metadata,
-        plugin_manifest_paths: options.plugin_manifest_paths,
-        writer: writer.clone(),
-        lifecycle: Mutex::new(None),
-        endpoints: Mutex::new(HashMap::new()),
-        provider,
-        core,
-        closing: Mutex::new(false),
-        ready: Mutex::new(false),
-        _lock: Mutex::new(Some(lock)),
-        _owner: Mutex::new(Some(owner_lock)),
-        progress,
-        health: health_state,
-        stuck_after,
-        jobs: Mutex::new(jobs),
-        active: Mutex::new(HashMap::new()),
-    });
-    let _ = shared_slot.set(Arc::downgrade(&shared));
-    let retiring = Arc::downgrade(&shared);
+    )
+}
+
+fn start_lifecycle_and_announce(
+    shared: &Arc<Shared>,
+    lifecycle_slot: &LifecycleRef,
+    owner: Option<String>,
+) -> Result<Duration, String> {
+    let retiring = Arc::downgrade(shared);
     let lifecycle = Lifecycle::new(
         owner,
         lifecycle_delay(INITIAL_DEMAND_GRACE_ENV, DEFAULT_INITIAL_DEMAND_GRACE_MS)?,
@@ -892,17 +571,14 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
             }
         }),
     );
-    *shared
-        .lifecycle
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(lifecycle.clone());
-    *lifecycle_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(lifecycle);
+    *jsrt::sync::lock(&shared.lifecycle) = Some(lifecycle.clone());
+    *jsrt::sync::lock(lifecycle_slot) = Some(lifecycle);
     let discovery_grace = lifecycle_delay(DISCOVERY_GRACE_ENV, DEFAULT_DISCOVERY_GRACE_MS)?;
-    *shared.ready.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+    *jsrt::sync::lock(&shared.ready) = true;
     if shared.send(shared.worker_ready(), None).is_err() {
         shared.close_and_exit(1);
     }
-    let signalled = Arc::downgrade(&shared);
+    let signalled = Arc::downgrade(shared);
     signals::set_handler(Arc::new(move |_| {
         if let Some(shared) = signalled.upgrade() {
             shared.hand_over_and_exit(0);
@@ -913,13 +589,242 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
     std::thread::spawn(move || {
         let _ = session_core::core::call(&recover, Op::Recover);
     });
-    spawn_watchdog(&shared);
+    spawn_watchdog(shared);
+    Ok(discovery_grace)
+}
+
+fn acquire_worker_locks(
+    path: &Path,
+    session_id: &str,
+    writer: &LineWriter,
+    owner: Option<&str>,
+    worker_env: &WorkerEnv,
+) -> Result<(crate::owner::OwnerLock, config::lock::LockGuard), String> {
+    let owner_lock = crate::owner::OwnerLock::acquire(path, Duration::from_secs(30)).map_err(|error| match error {
+        crate::owner::OwnerError::InUse { pid } => send_worker_failed(
+            writer,
+            owner,
+            &worker_env.token,
+            &worker_env.session_key,
+            Some("service_invalid_value"),
+            session_in_use(session_id, pid),
+        ),
+        crate::owner::OwnerError::Io(error) => send_worker_failed(
+            writer,
+            owner,
+            &worker_env.token,
+            &worker_env.session_key,
+            None,
+            error.to_string(),
+        ),
+    })?;
+    let lock = crate::paths::lock(path, Duration::from_millis(2_000), Duration::from_millis(8_000)).map_err(|e| {
+        send_worker_failed(
+            writer,
+            owner,
+            &worker_env.token,
+            &worker_env.session_key,
+            None,
+            e.to_string(),
+        )
+    })?;
+    Ok((owner_lock, lock))
+}
+
+fn spawn_job_queue() -> Sender<Box<dyn FnOnce() + Send>> {
+    let (jobs, queue) = mpsc::channel::<Box<dyn FnOnce() + Send>>();
+    std::thread::spawn(move || {
+        for job in queue {
+            job();
+        }
+    });
+    jobs
+}
+
+fn run_input_loop(shared: &Arc<Shared>, mut reader: LineReader<UnixStream>, discovery_grace: Duration) -> ! {
     loop {
         let message = match reader.read_value() {
             Ok(Some(message)) => message,
             _ => shared.hand_over_and_exit(0),
         };
-        handle_input(&shared, &message, discovery_grace);
+        handle_input(shared, &message, discovery_grace);
+    }
+}
+
+fn parse_run_options(args: &[String]) -> Result<WorkerOptions, String> {
+    let [argument] = args else {
+        return Err("Session worker requires one options argument".into());
+    };
+    let options = parse_options(argument)?;
+    apply_process_options(argument);
+    Ok(options)
+}
+
+fn sync_initial_session_name(core: &Sender<Input>, name_state: &crate::chord::State) {
+    if let Ok(Some(described)) = session_core::core::call(core, Op::Describe) {
+        name_state.replace(json!({"name": described["name"]}));
+    }
+}
+
+fn open_session_metadata(
+    path: &Path,
+    writer: &LineWriter,
+    owner: Option<&str>,
+    worker_env: &WorkerEnv,
+) -> Result<session_journal::Metadata, String> {
+    session_journal::catalog::read_metadata(path).ok_or_else(|| {
+        send_worker_failed(
+            writer,
+            owner,
+            &worker_env.token,
+            &worker_env.session_key,
+            None,
+            format!("Not a session file: {}", path.display()),
+        )
+    })
+}
+
+struct BootstrappedWorker {
+    options: WorkerOptions,
+    worker_env: WorkerEnv,
+    writer: LineWriter,
+    reader: LineReader<UnixStream>,
+    owner: Option<String>,
+}
+
+fn bootstrap_worker(args: &[String]) -> Result<BootstrappedWorker, String> {
+    let options = parse_run_options(args)?;
+    let worker_env = read_worker_env()?;
+    let (writer, reader, owner) = register_with_coordinator(&worker_env.address, &worker_env.peer_id)?;
+    Ok(BootstrappedWorker {
+        options,
+        worker_env,
+        writer,
+        reader,
+        owner,
+    })
+}
+
+fn is_interactive_mode(mode: &str) -> bool {
+    matches!(mode, "interactive" | "tui" | "rpc")
+}
+
+/// `runSessionWorkerWithHarness`: run until retirement, release or shutdown; never returns on success.
+pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
+    let BootstrappedWorker {
+        options,
+        worker_env,
+        writer,
+        reader,
+        owner,
+    } = bootstrap_worker(args)?;
+    let metadata = options.metadata.clone();
+    let path = PathBuf::from(metadata["path"].as_str().unwrap_or_default());
+    let session_id = metadata["id"].as_str().unwrap_or_default().to_string();
+    let (owner_lock, lock) = acquire_worker_locks(&path, &session_id, &writer, owner.as_deref(), &worker_env)?;
+    let env = RunEnv::process(PathBuf::from(metadata["cwd"].as_str().unwrap_or_default()), package);
+    let run_env = env.clone();
+    let control_context = crate::session_control::context(&env, &path);
+    let session_metadata = open_session_metadata(&path, &writer, owner.as_deref(), &worker_env)?;
+    let lane_slot: Arc<OnceLock<Arc<Mutex<Lane>>>> = Arc::new(OnceLock::new());
+    let core_slot: Arc<OnceLock<Sender<Input>>> = Arc::new(OnceLock::new());
+    let ui = crate::extension_ui::ExtensionUiBridge::new(is_interactive_mode(&options.mode));
+    let gateway_slot: Arc<OnceLock<Arc<mcp::gateway::Gateway>>> = Arc::new(OnceLock::new());
+    let shared_slot: Arc<OnceLock<Weak<Shared>>> = Arc::new(OnceLock::new());
+    let open = build_open_options(env, &options, session_metadata, &ui, &gateway_slot, &shared_slot);
+    let name_state = crate::chord::State::new(json!({"name": null}));
+    let progress = Arc::new(Progress::default());
+    let stuck_after = crate::watchdog::stuck_after(&|k| std::env::var(k).ok());
+    let health_state = crate::chord::State::new(progress.health(jsrt::date::now_ms(), stuck_after));
+    let (sink_shared, sink_progress, names, sink_lane, sink_core) = (
+        shared_slot.clone(),
+        progress.clone(),
+        name_state.clone(),
+        lane_slot.clone(),
+        core_slot.clone(),
+    );
+    let (core, _actor, summary) = session_core::core::spawn(
+        open,
+        Box::new(move |event| handle_core_event(event, &sink_shared, &sink_progress, &names, &sink_lane, &sink_core)),
+    )
+    .map_err(|message| {
+        send_worker_failed(
+            &writer,
+            owner.as_deref(),
+            &worker_env.token,
+            &worker_env.session_key,
+            None,
+            message,
+        )
+    })?;
+    let _ = core_slot.set(core.clone());
+    let lane = lane_slot
+        .get_or_init(|| Arc::new(Mutex::new(Lane::new(summary["snapshot"].clone()))))
+        .clone();
+    let models_state = build_models_state(&summary);
+    let lifecycle_slot: LifecycleRef = Arc::new(Mutex::new(None));
+    sync_initial_session_name(&core, &name_state);
+    let watch = Watch {
+        progress: progress.clone(),
+        health: health_state.clone(),
+        stuck_after,
+        abort_grace: lifecycle_delay(ABORT_GRACE_ENV, DEFAULT_ABORT_GRACE_MS)?,
+        shared: shared_slot.clone(),
+    };
+    let provider = Arc::new(services::services(
+        &jsrt::sync::lock(&lane),
+        models_state,
+        name_state,
+        core.clone(),
+        lifecycle_slot.clone(),
+        watch,
+        Extensions {
+            ui,
+            mcp: gateway_slot,
+            control: control_context,
+            env: run_env,
+        },
+    ));
+    let shared = Arc::new(Shared {
+        token: worker_env.token,
+        session_key: worker_env.session_key,
+        session_id,
+        metadata,
+        plugin_manifest_paths: options.plugin_manifest_paths,
+        writer,
+        lifecycle: Mutex::new(None),
+        endpoints: Mutex::new(HashMap::new()),
+        provider,
+        core,
+        closing: Mutex::new(false),
+        ready: Mutex::new(false),
+        _lock: Mutex::new(Some(lock)),
+        _owner: Mutex::new(Some(owner_lock)),
+        progress,
+        health: health_state,
+        stuck_after,
+        jobs: Mutex::new(spawn_job_queue()),
+        active: Mutex::new(HashMap::new()),
+    });
+    let _ = shared_slot.set(Arc::downgrade(&shared));
+    let discovery_grace = start_lifecycle_and_announce(&shared, &lifecycle_slot, owner)?;
+    run_input_loop(&shared, reader, discovery_grace);
+}
+
+fn handle_owner_command(shared: &Arc<Shared>, lifecycle: &Arc<Lifecycle>, command: &Value) {
+    match command["type"].as_str() {
+        Some("ping") => {
+            let _ = shared.send(shared.status(command["nonce"].clone()), None);
+        }
+        Some("shutdown") => shared.close_and_exit(0),
+        Some("release") => release(shared, lifecycle, command),
+        Some("session_demand") => demand(shared, lifecycle, command),
+        Some("operation") => operation(shared, lifecycle, command.clone()),
+        Some("operation_cancel") => {
+            let request = command["requestId"].as_str().unwrap_or_default();
+            cancel_requests(shared, |id, scope| id == request && *scope == command["scope"]);
+        }
+        _ => {}
     }
 }
 
@@ -940,22 +845,8 @@ fn handle_input(shared: &Arc<Shared>, message: &Value, discovery_grace: Duration
                 announce(shared, &lifecycle, from, discovery_grace);
                 return;
             }
-            if lifecycle.owner().as_deref() != Some(from) {
-                return;
-            }
-            match command["type"].as_str() {
-                Some("ping") => {
-                    let _ = shared.send(shared.status(command["nonce"].clone()), None);
-                }
-                Some("shutdown") => shared.close_and_exit(0),
-                Some("release") => release(shared, &lifecycle, command),
-                Some("session_demand") => demand(shared, &lifecycle, command),
-                Some("operation") => operation(shared, &lifecycle, command.clone()),
-                Some("operation_cancel") => {
-                    let request = command["requestId"].as_str().unwrap_or_default();
-                    cancel_requests(shared, |id, scope| id == request && *scope == command["scope"]);
-                }
-                _ => {}
+            if lifecycle.owner().as_deref() == Some(from) {
+                handle_owner_command(shared, &lifecycle, command);
             }
         }
         _ => {}
@@ -1027,6 +918,66 @@ fn demand(shared: &Arc<Shared>, lifecycle: &Arc<Lifecycle>, command: &Value) {
     let _ = shared.send(event, None);
 }
 
+fn format_operation_response(result: ServiceResult, request_id: &Value, scope: Value) -> Value {
+    match result {
+        Ok(result) => {
+            let mut response = json!({"type": "operation_result", "requestId": request_id, "scope": scope});
+            if let Some(result) = result {
+                response["result"] = result;
+            }
+            response
+        }
+        Err(error) => {
+            let mut response = json!({"type": "operation_error", "requestId": request_id, "scope": scope});
+            if let Some(code) = error.code {
+                response["code"] = json!(code);
+            }
+            response["message"] = json!(error.message);
+            response
+        }
+    }
+}
+
+fn execute_operation(
+    shared: &Arc<Shared>,
+    hold: Result<Hold, String>,
+    call: Option<Call>,
+    scope: Value,
+    request_id: &str,
+    raw_request_id: &Value,
+) {
+    let result: ServiceResult = match (hold, call) {
+        (Err(message), _) => Err(ServiceError::internal(message)),
+        (Ok(_), None) => Err(ServiceError::internal("Invalid service call")),
+        (Ok(hold), Some(call)) => {
+            let endpoint = jsrt::sync::lock(&shared.endpoints)
+                .entry(scope_key(&scope))
+                .or_insert_with(|| (scope.clone(), Arc::new(Endpoint::new(shared.provider.clone()))))
+                .1
+                .clone();
+            let publisher = shared.clone();
+            let publish_scope = scope.clone();
+            let result = endpoint.invoke(
+                &call,
+                Arc::new(move |subscription: &str, update: Value| {
+                    let event = json!({"type": "service_update", "token": publisher.token, "sessionKey": publisher.session_key,
+                        "scope": publish_scope, "subscriptionId": subscription, "update": update});
+                    let _ = publisher.send(event, None);
+                }),
+            );
+            drop(hold);
+            result
+        }
+    };
+    let response = format_operation_response(result, raw_request_id, scope);
+    jsrt::sync::lock(&shared.active).remove(request_id);
+    let event = json!({"type": "operation_response", "token": shared.token, "sessionKey": shared.session_key,
+        "response": response});
+    if shared.send(event, None).is_err() {
+        shared.close_and_exit(1);
+    }
+}
+
 fn operation(shared: &Arc<Shared>, lifecycle: &Arc<Lifecycle>, request: Value) {
     let scope = request["scope"].clone();
     let hold = lifecycle.begin_request(
@@ -1037,80 +988,16 @@ fn operation(shared: &Arc<Shared>, lifecycle: &Arc<Lifecycle>, request: Value) {
     let long = call
         .as_ref()
         .is_some_and(|c| LONG_OPERATIONS.contains(&(c.service_id.as_str(), c.member.as_str())));
-    let jobs = shared
-        .jobs
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
+    let jobs = jsrt::sync::lock(&shared.jobs).clone();
     let shared = shared.clone();
     let request_id = request["requestId"].as_str().unwrap_or_default().to_string();
     if let Some(call) = &call {
-        shared
-            .active
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
-                request_id.clone(),
-                (scope.clone(), call.service_id.clone(), call.member.clone()),
-            );
+        jsrt::sync::lock(&shared.active).insert(
+            request_id.clone(),
+            (scope.clone(), call.service_id.clone(), call.member.clone()),
+        );
     }
-    let execute = move || {
-        let result: ServiceResult = match (hold, call) {
-            (Err(message), _) => Err(ServiceError::internal(message)),
-            (Ok(_), None) => Err(ServiceError::internal("Invalid service call")),
-            (Ok(hold), Some(call)) => {
-                let endpoint = shared
-                    .endpoints
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .entry(scope_key(&scope))
-                    .or_insert_with(|| (scope.clone(), Arc::new(Endpoint::new(shared.provider.clone()))))
-                    .1
-                    .clone();
-                let publisher = shared.clone();
-                let publish_scope = scope.clone();
-                let result = endpoint.invoke(
-                    &call,
-                    Arc::new(move |subscription: &str, update: Value| {
-                        let event = json!({"type": "service_update", "token": publisher.token, "sessionKey": publisher.session_key,
-                            "scope": publish_scope, "subscriptionId": subscription, "update": update});
-                        let _ = publisher.send(event, None);
-                    }),
-                );
-                drop(hold);
-                result
-            }
-        };
-        let mut response = match result {
-            Ok(result) => {
-                let mut response =
-                    json!({"type": "operation_result", "requestId": request["requestId"], "scope": scope});
-                if let Some(result) = result {
-                    response["result"] = result;
-                }
-                response
-            }
-            Err(error) => {
-                let mut response =
-                    json!({"type": "operation_error", "requestId": request["requestId"], "scope": scope});
-                if let Some(code) = error.code {
-                    response["code"] = json!(code);
-                }
-                response["message"] = json!(error.message);
-                response
-            }
-        };
-        shared
-            .active
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&request_id);
-        let event = json!({"type": "operation_response", "token": shared.token, "sessionKey": shared.session_key,
-            "response": std::mem::take(&mut response)});
-        if shared.send(event, None).is_err() {
-            shared.close_and_exit(1);
-        }
-    };
+    let execute = move || execute_operation(&shared, hold, call, scope, &request_id, &request["requestId"]);
     if long {
         std::thread::spawn(execute);
     } else {

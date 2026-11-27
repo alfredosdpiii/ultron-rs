@@ -10,30 +10,63 @@ fn words(args: &str) -> Vec<&str> {
     args.split_whitespace().collect()
 }
 
+fn request(kind: &str, payload: Value) -> Result<(String, Value), String> {
+    Ok((kind.to_string(), payload))
+}
+
+fn optional_id_request(args: &str, list_kind: &str, get_kind: &str) -> Result<(String, Value), String> {
+    if args.is_empty() {
+        request(list_kind, json!({}))
+    } else {
+        request(get_kind, json!({ "id": args }))
+    }
+}
+
+fn why_or_list_request(
+    args: &str,
+    why_kind: &str,
+    id_field: &str,
+    list_kind: &str,
+    usage: &str,
+) -> Result<(String, Value), String> {
+    let words = words(args);
+    match (words.first().copied(), words.get(1).copied()) {
+        (Some("why"), Some(target)) => request(why_kind, json!({ id_field: target })),
+        (None | Some("list"), _) => request(list_kind, json!({})),
+        _ => Err(usage.into()),
+    }
+}
+
+fn progress_request(args: &str) -> Result<(String, Value), String> {
+    if args.is_empty() {
+        Err("Usage: /progress <task-id>".into())
+    } else {
+        request("progress.history", json!({ "task_id": args }))
+    }
+}
+
 /// The host request of `/name args` (args trimmed), or the command's usage error; `None` when `name` is not an
 /// inspection command.
 pub fn inspection_request(name: &str, args: &str) -> Option<Result<(String, Value), String>> {
-    let request = |kind: &str, payload: Value| Ok((kind.to_string(), payload));
-    let words = words(args);
-    let (verb, target) = (words.first().copied(), words.get(1).copied());
     Some(match name {
-        "agents" if args.is_empty() => request("agents.status", json!({})),
-        "agents" => request("agents.inspect", json!({ "id": args })),
-        "memory" => match (verb, target) {
-            (Some("why"), Some(target)) => request("memory.why", json!({ "taskId": target })),
-            (None | Some("list"), _) => request("memory.list", json!({})),
-            _ => Err("Usage: /memory why <task-id> | /memory list".into()),
-        },
-        "skills" => match (verb, target) {
-            (Some("why"), Some(target)) => request("skills.why", json!({ "decision_id": target })),
-            (None | Some("list"), _) => request("skills.list", json!({})),
-            _ => Err("Usage: /skills why <decision-id> | /skills list".into()),
-        },
+        "agents" => optional_id_request(args, "agents.status", "agents.inspect"),
+        "memory" => why_or_list_request(
+            args,
+            "memory.why",
+            "taskId",
+            "memory.list",
+            "Usage: /memory why <task-id> | /memory list",
+        ),
+        "skills" => why_or_list_request(
+            args,
+            "skills.why",
+            "decision_id",
+            "skills.list",
+            "Usage: /skills why <decision-id> | /skills list",
+        ),
         "experiments" => request("experiments.list", json!({})),
-        "goals" if args.is_empty() => request("goals.list", json!({})),
-        "goals" => request("goals.get", json!({ "id": args })),
-        "progress" if args.is_empty() => Err("Usage: /progress <task-id>".into()),
-        "progress" => request("progress.history", json!({ "task_id": args })),
+        "goals" => optional_id_request(args, "goals.list", "goals.get"),
+        "progress" => progress_request(args),
         _ => return None,
     })
 }
@@ -43,6 +76,37 @@ fn scalar(item: &Value) -> String {
     match item {
         Value::String(text) => text.clone(),
         other => jsrt::json::stringify(other),
+    }
+}
+
+fn render_array(lines: &mut Vec<String>, items: &[Value], inner: &str) {
+    for child in items {
+        if child.is_array() || child.is_object() {
+            lines.push(format!("{inner}-"));
+            render(lines, child, &format!("{inner}  "), None);
+        } else {
+            lines.push(format!("{inner}- {}", scalar(child)));
+        }
+    }
+}
+
+fn render_container(lines: &mut Vec<String>, item: &Value, indent: &str, label: Option<&str>) {
+    if let Some(label) = label {
+        lines.push(format!("{indent}{label}:"));
+    }
+    let inner = if label.is_some() {
+        format!("{indent}  ")
+    } else {
+        indent.to_string()
+    };
+    match item {
+        Value::Array(items) => render_array(lines, items, &inner),
+        Value::Object(map) => {
+            for (key, child) in jsrt::json::object_entries(map) {
+                render(lines, child, &inner, Some(key));
+            }
+        }
+        _ => {}
     }
 }
 
@@ -63,31 +127,7 @@ fn render(lines: &mut Vec<String>, item: &Value, indent: &str, label: Option<&st
         lines.push(format!("{head}(none)"));
         return;
     }
-    if let Some(label) = label {
-        lines.push(format!("{indent}{label}:"));
-    }
-    let inner = match label {
-        None => indent.to_string(),
-        Some(_) => format!("{indent}  "),
-    };
-    match item {
-        Value::Array(items) => {
-            for child in items {
-                if child.is_array() || child.is_object() {
-                    lines.push(format!("{inner}-"));
-                    render(lines, child, &format!("{inner}  "), None);
-                } else {
-                    lines.push(format!("{inner}- {}", scalar(child)));
-                }
-            }
-        }
-        Value::Object(map) => {
-            for (key, child) in jsrt::json::object_entries(map) {
-                render(lines, child, &inner, Some(key));
-            }
-        }
-        _ => {}
-    }
+    render_container(lines, item, indent, label);
 }
 
 /// `formatInspection`: JSON as indented `key: value` lines under `title`, at most 40 lines and a count of the rest,

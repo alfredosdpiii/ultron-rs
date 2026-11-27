@@ -2,6 +2,166 @@
 
 use super::*;
 
+const BOOL_SETTINGS: &[(&str, &str)] = &[
+    ("autocompact", "compaction.enabled"),
+    ("show-images", "terminal.showImages"),
+    ("auto-resize-images", "images.autoResize"),
+    ("block-images", "images.blockImages"),
+    ("skill-commands", "enableSkillCommands"),
+    ("hide-thinking", "hideThinkingBlock"),
+    ("cache-miss-notices", "showCacheMissNotices"),
+    ("collapse-changelog", "collapseChangelog"),
+    ("quiet-startup", "quietStartup"),
+    ("rlm-pane-auto-open", "rlmPaneAutoOpen"),
+    ("autoreview-enabled", "autoreview.enabled"),
+    ("autoreview-never-request-changes", "autoreview.neverRequestChanges"),
+    ("autoreview-system-prefix", "autoreview.systemPrefix"),
+    ("turn-end-checks", "turnEndChecks"),
+    ("situational-skills", "situationalSkills"),
+    ("observer-enabled", "observer.enabled"),
+    ("autoreview-ack", "autoreview.ack"),
+    ("install-telemetry", "enableInstallTelemetry"),
+    ("show-hardware-cursor", "showHardwareCursor"),
+    ("clear-on-shrink", "terminal.clearOnShrink"),
+    ("terminal-progress", "terminal.showTerminalProgress"),
+    ("fullscreen-copy-on-select", "fullscreenCopyOnSelect"),
+    ("result-footer", "rlm.resultFooter"),
+];
+
+const INT_SETTINGS: &[(&str, &str)] = &[
+    ("image-width-cells", "terminal.imageWidthCells"),
+    ("autoreview-quiet-minutes", "autoreview.quietMinutes"),
+    ("autoreview-deep-rounds", "autoreview.deepRounds"),
+    ("editor-padding", "editorPaddingX"),
+    ("output-padding", "outputPad"),
+    ("autocomplete-max-visible", "autocompleteMaxVisible"),
+];
+
+const STRING_SETTINGS: &[(&str, &str)] = &[
+    ("steering-mode", "steeringMode"),
+    ("follow-up-mode", "followUpMode"),
+    ("transport", "transport"),
+    ("cache-warming-mode", "cacheWarming"),
+    ("mermaid-rendering", "markdown.mermaid"),
+    ("autoreview-mode", "autoreview.mode"),
+    ("self-review", "selfReview"),
+    ("loki-hygiene", "loki.hygiene"),
+    ("autoreview-ack-art", "autoreview.ackArt"),
+    ("double-escape-action", "doubleEscapeAction"),
+    ("tree-filter-mode", "treeFilterMode"),
+    ("tui-mode", "tuiMode"),
+    ("fullscreen-exit-output", "fullscreenExitOutput"),
+    ("fullscreen-scrollbar", "fullscreenScrollbar"),
+];
+
+fn lookup_key(table: &[(&'static str, &'static str)], id: &str) -> Option<&'static str> {
+    table.iter().find(|(k, _)| *k == id).map(|(_, v)| *v)
+}
+
+fn resolve_simple_change(id: &str, value: &str) -> Option<(&'static str, Value)> {
+    if let Some(key) = lookup_key(BOOL_SETTINGS, id) {
+        return Some((key, Value::Bool(value == "true")));
+    }
+    if let Some(key) = lookup_key(INT_SETTINGS, id) {
+        return Some((key, Value::from(value.parse::<i64>().unwrap_or(0))));
+    }
+    lookup_key(STRING_SETTINGS, id).map(|key| (key, value.into()))
+}
+
+fn trust_setting_value(value: &str) -> &'static str {
+    match value {
+        "Always trust" => "always",
+        "Never trust" => "never",
+        _ => "ask",
+    }
+}
+
+fn trust_display_label(value: &str) -> String {
+    match value {
+        "always" => "Always trust",
+        "never" => "Never trust",
+        _ => "Ask",
+    }
+    .to_string()
+}
+
+fn persona_setting_value(value: &str) -> &str {
+    if value == config::keys::PERSONA_ULTRON {
+        value
+    } else {
+        config::keys::PERSONA_OFF
+    }
+}
+
+fn memory_backend_value(value: &str) -> Value {
+    if value == MEMORY_BACKENDS[0] {
+        Value::Null
+    } else {
+        value.into()
+    }
+}
+
+fn resolve_special_change<'a>(id: &'a str, value: &str) -> (&'a str, Value) {
+    match id {
+        "http-idle-timeout" => (
+            "httpIdleTimeoutMs",
+            Value::from(HTTP_IDLE.iter().find(|(l, _)| *l == value).map_or(300_000, |(_, v)| *v)),
+        ),
+        "default-project-trust" => ("defaultProjectTrust", trust_setting_value(value).into()),
+        "persona" => (config::keys::PERSONA_KEY, persona_setting_value(value).into()),
+        "request-token-cap" => ("rootBudget.maxTotalTokens", token_cap_value(value)),
+        "map-token-cap" => ("rlm.mapTokens", token_cap_value(value)),
+        "judge-provider" => ("judge.provider", judge_order_value(value)),
+        "judge-budget" => ("judge.budgetUsd", budget_value(value)),
+        "memory-backend" => ("memory.backend", memory_backend_value(value)),
+        other => (other, value.into()),
+    }
+}
+
+fn ack_art_item(c: &SettingsInput) -> Item {
+    let art = c.str("autoreview.ackArt", "logo");
+    let values: &[&str] = if art == "custom" {
+        &["custom", "logo", "none"]
+    } else {
+        &["logo", "none"]
+    };
+    item(
+        "autoreview-ack-art",
+        "Autoreview acknowledgement art",
+        "Ultron's logo under the acknowledgement line, or none (custom text is set in settings.json)",
+        art,
+        values,
+    )
+}
+
+fn persona_display_value(c: &SettingsInput) -> String {
+    if c.text(config::keys::PERSONA_KEY).as_deref() == Some(config::keys::PERSONA_ULTRON) {
+        config::keys::PERSONA_ULTRON
+    } else {
+        config::keys::PERSONA_OFF
+    }
+    .into()
+}
+
+fn judge_budget_item(c: &SettingsInput) -> Item {
+    let budget = budget_label(c.get("judge.budgetUsd"));
+    let mut budgets = JUDGE_BUDGETS.to_vec();
+    if !budgets.contains(&budget.as_str()) {
+        budgets.insert(1, &budget);
+    }
+    item(
+        "judge-budget",
+        "Judge budget",
+        "USD the judge may spend in a session (Jev and the fallback and escalation models; d1 is free). Off: no cap, spend is still recorded.",
+        budget.clone(),
+        &budgets,
+    )
+}
+
+fn output_padding_value(c: &SettingsInput) -> String {
+    if c.num("outputPad", 1.0) == 0.0 { "0" } else { "1" }.into()
+}
+
 impl SettingsSelector {
     pub(super) fn items(&self) -> Vec<Item> {
         let c = &self.input;
@@ -178,21 +338,7 @@ impl SettingsSelector {
                 c.str("loki.hygiene", "on"),
                 &["on", "all", "off"],
             ),
-            {
-                let art = c.str("autoreview.ackArt", "logo");
-                let values: &[&str] = if art == "custom" {
-                    &["custom", "logo", "none"]
-                } else {
-                    &["logo", "none"]
-                };
-                item(
-                    "autoreview-ack-art",
-                    "Autoreview acknowledgement art",
-                    "Ultron's logo under the acknowledgement line, or none (custom text is set in settings.json)",
-                    art,
-                    values,
-                )
-            },
+            ack_art_item(c),
             item(
                 "install-telemetry",
                 "Install telemetry",
@@ -204,12 +350,7 @@ impl SettingsSelector {
                 "default-project-trust",
                 "Default project trust",
                 "Fallback behavior when no extension or saved trust decision decides project trust",
-                match c.str("defaultProjectTrust", "ask").as_str() {
-                    "always" => "Always trust",
-                    "never" => "Never trust",
-                    _ => "Ask",
-                }
-                .to_string(),
+                trust_display_label(&c.str("defaultProjectTrust", "ask")),
                 &["Ask", "Always trust", "Never trust"],
             ),
             item(
@@ -288,92 +429,86 @@ impl SettingsSelector {
                 )
             },
         ];
-        if c.rust_rows
-            && let Some(at) = items.iter().position(|it| it.id == "autoreview-enabled")
-        {
-            items.insert(
-                at,
-                item(
-                    "persona",
-                    "Persona",
-                    "The Ultron persona: personality.md in the system prompt, announced next steps continued (applies from the next prompt)",
-                    if c.text(config::keys::PERSONA_KEY).as_deref() == Some(config::keys::PERSONA_ULTRON) {
-                        config::keys::PERSONA_ULTRON
-                    } else {
-                        config::keys::PERSONA_OFF
-                    }
-                    .into(),
-                    &config::keys::PERSONA_VALUES,
-                ),
-            );
-            items.insert(
-                at + 1,
-                token_cap_item(
-                    "request-token-cap",
-                    "Request token cap",
-                    "Tokens one request may spend, with its sub-agents and frames, before more model work is refused (applies to new sessions; ULTRON_MAX_TOTAL_TOKENS overrides it)",
-                    c.get("rootBudget.maxTotalTokens"),
-                    &REQUEST_TOKEN_CAPS,
-                ),
-            );
-            items.insert(
-                at + 2,
-                token_cap_item(
-                    "map-token-cap",
-                    "rlm.map token cap",
-                    "Tokens an rlm.map that sets no budget may spend; frames past it come back Incomplete (applies to the next map; ULTRON_RLM_MAP_TOKENS overrides it)",
-                    c.get("rlm.mapTokens"),
-                    &MAP_TOKEN_CAPS,
-                ),
-            );
-            items.insert(
-                at + 3,
-                item(
-                    "judge-provider",
-                    "Judge backends",
-                    "Who answers judge.decide, in order: Jev (TypeSafe key), d1 (judge.d1.url and key); `ultron setup` sets them up. Models: the judge's fallback and escalation models.",
-                    judge_order(c.get("judge.provider")),
-                    &JUDGE_ORDERS,
-                ),
-            );
-            let budget = budget_label(c.get("judge.budgetUsd"));
-            let mut budgets = JUDGE_BUDGETS.to_vec();
-            if !budgets.contains(&budget.as_str()) {
-                budgets.insert(1, &budget);
-            }
-            items.insert(
-                at + 4,
-                item(
-                    "judge-budget",
-                    "Judge budget",
-                    "USD the judge may spend in a session (Jev and the fallback and escalation models; d1 is free). Off: no cap, spend is still recorded.",
-                    budget.clone(),
-                    &budgets,
-                ),
-            );
-            items.insert(
-                at + 5,
-                item(
-                    "memory-backend",
-                    "Memory backend",
-                    "Where memory lives (applies to new sessions). detect: memorantado once it answers, kept from then on; until then Hindsight. Once memorantado is the backend, an outage pauses memory instead of writing to Hindsight.",
-                    c.text("memory.backend")
-                        .filter(|b| MEMORY_BACKENDS.contains(&b.as_str()))
-                        .unwrap_or_else(|| MEMORY_BACKENDS[0].into()),
-                    &MEMORY_BACKENDS,
-                ),
-            );
-            items.insert(
-                at + 6,
-                item(
-                    "result-footer",
-                    "REPL result footer",
-                    "End each rlm result with [t+<time since the session started> ctx <tokens>], and tell the model so (applies to new sessions)",
-                    b("rlm.resultFooter", false),
-                    &["true", "false"],
-                ),
-            );
+        self.insert_rust_items(&mut items);
+        self.insert_tail_items(&mut items);
+        items.insert(
+            0,
+            Item {
+                sub: Some(SubKind::Models),
+                ..item(
+                    "models",
+                    "Models",
+                    "Models of the session, inference frames, /review and sub-agents, and of Claude Code mode. Changes apply to the running session.",
+                    self.models_summary(),
+                    &[],
+                )
+            },
+        );
+        items
+    }
+
+    fn insert_rust_items(&self, items: &mut Vec<Item>) {
+        let c = &self.input;
+        if !c.rust_rows {
+            return;
         }
+        let Some(at) = items.iter().position(|it| it.id == "autoreview-enabled") else {
+            return;
+        };
+        let b = |key: &str, fallback: bool| str_bool(c.bool(key, fallback));
+        let rust_items = [
+            item(
+                "persona",
+                "Persona",
+                "The Ultron persona: personality.md in the system prompt, announced next steps continued (applies from the next prompt)",
+                persona_display_value(c),
+                &config::keys::PERSONA_VALUES,
+            ),
+            token_cap_item(
+                "request-token-cap",
+                "Request token cap",
+                "Tokens one request may spend, with its sub-agents and frames, before more model work is refused (applies to new sessions; ULTRON_MAX_TOTAL_TOKENS overrides it)",
+                c.get("rootBudget.maxTotalTokens"),
+                &REQUEST_TOKEN_CAPS,
+            ),
+            token_cap_item(
+                "map-token-cap",
+                "rlm.map token cap",
+                "Tokens an rlm.map that sets no budget may spend; frames past it come back Incomplete (applies to the next map; ULTRON_RLM_MAP_TOKENS overrides it)",
+                c.get("rlm.mapTokens"),
+                &MAP_TOKEN_CAPS,
+            ),
+            item(
+                "judge-provider",
+                "Judge backends",
+                "Who answers judge.decide, in order: Jev (TypeSafe key), d1 (judge.d1.url and key); `ultron setup` sets them up. Models: the judge's fallback and escalation models.",
+                judge_order(c.get("judge.provider")),
+                &JUDGE_ORDERS,
+            ),
+            judge_budget_item(c),
+            item(
+                "memory-backend",
+                "Memory backend",
+                "Where memory lives (applies to new sessions). detect: memorantado once it answers, kept from then on; until then Hindsight. Once memorantado is the backend, an outage pauses memory instead of writing to Hindsight.",
+                c.text("memory.backend")
+                    .filter(|b| MEMORY_BACKENDS.contains(&b.as_str()))
+                    .unwrap_or_else(|| MEMORY_BACKENDS[0].into()),
+                &MEMORY_BACKENDS,
+            ),
+            item(
+                "result-footer",
+                "REPL result footer",
+                "End each rlm result with [t+<time since the session started> ctx <tokens>], and tell the model so (applies to new sessions)",
+                b("rlm.resultFooter", false),
+                &["true", "false"],
+            ),
+        ];
+        items.splice(at..at, rust_items);
+    }
+
+    fn insert_tail_items(&self, items: &mut Vec<Item>) {
+        let c = &self.input;
+        let b = |key: &str, fallback: bool| str_bool(c.bool(key, fallback));
         let mut at = 1;
         if c.supports_images {
             items.insert(
@@ -438,7 +573,7 @@ impl SettingsSelector {
                 "output-padding",
                 "Output padding",
                 "Horizontal padding for user messages, assistant messages, and thinking",
-                if c.num("outputPad", 1.0) == 0.0 { "0" } else { "1" }.into(),
+                output_padding_value(c),
                 &["0", "1"],
             ),
             item(
@@ -463,108 +598,11 @@ impl SettingsSelector {
                 &["true", "false"],
             ),
         ];
-        for (i, it) in tail.into_iter().enumerate() {
-            items.insert(at + i, it);
-        }
-        items.insert(
-            0,
-            Item {
-                sub: Some(SubKind::Models),
-                ..item(
-                    "models",
-                    "Models",
-                    "Models of the session, inference frames, /review and sub-agents, and of Claude Code mode. Changes apply to the running session.",
-                    self.models_summary(),
-                    &[],
-                )
-            },
-        );
-        items
+        items.splice(at..at, tail);
     }
 
     pub(super) fn main_change(&mut self, id: &str, value: &str) -> SettingsEvent {
-        let b = Value::Bool(value == "true");
-        let n = |v: &str| Value::from(v.parse::<i64>().unwrap_or(0));
-        let (key, v) = match id {
-            "autocompact" => ("compaction.enabled", b),
-            "show-images" => ("terminal.showImages", b),
-            "image-width-cells" => ("terminal.imageWidthCells", n(value)),
-            "auto-resize-images" => ("images.autoResize", b),
-            "block-images" => ("images.blockImages", b),
-            "skill-commands" => ("enableSkillCommands", b),
-            "steering-mode" => ("steeringMode", value.into()),
-            "follow-up-mode" => ("followUpMode", value.into()),
-            "transport" => ("transport", value.into()),
-            "http-idle-timeout" => (
-                "httpIdleTimeoutMs",
-                Value::from(HTTP_IDLE.iter().find(|(l, _)| *l == value).map_or(300_000, |(_, v)| *v)),
-            ),
-            "cache-warming-mode" => ("cacheWarming", value.into()),
-            "hide-thinking" => ("hideThinkingBlock", b),
-            "mermaid-rendering" => ("markdown.mermaid", value.into()),
-            "cache-miss-notices" => ("showCacheMissNotices", b),
-            "collapse-changelog" => ("collapseChangelog", b),
-            "quiet-startup" => ("quietStartup", b),
-            "rlm-pane-auto-open" => ("rlmPaneAutoOpen", b),
-            "autoreview-enabled" => ("autoreview.enabled", b),
-            "autoreview-mode" => ("autoreview.mode", value.into()),
-            "autoreview-quiet-minutes" => ("autoreview.quietMinutes", n(value)),
-            "autoreview-never-request-changes" => ("autoreview.neverRequestChanges", b),
-            "autoreview-deep-rounds" => ("autoreview.deepRounds", n(value)),
-            "autoreview-system-prefix" => ("autoreview.systemPrefix", b),
-            "self-review" => ("selfReview", value.into()),
-            "turn-end-checks" => ("turnEndChecks", b),
-            "situational-skills" => ("situationalSkills", b),
-            "observer-enabled" => ("observer.enabled", b),
-            "loki-hygiene" => ("loki.hygiene", value.into()),
-            "autoreview-ack" => ("autoreview.ack", b),
-            "autoreview-ack-art" => ("autoreview.ackArt", value.into()),
-            "install-telemetry" => ("enableInstallTelemetry", b),
-            "default-project-trust" => (
-                "defaultProjectTrust",
-                match value {
-                    "Always trust" => "always",
-                    "Never trust" => "never",
-                    _ => "ask",
-                }
-                .into(),
-            ),
-            "double-escape-action" => ("doubleEscapeAction", value.into()),
-            "tree-filter-mode" => ("treeFilterMode", value.into()),
-            "show-hardware-cursor" => ("showHardwareCursor", b),
-            "editor-padding" => ("editorPaddingX", n(value)),
-            "output-padding" => ("outputPad", n(value)),
-            "autocomplete-max-visible" => ("autocompleteMaxVisible", n(value)),
-            "clear-on-shrink" => ("terminal.clearOnShrink", b),
-            "terminal-progress" => ("terminal.showTerminalProgress", b),
-            "tui-mode" => ("tuiMode", value.into()),
-            "fullscreen-exit-output" => ("fullscreenExitOutput", value.into()),
-            "fullscreen-scrollbar" => ("fullscreenScrollbar", value.into()),
-            "fullscreen-copy-on-select" => ("fullscreenCopyOnSelect", b),
-            "persona" => (
-                config::keys::PERSONA_KEY,
-                if value == config::keys::PERSONA_ULTRON {
-                    value
-                } else {
-                    config::keys::PERSONA_OFF
-                }
-                .into(),
-            ),
-            "request-token-cap" => ("rootBudget.maxTotalTokens", token_cap_value(value)),
-            "map-token-cap" => ("rlm.mapTokens", token_cap_value(value)),
-            "result-footer" => ("rlm.resultFooter", b),
-            "judge-provider" => ("judge.provider", judge_order_value(value)),
-            "judge-budget" => ("judge.budgetUsd", budget_value(value)),
-            "memory-backend" => (
-                "memory.backend",
-                if value == MEMORY_BACKENDS[0] {
-                    Value::Null
-                } else {
-                    value.into()
-                },
-            ),
-            other => (other, value.into()),
-        };
+        let (key, v) = resolve_simple_change(id, value).unwrap_or_else(|| resolve_special_change(id, value));
         set_path(&mut self.input.settings, key, v.clone());
         SettingsEvent::Change(key.to_string(), v)
     }

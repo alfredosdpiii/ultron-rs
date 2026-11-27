@@ -25,57 +25,78 @@ fn clamp_size(size: usize, e: &StackEntry) -> usize {
     size.clamp(e.min_size, max)
 }
 
+fn entry_eligible(size: usize, entry: &StackEntry, grow: bool) -> bool {
+    if grow {
+        entry.grow > 0 && size < entry.max_size.unwrap_or(usize::MAX)
+    } else {
+        entry.shrink.unwrap_or(1) > 0 && size > entry.min_size
+    }
+}
+
+fn entry_weight(size: usize, entry: &StackEntry, grow: bool) -> usize {
+    if grow {
+        entry.grow
+    } else {
+        entry.shrink.unwrap_or(1) * size.max(1)
+    }
+}
+
+fn distribution_candidates(sizes: &[usize], entries: &[StackEntry], grow: bool) -> Vec<(usize, usize)> {
+    entries
+        .iter()
+        .enumerate()
+        .filter(|&(idx, entry)| entry_eligible(sizes[idx], entry, grow))
+        .map(|(idx, entry)| (idx, entry_weight(sizes[idx], entry, grow)))
+        .collect()
+}
+
+fn entry_capacity(size: usize, entry: &StackEntry, grow: bool) -> usize {
+    if grow {
+        entry.max_size.unwrap_or(usize::MAX) - size
+    } else {
+        size - entry.min_size
+    }
+}
+
+fn distribute_pass(
+    sizes: &mut [usize],
+    entries: &[StackEntry],
+    candidates: &[(usize, usize)],
+    remaining: &mut usize,
+    total: usize,
+    grow: bool,
+) -> usize {
+    let mut distributed = 0;
+    for &(idx, weight) in candidates {
+        if *remaining == 0 {
+            break;
+        }
+        let proposed = (*remaining * weight / total).max(1);
+        let capacity = entry_capacity(sizes[idx], &entries[idx], grow);
+        let delta = (*remaining).min(proposed).min(capacity);
+        if delta == 0 {
+            continue;
+        }
+        if grow {
+            sizes[idx] += delta;
+        } else {
+            sizes[idx] -= delta;
+        }
+        *remaining -= delta;
+        distributed += delta;
+    }
+    distributed
+}
+
 fn distribute(sizes: &mut [usize], entries: &[StackEntry], amount: usize, grow: bool) {
     let mut remaining = amount;
     while remaining > 0 {
-        let candidates: Vec<usize> = (0..entries.len())
-            .filter(|&i| {
-                let e = &entries[i];
-                if grow {
-                    e.grow > 0 && sizes[i] < e.max_size.unwrap_or(usize::MAX)
-                } else {
-                    e.shrink.unwrap_or(1) > 0 && sizes[i] > e.min_size
-                }
-            })
-            .collect();
+        let candidates = distribution_candidates(sizes, entries, grow);
         if candidates.is_empty() {
             return;
         }
-        let weights: Vec<usize> = candidates
-            .iter()
-            .map(|&i| {
-                if grow {
-                    entries[i].grow
-                } else {
-                    entries[i].shrink.unwrap_or(1) * sizes[i].max(1)
-                }
-            })
-            .collect();
-        let total: usize = weights.iter().sum();
-        let mut distributed = 0;
-        for (&i, &weight) in candidates.iter().zip(&weights) {
-            if remaining == 0 {
-                break;
-            }
-            let proposed = (remaining * weight / total).max(1);
-            let capacity = if grow {
-                entries[i].max_size.unwrap_or(usize::MAX) - sizes[i]
-            } else {
-                sizes[i] - entries[i].min_size
-            };
-            let delta = remaining.min(proposed).min(capacity);
-            if delta == 0 {
-                continue;
-            }
-            if grow {
-                sizes[i] += delta;
-            } else {
-                sizes[i] -= delta;
-            }
-            remaining -= delta;
-            distributed += delta;
-        }
-        if distributed == 0 {
+        let total: usize = candidates.iter().map(|&(_, weight)| weight).sum();
+        if distribute_pass(sizes, entries, &candidates, &mut remaining, total, grow) == 0 {
             return;
         }
     }
@@ -296,9 +317,7 @@ impl AltScreen {
         (lines, deletion)
     }
 
-    /// One frame of exactly `height` rows (extra rows are dropped, missing rows blank); a cursor marker places the
-    /// hardware cursor.
-    pub fn paint(&mut self, lines: &[String], width: usize, height: usize) -> String {
+    fn format_screen(lines: &[String], width: usize, height: usize) -> (Vec<String>, Option<(usize, usize)>) {
         let mut lines: Vec<String> = lines.iter().take(height).cloned().collect();
         let cursor = extract_cursor(&mut lines);
         let mut screen: Vec<String> = Vec::with_capacity(height);
@@ -313,19 +332,29 @@ impl AltScreen {
             screen.push(format!("{line}{SEGMENT_RESET}"));
         }
         screen.resize(height, SEGMENT_RESET.to_string());
-        let full = self.width != width || self.height != height || self.previous.is_empty();
-        let images_changed = screen.iter().enumerate().any(|(row, line)| {
-            let before = self.previous.get(row);
-            before != Some(line) && (is_image_line(line) || before.is_some_and(|b| is_image_line(b)))
-        });
-        let redraw_images = full || images_changed;
-        let had_uploaded = !self.uploaded.is_empty();
-        let (prepared, evicted) = if redraw_images && self.kitty() {
-            self.prepare_kitty(&screen)
+        (screen, cursor)
+    }
+
+    fn row_image_changed(before: Option<&String>, line: &str) -> bool {
+        before != Some(&line.to_string()) && (is_image_line(line) || before.is_some_and(|b| is_image_line(b)))
+    }
+
+    fn images_changed(&self, screen: &[String]) -> bool {
+        screen
+            .iter()
+            .enumerate()
+            .any(|(row, line)| Self::row_image_changed(self.previous.get(row), line))
+    }
+
+    fn prepare_frame(&mut self, screen: &[String], redraw_images: bool) -> (Vec<String>, String) {
+        if redraw_images && self.kitty() {
+            self.prepare_kitty(screen)
         } else {
-            (screen.clone(), String::new())
-        };
-        let mut out = String::from(SYNC_BEGIN);
+            (screen.to_vec(), String::new())
+        }
+    }
+
+    fn emit_clear_sequences(&mut self, out: &mut String, full: bool, images_changed: bool, had_uploaded: bool) {
         if full {
             self.full_redraws += 1;
             out.push_str(if self.kitty() && had_uploaded {
@@ -341,23 +370,46 @@ impl AltScreen {
                 None => {}
             }
         }
-        out.push_str(&evicted);
-        let unchanged = |row: usize| !redraw_images && self.previous.get(row) == Some(&screen[row]);
-        let clear_first = redraw_images && self.kitty() && self.wezterm && screen.iter().any(|l| is_image_line(l));
-        if clear_first {
-            for row in 0..height {
-                if !unchanged(row) {
-                    out.push_str(&format!("\x1b[{};1H\x1b[2K", row + 1));
-                }
+    }
+
+    fn row_unchanged(&self, screen: &[String], row: usize, redraw_images: bool) -> bool {
+        !redraw_images && self.previous.get(row) == Some(&screen[row])
+    }
+
+    fn should_clear_first(&self, screen: &[String], redraw_images: bool) -> bool {
+        redraw_images && self.kitty() && self.wezterm && screen.iter().any(|l| is_image_line(l))
+    }
+
+    fn clear_changed_rows(&self, out: &mut String, screen: &[String], height: usize, redraw_images: bool) {
+        for row in 0..height {
+            if !self.row_unchanged(screen, row, redraw_images) {
+                out.push_str(&format!("\x1b[{};1H\x1b[2K", row + 1));
             }
         }
+    }
+
+    fn write_screen_rows(
+        &self,
+        out: &mut String,
+        screen: &[String],
+        prepared: &[String],
+        height: usize,
+        redraw_images: bool,
+    ) {
+        let clear_first = self.should_clear_first(screen, redraw_images);
+        if clear_first {
+            self.clear_changed_rows(out, screen, height, redraw_images);
+        }
         for (row, line) in prepared.iter().enumerate().take(height) {
-            if unchanged(row) {
+            if self.row_unchanged(screen, row, redraw_images) {
                 continue;
             }
             let clear = if clear_first { "" } else { "\x1b[2K" };
             out.push_str(&format!("\x1b[{};1H{clear}{line}", row + 1));
         }
+    }
+
+    fn write_cursor(&self, out: &mut String, cursor: Option<(usize, usize)>, width: usize) {
         match cursor {
             Some((row, col)) => {
                 out.push_str(&format!("\x1b[{};{}H", row + 1, col.min(width) + 1));
@@ -369,6 +421,22 @@ impl AltScreen {
             }
             None => out.push_str("\x1b[?25l"),
         }
+    }
+
+    /// One frame of exactly `height` rows (extra rows are dropped, missing rows blank); a cursor marker places the
+    /// hardware cursor.
+    pub fn paint(&mut self, lines: &[String], width: usize, height: usize) -> String {
+        let (screen, cursor) = Self::format_screen(lines, width, height);
+        let full = self.width != width || self.height != height || self.previous.is_empty();
+        let images_changed = self.images_changed(&screen);
+        let redraw_images = full || images_changed;
+        let had_uploaded = !self.uploaded.is_empty();
+        let (prepared, evicted) = self.prepare_frame(&screen, redraw_images);
+        let mut out = String::from(SYNC_BEGIN);
+        self.emit_clear_sequences(&mut out, full, images_changed, had_uploaded);
+        out.push_str(&evicted);
+        self.write_screen_rows(&mut out, &screen, &prepared, height, redraw_images);
+        self.write_cursor(&mut out, cursor, width);
         out.push_str(SYNC_END);
         self.previous = screen;
         self.width = width;

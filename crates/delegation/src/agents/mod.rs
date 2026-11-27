@@ -33,9 +33,11 @@ use std::time::Duration;
 mod dispatch;
 mod execution;
 mod graph_view;
+mod lifecycle;
 mod managed_workflow;
 mod predict;
 mod workflow;
+mod workflow_parse;
 
 use execution::{bound_value, condition_met, json_from, object_input, text_of, verdict_gate};
 use graph_view::{
@@ -402,32 +404,24 @@ impl Agents {
         (self.inner.now)()
     }
 
+    fn load_tasks_once(&self, state: &mut State) -> Result<(), String> {
+        state.registry.ready()?;
+        for record in state.journal.list()? {
+            Self::adopt(state, record);
+        }
+        if let Some(usage) = &self.inner.usage {
+            usage.ready()?;
+            usage.reconcile(&[])?;
+        }
+        Ok(())
+    }
+
     /// `loadTasks`: the registry, the journal (an earlier owner's unfinished tasks become interrupted), and the
     /// ledger, whose open reservations all belong to an ended owner and settle as unknown.
     pub fn load_tasks(&self) -> Result<(), String> {
         let mut state = self.state();
         if state.loaded.is_none() {
-            let outcome = (|| {
-                state.registry.ready()?;
-                for record in state.journal.list()? {
-                    let id = record["id"].as_str().unwrap_or_default().to_string();
-                    if state.task(&id).is_none() {
-                        state.tasks.push(Task {
-                            parent_id: record["parentId"].as_str().map(String::from),
-                            definition: record["definition"].as_str().unwrap_or_default().into(),
-                            outcome: record.get("result").cloned().map(Ok),
-                            record,
-                            id,
-                            ..Task::default()
-                        });
-                    }
-                }
-                if let Some(usage) = &self.inner.usage {
-                    usage.ready()?;
-                    usage.reconcile(&[])?;
-                }
-                Ok(())
-            })();
+            let outcome = self.load_tasks_once(&mut state);
             state.loaded = Some(outcome);
         }
         state.loaded.clone().unwrap_or(Ok(()))?;
@@ -593,44 +587,27 @@ impl Agents {
             .map(|(id, _)| id)
     }
 
-    /// [`Self::spawn_task`], with the task's record as admitted: read before its run starts on another thread, so
-    /// a spawn reports `admitted` as TS does (its run starts after the call returns), never a state the run reached.
-    fn spawn_task_with_record(
+    fn find_idempotent_task(&self, key: &str, fingerprint: &str) -> Result<Option<(String, Value)>, String> {
+        let mut state = self.state();
+        let prior = state.journal.list()?.into_iter().find(|t| t["key"] == key);
+        let Some(prior) = prior else {
+            return Ok(None);
+        };
+        if prior["fingerprint"] != fingerprint {
+            return Err("Idempotency key reused for a different task".into());
+        }
+        let id = prior["id"].as_str().unwrap_or_default().to_string();
+        Self::adopt(&mut state, prior);
+        let record = state.task(&id).map_or(Value::Null, |t| t.record.clone());
+        Ok(Some((id, record)))
+    }
+
+    fn reserve_task_slot(
         &self,
-        request: TaskRequest,
-        cell: Option<&Signal>,
+        request: &TaskRequest,
+        key: &str,
         parent: Option<&str>,
-        notify: Option<&'static str>,
-    ) -> Result<(String, Value), String> {
-        let _admitting = sync::lock(&self.inner.admissions);
-        if self.state().closed {
-            return Err("Ultron task host is closed".into());
-        }
-        if let Some(reason) = cell.and_then(Signal::reason) {
-            return Err(reason);
-        }
-        let mut fingerprinted = json!({
-            "definition": request.definition, "input": request.input, "model": request.model,
-            "timeout_ms": request.timeout_ms,
-        });
-        if let Some(brief) = &request.brief {
-            fingerprinted["brief"] = brief.to_value();
-        }
-        let fingerprint = task_fingerprint(&fingerprinted);
-        let key = request.key.clone().unwrap_or_else(random::uuid_v4);
-        if request.key.is_some() {
-            let mut state = self.state();
-            let prior = state.journal.list()?.into_iter().find(|t| t["key"] == key.as_str());
-            if let Some(prior) = prior {
-                if prior["fingerprint"] != fingerprint.as_str() {
-                    return Err("Idempotency key reused for a different task".into());
-                }
-                let id = prior["id"].as_str().unwrap_or_default().to_string();
-                Self::adopt(&mut state, prior);
-                let record = state.task(&id).map_or(Value::Null, |t| t.record.clone());
-                return Ok((id, record));
-            }
-        }
+    ) -> Result<Option<Reservation>, String> {
         let strategy = self.definition(&request.definition)?.strategy();
         let root = {
             let state = self.state();
@@ -639,40 +616,74 @@ impl Agents {
                 .clone()
                 .or_else(|| self.admission_root(&state, parent))
         };
-        let reservation = match &self.inner.usage {
-            Some(usage) => Some(usage.reserve(&ReserveRequest {
+        let Some(usage) = &self.inner.usage else {
+            return Ok(None);
+        };
+        usage
+            .reserve(&ReserveRequest {
                 kind: "task".into(),
                 root_id: root,
                 model_backed: Some(strategy != Strategy::Deterministic),
-                request_key: Some(key.clone()),
+                request_key: Some(key.to_string()),
                 timeout_ms: (!request.untimed).then_some(request.timeout_ms as f64),
                 estimated_cost_usd: request.estimate_usd,
                 ..ReserveRequest::default()
-            })?),
-            None => None,
+            })
+            .map(Some)
+    }
+
+    fn spawn_deadline_watcher(
+        &self,
+        id: &str,
+        request: &TaskRequest,
+        done: Signal,
+        now: f64,
+        deadline_at: Option<f64>,
+        admitted_at: Option<f64>,
+    ) {
+        let delay = match deadline_at {
+            None => (!request.untimed).then_some(request.timeout_ms as f64),
+            Some(deadline) => Some(if request.untimed {
+                (deadline - now).max(1.0)
+            } else {
+                (request.timeout_ms as f64).min(deadline - now).max(1.0)
+            }),
         };
-        let settle = |status: &str| {
-            if let (Some(usage), Some(reservation)) = (&self.inner.usage, &reservation) {
-                let _ = usage.settle(reservation, Some(status), None);
+        let Some(delay) = delay else {
+            return;
+        };
+        let wall = deadline_at.is_some_and(|deadline| {
+            request.untimed || deadline < admitted_at.unwrap_or(now) + request.timeout_ms as f64
+        });
+        let host = self.clone();
+        let (task_id, timeout) = (id.to_string(), request.timeout_ms);
+        std::thread::spawn(move || {
+            if !done.wait(Duration::from_secs_f64(delay / 1000.0)) {
+                let reason = if wall {
+                    "Ultron root wall deadline exceeded".to_string()
+                } else {
+                    format!("Ultron task exceeded {timeout}ms timeout")
+                };
+                let _ = host.cancel(&task_id, &reason);
             }
-        };
-        let admitted = self
-            .state()
-            .journal
-            .admit(&request.definition, &fingerprint, &key, parent);
-        let (record, created) = match admitted {
-            Ok(admitted) => admitted,
-            Err(error) => {
-                settle("unknown");
-                return Err(error);
-            }
-        };
-        let id = record["id"].as_str().unwrap_or_default().to_string();
-        if !created {
-            settle("succeeded");
-            Self::adopt(&mut self.state(), record);
-            return Ok((id.clone(), self.record(&id)));
+        });
+    }
+
+    fn settle_reservation(&self, reservation: Option<&Reservation>, status: &str) {
+        if let (Some(usage), Some(reservation)) = (&self.inner.usage, reservation) {
+            let _ = usage.settle(reservation, Some(status), None);
         }
+    }
+
+    fn start_admitted_task(
+        &self,
+        id: String,
+        request: TaskRequest,
+        record: Value,
+        reservation: Option<Reservation>,
+        parent: Option<&str>,
+        notify: Option<&'static str>,
+    ) -> (String, Value) {
         let now = self.now();
         let deadline_at = reservation.as_ref().and_then(Reservation::deadline_at);
         let admitted_at = reservation.as_ref().map(Reservation::admitted_at);
@@ -695,31 +706,7 @@ impl Agents {
             state.tasks.push(task);
             state.closed
         };
-        let delay = match deadline_at {
-            None => (!request.untimed).then_some(request.timeout_ms as f64),
-            Some(deadline) => Some(if request.untimed {
-                (deadline - now).max(1.0)
-            } else {
-                (request.timeout_ms as f64).min(deadline - now).max(1.0)
-            }),
-        };
-        let wall = deadline_at.is_some_and(|deadline| {
-            request.untimed || deadline < admitted_at.unwrap_or(now) + request.timeout_ms as f64
-        });
-        if let Some(delay) = delay {
-            let host = self.clone();
-            let (task_id, timeout) = (id.clone(), request.timeout_ms);
-            std::thread::spawn(move || {
-                if !done.wait(Duration::from_secs_f64(delay / 1000.0)) {
-                    let reason = if wall {
-                        "Ultron root wall deadline exceeded".to_string()
-                    } else {
-                        format!("Ultron task exceeded {timeout}ms timeout")
-                    };
-                    let _ = host.cancel(&task_id, &reason);
-                }
-            });
-        }
+        self.spawn_deadline_watcher(&id, &request, done, now, deadline_at, admitted_at);
         let admitted = self.record(&id);
         if closed {
             let _ = self.cancel(&id, "Ultron task host closed");
@@ -728,7 +715,51 @@ impl Agents {
             let task_id = id.clone();
             std::thread::spawn(move || host.run(&task_id, request));
         }
-        Ok((id, admitted))
+        (id, admitted)
+    }
+
+    /// [`Self::spawn_task`], with the task's record as admitted: read before its run starts on another thread, so
+    /// a spawn reports `admitted` as TS does (its run starts after the call returns), never a state the run reached.
+    fn spawn_task_with_record(
+        &self,
+        request: TaskRequest,
+        cell: Option<&Signal>,
+        parent: Option<&str>,
+        notify: Option<&'static str>,
+    ) -> Result<(String, Value), String> {
+        let _admitting = sync::lock(&self.inner.admissions);
+        if self.state().closed {
+            return Err("Ultron task host is closed".into());
+        }
+        if let Some(reason) = cell.and_then(Signal::reason) {
+            return Err(reason);
+        }
+        let fingerprint = request_fingerprint(&request);
+        let key = request.key.clone().unwrap_or_else(random::uuid_v4);
+        if request.key.is_some()
+            && let Some(existing) = self.find_idempotent_task(&key, &fingerprint)?
+        {
+            return Ok(existing);
+        }
+        let reservation = self.reserve_task_slot(&request, &key, parent)?;
+        let (record, created) = match self
+            .state()
+            .journal
+            .admit(&request.definition, &fingerprint, &key, parent)
+        {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                self.settle_reservation(reservation.as_ref(), "unknown");
+                return Err(error);
+            }
+        };
+        let id = record["id"].as_str().unwrap_or_default().to_string();
+        if !created {
+            self.settle_reservation(reservation.as_ref(), "succeeded");
+            Self::adopt(&mut self.state(), record);
+            return Ok((id.clone(), self.record(&id)));
+        }
+        Ok(self.start_admitted_task(id, request, record, reservation, parent, notify))
     }
 
     /// A journal record this owner did not start (an earlier owner's, or a retried key's) joins the task table.
@@ -876,274 +907,15 @@ impl Agents {
             let _ = usage.settle(&reservation, Some(status), None);
         }
     }
+}
 
-    /// `finish`: the first terminal result wins; nothing is published until the journal commits it.
-    fn finish(&self, id: &str, result: Value) -> Result<Value, String> {
-        {
-            let mut state = self.state();
-            loop {
-                let task = state.task(id).ok_or("Unknown Ultron task")?;
-                if let Some(outcome) = &task.outcome {
-                    return outcome.clone();
-                }
-                if !task.finishing {
-                    break;
-                }
-                state = self.inner.changed.wait(state).unwrap_or_else(PoisonError::into_inner);
-            }
-            if let Some(task) = state.task_mut(id) {
-                task.finishing = true;
-            }
-        }
-        self.commit(id, result)
+fn request_fingerprint(request: &TaskRequest) -> String {
+    let mut fingerprinted = json!({
+        "definition": request.definition, "input": request.input, "model": request.model,
+        "timeout_ms": request.timeout_ms,
+    });
+    if let Some(brief) = &request.brief {
+        fingerprinted["brief"] = brief.to_value();
     }
-
-    /// The terminal transition of a task this caller is finishing.
-    fn commit(&self, id: &str, result: Value) -> Result<Value, String> {
-        let terminal = match result["status"].as_str() {
-            Some("succeeded") => "completed",
-            Some(other) => other,
-            None => "failed",
-        }
-        .to_string();
-        let meant = match result["status"].as_str() {
-            Some("succeeded") => "succeeded",
-            Some("cancelled") => "cancelled",
-            Some("interrupted") => "unknown",
-            _ => "failed",
-        };
-        let mut state = self.state();
-        let committed = state.journal.transition(id, &terminal, Some(result));
-        let now = self.now();
-        let closed = state.closed;
-        let owner_lane = state
-            .parent_of(id)
-            .and_then(|p| state.task(&p).and_then(|t| t.lane.clone()))
-            .unwrap_or_else(|| "main".into());
-        let outcome = committed.map(|record| {
-            if let Some(task) = state.task_mut(id) {
-                task.record = record.clone();
-            }
-            record["result"].clone()
-        });
-        let Some(task) = state.task_mut(id) else {
-            return Err("Unknown Ultron task".into());
-        };
-        task.ended_at.get_or_insert(now);
-        task.outcome = Some(outcome.clone());
-        task.done.abort("ended");
-        let lane = task.lane.clone();
-        if let Err(error) = &outcome {
-            task.signal.abort(error.clone());
-            self.settle_task(&mut state, id, meant);
-            drop(state);
-            if let Some(lane) = lane {
-                self.abort_lane(&lane);
-            }
-            self.inner.changed.notify_all();
-            return outcome;
-        }
-        let status = match outcome.as_ref().ok().and_then(|r| r["status"].as_str()) {
-            Some("succeeded") => "succeeded",
-            Some("cancelled") => "cancelled",
-            Some("interrupted") => "unknown",
-            _ => "failed",
-        };
-        self.settle_task(&mut state, id, status);
-        let task = state.task(id).ok_or("Unknown Ultron task")?;
-        let record = public_record(&task.record);
-        let event = (task.notify.is_some() && !closed).then(|| TaskEnd {
-            task: record.clone(),
-            kind: task.notify.unwrap_or("task_done"),
-            owner_lane,
-            root_id: task.reservation.as_ref().map(|r| r.root_id().to_string()),
-            awaited: task.waiters > 0,
-            fetch: fetch_hint(&task.definition, id),
-            cost: task.cost,
-        });
-        let (cost, model) = (task.cost, task.model.clone());
-        drop(state);
-        self.inner.changed.notify_all();
-        if let Some(hook) = &self.inner.on_task_end {
-            hook(&record, cost, model.as_deref());
-        }
-        if let Some(event) = event {
-            let _ = sync::lock(&self.inner.events).send(event);
-        }
-        outcome
-    }
-
-    /// `cancel`: the task (when it has not ended) and every unfinished descendant; siblings keep running.
-    fn cancel(&self, id: &str, reason: &str) -> Result<Value, String> {
-        let begun = {
-            let mut state = self.state();
-            let task = state.task_mut(id).ok_or("Unknown Ultron task")?;
-            if task.outcome.is_some() || task.finishing {
-                None
-            } else {
-                task.finishing = true;
-                task.signal.abort(reason);
-                Some(task.lane.clone())
-            }
-        };
-        let own = match begun {
-            Some(lane) => {
-                if let Some(lane) = lane {
-                    self.abort_lane(&lane);
-                }
-                self.commit(id, cancelled(reason))
-            }
-            None => self.wait_outcome(id, None),
-        };
-        let children: Vec<String> = self
-            .state()
-            .tasks
-            .iter()
-            .filter(|t| t.parent_id.as_deref() == Some(id) && t.outcome.is_none())
-            .map(|t| t.id.clone())
-            .collect();
-        let cascade = format!("Ancestor {id} cancelled: {reason}");
-        let threads: Vec<_> = children
-            .into_iter()
-            .map(|child| {
-                let (host, cascade) = (self.clone(), cascade.clone());
-                std::thread::spawn(move || {
-                    let _ = host.cancel(&child, &cascade);
-                })
-            })
-            .collect();
-        for thread in threads {
-            let _ = thread.join();
-        }
-        own
-    }
-
-    /// Waits for a task's terminal result. `cell`: the requesting cell; when it is cancelled the wait ends with an
-    /// error (`cancel_task`: and the task is cancelled first, as an invoke's own task is).
-    fn wait_outcome(&self, id: &str, cell: Option<(&Signal, bool)>) -> Result<Value, String> {
-        let listener = cell.and_then(|(signal, _)| {
-            let inner = self.inner.clone();
-            let id = signal.on_abort(move |_| {
-                std::thread::spawn(move || {
-                    let _state = sync::lock(&inner.state);
-                    inner.changed.notify_all();
-                });
-            })?;
-            Some((signal, id))
-        });
-        let mut state = self.state();
-        if let Some(task) = state.task_mut(id) {
-            task.waiters += 1;
-        }
-        let mut cancelled_task = false;
-        let outcome = loop {
-            let task = state.task(id).ok_or("Unknown Ultron task")?;
-            if let Some(outcome) = &task.outcome {
-                break outcome.clone();
-            }
-            if !task.live && !task.finishing {
-                break task
-                    .record
-                    .get("result")
-                    .cloned()
-                    .ok_or_else(|| "Unknown Ultron task".into());
-            }
-            if let Some((signal, cancel_task)) = cell
-                && let Some(reason) = signal.reason()
-            {
-                if !cancel_task {
-                    break Err(format!("Waiting for {id} was cancelled: {reason}"));
-                }
-                if !cancelled_task {
-                    cancelled_task = true;
-                    drop(state);
-                    let _ = self.cancel(id, "Parent task aborted");
-                    state = self.state();
-                    continue;
-                }
-            }
-            state = self.inner.changed.wait(state).unwrap_or_else(PoisonError::into_inner);
-        };
-        if let Some(task) = state.task_mut(id) {
-            task.waiters -= 1;
-        }
-        drop(state);
-        if let Some((signal, listener)) = listener {
-            signal.forget(listener);
-        }
-        outcome
-    }
-
-    /// Whether `id` is `caller`'s own task or a descendant (the root lane sees everything).
-    fn visible(records: &[Value], id: &str, caller: Option<&str>) -> bool {
-        let Some(caller) = caller else {
-            return true;
-        };
-        let mut current = records.iter().find(|r| r["id"] == id);
-        while let Some(record) = current {
-            if record["id"] == caller {
-                return true;
-            }
-            current = record["parentId"]
-                .as_str()
-                .and_then(|parent| records.iter().find(|r| r["id"] == parent));
-        }
-        false
-    }
-
-    /// Closes the host: later requests are refused and every unfinished task is cancelled.
-    pub fn close(&self) {
-        let _admitting = sync::lock(&self.inner.admissions);
-        let unfinished: Vec<String> = {
-            let mut state = self.state();
-            state.closed = true;
-            state
-                .tasks
-                .iter()
-                .filter(|t| t.outcome.is_none())
-                .map(|t| t.id.clone())
-                .collect()
-        };
-        for id in unfinished {
-            let _ = self.cancel(&id, "Ultron task host closed");
-        }
-    }
-
-    /// Run `rlm-child@1` workflow nodes with `worktree=True` / `"auto"` as subagents of `children` (set once).
-    pub fn set_worktree_children(&self, children: crate::host::Delegation) {
-        let _ = self.inner.worktree_children.set(children);
-    }
-
-    /// Admit an `rlm-frame@1` task for `lane` (as `agents.spawn` with this payload, under the lane's task) without
-    /// a completion notice: inference waits for its result itself. Returns the task id.
-    pub fn spawn_frame(&self, lane: &str, payload: Value) -> Result<String, String> {
-        let Value::Object(payload) = payload else {
-            return Err("Host payload must be a JSON object".into());
-        };
-        self.load_tasks()?;
-        let parent = self.caller_task(lane);
-        let request = self.request(&payload, parent.as_deref())?;
-        self.spawn_task(request, None, parent.as_deref(), None)
-    }
-
-    /// Cancel task `id` and its subtree with `reason` (inference cancels its frame tasks with the calling cell).
-    pub fn cancel_task(&self, id: &str, reason: &str) -> Result<Value, String> {
-        self.cancel(id, reason)
-    }
-
-    fn is_live(&self, id: &str) -> bool {
-        self.state().task(id).is_some_and(|t| t.live)
-    }
-
-    fn record(&self, id: &str) -> Value {
-        self.state().task(id).map_or(Value::Null, |t| t.record.clone())
-    }
-
-    /// The result of a task this request admitted (or found by its key): awaited when live, else as stored.
-    fn result_of(&self, id: &str, cell: Option<(&Signal, bool)>) -> Result<Value, String> {
-        if self.is_live(id) {
-            return self.wait_outcome(id, cell);
-        }
-        Ok(self.record(id).get("result").cloned().unwrap_or(Value::Null))
-    }
+    task_fingerprint(&fingerprinted)
 }

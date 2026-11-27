@@ -20,29 +20,38 @@ enum Status {
     Incomplete,
 }
 
+fn is_complete_bracket(data: &str, after: &str) -> Status {
+    if after.starts_with("[M") {
+        return if data.chars().count() >= 6 {
+            Status::Complete
+        } else {
+            Status::Incomplete
+        };
+    }
+    is_complete_csi(data)
+}
+
+fn is_complete_string_seq(lead: u8, data: &str) -> Status {
+    let complete = data.ends_with("\x1b\\") || (lead == b']' && data.ends_with('\x07'));
+    if complete { Status::Complete } else { Status::Incomplete }
+}
+
 fn is_complete(data: &str) -> Status {
-    use Status::*;
     let after = &data[1..];
-    if after.is_empty() {
-        return Incomplete;
+    let Some(&lead) = after.as_bytes().first() else {
+        return Status::Incomplete;
+    };
+    match lead {
+        b'[' => is_complete_bracket(data, after),
+        b']' | b'P' | b'_' => is_complete_string_seq(lead, data),
+        b'O' if after.chars().count() >= 2 => Status::Complete,
+        b'O' => Status::Incomplete,
+        _ => Status::Complete,
     }
-    let ends_st = data.ends_with("\x1b\\");
-    match after.as_bytes()[0] {
-        b'[' if after.starts_with("[M") => {
-            if data.chars().count() >= 6 {
-                Complete
-            } else {
-                Incomplete
-            }
-        }
-        b'[' => is_complete_csi(data),
-        b']' if ends_st || data.ends_with('\x07') => Complete,
-        b'P' | b'_' if ends_st => Complete,
-        b']' | b'P' | b'_' => Incomplete,
-        b'O' if after.chars().count() >= 2 => Complete,
-        b'O' => Incomplete,
-        _ => Complete,
-    }
+}
+
+fn is_ascii_digits(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
 }
 
 fn is_complete_csi(data: &str) -> Status {
@@ -55,28 +64,24 @@ fn is_complete_csi(data: &str) -> Status {
     }
     if let Some(mouse) = payload.strip_prefix('<') {
         let parts: Vec<&str> = mouse[..mouse.len() - 1].split(';').collect();
-        let ok = (last == 'M' || last == 'm')
-            && parts.len() == 3
-            && parts
-                .iter()
-                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+        let ok = (last == 'M' || last == 'm') && parts.len() == 3 && parts.iter().copied().all(is_ascii_digits);
         return if ok { Status::Complete } else { Status::Incomplete };
     }
     Status::Complete
+}
+
+fn valid_kitty_modifiers(shifted: Option<&str>, base: Option<&str>, has_extra: bool) -> bool {
+    !has_extra && shifted.is_none_or(|s| s.is_empty() || is_ascii_digits(s)) && base.is_none_or(is_ascii_digits)
 }
 
 /// `^\x1b\[(\d+)(?::\d*)?(?::\d+)?u$` with codepoint >= 32.
 fn unmodified_kitty_printable(seq: &str) -> Option<u32> {
     let body = seq.strip_prefix("\x1b[")?.strip_suffix('u')?;
     let mut parts = body.split(':');
-    let cp = parts.next()?;
+    let cp = parts.next().filter(|s| is_ascii_digits(s))?;
     let shifted = parts.next();
     let base = parts.next();
-    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
-    if parts.next().is_some() || !digits(cp) || shifted.is_some_and(|s| !s.is_empty() && !digits(s)) {
-        return None;
-    }
-    if base.is_some_and(|b| !digits(b)) {
+    if !valid_kitty_modifiers(shifted, base, parts.next().is_some()) {
         return None;
     }
     let cp: u32 = cp.parse().ok()?;

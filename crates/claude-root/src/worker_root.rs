@@ -33,14 +33,7 @@ fn claude_alias(model: &str) -> bool {
         .any(|prefix| lower.starts_with(prefix))
 }
 
-/// `prepareClaudeRoot`: the model the root starts on, as `claude-code/<id>`, from `--model` (`claude-code/<id>`,
-/// or a bare Claude model or alias), ULTRON_CLAUDE_MODEL, or claude-opus-5-5. Fails for a model Claude Code does
-/// not serve.
-pub fn prepare_claude_root(
-    provider: Option<&str>,
-    model: Option<&str>,
-    var: &dyn Fn(&str) -> Option<String>,
-) -> Result<ClaudeRoot, String> {
+fn claude_root_env(var: &dyn Fn(&str) -> Option<String>) -> Vec<(String, String)> {
     let mut env = vec![(session_core::core::ROOT_ENV.to_string(), "claude".to_string())];
     if var(SELF_COMMAND_ENV).is_none_or(|v| v.trim().is_empty())
         && let Ok(command) = self_command(var)
@@ -51,13 +44,14 @@ pub fn prepare_claude_root(
             serde_json::to_string(&parts).expect("strings serialize"),
         ));
     }
-    let provider = provider.map(str::trim).filter(|p| !p.is_empty());
-    let model = model.map(str::trim).filter(|m| !m.is_empty());
-    let done = |provider: Option<&str>, model: String| ClaudeRoot {
-        provider: provider.map(str::to_string),
-        model,
-        env: env.clone(),
-    };
+    env
+}
+
+fn resolve_claude_model(
+    provider: Option<&str>,
+    model: Option<&str>,
+    var: &dyn Fn(&str) -> Option<String>,
+) -> Result<(Option<String>, String), String> {
     let Some(model) = model else {
         if let Some(provider) = provider
             && provider != ai::claude_code::PROVIDER
@@ -68,24 +62,39 @@ pub fn prepare_claude_root(
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| CLAUDE_CODE_DEFAULT_MODEL.into());
-        return Ok(done(None, crate::claude_code_ref(&id)));
+        return Ok((None, crate::claude_code_ref(&id)));
     };
     if let Some(provider) = provider {
         if provider != ai::claude_code::PROVIDER {
             return Err(model_error(&format!("{provider}/{model}")));
         }
-        return Ok(done(Some(provider), model.to_string()));
+        return Ok((Some(provider.to_string()), model.to_string()));
     }
     if let Some(slash) = model.find('/').filter(|s| *s > 0) {
         if &model[..slash] != ai::claude_code::PROVIDER {
             return Err(model_error(model));
         }
-        return Ok(done(None, model.to_string()));
+        return Ok((None, model.to_string()));
     }
     if claude_alias(model) {
-        return Ok(done(None, crate::claude_code_ref(model)));
+        return Ok((None, crate::claude_code_ref(model)));
     }
     Err(model_error(model))
+}
+
+/// `prepareClaudeRoot`: the model the root starts on, as `claude-code/<id>`, from `--model` (`claude-code/<id>`,
+/// or a bare Claude model or alias), ULTRON_CLAUDE_MODEL, or claude-opus-5-5. Fails for a model Claude Code does
+/// not serve.
+pub fn prepare_claude_root(
+    provider: Option<&str>,
+    model: Option<&str>,
+    var: &dyn Fn(&str) -> Option<String>,
+) -> Result<ClaudeRoot, String> {
+    let env = claude_root_env(var);
+    let provider = provider.map(str::trim).filter(|p| !p.is_empty());
+    let model = model.map(str::trim).filter(|m| !m.is_empty());
+    let (provider, model) = resolve_claude_model(provider, model, var)?;
+    Ok(ClaudeRoot { provider, model, env })
 }
 
 pub const CLAUDE_SUBSCRIPTION_PROVIDER_ID: &str = ai::claude_subscription::PROVIDER;

@@ -37,12 +37,7 @@ pub fn is_orphan_snapshot_temp(name: &str) -> bool {
     name.starts_with('.') && (name.ends_with(".unsigned") || name.ends_with(".tmp"))
 }
 
-/// Removes orphaned `.unsigned` / `.tmp` snapshot files under `root` (and its immediate subdirectories) older than
-/// `min_age`. Returns `(removed_files, freed_bytes)`.
-pub fn sweep_orphan_snapshots(root: &Path, min_age: std::time::Duration) -> (usize, u64) {
-    let cutoff = std::time::SystemTime::now().checked_sub(min_age);
-    let mut removed = 0usize;
-    let mut freed = 0u64;
+fn collect_sweep_dirs(root: &Path) -> Vec<std::path::PathBuf> {
     let mut dirs = vec![root.to_path_buf()];
     if let Ok(entries) = std::fs::read_dir(root) {
         for entry in entries.flatten() {
@@ -51,32 +46,42 @@ pub fn sweep_orphan_snapshots(root: &Path, min_age: std::time::Duration) -> (usi
             }
         }
     }
-    for dir in dirs {
+    dirs
+}
+
+fn try_remove_orphan_entry(entry: &std::fs::DirEntry, cutoff: Option<std::time::SystemTime>) -> Option<u64> {
+    let name = entry.file_name();
+    let name = name.to_str()?;
+    if !is_orphan_snapshot_temp(name) {
+        return None;
+    }
+    let meta = entry.metadata().ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    if let (Some(cutoff), Ok(modified)) = (cutoff, meta.modified())
+        && modified > cutoff
+    {
+        return None;
+    }
+    std::fs::remove_file(entry.path()).ok()?;
+    Some(meta.len())
+}
+
+/// Removes orphaned `.unsigned` / `.tmp` snapshot files under `root` (and its immediate subdirectories) older than
+/// `min_age`. Returns `(removed_files, freed_bytes)`.
+pub fn sweep_orphan_snapshots(root: &Path, min_age: std::time::Duration) -> (usize, u64) {
+    let cutoff = std::time::SystemTime::now().checked_sub(min_age);
+    let mut removed = 0usize;
+    let mut freed = 0u64;
+    for dir in collect_sweep_dirs(root) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             continue;
         };
         for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else {
-                continue;
-            };
-            if !is_orphan_snapshot_temp(name) {
-                continue;
-            }
-            let Ok(meta) = entry.metadata() else {
-                continue;
-            };
-            if !meta.is_file() {
-                continue;
-            }
-            if let (Some(cutoff), Ok(modified)) = (cutoff, meta.modified())
-                && modified > cutoff
-            {
-                continue;
-            }
-            if std::fs::remove_file(entry.path()).is_ok() {
+            if let Some(bytes) = try_remove_orphan_entry(&entry, cutoff) {
                 removed += 1;
-                freed = freed.saturating_add(meta.len());
+                freed = freed.saturating_add(bytes);
             }
         }
     }

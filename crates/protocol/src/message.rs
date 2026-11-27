@@ -264,84 +264,104 @@ fn integer(value: &Value) -> Option<i64> {
     }
 }
 
+fn parse_client_hello(value: &Value) -> Option<ClientMessage> {
+    strict(value, &["type", "version"], &[])?;
+    let version = integer(field(value, "version")?).filter(|v| *v >= 0)?;
+    Some(ClientMessage::Hello { version })
+}
+
+fn parse_client_request(value: &Value) -> Option<ClientMessage> {
+    strict(value, &["type", "id", "target", "call"], &[])?;
+    Some(ClientMessage::Request {
+        id: id(value, "id")?,
+        target: target(field(value, "target")?)?,
+        call: opaque(value, "call")?,
+    })
+}
+
+fn parse_client_cancel(value: &Value) -> Option<ClientMessage> {
+    strict(value, &["type", "id", "target"], &[])?;
+    Some(ClientMessage::Cancel {
+        id: id(value, "id")?,
+        target: target(field(value, "target")?)?,
+    })
+}
+
 fn client_message(value: &Value) -> Option<ClientMessage> {
     match field(value, "type")?.as_str()? {
-        "hello" => {
-            strict(value, &["type", "version"], &[])?;
-            let version = integer(field(value, "version")?).filter(|v| *v >= 0)?;
-            Some(ClientMessage::Hello { version })
-        }
-        "request" => {
-            strict(value, &["type", "id", "target", "call"], &[])?;
-            Some(ClientMessage::Request {
-                id: id(value, "id")?,
-                target: target(field(value, "target")?)?,
-                call: opaque(value, "call")?,
-            })
-        }
-        "cancel" => {
-            strict(value, &["type", "id", "target"], &[])?;
-            Some(ClientMessage::Cancel {
-                id: id(value, "id")?,
-                target: target(field(value, "target")?)?,
-            })
-        }
+        "hello" => parse_client_hello(value),
+        "request" => parse_client_request(value),
+        "cancel" => parse_client_cancel(value),
         _ => None,
     }
 }
 
+fn parse_server_hello(value: &Value) -> Option<ServerMessage> {
+    strict(value, &["type", "version", "serverId"], &[])?;
+    let version = integer(field(value, "version")?).filter(|v| *v == PROTOCOL_VERSION)?;
+    Some(ServerMessage::Hello {
+        version,
+        server_id: server_id(value)?,
+    })
+}
+
+fn parse_server_hello_error(value: &Value) -> Option<ServerMessage> {
+    strict(value, &["type", "error"], &[])?;
+    Some(ServerMessage::HelloError {
+        error: protocol_error(field(value, "error")?)?,
+    })
+}
+
+fn parse_server_ok_response(value: &Value, id: String) -> Option<ServerMessage> {
+    strict(value, &["type", "id", "ok"], &["result"])?;
+    let result = match field(value, "result") {
+        Some(_) => Some(opaque(value, "result")?),
+        None => None,
+    };
+    Some(ServerMessage::Response { id, result: Ok(result) })
+}
+
+fn parse_server_err_response(value: &Value, id: String) -> Option<ServerMessage> {
+    strict(value, &["type", "id", "ok", "error"], &[])?;
+    Some(ServerMessage::Response {
+        id,
+        result: Err(protocol_error(field(value, "error")?)?),
+    })
+}
+
+fn parse_server_response(value: &Value) -> Option<ServerMessage> {
+    let id = id(value, "id")?;
+    match field(value, "ok")? {
+        Value::Bool(true) => parse_server_ok_response(value, id),
+        Value::Bool(false) => parse_server_err_response(value, id),
+        _ => None,
+    }
+}
+
+fn parse_service_update(value: &Value) -> Option<ServerMessage> {
+    strict(value, &["type", "subscriptionId", "update"], &[])?;
+    Some(ServerMessage::ServiceUpdate {
+        subscription_id: id(value, "subscriptionId")?,
+        update: opaque(value, "update")?,
+    })
+}
+
+fn parse_attachment(value: &Value) -> Option<ServerMessage> {
+    strict(value, &["type", "attachment"], &[])?;
+    let attachment = match field(value, "attachment")? {
+        Value::Null => None,
+        other => Some(session_target(other)?),
+    };
+    Some(ServerMessage::Attachment { attachment })
+}
+
 fn server_message(value: &Value) -> Option<ServerMessage> {
     match field(value, "type")?.as_str()? {
-        "hello" => {
-            strict(value, &["type", "version", "serverId"], &[])?;
-            let version = integer(field(value, "version")?).filter(|v| *v == PROTOCOL_VERSION)?;
-            Some(ServerMessage::Hello {
-                version,
-                server_id: server_id(value)?,
-            })
-        }
-        "hello_error" => {
-            strict(value, &["type", "error"], &[])?;
-            Some(ServerMessage::HelloError {
-                error: protocol_error(field(value, "error")?)?,
-            })
-        }
-        "response" => {
-            let id = id(value, "id")?;
-            match field(value, "ok")? {
-                Value::Bool(true) => {
-                    strict(value, &["type", "id", "ok"], &["result"])?;
-                    let result = match field(value, "result") {
-                        Some(_) => Some(opaque(value, "result")?),
-                        None => None,
-                    };
-                    Some(ServerMessage::Response { id, result: Ok(result) })
-                }
-                Value::Bool(false) => {
-                    strict(value, &["type", "id", "ok", "error"], &[])?;
-                    Some(ServerMessage::Response {
-                        id,
-                        result: Err(protocol_error(field(value, "error")?)?),
-                    })
-                }
-                _ => None,
-            }
-        }
-        "service_update" => {
-            strict(value, &["type", "subscriptionId", "update"], &[])?;
-            Some(ServerMessage::ServiceUpdate {
-                subscription_id: id(value, "subscriptionId")?,
-                update: opaque(value, "update")?,
-            })
-        }
-        "attachment" => {
-            strict(value, &["type", "attachment"], &[])?;
-            let attachment = match field(value, "attachment")? {
-                Value::Null => None,
-                other => Some(session_target(other)?),
-            };
-            Some(ServerMessage::Attachment { attachment })
-        }
+        "hello" => parse_server_hello(value),
+        "hello_error" => parse_server_hello_error(value),
+        "response" => parse_server_response(value),
+        "service_update" => parse_service_update(value),
+        "attachment" => parse_attachment(value),
         _ => None,
     }
 }

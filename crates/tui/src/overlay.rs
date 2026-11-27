@@ -118,6 +118,80 @@ fn run_end(s: &str, mut i: usize) -> usize {
     i
 }
 
+#[derive(Default)]
+struct SegmentState {
+    before: String,
+    before_w: usize,
+    after: String,
+    after_w: usize,
+    pending: String,
+    after_started: bool,
+    col: usize,
+    tracker: AnsiCodeTracker,
+}
+
+fn segments_done(col: usize, before_end: usize, after_end: usize, after_len: usize) -> bool {
+    if after_len == 0 {
+        col >= before_end
+    } else {
+        col >= after_end
+    }
+}
+
+fn push_ansi_code(state: &mut SegmentState, code: &str, before_end: usize, after_start: usize, after_end: usize) {
+    state.tracker.process(code);
+    if state.col < before_end {
+        state.pending.push_str(code);
+    } else if state.col >= after_start && state.col < after_end && state.after_started {
+        state.after.push_str(code);
+    }
+}
+
+fn should_append_after(col: usize, w: usize, after_start: usize, after_end: usize, strict_after: bool) -> bool {
+    col >= after_start && col < after_end && (!strict_after || col + w <= after_end)
+}
+
+fn push_grapheme(
+    state: &mut SegmentState,
+    g: &str,
+    before_end: usize,
+    after_start: usize,
+    after_end: usize,
+    strict_after: bool,
+) {
+    let w = grapheme_width(g);
+    if state.col < before_end && state.col + w <= before_end {
+        state.before.push_str(&std::mem::take(&mut state.pending));
+        state.before.push_str(g);
+        state.before_w += w;
+    } else if should_append_after(state.col, w, after_start, after_end, strict_after) {
+        if !state.after_started {
+            state.after.push_str(&state.tracker.active_codes());
+            state.after_started = true;
+        }
+        state.after.push_str(g);
+        state.after_w += w;
+    }
+    state.col += w;
+}
+
+fn push_grapheme_run(
+    state: &mut SegmentState,
+    run: &str,
+    before_end: usize,
+    after_start: usize,
+    after_end: usize,
+    after_len: usize,
+    strict_after: bool,
+) {
+    for g in run.graphemes(true) {
+        push_grapheme(state, g, before_end, after_start, after_end, strict_after);
+        if segments_done(state.col, before_end, after_end, after_len) {
+            break;
+        }
+    }
+}
+
 /// Content before column `before_end` and from `after_start` for `after_len` columns; the after part inherits the
 /// styling active at its start.
 pub fn extract_segments(
@@ -127,57 +201,31 @@ pub fn extract_segments(
     after_len: usize,
     strict_after: bool,
 ) -> (String, usize, String, usize) {
-    let (mut before, mut before_w, mut after, mut after_w) = (String::new(), 0, String::new(), 0);
-    let (mut col, mut i) = (0, 0);
-    let mut pending = String::new();
-    let mut after_started = false;
+    let mut state = SegmentState::default();
     let after_end = after_start + after_len;
-    let mut tracker = AnsiCodeTracker::default();
-    let done = |col: usize| {
-        if after_len == 0 {
-            col >= before_end
-        } else {
-            col >= after_end
-        }
-    };
+    let mut i = 0;
     while i < line.len() {
         if let Some(len) = ansi_len(line, i) {
-            let code = &line[i..i + len];
-            tracker.process(code);
-            if col < before_end {
-                pending.push_str(code);
-            } else if col >= after_start && col < after_end && after_started {
-                after.push_str(code);
-            }
+            push_ansi_code(&mut state, &line[i..i + len], before_end, after_start, after_end);
             i += len;
             continue;
         }
         let end = run_end(line, i);
-        for g in line[i..end].graphemes(true) {
-            let w = grapheme_width(g);
-            if col < before_end && col + w <= before_end {
-                before.push_str(&std::mem::take(&mut pending));
-                before.push_str(g);
-                before_w += w;
-            } else if col >= after_start && col < after_end && (!strict_after || col + w <= after_end) {
-                if !after_started {
-                    after.push_str(&tracker.active_codes());
-                    after_started = true;
-                }
-                after.push_str(g);
-                after_w += w;
-            }
-            col += w;
-            if done(col) {
-                break;
-            }
-        }
+        push_grapheme_run(
+            &mut state,
+            &line[i..end],
+            before_end,
+            after_start,
+            after_end,
+            after_len,
+            strict_after,
+        );
         i = end;
-        if done(col) {
+        if segments_done(state.col, before_end, after_end, after_len) {
             break;
         }
     }
-    (before, before_w, after, after_w)
+    (state.before, state.before_w, state.after, state.after_w)
 }
 
 /// `overlay_line` drawn over `base_line` at `start_col`, `overlay_width` columns wide, in a `total_width` line.

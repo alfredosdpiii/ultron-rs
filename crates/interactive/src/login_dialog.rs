@@ -190,45 +190,61 @@ impl LoginDialog {
         }
     }
 
-    pub fn handle_input(&mut self, data: &str) -> DialogAction {
-        if let Some(select) = self.select.as_mut() {
-            let keys = &self.keys;
-            if keys.matches(data, "tui.select.up") || data == "k" {
-                select.index = select.index.saturating_sub(1);
-            } else if keys.matches(data, "tui.select.down") || data == "j" {
-                select.index = (select.index + 1).min(select.options.len().saturating_sub(1));
-            } else if keys.matches(data, "tui.select.confirm") || data == "\n" {
-                if let Some((id, _)) = select.options.get(select.index) {
-                    let id = id.clone();
-                    self.select = None;
-                    return DialogAction::Answer(id);
-                }
-            } else if keys.matches(data, "tui.select.cancel") {
+    fn handle_select_input(&mut self, data: &str) -> DialogAction {
+        let Some(select) = self.select.as_mut() else {
+            return DialogAction::None;
+        };
+        if self.keys.matches(data, "tui.select.up") || data == "k" {
+            select.index = select.index.saturating_sub(1);
+            return DialogAction::None;
+        }
+        if self.keys.matches(data, "tui.select.down") || data == "j" {
+            select.index = (select.index + 1).min(select.options.len().saturating_sub(1));
+            return DialogAction::None;
+        }
+        if self.keys.matches(data, "tui.select.confirm") || data == "\n" {
+            if let Some((id, _)) = select.options.get(select.index) {
+                let id = id.clone();
                 self.select = None;
-                return DialogAction::Cancel;
+                return DialogAction::Answer(id);
             }
             return DialogAction::None;
+        }
+        if self.keys.matches(data, "tui.select.cancel") {
+            self.select = None;
+            return DialogAction::Cancel;
+        }
+        DialogAction::None
+    }
+
+    fn submit_text_input(&mut self) -> DialogAction {
+        let value = self.input.value().to_string();
+        if self.require_value && value.trim().is_empty() {
+            return DialogAction::None;
+        }
+        let shown = if self.secret {
+            "•".repeat(value.chars().count().min(12))
+        } else {
+            value.clone()
+        };
+        for item in self.items.iter_mut() {
+            if matches!(item, Item::Input) {
+                *item = Item::Submitted(shown.clone());
+            }
+        }
+        self.waiting = false;
+        DialogAction::Answer(value)
+    }
+
+    pub fn handle_input(&mut self, data: &str) -> DialogAction {
+        if self.select.is_some() {
+            return self.handle_select_input(data);
         }
         if self.keys.matches(data, "tui.select.cancel") {
             return DialogAction::Cancel;
         }
         if self.waiting && self.keys.matches(data, "tui.select.confirm") {
-            let value = self.input.value().to_string();
-            if self.require_value && value.trim().is_empty() {
-                return DialogAction::None;
-            }
-            let shown = if self.secret {
-                "•".repeat(value.chars().count().min(12))
-            } else {
-                value.clone()
-            };
-            for item in self.items.iter_mut() {
-                if matches!(item, Item::Input) {
-                    *item = Item::Submitted(shown.clone());
-                }
-            }
-            self.waiting = false;
-            return DialogAction::Answer(value);
+            return self.submit_text_input();
         }
         self.input.handle_input(data);
         DialogAction::None

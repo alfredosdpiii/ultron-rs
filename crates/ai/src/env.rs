@@ -22,49 +22,59 @@ pub fn provider_env_value(name: &str, env: Option<&ProviderEnv>) -> Option<Strin
         .or_else(|| std::env::var(name).ok().filter(|v| !v.is_empty()))
 }
 
-fn api_key_env_vars(provider: &str) -> Option<&'static [&'static str]> {
-    Some(match provider {
-        "github-copilot" => &["COPILOT_GITHUB_TOKEN"],
-        "anthropic" => &[
+const PROVIDER_ENV_VARS: &[(&str, &[&str])] = &[
+    ("github-copilot", &["COPILOT_GITHUB_TOKEN"]),
+    (
+        "anthropic",
+        &[
             ANTHROPIC_AUTH_TOKEN_ENV,
             ANTHROPIC_OAUTH_TOKEN_ENV,
             ANTHROPIC_API_KEY_ENV,
         ],
-        "ant-ling" => &["ANT_LING_API_KEY"],
-        "qwen-token-plan" | "qwen-token-plan-individual" => &["QWEN_TOKEN_PLAN_API_KEY"],
-        "qwen-token-plan-cn" => &["QWEN_TOKEN_PLAN_CN_API_KEY"],
-        "openai" => &["OPENAI_API_KEY"],
-        "azure-openai-responses" => &["AZURE_OPENAI_API_KEY"],
-        "nvidia" => &["NVIDIA_API_KEY"],
-        "deepseek" => &["DEEPSEEK_API_KEY"],
-        "google" => &["GEMINI_API_KEY"],
-        "google-vertex" => &["GOOGLE_CLOUD_API_KEY"],
-        "groq" => &["GROQ_API_KEY"],
-        "cerebras" => &["CEREBRAS_API_KEY"],
-        "xai" => &["XAI_API_KEY"],
-        "radius" => &["RADIUS_API_KEY"],
-        "openrouter" => &["OPENROUTER_API_KEY"],
-        "vercel-ai-gateway" => &["AI_GATEWAY_API_KEY"],
-        "zai" => &["ZAI_API_KEY"],
-        "zai-coding-cn" => &["ZAI_CODING_CN_API_KEY"],
-        "mistral" => &["MISTRAL_API_KEY"],
-        "minimax" => &["MINIMAX_API_KEY"],
-        "minimax-cn" => &["MINIMAX_CN_API_KEY"],
-        "moonshotai" | "moonshotai-cn" => &["MOONSHOT_API_KEY"],
-        "huggingface" => &["HF_TOKEN"],
-        "fireworks" => &["FIREWORKS_API_KEY"],
-        "together" => &["TOGETHER_API_KEY"],
-        "baseten" => &["BASETEN_API_KEY"],
-        "opencode" | "opencode-go" => &["OPENCODE_API_KEY"],
-        "kimi-coding" => &["KIMI_API_KEY"],
-        "meta" => &["META_API_KEY"],
-        "cloudflare-workers-ai" | "cloudflare-ai-gateway" => &["CLOUDFLARE_API_KEY"],
-        "xiaomi" => &["XIAOMI_API_KEY"],
-        "xiaomi-token-plan-cn" => &["XIAOMI_TOKEN_PLAN_CN_API_KEY"],
-        "xiaomi-token-plan-ams" => &["XIAOMI_TOKEN_PLAN_AMS_API_KEY"],
-        "xiaomi-token-plan-sgp" => &["XIAOMI_TOKEN_PLAN_SGP_API_KEY"],
-        _ => return None,
-    })
+    ),
+    ("ant-ling", &["ANT_LING_API_KEY"]),
+    ("qwen-token-plan", &["QWEN_TOKEN_PLAN_API_KEY"]),
+    ("qwen-token-plan-individual", &["QWEN_TOKEN_PLAN_API_KEY"]),
+    ("qwen-token-plan-cn", &["QWEN_TOKEN_PLAN_CN_API_KEY"]),
+    ("openai", &["OPENAI_API_KEY"]),
+    ("azure-openai-responses", &["AZURE_OPENAI_API_KEY"]),
+    ("nvidia", &["NVIDIA_API_KEY"]),
+    ("deepseek", &["DEEPSEEK_API_KEY"]),
+    ("google", &["GEMINI_API_KEY"]),
+    ("google-vertex", &["GOOGLE_CLOUD_API_KEY"]),
+    ("groq", &["GROQ_API_KEY"]),
+    ("cerebras", &["CEREBRAS_API_KEY"]),
+    ("xai", &["XAI_API_KEY"]),
+    ("radius", &["RADIUS_API_KEY"]),
+    ("openrouter", &["OPENROUTER_API_KEY"]),
+    ("vercel-ai-gateway", &["AI_GATEWAY_API_KEY"]),
+    ("zai", &["ZAI_API_KEY"]),
+    ("zai-coding-cn", &["ZAI_CODING_CN_API_KEY"]),
+    ("mistral", &["MISTRAL_API_KEY"]),
+    ("minimax", &["MINIMAX_API_KEY"]),
+    ("minimax-cn", &["MINIMAX_CN_API_KEY"]),
+    ("moonshotai", &["MOONSHOT_API_KEY"]),
+    ("moonshotai-cn", &["MOONSHOT_API_KEY"]),
+    ("huggingface", &["HF_TOKEN"]),
+    ("fireworks", &["FIREWORKS_API_KEY"]),
+    ("together", &["TOGETHER_API_KEY"]),
+    ("baseten", &["BASETEN_API_KEY"]),
+    ("opencode", &["OPENCODE_API_KEY"]),
+    ("opencode-go", &["OPENCODE_API_KEY"]),
+    ("kimi-coding", &["KIMI_API_KEY"]),
+    ("meta", &["META_API_KEY"]),
+    ("cloudflare-workers-ai", &["CLOUDFLARE_API_KEY"]),
+    ("cloudflare-ai-gateway", &["CLOUDFLARE_API_KEY"]),
+    ("xiaomi", &["XIAOMI_API_KEY"]),
+    ("xiaomi-token-plan-cn", &["XIAOMI_TOKEN_PLAN_CN_API_KEY"]),
+    ("xiaomi-token-plan-ams", &["XIAOMI_TOKEN_PLAN_AMS_API_KEY"]),
+    ("xiaomi-token-plan-sgp", &["XIAOMI_TOKEN_PLAN_SGP_API_KEY"]),
+];
+
+fn api_key_env_vars(provider: &str) -> Option<&'static [&'static str]> {
+    PROVIDER_ENV_VARS
+        .iter()
+        .find_map(|&(name, vars)| (name == provider).then_some(vars))
 }
 
 /// Environment lookups and the file-existence check, injectable so tests never read the real environment or home.
@@ -84,9 +94,15 @@ pub fn find_env_keys_in(provider: &str, source: &EnvSource<'_>) -> Option<Vec<&'
     (!found.is_empty()).then_some(found)
 }
 
-/// The API key for `provider` from known variables; `<authenticated>` for configured Vertex ADC or AWS credentials.
-/// `ANTHROPIC_AUTH_TOKEN` is reported by [`find_env_keys_in`] but never returned (it is sent as a bearer token).
-pub fn env_api_key_in(provider: &str, source: &EnvSource<'_>) -> Option<String> {
+const BEDROCK_AMBIENT_VARS: &[&str] = &[
+    "AWS_PROFILE",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+];
+
+fn builtin_request_key(provider: &str) -> Option<String> {
     if provider == crate::claude_subscription::PROVIDER {
         return Some("<claude-code-login>".into());
     }
@@ -96,40 +112,51 @@ pub fn env_api_key_in(provider: &str, source: &EnvSource<'_>) -> Option<String> 
     if provider == crate::models::ANTIGRAVITY_PROVIDER {
         return Some(crate::models::ANTIGRAVITY_REQUEST_KEY.into());
     }
-    if let Some(keys) = find_env_keys_in(provider, source) {
-        let key = if provider == "anthropic" {
-            keys.iter().find(|k| **k != ANTHROPIC_AUTH_TOKEN_ENV).copied()
-        } else {
-            keys.first().copied()
-        };
-        if let Some(key) = key {
-            return (source.lookup)(key);
-        }
-    }
-    let has = |name: &str| (source.lookup)(name).is_some();
-    if provider == "google-vertex" {
-        let credentials = match (source.lookup)("GOOGLE_APPLICATION_CREDENTIALS") {
-            Some(path) => (source.exists)(std::path::Path::new(&path)),
-            None => source
-                .home
-                .as_ref()
-                .is_some_and(|home| (source.exists)(&home.join(".config/gcloud/application_default_credentials.json"))),
-        };
-        if credentials && (has("GOOGLE_CLOUD_PROJECT") || has("GCLOUD_PROJECT")) && has("GOOGLE_CLOUD_LOCATION") {
-            return Some(AMBIENT_CREDENTIALS.into());
-        }
-    }
-    if provider == "amazon-bedrock"
-        && (has("AWS_PROFILE")
-            || (has("AWS_ACCESS_KEY_ID") && has("AWS_SECRET_ACCESS_KEY"))
-            || has("AWS_BEARER_TOKEN_BEDROCK")
-            || has("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI")
-            || has("AWS_CONTAINER_CREDENTIALS_FULL_URI")
-            || has("AWS_WEB_IDENTITY_TOKEN_FILE"))
-    {
-        return Some(AMBIENT_CREDENTIALS.into());
-    }
     None
+}
+
+fn direct_env_api_key(provider: &str, source: &EnvSource<'_>) -> Option<String> {
+    let keys = find_env_keys_in(provider, source)?;
+    let key = if provider == "anthropic" {
+        keys.iter().find(|k| **k != ANTHROPIC_AUTH_TOKEN_ENV).copied()
+    } else {
+        keys.first().copied()
+    }?;
+    (source.lookup)(key)
+}
+
+fn has_vertex_adc(source: &EnvSource<'_>) -> bool {
+    let has = |name: &str| (source.lookup)(name).is_some();
+    let credentials = match (source.lookup)("GOOGLE_APPLICATION_CREDENTIALS") {
+        Some(path) => (source.exists)(std::path::Path::new(&path)),
+        None => source
+            .home
+            .as_ref()
+            .is_some_and(|home| (source.exists)(&home.join(".config/gcloud/application_default_credentials.json"))),
+    };
+    credentials && (has("GOOGLE_CLOUD_PROJECT") || has("GCLOUD_PROJECT")) && has("GOOGLE_CLOUD_LOCATION")
+}
+
+fn has_bedrock_ambient(source: &EnvSource<'_>) -> bool {
+    let has = |name: &str| (source.lookup)(name).is_some();
+    BEDROCK_AMBIENT_VARS.iter().any(|name| has(name)) || (has("AWS_ACCESS_KEY_ID") && has("AWS_SECRET_ACCESS_KEY"))
+}
+
+/// The API key for `provider` from known variables; `<authenticated>` for configured Vertex ADC or AWS credentials.
+/// `ANTHROPIC_AUTH_TOKEN` is reported by [`find_env_keys_in`] but never returned (it is sent as a bearer token).
+pub fn env_api_key_in(provider: &str, source: &EnvSource<'_>) -> Option<String> {
+    if let Some(key) = builtin_request_key(provider) {
+        return Some(key);
+    }
+    if let Some(key) = direct_env_api_key(provider, source) {
+        return Some(key);
+    }
+    let ambient = match provider {
+        "google-vertex" => has_vertex_adc(source),
+        "amazon-bedrock" => has_bedrock_ambient(source),
+        _ => false,
+    };
+    ambient.then(|| AMBIENT_CREDENTIALS.into())
 }
 
 fn with_process_env<T>(env: Option<&ProviderEnv>, f: impl FnOnce(&EnvSource<'_>) -> T) -> T {

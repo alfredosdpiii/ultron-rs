@@ -479,6 +479,18 @@ pub fn certainty(finding: &EngineFinding) -> String {
     parts.join(" ")
 }
 
+fn replacement_part(replacement: &str, suggestion: bool, line: i64, end: i64) -> String {
+    if suggestion {
+        return fence(replacement, "suggestion");
+    }
+    let lines = if end > line {
+        format!("lines {line}-{end}")
+    } else {
+        format!("line {line}")
+    };
+    format!("Suggested replacement for {lines}:\n\n{}", fence(replacement, ""))
+}
+
 /// The inline comment of one finding, or none when its line cannot be placed on the diff.
 pub fn plan_comment(
     finding: &EngineFinding,
@@ -506,19 +518,7 @@ pub fn plan_comment(
         parts.push(format!("Same at {}.", named.join(", ")));
     }
     if let Some(replacement) = &finding.replacement {
-        if suggestion {
-            parts.push(fence(replacement, "suggestion"));
-        } else {
-            let lines = if end > finding.line {
-                format!("lines {}-{end}", finding.line)
-            } else {
-                format!("line {}", finding.line)
-            };
-            parts.push(format!(
-                "Suggested replacement for {lines}:\n\n{}",
-                fence(replacement, "")
-            ));
-        }
+        parts.push(replacement_part(replacement, suggestion, finding.line, end));
     }
     let marker = comment_marker(key);
     parts.push(marker.clone());
@@ -675,6 +675,331 @@ fn capitalized(text: &str) -> String {
         .map_or_default(|first| format!("{}{}", first.to_uppercase(), chars.as_str()))
 }
 
+fn place_finding_comment(result: &EngineResult, index: usize, short_sha: &str) -> Option<PlannedComment> {
+    let finding = &result.findings[index];
+    let key = format!("{short_sha}-{}", index + 1);
+    let ranges = |file: &str| result.diff_lines.get(file).map(Vec::as_slice);
+    if let Some(comment) = plan_comment(finding, index, ranges(&finding.file), &key) {
+        return Some(comment);
+    }
+    let also = finding.also_at.as_deref().unwrap_or(&[]);
+    for (position, other) in also.iter().enumerate() {
+        let mut also_at = vec![Place {
+            file: finding.file.clone(),
+            line: finding.line,
+        }];
+        also_at.extend(
+            also.iter()
+                .enumerate()
+                .filter(|(i, _)| *i != position)
+                .map(|(_, item)| item.clone()),
+        );
+        let moved = EngineFinding {
+            file: other.file.clone(),
+            line: other.line,
+            end_line: None,
+            replacement: None,
+            also_at: Some(also_at),
+            ..finding.clone()
+        };
+        if let Some(comment) = plan_comment(&moved, index, ranges(&other.file), &key) {
+            return Some(comment);
+        }
+    }
+    None
+}
+
+fn partition_findings(
+    result: &EngineResult,
+    ranked: &[usize],
+    verdict: Verdict,
+    block_at: &str,
+    max_comments: usize,
+    fresh: Option<&FreshLines>,
+    short_sha: &str,
+) -> (Vec<PlannedComment>, Vec<usize>, Vec<usize>) {
+    let mut comments: Vec<PlannedComment> = Vec::new();
+    let mut in_summary = Vec::new();
+    let mut over_cap = Vec::new();
+    for &index in ranked {
+        let finding = &result.findings[index];
+        let level = finding.level();
+        if verdict == Verdict::RequestChanges && level == "nit" {
+            over_cap.push(index);
+            continue;
+        }
+        let blocking = blocks(finding, block_at, fresh);
+        match place_finding_comment(result, index, short_sha) {
+            Some(comment) if comments.len() < max_comments => comments.push(comment),
+            ref other if blocking || (other.is_none() && level != "nit") => in_summary.push(index),
+            _ => over_cap.push(index),
+        }
+    }
+    (comments, in_summary, over_cap)
+}
+
+fn header_section(
+    result: &EngineResult,
+    options: &PlanOptions,
+    verdict: Verdict,
+    reason: &str,
+    blockers: usize,
+    short_sha: &str,
+    promotion: Option<&PromotionNote>,
+) -> String {
+    let since = options.since_sha.as_deref().map(|sha| jsrt::utf16::head(sha, 7));
+    let scope = format!(
+        "{} file{}, +{} / -{}",
+        result.files,
+        if result.files == 1 { "" } else { "s" },
+        result.added,
+        result.removed
+    );
+    let rev_span = match since {
+        None => format!("`{short_sha}`"),
+        Some(sha) => format!("`{sha}`..`{short_sha}`"),
+    };
+    let mut header_lines = vec![format!("**{}** — {rev_span} ({scope})", verdict.title())];
+    if let Some(note) = promotion {
+        header_lines.push(promotion_lead(note));
+    }
+    if blockers > 0 && verdict == Verdict::RequestChanges {
+        header_lines.push(format!(
+            "{blockers} blocking finding{} to resolve before merge.",
+            if blockers == 1 { "" } else { "s" }
+        ));
+    } else {
+        header_lines.push(format!("{}.", capitalized(reason)));
+    }
+    header_lines.join("\n")
+}
+
+fn format_finding_bullet(num: usize, finding: &EngineFinding, tag: &str) -> String {
+    format!(
+        "{num}. **[{}]** {}{} — {}",
+        capitalized(finding.level()),
+        where_(finding),
+        tag,
+        sentence(&finding.claim)
+    )
+}
+
+fn push_unique_findings(
+    out: &mut Vec<String>,
+    seen: &mut Vec<usize>,
+    indices: impl Iterator<Item = usize>,
+    result: &EngineResult,
+    tag_of: impl Fn(usize) -> &'static str,
+) {
+    for index in indices {
+        if seen.contains(&index) || out.len() >= MAX_FINDINGS_LISTED {
+            continue;
+        }
+        out.push(format_finding_bullet(
+            out.len() + 1,
+            &result.findings[index],
+            tag_of(index),
+        ));
+        seen.push(index);
+    }
+}
+
+fn findings_section(
+    result: &EngineResult,
+    blockers: &[usize],
+    comments: &[PlannedComment],
+    in_summary: &[usize],
+) -> Option<String> {
+    let inline: Vec<usize> = comments.iter().map(|comment| comment.finding).collect();
+    let mut listed: Vec<String> = Vec::new();
+    let mut seen: Vec<usize> = Vec::new();
+    push_unique_findings(&mut listed, &mut seen, blockers.iter().copied(), result, |i| {
+        if inline.contains(&i) { " (inline)" } else { "" }
+    });
+    push_unique_findings(&mut listed, &mut seen, inline.iter().copied(), result, |_| " (inline)");
+    push_unique_findings(
+        &mut listed,
+        &mut seen,
+        in_summary.iter().copied(),
+        result,
+        |_| " (outside diff)",
+    );
+    for finding in &result.preexisting {
+        if listed.len() >= MAX_FINDINGS_LISTED {
+            break;
+        }
+        listed.push(format_finding_bullet(listed.len() + 1, finding, " (pre-existing)"));
+    }
+    if listed.is_empty() {
+        return None;
+    }
+    let total_pool = blockers.len()
+        + comments.iter().filter(|c| !blockers.contains(&c.finding)).count()
+        + in_summary.iter().filter(|i| !blockers.contains(i)).count()
+        + result.preexisting.len();
+    let mut block = vec!["## Findings".to_string()];
+    block.extend(listed);
+    if total_pool > MAX_FINDINGS_LISTED {
+        block.push(format!(
+            "- *…and {} more finding(s).*",
+            total_pool - MAX_FINDINGS_LISTED
+        ));
+    }
+    Some(block.join("\n"))
+}
+
+fn earlier_section(result: &EngineResult) -> Option<String> {
+    if result.earlier.is_empty() {
+        return None;
+    }
+    let mut prev = vec!["## Previous findings".to_string()];
+    for item in result.earlier.iter().take(MAX_BLOCKING_LISTED) {
+        let status_label = match item.status.as_str() {
+            "fixed" => "fixed",
+            "still_present" => "still present",
+            "not_applicable" => "not applicable",
+            _ => "not re-checked",
+        };
+        let detail = if item.status == "still_present" && !item.evidence.is_empty() {
+            format!(" — {} ({})", sentence(&item.claim), sentence(&item.evidence))
+        } else if !item.claim.is_empty() {
+            format!(" — {}", sentence(&item.claim))
+        } else {
+            String::new()
+        };
+        prev.push(format!(
+            "- {} **[{status_label}]**{detail}",
+            place(&item.file, item.line)
+        ));
+    }
+    if result.earlier.len() > MAX_BLOCKING_LISTED {
+        prev.push(format!(
+            "- *…and {} more from earlier reviews.*",
+            result.earlier.len() - MAX_BLOCKING_LISTED
+        ));
+    }
+    Some(prev.join("\n"))
+}
+
+fn assurance_section(result: &EngineResult) -> Option<String> {
+    let assurance: Vec<String> = result
+        .assurance
+        .iter()
+        .flatten()
+        .take(4)
+        .map(|item| jsrt::string::flatten(item))
+        .collect();
+    if assurance.is_empty() {
+        return None;
+    }
+    let mut checked = vec!["## Checked".to_string()];
+    for item in &assurance {
+        checked.push(format!("- {item}"));
+    }
+    Some(checked.join("\n"))
+}
+
+fn also_raised_note(result: &EngineResult) -> Option<String> {
+    let raised = result.also_raised.len();
+    if raised == 0 {
+        return None;
+    }
+    let mut by: Vec<&str> = Vec::new();
+    for name in result.also_raised.iter().flat_map(|item| &item.by) {
+        if !by.contains(&name.as_str()) {
+            by.push(name);
+        }
+    }
+    let by: Vec<String> = by.iter().take(4).map(|name| format!("@{name}")).collect();
+    Some(format!(
+        "{raised} finding{} already raised by {} and {} not repeated.",
+        if raised == 1 { " was" } else { "s were" },
+        by.join(", "),
+        if raised == 1 { "is" } else { "are" }
+    ))
+}
+
+fn notes_section(result: &EngineResult, late: usize, over_cap: &[usize], block_at: &str) -> Option<String> {
+    let mut notes = Vec::new();
+    if late > 0 {
+        let (plural, verb, pronoun) = if late == 1 {
+            ("", "is", "it does")
+        } else {
+            ("s", "are", "they do")
+        };
+        notes.push(format!(
+            "{late} finding{plural} at {block_at} or above {verb} on unchanged lines, \
+             so {pronoun} not block."
+        ));
+    }
+    if !over_cap.is_empty() {
+        notes.push(format!(
+            "Not posted: {} lower-ranked finding{} ({}).",
+            over_cap.len(),
+            if over_cap.len() == 1 { "" } else { "s" },
+            counted(over_cap, result)
+        ));
+    }
+    let lowered = result
+        .findings
+        .iter()
+        .filter(|finding| non_empty(&finding.lesson).is_some())
+        .count();
+    if lowered > 0 {
+        notes.push(format!(
+            "{lowered} finding{} notes because this repository rarely accepted their kind.",
+            if lowered == 1 { " is" } else { "s are" }
+        ));
+    }
+    notes.extend(also_raised_note(result));
+    (!notes.is_empty()).then(|| notes.join(" "))
+}
+
+fn not_checked_section(result: &EngineResult) -> Option<String> {
+    let mut gaps: Vec<&String> = result.incomplete.iter().collect();
+    for item in &result.not_checked {
+        let is_accounting = PIPELINE_ACCOUNTING.iter().any(|lead| item.starts_with(lead));
+        if !result.incomplete.contains(item) && !is_accounting {
+            gaps.push(item);
+        }
+    }
+    if gaps.is_empty() {
+        return None;
+    }
+    let listed: Vec<String> = gaps
+        .iter()
+        .take(MAX_NOT_CHECKED)
+        .map(|gap| {
+            let gap = jsrt::string::flatten(gap);
+            gap.strip_suffix('.').map(str::to_string).unwrap_or(gap)
+        })
+        .collect();
+    let more = if gaps.len() > MAX_NOT_CHECKED {
+        format!("; and {} more", gaps.len() - MAX_NOT_CHECKED)
+    } else {
+        String::new()
+    };
+    Some(format!("Not checked: {}{more}.", listed.join("; ")))
+}
+
+fn join_body_sections(sections: Vec<String>, signature: bool) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for (index, section) in sections.into_iter().enumerate() {
+        if index > 0 {
+            lines.push(String::new());
+        }
+        lines.extend(section.lines().map(str::to_string));
+    }
+    let tail: Vec<String> = if signature {
+        vec![String::new(), SIGNATURE.into()]
+    } else {
+        Vec::new()
+    };
+    lines.truncate(MAX_BODY_LINES - tail.len());
+    lines.extend(tail);
+    lines.join("\n")
+}
+
 pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
     let block_at = options.block_at.as_deref().unwrap_or(DEFAULT_BLOCK_AT);
     let max_comments = options.max_comments.unwrap_or(DEFAULT_MAX_COMMENTS).max(0) as usize;
@@ -694,56 +1019,10 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
     } else {
         raw_verdict
     };
-    let mut comments: Vec<PlannedComment> = Vec::new();
-    let mut in_summary = Vec::new();
-    let mut over_cap = Vec::new();
     let short_sha = jsrt::utf16::head(&options.head_sha, 7);
     let ranked = rank_findings(result);
-    let ranges = |file: &str| result.diff_lines.get(file).map(Vec::as_slice);
-    for &index in &ranked {
-        let finding = &result.findings[index];
-        let level = finding.level();
-        let blocking = blocks(finding, block_at, fresh);
-        if verdict == Verdict::RequestChanges && level == "nit" {
-            over_cap.push(index);
-            continue;
-        }
-        let key = format!("{short_sha}-{}", index + 1);
-        let mut comment = plan_comment(finding, index, ranges(&finding.file), &key);
-        if comment.is_none() {
-            let also = finding.also_at.clone().unwrap_or_default();
-            for (position, other) in also.iter().enumerate() {
-                let mut also_at = vec![Place {
-                    file: finding.file.clone(),
-                    line: finding.line,
-                }];
-                also_at.extend(
-                    also.iter()
-                        .enumerate()
-                        .filter(|(i, _)| *i != position)
-                        .map(|(_, item)| item.clone()),
-                );
-                let moved = EngineFinding {
-                    file: other.file.clone(),
-                    line: other.line,
-                    end_line: None,
-                    replacement: None,
-                    also_at: Some(also_at),
-                    ..finding.clone()
-                };
-                comment = plan_comment(&moved, index, ranges(&other.file), &key);
-                if comment.is_some() {
-                    break;
-                }
-            }
-        }
-        match comment {
-            Some(comment) if comments.len() < max_comments => comments.push(comment),
-            ref other if blocking || (other.is_none() && level != "nit") => in_summary.push(index),
-            _ => over_cap.push(index),
-        }
-    }
-    let inline: Vec<usize> = comments.iter().map(|comment| comment.finding).collect();
+    let (comments, in_summary, over_cap) =
+        partition_findings(result, &ranked, verdict, block_at, max_comments, fresh, short_sha);
     let blockers: Vec<usize> = ranked
         .iter()
         .copied()
@@ -756,260 +1035,27 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
             at_or_above(finding.level(), block_at) && !blocks(finding, block_at, fresh)
         })
         .count();
-    let uncertain = result
-        .findings
-        .iter()
-        .filter(|finding| finding.verification == "uncertain")
-        .count();
-    let since = options.since_sha.as_deref().map(|sha| jsrt::utf16::head(sha, 7));
-
-    let scope = format!(
-        "{} file{}, +{} / -{}",
-        result.files,
-        if result.files == 1 { "" } else { "s" },
-        result.added,
-        result.removed
-    );
-    let rev_span = match since {
-        None => format!("`{short_sha}`"),
-        Some(sha) => format!("`{sha}`..`{short_sha}`"),
-    };
     let promotion = options.promotion.as_ref().filter(|note| !note.sources.is_empty());
 
-    let mut sections: Vec<String> = Vec::new();
-    let mut header_lines = vec![format!("**{}** — {rev_span} ({scope})", verdict.title())];
-    if let Some(note) = promotion {
-        header_lines.push(promotion_lead(note));
-    }
-    if blockers.is_empty() {
-        header_lines.push(format!("{}.", capitalized(&reason)));
-    } else if verdict == Verdict::RequestChanges {
-        header_lines.push(format!(
-            "{} blocking finding{} to resolve before merge.",
-            blockers.len(),
-            if blockers.len() == 1 { "" } else { "s" }
-        ));
-    } else {
-        header_lines.push(format!("{}.", capitalized(&reason)));
-    }
-    sections.push(header_lines.join("\n"));
-
-    let mut listed_findings: Vec<String> = Vec::new();
-    let mut seen_indices: Vec<usize> = Vec::new();
-    for &index in &blockers {
-        if listed_findings.len() >= MAX_FINDINGS_LISTED {
-            break;
-        }
-        let finding = &result.findings[index];
-        let tag = if inline.contains(&index) { " (inline)" } else { "" };
-        listed_findings.push(format!(
-            "{}. **[{}]** {}{} — {}",
-            listed_findings.len() + 1,
-            capitalized(finding.level()),
-            where_(finding),
-            tag,
-            sentence(&finding.claim)
-        ));
-        seen_indices.push(index);
-    }
-    for comment in &comments {
-        if seen_indices.contains(&comment.finding) || listed_findings.len() >= MAX_FINDINGS_LISTED {
-            continue;
-        }
-        let finding = &result.findings[comment.finding];
-        listed_findings.push(format!(
-            "{}. **[{}]** {} (inline) — {}",
-            listed_findings.len() + 1,
-            capitalized(finding.level()),
-            where_(finding),
-            sentence(&finding.claim)
-        ));
-        seen_indices.push(comment.finding);
-    }
-    for &index in &in_summary {
-        if seen_indices.contains(&index) || listed_findings.len() >= MAX_FINDINGS_LISTED {
-            continue;
-        }
-        let finding = &result.findings[index];
-        listed_findings.push(format!(
-            "{}. **[{}]** {} (outside diff) — {}",
-            listed_findings.len() + 1,
-            capitalized(finding.level()),
-            where_(finding),
-            sentence(&finding.claim)
-        ));
-        seen_indices.push(index);
-    }
-    for finding in &result.preexisting {
-        if listed_findings.len() >= MAX_FINDINGS_LISTED {
-            break;
-        }
-        listed_findings.push(format!(
-            "{}. **[{}]** {} (pre-existing) — {}",
-            listed_findings.len() + 1,
-            capitalized(finding.level()),
-            where_(finding),
-            sentence(&finding.claim)
-        ));
-    }
-    let total_listed_pool = blockers.len()
-        + comments.iter().filter(|c| !blockers.contains(&c.finding)).count()
-        + in_summary.iter().filter(|i| !blockers.contains(i)).count()
-        + result.preexisting.len();
-    if !listed_findings.is_empty() {
-        let mut block = vec!["## Findings".to_string()];
-        block.extend(listed_findings);
-        if total_listed_pool > MAX_FINDINGS_LISTED {
-            block.push(format!(
-                "- *…and {} more finding(s).*",
-                total_listed_pool - MAX_FINDINGS_LISTED
-            ));
-        }
-        sections.push(block.join("\n"));
-    }
-
-    if !result.earlier.is_empty() {
-        let mut prev = vec!["## Previous findings".to_string()];
-        for item in result.earlier.iter().take(MAX_BLOCKING_LISTED) {
-            let status_label = match item.status.as_str() {
-                "fixed" => "fixed",
-                "still_present" => "still present",
-                "not_applicable" => "not applicable",
-                _ => "not re-checked",
-            };
-            let detail = if item.status == "still_present" && !item.evidence.is_empty() {
-                format!(" — {} ({})", sentence(&item.claim), sentence(&item.evidence))
-            } else if !item.claim.is_empty() {
-                format!(" — {}", sentence(&item.claim))
-            } else {
-                String::new()
-            };
-            prev.push(format!(
-                "- {} **[{status_label}]**{detail}",
-                place(&item.file, item.line)
-            ));
-        }
-        if result.earlier.len() > MAX_BLOCKING_LISTED {
-            prev.push(format!(
-                "- *…and {} more from earlier reviews.*",
-                result.earlier.len() - MAX_BLOCKING_LISTED
-            ));
-        }
-        sections.push(prev.join("\n"));
-    }
-
-    let assurance: Vec<String> = result
-        .assurance
-        .iter()
-        .flatten()
-        .take(4)
-        .map(|item| jsrt::string::flatten(item))
-        .collect();
-    if !assurance.is_empty() {
-        let mut checked = vec!["## Checked".to_string()];
-        for item in &assurance {
-            checked.push(format!("- {item}"));
-        }
-        sections.push(checked.join("\n"));
-    }
-
-    let mut notes = Vec::new();
-    if late > 0 {
-        let (plural, verb, pronoun) = if late == 1 {
-            ("", "is", "it does")
-        } else {
-            ("s", "are", "they do")
-        };
-        notes.push(format!(
-            "{late} finding{plural} at {block_at} or above {verb} on unchanged lines, \
-             so {pronoun} not block."
-        ));
-    }
-    if !over_cap.is_empty() {
-        notes.push(format!(
-            "Not posted: {} lower-ranked finding{} ({}).",
-            over_cap.len(),
-            if over_cap.len() == 1 { "" } else { "s" },
-            counted(&over_cap, result)
-        ));
-    }
-    let lowered = result
-        .findings
-        .iter()
-        .filter(|finding| non_empty(&finding.lesson).is_some())
-        .count();
-    if lowered > 0 {
-        notes.push(format!(
-            "{lowered} finding{} notes because this repository rarely accepted their kind.",
-            if lowered == 1 { " is" } else { "s are" }
-        ));
-    }
-    let raised = result.also_raised.len();
-    if raised > 0 {
-        let mut by: Vec<&str> = Vec::new();
-        for name in result.also_raised.iter().flat_map(|item| &item.by) {
-            if !by.contains(&name.as_str()) {
-                by.push(name);
-            }
-        }
-        let by: Vec<String> = by.iter().take(4).map(|name| format!("@{name}")).collect();
-        notes.push(format!(
-            "{raised} finding{} already raised by {} and {} not repeated.",
-            if raised == 1 { " was" } else { "s were" },
-            by.join(", "),
-            if raised == 1 { "is" } else { "are" }
-        ));
-    }
-    let _ = uncertain;
-    if !notes.is_empty() {
-        sections.push(notes.join(" "));
-    }
-    if let Some(missing) = promotion.and_then(promotion_missing) {
-        sections.push(missing);
-    }
-
-    let mut gaps: Vec<&String> = result.incomplete.iter().collect();
-    for item in &result.not_checked {
-        let is_accounting = PIPELINE_ACCOUNTING.iter().any(|lead| item.starts_with(lead));
-        if !result.incomplete.contains(item) && !is_accounting {
-            gaps.push(item);
-        }
-    }
-    if !gaps.is_empty() {
-        let listed: Vec<String> = gaps
-            .iter()
-            .take(MAX_NOT_CHECKED)
-            .map(|gap| {
-                let gap = jsrt::string::flatten(gap);
-                gap.strip_suffix('.').map(str::to_string).unwrap_or(gap)
-            })
-            .collect();
-        let more = if gaps.len() > MAX_NOT_CHECKED {
-            format!("; and {} more", gaps.len() - MAX_NOT_CHECKED)
-        } else {
-            String::new()
-        };
-        sections.push(format!("Not checked: {}{more}.", listed.join("; ")));
-    }
-
-    let mut lines: Vec<String> = Vec::new();
-    for (index, section) in sections.into_iter().enumerate() {
-        if index > 0 {
-            lines.push(String::new());
-        }
-        lines.extend(section.lines().map(str::to_string));
-    }
-    let tail: Vec<String> = if options.signature {
-        vec![String::new(), SIGNATURE.into()]
-    } else {
-        Vec::new()
-    };
-    lines.truncate(MAX_BODY_LINES - tail.len());
-    lines.extend(tail);
+    let mut sections = vec![header_section(
+        result,
+        options,
+        verdict,
+        &reason,
+        blockers.len(),
+        short_sha,
+        promotion,
+    )];
+    sections.extend(findings_section(result, &blockers, &comments, &in_summary));
+    sections.extend(earlier_section(result));
+    sections.extend(assurance_section(result));
+    sections.extend(notes_section(result, late, &over_cap, block_at));
+    sections.extend(promotion.and_then(promotion_missing));
+    sections.extend(not_checked_section(result));
     ReviewPlan {
         verdict,
         event: verdict.event(),
-        body: lines.join("\n"),
+        body: join_body_sections(sections, options.signature),
         comments,
         in_summary,
         over_cap,

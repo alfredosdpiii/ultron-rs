@@ -258,6 +258,30 @@ impl State {
         Ok((committed, first))
     }
 
+    fn validate_id_write(
+        &self,
+        write: &Value,
+        kind: &str,
+        ids: &mut HashSet<String>,
+        entry_ids: &mut HashSet<String>,
+    ) -> Result<(), String> {
+        let id = str_of(write, "id").to_string();
+        if self.entries.contains_key(&id) || self.usage.contains_key(&id) || ids.contains(&id) {
+            return Err(format!("Duplicate entry or usage id: {id}"));
+        }
+        if kind == "entry" {
+            if let Some(parent) = write.get("parentId").and_then(Value::as_str)
+                && !self.entries.contains_key(parent)
+                && !entry_ids.contains(parent)
+            {
+                return Err(format!("Missing parent entry: {parent}"));
+            }
+            entry_ids.insert(id.clone());
+        }
+        ids.insert(id);
+        Ok(())
+    }
+
     /// `validateCommittedWrites`.
     pub fn validate(&self, writes: &[Value]) -> Result<(), String> {
         let mut previous = self.next_seq - 1;
@@ -270,74 +294,66 @@ impl State {
             }
             previous = seq;
             let kind = str_of(write, "kind");
-            if kind != "entry" && kind != "usage" {
-                continue;
+            if matches!(kind, "entry" | "usage") {
+                self.validate_id_write(write, kind, &mut ids, &mut entry_ids)?;
             }
-            let id = str_of(write, "id").to_string();
-            if self.entries.contains_key(&id) || self.usage.contains_key(&id) || ids.contains(&id) {
-                return Err(format!("Duplicate entry or usage id: {id}"));
-            }
-            if kind == "entry"
-                && let Some(parent) = write.get("parentId").and_then(Value::as_str)
-                && !self.entries.contains_key(parent)
-                && !entry_ids.contains(parent)
-            {
-                return Err(format!("Missing parent entry: {parent}"));
-            }
-            if kind == "entry" {
-                entry_ids.insert(id.clone());
-            }
-            ids.insert(id);
         }
         Ok(())
     }
 
+    fn classify_action(write: &Value) -> Action {
+        match (str_of(write, "kind"), str_of(write, "op")) {
+            ("entry", _) => Action::Entry,
+            ("usage", _) => Action::Usage,
+            ("value", "delete") => Action::DeleteValue,
+            ("list", "delete") => Action::DeleteList,
+            ("value", _) => Action::SetValue,
+            ("list", _) => Action::PushList,
+            _ => Action::None,
+        }
+    }
+
+    fn apply_one(&mut self, mut write: Value) {
+        let seq = seq_of(&write);
+        let place = |write: &Value| physical_key(str_of(write, "namespace"), str_of(write, "key"));
+        match Self::classify_action(&write) {
+            Action::Entry => {
+                let entry = without_kind(write);
+                if str_of(&entry, "type") == "message" {
+                    self.message_count += 1;
+                }
+                let id = str_of(&entry, "id").to_string();
+                self.entries.insert(id, self.entries_by_seq.len());
+                self.entries_by_seq.push(entry);
+            }
+            Action::Usage => {
+                let row = without_kind(write);
+                self.usage_total = add_usage(&self.usage_total, &row["usage"]);
+                self.usage.insert(str_of(&row, "id").into(), row);
+            }
+            Action::DeleteValue => {
+                self.scalars.remove(&place(&write));
+            }
+            Action::DeleteList => {
+                self.lists.remove(&place(&write));
+            }
+            Action::SetValue => {
+                let value = take_value(&mut write);
+                self.set_scalar(str_of(&write, "namespace"), str_of(&write, "key"), value, seq);
+            }
+            Action::PushList => {
+                let value = take_value(&mut write);
+                self.push_list(str_of(&write, "namespace"), str_of(&write, "key"), value, seq);
+            }
+            Action::None => {}
+        }
+        self.next_seq = seq + 1;
+    }
+
     /// `applyValidated`: returns the stats after the writes. The writes are moved into the state, not copied.
     pub fn apply(&mut self, writes: Vec<Value>) -> Value {
-        for mut write in writes {
-            let seq = seq_of(&write);
-            let action = match (str_of(&write, "kind"), str_of(&write, "op")) {
-                ("entry", _) => Action::Entry,
-                ("usage", _) => Action::Usage,
-                ("value", "delete") => Action::DeleteValue,
-                ("list", "delete") => Action::DeleteList,
-                ("value", _) => Action::SetValue,
-                ("list", _) => Action::PushList,
-                _ => Action::None,
-            };
-            let place = |write: &Value| physical_key(str_of(write, "namespace"), str_of(write, "key"));
-            match action {
-                Action::Entry => {
-                    let entry = without_kind(write);
-                    if str_of(&entry, "type") == "message" {
-                        self.message_count += 1;
-                    }
-                    let id = str_of(&entry, "id").to_string();
-                    self.entries.insert(id, self.entries_by_seq.len());
-                    self.entries_by_seq.push(entry);
-                }
-                Action::Usage => {
-                    let row = without_kind(write);
-                    self.usage_total = add_usage(&self.usage_total, &row["usage"]);
-                    self.usage.insert(str_of(&row, "id").into(), row);
-                }
-                Action::DeleteValue => {
-                    self.scalars.remove(&place(&write));
-                }
-                Action::DeleteList => {
-                    self.lists.remove(&place(&write));
-                }
-                Action::SetValue => {
-                    let value = take_value(&mut write);
-                    self.set_scalar(str_of(&write, "namespace"), str_of(&write, "key"), value, seq);
-                }
-                Action::PushList => {
-                    let value = take_value(&mut write);
-                    self.push_list(str_of(&write, "namespace"), str_of(&write, "key"), value, seq);
-                }
-                Action::None => {}
-            }
-            self.next_seq = seq + 1;
+        for write in writes {
+            self.apply_one(write);
         }
         self.stats()
     }

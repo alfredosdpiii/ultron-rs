@@ -2,26 +2,109 @@
 
 use super::*;
 
+struct SpawnWorkspace {
+    mode: WorktreeMode,
+    setup: Option<WorktreeSetup>,
+    cwd: Option<PathBuf>,
+    spawner_dir: Option<PathBuf>,
+}
+
+struct SpawnSpec {
+    prompt: String,
+    name: String,
+    contract: Option<Arc<SpawnContract>>,
+    context: SpawnContext,
+    mode: WorktreeMode,
+    setup: Option<WorktreeSetup>,
+    cwd: Option<PathBuf>,
+    spawner_dir: Option<PathBuf>,
+    child_depth: i64,
+    model: Option<String>,
+    timeout_ms: u64,
+    fork_at: Option<String>,
+}
+
+fn parse_worktree_mode(value: Option<&Value>) -> Result<WorktreeMode, String> {
+    match value {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => Ok(WorktreeMode::Off),
+        Some(Value::Bool(true)) => Ok(WorktreeMode::On),
+        Some(Value::String(s)) if s == "auto" => Ok(WorktreeMode::Auto),
+        Some(_) => {
+            Err("worktree must be True, False or \"auto\" (each worktree child gets its own private worktree)".into())
+        }
+    }
+}
+
+fn resolve_spawn_cwd(value: Option<&Value>, spawner_dir: Option<&Path>) -> Result<Option<PathBuf>, String> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(raw)) => {
+            let path = spawner_dir.map_or_else(|| PathBuf::from(raw), |dir| dir.join(raw));
+            match std::fs::canonicalize(&path) {
+                Ok(dir) if dir.is_dir() => Ok(Some(dir)),
+                _ => Err(format!("cwd={raw:?} is not an existing directory ({})", path.display())),
+            }
+        }
+        Some(_) => Err("cwd must be a directory path string".into()),
+    }
+}
+
+fn parse_child_depth(value: Option<&Value>, allowance: i64, depth: i64, limit: u32) -> Result<i64, String> {
+    let child_depth = match value {
+        None => 0,
+        Some(value) => number::safe_integer(value)
+            .filter(|n| *n >= 0)
+            .ok_or("depth must be a non-negative integer")?,
+    };
+    let max_child_depth = (allowance.saturating_sub(1)).min(if limit > 0 {
+        i64::from(limit) - depth - 1
+    } else {
+        i64::MAX
+    });
+    if child_depth > max_child_depth {
+        return Err(format!(
+            "rlm.spawn depth={child_depth} is too deep here: at most {max_child_depth} (ULTRON_SPAWN_DEPTH={limit} levels in all)."
+        ));
+    }
+    Ok(child_depth)
+}
+
+fn spawn_fingerprint(
+    prompt: &str,
+    model: Option<&str>,
+    timeout_ms: u64,
+    contract: Option<&Arc<SpawnContract>>,
+) -> String {
+    let mut fingerprinted = json!({
+        "definition": CHILD,
+        "input": { "prompt": prompt },
+        "model": model,
+        "timeout_ms": timeout_ms,
+    });
+    if let Some(contract) = contract {
+        fingerprinted["contract"] = contract.describe();
+    }
+    task_fingerprint(&fingerprinted)
+}
+
 impl Delegation {
-    pub(super) fn spawn(
+    fn check_spawn_allowance(
         &self,
-        payload: &Map<String, Value>,
         parent: Option<&str>,
-        lane: &str,
-    ) -> Result<Value, String> {
-        jsrt::payload::fields(payload, &["prompt", "kwargs"])?;
+        root_level: u32,
+        root_allowance: Option<i64>,
+    ) -> Result<(i64, i64), String> {
         let limit = self.inner.spawn_depth;
-        let root = jsrt::sync::lock(&self.inner.root).clone();
         let (depth, allowance) = {
             let state = sync::lock(&self.inner.state);
             let children: Vec<String> = state.line(parent).into_iter().filter(|id| state.is_child(id)).collect();
             let allowance = children
                 .first()
                 .and_then(|id| state.task(id))
-                .map_or(root.allowance.unwrap_or(i64::MAX), |spawner| {
+                .map_or(root_allowance.unwrap_or(i64::MAX), |spawner| {
                     i64::from(spawner.spawn_depth)
                 });
-            (i64::from(root.level) + children.len() as i64, allowance)
+            (i64::from(root_level) + children.len() as i64, allowance)
         };
         if limit > 0 && depth >= i64::from(limit) {
             return Err(format!(
@@ -31,267 +114,283 @@ impl Delegation {
         if allowance < 1 {
             return Err("rlm.spawn refused: this subagent was started with depth=0, so it does its brief itself. A parent that wants nested delegation passes rlm.spawn(brief, name=..., depth=N).".into());
         }
-        let prompt = nonempty_string(payload.get("prompt"), "prompt")?;
-        let empty = Map::new();
-        let kwargs = match payload.get("kwargs") {
-            None => &empty,
-            Some(Value::Object(map)) => map,
-            Some(_) => return Err("agent input must be a JSON object".into()),
-        };
-        jsrt::payload::fields(
-            kwargs,
-            &[
-                "name",
-                "model",
-                "thinking",
-                "timeout_ms",
-                "depth",
-                "worktree",
-                "worktree_setup",
-                "cwd",
-                "fork",
-                "context",
-                "role",
-                "contract",
-                "hop",
-            ],
-        )?;
-        let contract = SpawnContract::parse(kwargs)?.map(Arc::new);
-        let context = SpawnContext::of(kwargs.get("context"), kwargs.get("fork"))?;
-        let fork = context == SpawnContext::Fork;
-        let fork_hook = jsrt::sync::lock(&self.inner.fork_point).clone();
-        if fork && fork_hook.is_none() {
-            return Err("rlm.spawn fork=True is not available when subagents run as external processes".into());
-        }
-        let name = nonempty_string(kwargs.get("name"), "name")?;
-        let mode = match kwargs.get("worktree") {
-            None | Some(Value::Null) | Some(Value::Bool(false)) => WorktreeMode::Off,
-            Some(Value::Bool(true)) => WorktreeMode::On,
-            Some(Value::String(s)) if s == "auto" => WorktreeMode::Auto,
-            Some(_) => {
-                return Err(
-                    "worktree must be True, False or \"auto\" (each worktree child gets its own private worktree)"
-                        .into(),
-                );
-            }
-        };
-        let shared = self.inner.workspace.as_deref();
-        let spawner_dir = sync::lock(&self.inner.state).workspace_of(parent, shared);
-        let cwd = match kwargs.get("cwd") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(raw)) => {
-                let path = spawner_dir
-                    .as_deref()
-                    .map_or_else(|| PathBuf::from(raw), |dir| dir.join(raw));
-                match std::fs::canonicalize(&path) {
-                    Ok(dir) if dir.is_dir() => Some(dir),
-                    _ => return Err(format!("cwd={raw:?} is not an existing directory ({})", path.display())),
-                }
-            }
-            Some(_) => return Err("cwd must be a directory path string".into()),
-        };
-        let setup = check_worktree_setup(kwargs.get("worktree_setup"))?;
-        if setup.is_some() && mode == WorktreeMode::Off {
-            return Err("worktree_setup needs worktree=True".into());
-        }
-        let child_depth = match kwargs.get("depth") {
-            None => 0,
-            Some(value) => number::safe_integer(value)
-                .filter(|n| *n >= 0)
-                .ok_or("depth must be a non-negative integer")?,
-        };
-        let max_child_depth = (allowance.saturating_sub(1)).min(if limit > 0 {
-            i64::from(limit) - depth - 1
-        } else {
-            i64::MAX
-        });
-        if child_depth > max_child_depth {
-            return Err(format!(
-                "rlm.spawn depth={child_depth} is too deep here: at most {max_child_depth} (ULTRON_SPAWN_DEPTH={limit} levels in all)."
-            ));
-        }
-        let model = match kwargs.get("model") {
+        Ok((depth, allowance))
+    }
+
+    fn resolve_spawn_model(&self, value: Option<&Value>) -> Result<Option<String>, String> {
+        match value {
             Some(value @ Value::String(_)) => {
                 let model = model_scope::model_ref(value)?;
                 if let Some(check) = &self.inner.model_check {
                     check(&model)?;
                 }
-                Some(model)
+                Ok(Some(model))
             }
-            _ => self.child_model(),
-        };
-        let timeout_ms = crate::timeout_ms(kwargs.get("timeout_ms").filter(|t| t.is_number()))?;
-        let fork_at = match fork_hook.filter(|_| fork) {
-            Some(hook) => {
-                Some(hook(lane)?.ok_or("rlm.spawn fork=True: your lane has no finished conversation to fork yet")?)
-            }
-            None => None,
-        };
-        let worktree = self.new_worktree(mode, &name, setup.as_ref(), cwd.clone().or(spawner_dir))?;
-        let thinking = match kwargs.get("thinking").map(model_scope::thinking_level) {
-            None => None,
-            Some(Ok(level)) => Some(level),
-            Some(Err(error)) => {
-                if let Some(record) = &worktree {
-                    wt::remove_child_worktree(record, true);
-                }
-                return Err(error);
-            }
-        };
-        let mut fingerprinted = json!({
-            "definition": CHILD,
-            "input": { "prompt": prompt },
-            "model": model,
-            "timeout_ms": timeout_ms,
-        });
-        if let Some(contract) = &contract {
-            fingerprinted["contract"] = contract.describe();
+            _ => Ok(self.child_model()),
         }
-        let fingerprint = task_fingerprint(&fingerprinted);
-        let signal = Signal::new();
+    }
+
+    fn parse_spawn_workspace(
+        &self,
+        kwargs: &Map<String, Value>,
+        parent: Option<&str>,
+    ) -> Result<SpawnWorkspace, String> {
+        let mode = parse_worktree_mode(kwargs.get("worktree"))?;
+        let spawner_dir = sync::lock(&self.inner.state).workspace_of(parent, self.inner.workspace.as_deref());
+        let cwd = resolve_spawn_cwd(kwargs.get("cwd"), spawner_dir.as_deref())?;
+        let setup = check_worktree_setup(kwargs.get("worktree_setup"))?;
+        if setup.is_some() && mode == WorktreeMode::Off {
+            return Err("worktree_setup needs worktree=True".into());
+        }
+        Ok(SpawnWorkspace {
+            mode,
+            setup,
+            cwd,
+            spawner_dir,
+        })
+    }
+
+    fn parse_spawn_context(
+        &self,
+        kwargs: &Map<String, Value>,
+        lane: &str,
+    ) -> Result<(SpawnContext, Option<String>), String> {
+        let context = SpawnContext::of(kwargs.get("context"), kwargs.get("fork"))?;
+        let fork_at = self.resolve_fork_anchor(context == SpawnContext::Fork, lane)?;
+        Ok((context, fork_at))
+    }
+
+    fn parse_spawn_spec(
+        &self,
+        payload: &Map<String, Value>,
+        parent: Option<&str>,
+        lane: &str,
+        depth: i64,
+        allowance: i64,
+    ) -> Result<(SpawnSpec, Option<Value>), String> {
+        let prompt = nonempty_string(payload.get("prompt"), "prompt")?;
+        let empty = Map::new();
+        let kwargs = extract_spawn_kwargs(payload, &empty)?;
+        let contract = SpawnContract::parse(kwargs)?.map(Arc::new);
+        let (context, fork_at) = self.parse_spawn_context(kwargs, lane)?;
+        let name = nonempty_string(kwargs.get("name"), "name")?;
+        let ws = self.parse_spawn_workspace(kwargs, parent)?;
+        let child_depth = parse_child_depth(kwargs.get("depth"), allowance, depth, self.inner.spawn_depth)?;
+        let model = self.resolve_spawn_model(kwargs.get("model"))?;
+        let timeout_ms = crate::timeout_ms(kwargs.get("timeout_ms").filter(|t| t.is_number()))?;
+        Ok((
+            SpawnSpec {
+                prompt,
+                name,
+                contract,
+                context,
+                mode: ws.mode,
+                setup: ws.setup,
+                cwd: ws.cwd,
+                spawner_dir: ws.spawner_dir,
+                child_depth,
+                model,
+                timeout_ms,
+                fork_at,
+            },
+            kwargs.get("thinking").cloned(),
+        ))
+    }
+
+    fn resolve_fork_anchor(&self, fork: bool, lane: &str) -> Result<Option<String>, String> {
+        if !fork {
+            return Ok(None);
+        }
+        let Some(hook) = jsrt::sync::lock(&self.inner.fork_point).clone() else {
+            return Err("rlm.spawn fork=True is not available when subagents run as external processes".into());
+        };
+        hook(lane)?
+            .ok_or_else(|| "rlm.spawn fork=True: your lane has no finished conversation to fork yet".into())
+            .map(Some)
+    }
+
+    fn admit_child_task(
+        &self,
+        spec: &SpawnSpec,
+        parent: Option<&str>,
+        root_level: u32,
+        worktree: &Option<WorktreeRecord>,
+        signal: &Signal,
+    ) -> Result<(String, u32, Option<String>), String> {
+        let fingerprint = spawn_fingerprint(
+            &spec.prompt,
+            spec.model.as_deref(),
+            spec.timeout_ms,
+            spec.contract.as_ref(),
+        );
         let mut record_error = None;
-        let (task_id, level) = {
-            let mut state = sync::lock(&self.inner.state);
-            if state.closed {
-                return Err("Ultron task host is closed".into());
-            }
-            let admitted = state
-                .journal
-                .admit(CHILD, &fingerprint, &jsrt::random::uuid_v4(), parent);
-            let (record, _) = match admitted {
-                Ok(admitted) => admitted,
-                Err(error) => {
-                    if let Some(record) = &worktree {
-                        wt::remove_child_worktree(record, true);
-                    }
-                    return Err(error);
-                }
-            };
-            let id = record["id"].as_str().unwrap_or_default().to_string();
-            let record = match state.journal.transition(&id, "running", None) {
-                Ok(running) => running,
-                Err(error) => {
-                    if let Some(record) = &worktree {
-                        wt::remove_child_worktree(record, true);
-                    }
-                    return Err(error);
-                }
-            };
-            state.tasks.push(Task {
-                id: id.clone(),
-                parent_id: parent.map(String::from),
-                record,
-                outcome: None,
-                spawn_depth: child_depth as u32,
-                lane_name: None,
-                name: Some(name.clone()),
-                model: model.clone(),
-                started_at: Some((self.inner.now)()),
-                ended_at: None,
-                timeout_ms: Some(timeout_ms),
-                verdict: None,
-                verdict_rejections: 0,
-                verdict_problems: Vec::new(),
-                verdict_invalid: false,
-                waiters: 0,
-                signal: signal.clone(),
-                finishing: false,
-                worktree: worktree.clone().map(|mut record| {
-                    record.task_id = Some(id.clone());
-                    record_error = wt::save_record(&record).err().map(|error| error.message);
-                    record
-                }),
-                cwd: cwd.filter(|_| worktree.is_none()),
-                worktree_baseline: None,
-                outside_before: None,
-                before: None,
-                merge_status: None,
-                contract: contract.clone(),
-                git_baseline: None,
-            });
-            let level = root.level + state.line(Some(&id)).iter().filter(|a| state.is_child(a)).count() as u32;
-            (id, level)
+        let mut state = sync::lock(&self.inner.state);
+        if state.closed {
+            return Err("Ultron task host is closed".into());
+        }
+        let (record, _) = state
+            .journal
+            .admit(CHILD, &fingerprint, &jsrt::random::uuid_v4(), parent)?;
+        let id = record["id"].as_str().unwrap_or_default().to_string();
+        let record = state.journal.transition(&id, "running", None)?;
+        state.tasks.push(Task {
+            id: id.clone(),
+            parent_id: parent.map(String::from),
+            record,
+            outcome: None,
+            spawn_depth: spec.child_depth as u32,
+            lane_name: None,
+            name: Some(spec.name.clone()),
+            model: spec.model.clone(),
+            started_at: Some((self.inner.now)()),
+            ended_at: None,
+            timeout_ms: Some(spec.timeout_ms),
+            verdict: None,
+            verdict_rejections: 0,
+            verdict_problems: Vec::new(),
+            verdict_invalid: false,
+            waiters: 0,
+            signal: signal.clone(),
+            finishing: false,
+            worktree: worktree.clone().map(|mut record| {
+                record.task_id = Some(id.clone());
+                record_error = wt::save_record(&record).err().map(|error| error.message);
+                record
+            }),
+            cwd: spec.cwd.clone().filter(|_| worktree.is_none()),
+            worktree_baseline: None,
+            outside_before: None,
+            before: None,
+            merge_status: None,
+            contract: spec.contract.clone(),
+            git_baseline: None,
+        });
+        let level = root_level + state.line(Some(&id)).iter().filter(|a| state.is_child(a)).count() as u32;
+        Ok((id, level, record_error))
+    }
+
+    fn build_child_run_context(
+        &self,
+        task_id: &str,
+        spec: &SpawnSpec,
+        worktree: Option<&WorktreeRecord>,
+    ) -> (Option<String>, Vec<(String, String)>, String) {
+        let state = sync::lock(&self.inner.state);
+        let inherited = state.worktree_of(Some(task_id));
+        let note = worktree.map(wt::worktree_brief_note);
+        let prompt = match &spec.contract {
+            Some(contract) => contract.prompt(&spec.prompt),
+            None => spec.prompt.clone(),
         };
-        let lane_name = lanes::lane_names::child_lane(&task_id);
-        let (cwd, env, brief) = {
-            let state = sync::lock(&self.inner.state);
-            let inherited = state.worktree_of(Some(&task_id));
-            let note = worktree.as_ref().map(wt::worktree_brief_note);
-            let prompt = match &contract {
-                Some(contract) => contract.prompt(&prompt),
-                None => prompt,
-            };
-            let prompt = match (&fork_at, context) {
-                (Some(_), _) => format!("{}\n\n{prompt}", crate::fork::FORK_BRIEF_NOTE),
-                (None, SpawnContext::Retrieve) => format!(
-                    "{}\n\n{prompt}",
-                    crate::fork::retrieve_brief_note(&self.inner.session_id)
-                ),
-                (None, _) => prompt,
-            };
-            (
-                state
-                    .workspace_of(Some(&task_id), None)
-                    .map(|dir| dir.display().to_string()),
-                inherited.map_or_default(wt::worktree_env),
-                match note {
-                    Some(note) => format!("{prompt}\n\n{note}"),
-                    None => prompt,
-                },
-            )
+        let prompt = match (&spec.fork_at, spec.context) {
+            (Some(_), _) => format!("{}\n\n{prompt}", crate::fork::FORK_BRIEF_NOTE),
+            (None, SpawnContext::Retrieve) => format!(
+                "{}\n\n{prompt}",
+                crate::fork::retrieve_brief_note(&self.inner.session_id)
+            ),
+            (None, _) => prompt,
         };
+        let brief = match note {
+            Some(note) => format!("{prompt}\n\n{note}"),
+            None => prompt,
+        };
+        (
+            state
+                .workspace_of(Some(task_id), None)
+                .map(|dir| dir.display().to_string()),
+            inherited.map_or_default(wt::worktree_env),
+            brief,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal helper spawning the child runner and timeout threads"
+    )]
+    fn launch_spawned_child(
+        &self,
+        task_id: &str,
+        spec: &SpawnSpec,
+        level: u32,
+        thinking: Option<String>,
+        worktree: Option<&WorktreeRecord>,
+        parent: Option<&str>,
+        lane: &str,
+        signal: Signal,
+    ) {
+        let lane_name = lanes::lane_names::child_lane(task_id);
+        let (cwd, env, brief) = self.build_child_run_context(task_id, spec, worktree);
         let run = ChildRun {
-            task_id: task_id.clone(),
-            name: name.clone(),
+            task_id: task_id.to_string(),
+            name: spec.name.clone(),
             lane_name: lane_name.clone(),
             prompt: brief,
             level,
-            allowance: child_depth as u32,
-            model: model.clone(),
+            allowance: spec.child_depth as u32,
+            model: spec.model.clone(),
             thinking,
-            timeout_ms,
+            timeout_ms: spec.timeout_ms,
             cwd,
             env,
-            fork_at: fork_at.clone(),
+            fork_at: spec.fork_at.clone(),
             signal: signal.clone(),
             host: self.clone(),
         };
         {
             let mut state = sync::lock(&self.inner.state);
-            state.lane_tasks.insert(lane_name.clone(), task_id.clone());
-            if let Some(task) = state.task_mut(&task_id) {
+            state.lane_tasks.insert(lane_name.clone(), task_id.to_string());
+            if let Some(task) = state.task_mut(task_id) {
                 task.lane_name = Some(lane_name);
             }
         }
         let observer = jsrt::sync::lock(&self.inner.on_spawn).clone();
         if let Some(observer) = observer {
-            observer(&task_id, parent, lane);
+            observer(task_id, parent, lane);
         }
         let host = self.clone();
         std::thread::spawn(move || host.run_child(run));
         let host = self.clone();
-        let (id, deadline) = (task_id.clone(), signal);
+        let (id, timeout_ms) = (task_id.to_string(), spec.timeout_ms);
         std::thread::spawn(move || {
-            if !deadline.wait(Duration::from_millis(timeout_ms)) {
+            if !signal.wait(Duration::from_millis(timeout_ms)) {
                 let _ = host.cancel(&id, &format!("Ultron task exceeded {timeout_ms}ms timeout"));
             }
         });
-        let mut worktree = worktree.map_or(
-            Value::Null,
-            |w| json!({ "branch": w.branch, "path": w.path, "cwd": w.cwd }),
+    }
+
+    pub(super) fn spawn(
+        &self,
+        payload: &Map<String, Value>,
+        parent: Option<&str>,
+        lane: &str,
+    ) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &["prompt", "kwargs"])?;
+        let root = jsrt::sync::lock(&self.inner.root).clone();
+        let (depth, allowance) = self.check_spawn_allowance(parent, root.level, root.allowance)?;
+        let (spec, raw_thinking) = self.parse_spawn_spec(payload, parent, lane, depth, allowance)?;
+        let worktree = self.new_worktree(
+            spec.mode,
+            &spec.name,
+            spec.setup.as_ref(),
+            spec.cwd.clone().or_else(|| spec.spawner_dir.clone()),
+        )?;
+        let thinking = parse_thinking_or_cleanup(raw_thinking.as_ref(), &worktree)?;
+        let signal = Signal::new();
+        let (task_id, level, record_error) = cleanup_on_err(
+            self.admit_child_task(&spec, parent, root.level, &worktree, &signal),
+            &worktree,
+        )?;
+        self.launch_spawned_child(
+            &task_id,
+            &spec,
+            level,
+            thinking,
+            worktree.as_ref(),
+            parent,
+            lane,
+            signal,
         );
-        if let Some(error) = record_error {
-            worktree["record_error"] = error.into();
-        }
-        Ok(json!({
-            "rlm_child_id": task_id,
-            "name": name,
-            "session_dir": "",
-            "model": model.unwrap_or_default(),
-            "timeout_ms": timeout_ms,
-            "parent_branch_anchor": fork_at.unwrap_or_default(),
-            "worktree": worktree,
-        }))
+        Ok(format_spawn_reply(task_id, spec, worktree, record_error))
     }
 
     /// `newWorktree`: a private worktree (`worktree=True`) branched from the repository at `from`.
@@ -496,56 +595,45 @@ impl Delegation {
         Ok(())
     }
 
-    /// `childResult`: the reply, the verdict (null without one), and the check of its declared files against the
-    /// files that changed in its working directory while it ran.
-    pub(super) fn child_result(&self, id: &str, text: &str) -> Result<Value, String> {
-        let (verdict, invalid, problems, before, workspace) = {
-            let state = sync::lock(&self.inner.state);
-            let task = state.task(id).ok_or("Unknown Ultron task")?;
-            (
-                task.verdict.clone(),
-                task.verdict_invalid,
-                task.verdict_problems.clone(),
-                task.before.clone(),
-                state.workspace_of(Some(id), self.inner.workspace.as_deref()),
-            )
-        };
-        if text.trim().is_empty() && verdict.is_none() {
-            return Err("Agent produced no assistant result at the completed tip".into());
-        }
-        let value = if text.trim().is_empty() {
-            verdict.as_ref().map_or(Value::Null, |v| v["summary"].clone())
-        } else {
-            json!(text)
-        };
-        let after = match (&before, &workspace) {
-            (Some(_), Some(w)) => Some(snapshot_workspace(w)),
-            _ => None,
-        };
-        let (concurrent, explained) = {
-            let state = sync::lock(&self.inner.state);
-            let task = state.task(id).ok_or("Unknown Ultron task")?;
-            let others = self.concurrent_with(&state, task);
-            let explained: Vec<String> = others
-                .iter()
-                .filter_map(|other| state.task(other))
-                .filter_map(|other| match &other.outcome {
-                    Some(Ok(result)) => result["verdict"]["changed_files"].as_array().cloned(),
-                    _ => None,
-                })
-                .flatten()
-                .filter_map(|p| p.as_str().map(String::from))
-                .collect();
-            (others, explained)
-        };
-        let mut check = match (&before, &after) {
+    fn concurrent_explained(&self, id: &str) -> Result<(Vec<String>, Vec<String>), String> {
+        let state = sync::lock(&self.inner.state);
+        let task = state.task(id).ok_or("Unknown Ultron task")?;
+        let others = self.concurrent_with(&state, task);
+        let explained: Vec<String> = others
+            .iter()
+            .filter_map(|other| state.task(other))
+            .filter_map(|other| match &other.outcome {
+                Some(Ok(result)) => result["verdict"]["changed_files"].as_array().cloned(),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|p| p.as_str().map(String::from))
+            .collect();
+        Ok((others, explained))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal helper assembling the workspace check object for a child"
+    )]
+    fn build_child_check(
+        &self,
+        id: &str,
+        verdict: Option<&Value>,
+        invalid: bool,
+        problems: &[String],
+        before: Option<&WorkspaceSnapshot>,
+        after: Option<&WorkspaceSnapshot>,
+        explained: &[String],
+        concurrent: &[String],
+    ) -> Result<Value, String> {
+        let mut check = match (before, after) {
             (Some(before), Some(after)) => {
                 let declared: Vec<String> = verdict
-                    .as_ref()
                     .and_then(|v| v["changed_files"].as_array())
                     .map_or_default(|files| files.iter().filter_map(|f| f.as_str().map(String::from)).collect());
                 let diff = diff_snapshots(before, after)?;
-                let mut check = check_files(&declared, &before.root, before, after, &diff, &explained, &concurrent);
+                let mut check = check_files(&declared, &before.root, before, after, &diff, explained, concurrent);
                 if verdict.is_none() {
                     check["outcome"] = json!(if invalid { "invalid" } else { "unchecked" });
                     check["reason"] = json!("the subagent ended without a verdict (rlm.finish)");
@@ -566,16 +654,37 @@ impl Delegation {
         if !outside.is_empty() {
             check["outside"] = json!(outside);
         }
-        let nothing_checked = verdict.is_none() && !invalid && before.is_none();
-        let mut result = json!({ "status": "succeeded", "value": value, "verification": "unverified",
-                                 "verdict": verdict.clone().unwrap_or(Value::Null) });
-        if !nothing_checked {
-            result["check"] = check;
-        }
-        if verdict.is_none() {
-            result["unverified"] = json!(true);
-        }
-        Ok(result)
+        Ok(check)
+    }
+
+    /// `childResult`: the reply, the verdict (null without one), and the check of its declared files against the
+    /// files that changed in its working directory while it ran.
+    pub(super) fn child_result(&self, id: &str, text: &str) -> Result<Value, String> {
+        let (verdict, invalid, problems, before, workspace) = {
+            let state = sync::lock(&self.inner.state);
+            let task = state.task(id).ok_or("Unknown Ultron task")?;
+            (
+                task.verdict.clone(),
+                task.verdict_invalid,
+                task.verdict_problems.clone(),
+                task.before.clone(),
+                state.workspace_of(Some(id), self.inner.workspace.as_deref()),
+            )
+        };
+        let value = resolve_child_reply_value(text, verdict.as_ref())?;
+        let after = before.as_ref().and(workspace.as_deref()).map(snapshot_workspace);
+        let (concurrent, explained) = self.concurrent_explained(id)?;
+        let check = self.build_child_check(
+            id,
+            verdict.as_ref(),
+            invalid,
+            &problems,
+            before.as_ref(),
+            after.as_ref(),
+            &explained,
+            &concurrent,
+        )?;
+        Ok(assemble_child_result(value, verdict, check, invalid, before.is_some()))
     }
 
     /// `outsideWrites`: files in the parent's tree that changed while a worktree child ran, minus what other tasks
@@ -639,6 +748,59 @@ impl Delegation {
             .collect()
     }
 
+    fn claim_finishing(&self, id: &str, result: &Value) -> Result<Option<Result<Value, String>>, String> {
+        let mut state = sync::lock(&self.inner.state);
+        loop {
+            let task = state.task(id).ok_or("Unknown Ultron task")?;
+            if let Some(outcome) = &task.outcome {
+                return Ok(Some(outcome.clone()));
+            }
+            if !task.finishing {
+                break;
+            }
+            state = self.inner.changed.wait(state).unwrap_or_else(PoisonError::into_inner);
+        }
+        let task = state.task_mut(id).ok_or("Unknown Ultron task")?;
+        task.finishing = true;
+        if result["status"] == "cancelled" {
+            task.signal.abort(result["error"].as_str().unwrap_or("cancelled"));
+        }
+        Ok(None)
+    }
+
+    fn commit_task_end(&self, id: &str, result: Value) -> Result<(Option<DetachedEnd>, Option<Value>), String> {
+        let mut state = sync::lock(&self.inner.state);
+        let terminal = terminal_state_name(result["status"].as_str());
+        let committed = state.journal.transition(id, &terminal, Some(result));
+        let now = (self.inner.now)();
+        let closed = state.closed;
+        if let Err(error) = &committed
+            && !closed
+        {
+            if let Some(task) = state.task_mut(id) {
+                task.finishing = false;
+            }
+            self.inner.changed.notify_all();
+            return Err(error.clone());
+        }
+        let owner_lane = owner_lane_of(&state, id);
+        let task = state.task_mut(id).ok_or("Unknown Ultron task")?;
+        task.ended_at.get_or_insert(now);
+        task.signal.abort("ended");
+        let outcome = committed.map(|record| {
+            task.record = record.clone();
+            record["result"].clone()
+        });
+        task.outcome = Some(outcome.clone());
+        let ended = outcome.is_ok().then(|| public_record(&task.record));
+        self.inner.changed.notify_all();
+        let event = build_detached_end(id, task, owner_lane, closed, outcome)?;
+        if let Some(event) = &event {
+            let _ = jsrt::sync::lock(&self.inner.events).send(event.clone());
+        }
+        Ok((event, ended))
+    }
+
     /// `finish`: the first terminal result wins; nothing is published until the journal commits it.
     ///
     /// A terminal write that fails is not an end: the journal still says `running` (and a failed write poisons it
@@ -647,80 +809,11 @@ impl Delegation {
     /// next end (a cancel, its timeout) tries again, and once the host has closed the error is published (this
     /// worker is going away).
     pub(super) fn end(&self, id: &str, result: Value) -> Result<Value, String> {
-        {
-            let mut state = sync::lock(&self.inner.state);
-            loop {
-                let task = state.task(id).ok_or("Unknown Ultron task")?;
-                if let Some(outcome) = &task.outcome {
-                    return outcome.clone();
-                }
-                if !task.finishing {
-                    break;
-                }
-                state = self.inner.changed.wait(state).unwrap_or_else(PoisonError::into_inner);
-            }
-            let task = state.task_mut(id).ok_or("Unknown Ultron task")?;
-            task.finishing = true;
-            if result["status"] == "cancelled" {
-                task.signal.abort(result["error"].as_str().unwrap_or("cancelled"));
-            }
+        if let Some(existing) = self.claim_finishing(id, &result)? {
+            return existing;
         }
         let result = self.finalize_worktree(id, result);
-        let mut ended = None;
-        let event = {
-            let mut state = sync::lock(&self.inner.state);
-            let terminal = match result["status"].as_str() {
-                Some("succeeded") => "completed",
-                Some(other) => other,
-                None => "failed",
-            }
-            .to_string();
-            let committed = state.journal.transition(id, &terminal, Some(result));
-            let now = (self.inner.now)();
-            let closed = state.closed;
-            if let Err(error) = &committed
-                && !closed
-            {
-                if let Some(task) = state.task_mut(id) {
-                    task.finishing = false;
-                }
-                self.inner.changed.notify_all();
-                return Err(error.clone());
-            }
-            let owner_lane = {
-                let parent = state.task(id).and_then(|t| t.parent_id.clone());
-                parent
-                    .and_then(|p| state.task(&p).and_then(|t| t.lane_name.clone()))
-                    .unwrap_or_else(|| "main".into())
-            };
-            let task = state.task_mut(id).ok_or("Unknown Ultron task")?;
-            task.ended_at.get_or_insert(now);
-            task.signal.abort("ended");
-            let outcome = committed.map(|record| {
-                task.record = record.clone();
-                record["result"].clone()
-            });
-            task.outcome = Some(outcome.clone());
-            if outcome.is_ok() {
-                ended = Some(public_record(&task.record));
-            }
-            self.inner.changed.notify_all();
-            let event = match outcome {
-                Ok(_) if !closed => Some(DetachedEnd {
-                    task: task.record.clone(),
-                    kind: "child_done",
-                    owner_lane,
-                    awaited: task.waiters > 0,
-                    fetch: format!("await rlm.collect([\"{id}\"])"),
-                }),
-                Ok(_) => None,
-                Err(error) => return Err(error),
-            };
-            if let Some(event) = &event {
-                let _ = jsrt::sync::lock(&self.inner.events).send(event.clone());
-            }
-            event
-        };
+        let (event, ended) = self.commit_task_end(id, result)?;
         let observer = jsrt::sync::lock(&self.inner.on_task_end).clone();
         if let (Some(observer), Some(record)) = (observer, &ended) {
             observer(record);
@@ -753,62 +846,17 @@ impl Delegation {
         let Some(mut record) = record else {
             return result;
         };
-        let status = verdict
-            .as_ref()
-            .and_then(|v| v["status"].as_str())
-            .or(result["status"].as_str())
-            .unwrap_or("")
-            .to_string();
-        let summary = match verdict.as_ref().and_then(|v| v["summary"].as_str()) {
-            Some(summary) => summary.to_string(),
-            None => match (&result["value"], &result["error"]) {
-                (Value::String(value), _) => value.clone(),
-                (_, Value::String(error)) => error.clone(),
-                _ => String::new(),
-            },
-        };
+        let (status, summary) = worktree_commit_meta(verdict.as_ref(), &result);
         let paths = worktree_changes(&record, baseline.as_ref());
         let message = wt::commit_message(&summary, &record.name, Some(id), &status);
-        let keep = self.inner.keep_worktrees;
-        let mut empty = false;
-        let info = match wt::commit_child_worktree(&record, &message, paths.as_deref()) {
-            Ok(commit) => {
-                record.state = if commit.commit.is_some() && status != "passed" && status != "succeeded" {
-                    "failed"
-                } else {
-                    "ended"
-                }
-                .into();
-                record.commit = Some(commit.commit.clone());
-                empty = commit.commit.is_none();
-                let saved = if empty && !keep {
-                    wt::remove_child_worktree(&record, true);
-                    Ok(())
-                } else {
-                    wt::save_record(&record)
-                };
-                let mut info = json!({ "task": id, "branch": record.branch, "path": record.path, "repo": record.repo,
-                    "base": record.base, "commit": commit.commit, "changed_files": commit.changed_files,
-                    "diffstat": commit.diffstat });
-                if empty && !keep {
-                    info["removed"] = json!(true);
-                }
-                if let Err(error) = saved {
-                    info["record_error"] = error.message.into();
-                }
-                info
-            }
-            Err(error) => {
-                record.state = "failed".into();
-                let mut info = json!({ "task": id, "branch": record.branch, "path": record.path, "repo": record.repo,
-                    "base": record.base, "commit": null, "changed_files": [], "diffstat": "",
-                    "error": format!("committing the worktree failed: {}", error.message) });
-                if let Err(error) = wt::save_record(&record) {
-                    info["record_error"] = error.message.into();
-                }
-                info
-            }
-        };
+        let (info, empty) = commit_worktree_record(
+            id,
+            &mut record,
+            &status,
+            &message,
+            paths.as_deref(),
+            self.inner.keep_worktrees,
+        );
         {
             let mut state = sync::lock(&self.inner.state);
             if let Some(task) = state.task_mut(id) {
@@ -823,5 +871,207 @@ impl Delegation {
         }
         result["worktree"] = info;
         result
+    }
+}
+
+fn worktree_commit_meta(verdict: Option<&Value>, result: &Value) -> (String, String) {
+    let status = verdict
+        .and_then(|v| v["status"].as_str())
+        .or(result["status"].as_str())
+        .unwrap_or("")
+        .to_string();
+    let summary = match verdict.and_then(|v| v["summary"].as_str()) {
+        Some(summary) => summary.to_string(),
+        None => match (&result["value"], &result["error"]) {
+            (Value::String(value), _) => value.clone(),
+            (_, Value::String(error)) => error.clone(),
+            _ => String::new(),
+        },
+    };
+    (status, summary)
+}
+
+fn extract_spawn_kwargs<'a>(
+    payload: &'a Map<String, Value>,
+    empty: &'a Map<String, Value>,
+) -> Result<&'a Map<String, Value>, String> {
+    let kwargs = match payload.get("kwargs") {
+        None => empty,
+        Some(Value::Object(map)) => map,
+        Some(_) => return Err("agent input must be a JSON object".into()),
+    };
+    jsrt::payload::fields(
+        kwargs,
+        &[
+            "name",
+            "model",
+            "thinking",
+            "timeout_ms",
+            "depth",
+            "worktree",
+            "worktree_setup",
+            "cwd",
+            "fork",
+            "context",
+            "role",
+            "contract",
+            "hop",
+        ],
+    )?;
+    Ok(kwargs)
+}
+
+fn cleanup_on_err<T>(result: Result<T, String>, worktree: &Option<WorktreeRecord>) -> Result<T, String> {
+    if result.is_err()
+        && let Some(record) = worktree
+    {
+        wt::remove_child_worktree(record, true);
+    }
+    result
+}
+
+fn parse_thinking_or_cleanup(raw: Option<&Value>, worktree: &Option<WorktreeRecord>) -> Result<Option<String>, String> {
+    let parsed = raw.map(model_scope::thinking_level).transpose();
+    cleanup_on_err(parsed, worktree)
+}
+
+fn format_spawn_reply(
+    task_id: String,
+    spec: SpawnSpec,
+    worktree: Option<WorktreeRecord>,
+    record_error: Option<String>,
+) -> Value {
+    let mut worktree = worktree.map_or(
+        Value::Null,
+        |w| json!({ "branch": w.branch, "path": w.path, "cwd": w.cwd }),
+    );
+    if let Some(error) = record_error {
+        worktree["record_error"] = error.into();
+    }
+    json!({
+        "rlm_child_id": task_id,
+        "name": spec.name,
+        "session_dir": "",
+        "model": spec.model.unwrap_or_default(),
+        "timeout_ms": spec.timeout_ms,
+        "parent_branch_anchor": spec.fork_at.unwrap_or_default(),
+        "worktree": worktree,
+    })
+}
+
+fn resolve_child_reply_value(text: &str, verdict: Option<&Value>) -> Result<Value, String> {
+    if text.trim().is_empty() && verdict.is_none() {
+        return Err("Agent produced no assistant result at the completed tip".into());
+    }
+    Ok(if text.trim().is_empty() {
+        verdict.map_or(Value::Null, |v| v["summary"].clone())
+    } else {
+        json!(text)
+    })
+}
+
+fn assemble_child_result(value: Value, verdict: Option<Value>, check: Value, invalid: bool, has_before: bool) -> Value {
+    let nothing_checked = verdict.is_none() && !invalid && !has_before;
+    let mut result = json!({ "status": "succeeded", "value": value, "verification": "unverified",
+                             "verdict": verdict.clone().unwrap_or(Value::Null) });
+    if !nothing_checked {
+        result["check"] = check;
+    }
+    if verdict.is_none() {
+        result["unverified"] = json!(true);
+    }
+    result
+}
+
+fn terminal_state_name(status: Option<&str>) -> String {
+    match status {
+        Some("succeeded") => "completed",
+        Some(other) => other,
+        None => "failed",
+    }
+    .to_string()
+}
+
+fn owner_lane_of(state: &State, id: &str) -> String {
+    state
+        .task(id)
+        .and_then(|t| t.parent_id.clone())
+        .and_then(|p| state.task(&p).and_then(|t| t.lane_name.clone()))
+        .unwrap_or_else(|| "main".into())
+}
+
+fn build_detached_end(
+    id: &str,
+    task: &Task,
+    owner_lane: String,
+    closed: bool,
+    outcome: Result<Value, String>,
+) -> Result<Option<DetachedEnd>, String> {
+    match outcome {
+        Ok(_) if !closed => Ok(Some(DetachedEnd {
+            task: task.record.clone(),
+            kind: "child_done",
+            owner_lane,
+            awaited: task.waiters > 0,
+            fetch: format!("await rlm.collect([\"{id}\"])"),
+        })),
+        Ok(_) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn commit_worktree_ok(
+    id: &str,
+    record: &mut WorktreeRecord,
+    status: &str,
+    commit: wt::CommitOutcome,
+    keep: bool,
+) -> (Value, bool) {
+    record.state = if commit.commit.is_some() && status != "passed" && status != "succeeded" {
+        "failed"
+    } else {
+        "ended"
+    }
+    .into();
+    record.commit = Some(commit.commit.clone());
+    let empty = commit.commit.is_none();
+    let saved = if empty && !keep {
+        wt::remove_child_worktree(record, true);
+        Ok(())
+    } else {
+        wt::save_record(record)
+    };
+    let mut info = json!({ "task": id, "branch": record.branch, "path": record.path, "repo": record.repo,
+        "base": record.base, "commit": commit.commit, "changed_files": commit.changed_files,
+        "diffstat": commit.diffstat });
+    if empty && !keep {
+        info["removed"] = json!(true);
+    }
+    if let Err(error) = saved {
+        info["record_error"] = error.message.into();
+    }
+    (info, empty)
+}
+
+fn commit_worktree_record(
+    id: &str,
+    record: &mut WorktreeRecord,
+    status: &str,
+    message: &str,
+    paths: Option<&[String]>,
+    keep: bool,
+) -> (Value, bool) {
+    match wt::commit_child_worktree(record, message, paths) {
+        Ok(commit) => commit_worktree_ok(id, record, status, commit, keep),
+        Err(error) => {
+            record.state = "failed".into();
+            let mut info = json!({ "task": id, "branch": record.branch, "path": record.path, "repo": record.repo,
+                "base": record.base, "commit": null, "changed_files": [], "diffstat": "",
+                "error": format!("committing the worktree failed: {}", error.message) });
+            if let Err(error) = wt::save_record(record) {
+                info["record_error"] = error.message.into();
+            }
+            (info, false)
+        }
     }
 }

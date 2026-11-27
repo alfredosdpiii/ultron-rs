@@ -18,29 +18,43 @@ const TEMPLATE_JS: &str = ultron_assets::EXPORT_HTML_JS;
 const MARKED_JS: &str = ultron_assets::MARKED_JS;
 const HIGHLIGHT_JS: &str = ultron_assets::HIGHLIGHT_JS;
 
-fn parse_color(color: &str) -> Option<(u8, u8, u8)> {
-    if let Some(hex) = color.strip_prefix('#')
-        && hex.len() == 6
-        && hex.bytes().all(|b| b.is_ascii_hexdigit())
-    {
-        let part = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
-        return Some((part(0)?, part(2)?, part(4)?));
+fn parse_hex_color(color: &str) -> Option<(u8, u8, u8)> {
+    let hex = color.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
     }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some((r, g, b))
+}
+
+fn parse_rgb_component(part: &str) -> Option<u8> {
+    if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    part.parse::<u8>().ok()
+}
+
+fn parse_rgb_color(color: &str) -> Option<(u8, u8, u8)> {
     let inner = color
         .strip_prefix("rgb")?
         .trim_start()
         .strip_prefix('(')?
         .strip_suffix(')')?;
     let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
-    if parts.len() != 3
-        || parts
-            .iter()
-            .any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()))
-    {
+    let [r, g, b] = parts.as_slice() else {
         return None;
-    }
-    let n = |p: &str| p.parse::<u8>().ok();
-    Some((n(parts[0])?, n(parts[1])?, n(parts[2])?))
+    };
+    Some((
+        parse_rgb_component(r)?,
+        parse_rgb_component(g)?,
+        parse_rgb_component(b)?,
+    ))
+}
+
+fn parse_color(color: &str) -> Option<(u8, u8, u8)> {
+    parse_hex_color(color).or_else(|| parse_rgb_color(color))
 }
 
 fn adjust_brightness(color: &str, factor: f64) -> String {

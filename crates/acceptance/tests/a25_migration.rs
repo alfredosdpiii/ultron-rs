@@ -218,7 +218,7 @@ fn acceptance_a25_backup_is_private_with_a_manifest_and_excludes_sessions() {
         assert_eq!(mode(&path.join(&dir)), 0o700, "{dir}");
     }
     let files = list_files(&path);
-    assert!(files.contains(&"manifest.json".to_string()));
+    assert!(files.iter().any(|i| i == "manifest.json"));
     for file in &files {
         assert_eq!(mode(&path.join(file)), 0o600, "{file}");
     }
@@ -322,7 +322,9 @@ fn acceptance_a25_backups_with_unlisted_files_or_unsafe_paths_are_refused() {
     std::fs::write(&manifest_path, manifest.to_string()).unwrap();
     let refused = problems(&restore(&root, &second, &agent));
     assert!(
-        refused.contains(&"unsafe path in manifest: \"../escape.json\"".to_string()),
+        refused
+            .iter()
+            .any(|i| i == "unsafe path in manifest: \"../escape.json\""),
         "{refused:?}"
     );
     assert!(!root.join("escape.json").exists() && !agent.join("../escape.json").exists());

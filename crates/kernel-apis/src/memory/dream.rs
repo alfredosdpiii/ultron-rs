@@ -167,6 +167,241 @@ impl MemoryService {
         tag.and_then(|tag| super::tag_identity(&tag))
             .ok_or(MemoryError::code(ErrorCode::UnsupportedScope))
     }
+}
+
+#[derive(Default)]
+struct DreamOutcome {
+    confirmed: Vec<Value>,
+    revised: Vec<Value>,
+    retracted: Vec<Value>,
+    conflicts: Vec<Value>,
+    review: Vec<Value>,
+    unchecked: usize,
+    judged: usize,
+}
+
+impl DreamOutcome {
+    fn into_json(self) -> Value {
+        json!({
+            "confirmed": self.confirmed,
+            "revised": self.revised,
+            "retracted": self.retracted,
+            "conflicts": self.conflicts,
+            "review": self.review,
+            "unchecked": self.unchecked,
+            "judged": self.judged,
+        })
+    }
+}
+
+struct ChangedClaim {
+    claim: Value,
+    quotes: Vec<Quote>,
+    why: String,
+    root: PathBuf,
+}
+
+fn collect_conflict_pairs(claims: &[Value], cutoff: &str, pairs: &mut Vec<(Value, Value)>) {
+    for newer in claims
+        .iter()
+        .filter(|c| c["createdAt"].as_str() >= Some(cutoff) && c["lastConfirmedAt"].is_null())
+    {
+        for older in claims {
+            if older["createdAt"].as_str() < newer["createdAt"].as_str()
+                && older["id"] != newer["id"]
+                && situation(older).is_some()
+                && situation(older) == situation(newer)
+            {
+                pairs.push((newer.clone(), older.clone()));
+            }
+        }
+    }
+}
+
+fn build_evidence_state(claim: &Value, quotes: &[Quote], root: &Path) -> (String, Vec<Quote>) {
+    let mut state = format!("Memory claim: {}\n", claim["text"].as_str().unwrap_or_default());
+    let mut held = Vec::new();
+    for quote in quotes {
+        let current = super::read_quoted(&root.join(&quote.path));
+        let holds = current
+            .as_deref()
+            .is_some_and(|text| super::squeezed(text).contains(&super::squeezed(&quote.quote)));
+        state.push_str(&format!("\nQuoted from {}: \"{}\"\n", quote.path, quote.quote));
+        match (&current, holds) {
+            (_, true) => {
+                state.push_str("The file still holds this text.\n");
+                held.push(quote.clone());
+            }
+            (Some(text), false) => {
+                let shown: String = text.chars().take(FILE_CHARS).collect();
+                state.push_str(&format!("The file now reads:\n{shown}\n"));
+            }
+            (None, false) => state.push_str("The file is gone.\n"),
+        }
+    }
+    (state, held)
+}
+
+fn updated_claim_metadata(claim: &Value, held: &[Quote]) -> Value {
+    let mut metadata = claim["metadata"].clone();
+    if held.is_empty() {
+        if let Some(map) = metadata.as_object_mut() {
+            map.remove("ultron_quotes");
+        }
+    } else {
+        let kept: Vec<Value> = held.iter().map(|q| json!({"path": q.path, "quote": q.quote})).collect();
+        metadata["ultron_quotes"] = Value::Array(kept).to_string().into();
+        metadata["ultron_evidence_class"] = "verified".into();
+    }
+    metadata
+}
+
+fn review_without_judge(changed: &[ChangedClaim], pairs: &[(Value, Value)], outcome: &mut DreamOutcome) {
+    for item in changed {
+        outcome.review.push(json!({"id": item.claim["id"], "why": item.why}));
+    }
+    for (newer, older) in pairs {
+        outcome
+            .review
+            .push(json!({"id": newer["id"], "why": format!("may contradict {}", older["id"])}));
+    }
+}
+
+fn validate_page_input(text: &str, scope: &str, topic: Option<&str>) -> Result<()> {
+    if page_budget(text, topic.is_some()).is_err()
+        || topic.is_some_and(|t| !crate::memory_records::is_kebab(t))
+        || scope == "session"
+    {
+        return Err(MemoryError::code(ErrorCode::InvalidInput));
+    }
+    Ok(())
+}
+
+impl MemoryService {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal dreaming helper passing accumulated scope state"
+    )]
+    fn scan_dream_scope(
+        &self,
+        tags: &[String],
+        root: Option<&Path>,
+        cutoff: &str,
+        limit: usize,
+        signal: &Signal,
+        outcome: &mut DreamOutcome,
+        changed: &mut Vec<ChangedClaim>,
+        pairs: &mut Vec<(Value, Value)>,
+    ) -> Result<()> {
+        let request = json!({
+            "tags": tags, "tagsMatch": "exact", "status": "active", "sort": "confirmed", "limit": LIST_LIMIT,
+        });
+        let listed = self.backend_call(self.backend.list(&request, signal))?;
+        let claims: Vec<Value> = listed["claims"].as_array().cloned().unwrap_or_default();
+        for claim in claims.iter().filter(|c| confirmed_at(c) < cutoff).take(limit) {
+            let quotes = quotes_of(&claim["metadata"]);
+            let (Some(root), false) = (root, quotes.is_empty()) else {
+                outcome.unchecked += 1;
+                continue;
+            };
+            let id = claim["id"].as_str().unwrap_or_default();
+            match staleness(root, &claim["metadata"]) {
+                None => {
+                    let evidence = json!({"evidence": self.evidence_of(root, &quotes), "tags": tags});
+                    self.backend_call(self.backend.confirm(id, &evidence, signal))?;
+                    outcome.confirmed.push(Value::from(id));
+                }
+                Some(why) => changed.push(ChangedClaim {
+                    claim: claim.clone(),
+                    quotes,
+                    why,
+                    root: root.to_path_buf(),
+                }),
+            }
+        }
+        collect_conflict_pairs(&claims, cutoff, pairs);
+        Ok(())
+    }
+
+    fn judge_changed_claim(
+        &self,
+        judge: &Decide,
+        item: ChangedClaim,
+        signal: &Signal,
+        outcome: &mut DreamOutcome,
+    ) -> Result<()> {
+        let id = item.claim["id"].as_str().unwrap_or_default().to_string();
+        let (state, held) = build_evidence_state(&item.claim, &item.quotes, &item.root);
+        outcome.judged += 1;
+        let verdict = judge(&state, &status_question(), "memory.evidence", signal)
+            .map_err(|_| MemoryError::code(ErrorCode::OperationError))?;
+        match settled(&verdict, "status").and_then(Value::as_str) {
+            Some("supported") => {
+                let metadata = updated_claim_metadata(&item.claim, &held);
+                let request = json!({
+                    "text": item.claim["text"], "metadata": metadata, "evidence": self.evidence_of(&item.root, &held),
+                    "tags": item.claim["tags"],
+                });
+                let new = self.backend_call(self.backend.supersede(&id, &request, signal))?;
+                outcome.revised.push(json!({"id": id, "by": new["id"]}));
+            }
+            Some(answer @ ("stale" | "contradicted")) => {
+                let reason = format!("dream: {answer} ({})", item.why);
+                let request = json!({"state": "invalidated", "reason": reason});
+                self.backend_call(self.backend.curate(&id, &request, signal))?;
+                outcome.retracted.push(json!({"id": id, "reason": reason}));
+            }
+            _ => outcome
+                .review
+                .push(json!({"id": id, "why": item.why, "verdict": verdict["rung"]})),
+        }
+        Ok(())
+    }
+
+    fn judge_conflict_pair(
+        &self,
+        judge: &Decide,
+        newer: &Value,
+        older: &Value,
+        looked_at: &mut Vec<Value>,
+        signal: &Signal,
+        outcome: &mut DreamOutcome,
+    ) -> Result<()> {
+        let state = format!(
+            "Both claims apply when: {}\n\nClaim A (kept recently): {}\n\nClaim B (kept earlier): {}",
+            situation(newer).unwrap_or_default(),
+            newer["text"].as_str().unwrap_or_default(),
+            older["text"].as_str().unwrap_or_default(),
+        );
+        outcome.judged += 1;
+        let verdict = judge(&state, &contradiction_question(), "memory.conflict", signal)
+            .map_err(|_| MemoryError::code(ErrorCode::OperationError))?;
+        match settled(&verdict, "contradict") {
+            Some(Value::Bool(true)) => {
+                let request = json!({
+                    "id": newer["id"], "conflictingId": older["id"],
+                    "reason": format!("dream: the claims contradict when {}", situation(newer).unwrap_or_default()),
+                });
+                self.backend_call(self.backend.conflict(&request, signal))?;
+                outcome
+                    .conflicts
+                    .push(json!({"id": newer["id"], "conflictingId": older["id"]}));
+            }
+            Some(_) => {}
+            None => {
+                outcome
+                    .review
+                    .push(json!({"id": newer["id"], "why": format!("may contradict {}", older["id"])}));
+                return Ok(());
+            }
+        }
+        if !looked_at.contains(&newer["id"]) {
+            let id = newer["id"].as_str().unwrap_or_default();
+            self.backend_call(self.backend.confirm(id, &json!({}), signal))?;
+            looked_at.push(newer["id"].clone());
+        }
+        Ok(())
+    }
 
     /// `memory.dream({days?, limit?})`: see the module docs. `{confirmed, revised, retracted, conflicts, review,
     /// unchecked, judged}`; ids are the backend's claim ids.
@@ -178,157 +413,33 @@ impl MemoryService {
             .and_then(Value::as_u64)
             .map_or(DEFAULT_LIMIT, |n| n as usize);
         let cutoff = jsrt::date::iso_string((self.clock)() - days * DAY_MS);
-        let (mut confirmed, mut revised, mut retracted, mut conflicts, mut review) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        let mut unchecked = 0;
-        let mut changed: Vec<(Value, Vec<Quote>, String, PathBuf)> = Vec::new();
-        let mut pairs: Vec<(Value, Value)> = Vec::new();
+        let mut outcome = DreamOutcome::default();
+        let mut changed = Vec::new();
+        let mut pairs = Vec::new();
         for (tags, root) in self.dream_scopes(payload)? {
-            let request = json!({
-                "tags": tags, "tagsMatch": "exact", "status": "active", "sort": "confirmed", "limit": LIST_LIMIT,
-            });
-            let listed = self.backend_call(self.backend.list(&request, signal))?;
-            let claims: Vec<Value> = listed["claims"].as_array().cloned().unwrap_or_default();
-            for claim in claims.iter().filter(|c| confirmed_at(c) < cutoff.as_str()).take(limit) {
-                let quotes = quotes_of(&claim["metadata"]);
-                let (Some(root), false) = (root.as_deref(), quotes.is_empty()) else {
-                    unchecked += 1;
-                    continue;
-                };
-                let id = claim["id"].as_str().unwrap_or_default();
-                match staleness(root, &claim["metadata"]) {
-                    None => {
-                        let evidence = json!({"evidence": self.evidence_of(root, &quotes), "tags": tags});
-                        self.backend_call(self.backend.confirm(id, &evidence, signal))?;
-                        confirmed.push(Value::from(id));
-                    }
-                    Some(why) => changed.push((claim.clone(), quotes, why, root.to_path_buf())),
-                }
-            }
-            for newer in claims
-                .iter()
-                .filter(|c| c["createdAt"].as_str() >= Some(cutoff.as_str()) && c["lastConfirmedAt"].is_null())
-            {
-                for older in &claims {
-                    if older["createdAt"].as_str() < newer["createdAt"].as_str()
-                        && older["id"] != newer["id"]
-                        && situation(older).is_some()
-                        && situation(older) == situation(newer)
-                    {
-                        pairs.push((newer.clone(), older.clone()));
-                    }
-                }
-            }
+            self.scan_dream_scope(
+                &tags,
+                root.as_deref(),
+                &cutoff,
+                limit,
+                signal,
+                &mut outcome,
+                &mut changed,
+                &mut pairs,
+            )?;
         }
-        let judge = match &self.judge {
-            Some(judge) => judge.clone(),
-            None => {
-                for (claim, _, why, _) in &changed {
-                    review.push(json!({"id": claim["id"], "why": why}));
-                }
-                for (newer, older) in &pairs {
-                    review.push(json!({"id": newer["id"], "why": format!("may contradict {}", older["id"])}));
-                }
-                return Ok(json!({
-                    "confirmed": confirmed, "revised": revised, "retracted": retracted, "conflicts": conflicts,
-                    "review": review, "unchecked": unchecked, "judged": 0,
-                }));
-            }
+        let Some(judge) = self.judge.clone() else {
+            review_without_judge(&changed, &pairs, &mut outcome);
+            return Ok(outcome.into_json());
         };
-        let mut judged = 0;
-        for (claim, quotes, why, root) in changed {
-            let id = claim["id"].as_str().unwrap_or_default().to_string();
-            let mut state = format!("Memory claim: {}\n", claim["text"].as_str().unwrap_or_default());
-            let mut held = Vec::new();
-            for quote in &quotes {
-                let current = super::read_quoted(&root.join(&quote.path));
-                let holds = current
-                    .as_deref()
-                    .is_some_and(|text| super::squeezed(text).contains(&super::squeezed(&quote.quote)));
-                state.push_str(&format!("\nQuoted from {}: \"{}\"\n", quote.path, quote.quote));
-                match (&current, holds) {
-                    (_, true) => {
-                        state.push_str("The file still holds this text.\n");
-                        held.push(quote.clone());
-                    }
-                    (Some(text), false) => {
-                        let shown: String = text.chars().take(FILE_CHARS).collect();
-                        state.push_str(&format!("The file now reads:\n{shown}\n"));
-                    }
-                    (None, false) => state.push_str("The file is gone.\n"),
-                }
-            }
-            judged += 1;
-            let verdict = judge(&state, &status_question(), "memory.evidence", signal)
-                .map_err(|_| MemoryError::code(ErrorCode::OperationError))?;
-            match settled(&verdict, "status").and_then(Value::as_str) {
-                Some("supported") => {
-                    let mut metadata = claim["metadata"].clone();
-                    match held.is_empty() {
-                        true => {
-                            if let Some(map) = metadata.as_object_mut() {
-                                map.remove("ultron_quotes");
-                            }
-                        }
-                        false => {
-                            let kept: Vec<Value> =
-                                held.iter().map(|q| json!({"path": q.path, "quote": q.quote})).collect();
-                            metadata["ultron_quotes"] = Value::Array(kept).to_string().into();
-                            metadata["ultron_evidence_class"] = "verified".into();
-                        }
-                    }
-                    let request = json!({
-                        "text": claim["text"], "metadata": metadata, "evidence": self.evidence_of(&root, &held),
-                        "tags": claim["tags"],
-                    });
-                    let new = self.backend_call(self.backend.supersede(&id, &request, signal))?;
-                    revised.push(json!({"id": id, "by": new["id"]}));
-                }
-                Some(answer @ ("stale" | "contradicted")) => {
-                    let reason = format!("dream: {answer} ({why})");
-                    let request = json!({"state": "invalidated", "reason": reason});
-                    self.backend_call(self.backend.curate(&id, &request, signal))?;
-                    retracted.push(json!({"id": id, "reason": reason}));
-                }
-                _ => review.push(json!({"id": id, "why": why, "verdict": verdict["rung"]})),
-            }
+        for item in changed {
+            self.judge_changed_claim(&judge, item, signal, &mut outcome)?;
         }
-        let mut looked_at: Vec<Value> = Vec::new();
-        for (newer, older) in pairs {
-            let state = format!(
-                "Both claims apply when: {}\n\nClaim A (kept recently): {}\n\nClaim B (kept earlier): {}",
-                situation(&newer).unwrap_or_default(),
-                newer["text"].as_str().unwrap_or_default(),
-                older["text"].as_str().unwrap_or_default(),
-            );
-            judged += 1;
-            let verdict = judge(&state, &contradiction_question(), "memory.conflict", signal)
-                .map_err(|_| MemoryError::code(ErrorCode::OperationError))?;
-            match settled(&verdict, "contradict") {
-                Some(Value::Bool(true)) => {
-                    let request = json!({
-                        "id": newer["id"], "conflictingId": older["id"],
-                        "reason": format!("dream: the claims contradict when {}", situation(&newer).unwrap_or_default()),
-                    });
-                    self.backend_call(self.backend.conflict(&request, signal))?;
-                    conflicts.push(json!({"id": newer["id"], "conflictingId": older["id"]}));
-                }
-                Some(_) => {}
-                None => {
-                    review.push(json!({"id": newer["id"], "why": format!("may contradict {}", older["id"])}));
-                    continue;
-                }
-            }
-            if !looked_at.contains(&newer["id"]) {
-                let id = newer["id"].as_str().unwrap_or_default();
-                self.backend_call(self.backend.confirm(id, &json!({}), signal))?;
-                looked_at.push(newer["id"].clone());
-            }
+        let mut looked_at = Vec::new();
+        for (newer, older) in &pairs {
+            self.judge_conflict_pair(&judge, newer, older, &mut looked_at, signal, &mut outcome)?;
         }
-        Ok(json!({
-            "confirmed": confirmed, "revised": revised, "retracted": retracted, "conflicts": conflicts,
-            "review": review, "unchecked": unchecked, "judged": judged,
-        }))
+        Ok(outcome.into_json())
     }
 
     /// The id of the brief of `scope` (`project`: the project brief, `global`: the user's brief), or of its topic
@@ -345,20 +456,7 @@ impl MemoryService {
         format!("ultron:pages:{scope}:{identity}")
     }
 
-    /// `memory.brief(text, scope, topic?)` (dreaming): writes the startup brief of `scope` (what opens each context
-    /// as the project's or the user's brief), or its topic page `topic`, replacing the one before. Within
-    /// [`page_budget`]; a text holding a secret is refused. `{id, scope, topic}`.
-    pub fn write_page(&self, payload: &Map<String, Value>, signal: &Signal) -> Result<Value> {
-        self.claims_backend()?;
-        let text = payload.get("text").and_then(Value::as_str).unwrap_or_default();
-        let scope = super::scope_of(payload.get("scope").unwrap_or(&json!("project")))?;
-        let topic = payload.get("topic").and_then(Value::as_str);
-        if page_budget(text, topic.is_some()).is_err()
-            || topic.is_some_and(|t| !crate::memory_records::is_kebab(t))
-            || scope == "session"
-        {
-            return Err(MemoryError::code(ErrorCode::InvalidInput));
-        }
+    fn gate_page(&self, text: &str, scope: &str, signal: &Signal) -> Result<()> {
         let check = json!({"action": "propose", "text": text, "scope": scope});
         let decision = super::gate_decision(
             &(self.gate)(&check, signal).map_err(|_| MemoryError::code(ErrorCode::OperationError))?,
@@ -367,6 +465,19 @@ impl MemoryService {
         if decision["action"] != "keep" {
             return Err(MemoryError::code(ErrorCode::InvalidInput));
         }
+        Ok(())
+    }
+
+    /// `memory.brief(text, scope, topic?)` (dreaming): writes the startup brief of `scope` (what opens each context
+    /// as the project's or the user's brief), or its topic page `topic`, replacing the one before. Within
+    /// [`page_budget`]; a text holding a secret is refused. `{id, scope, topic}`.
+    pub fn write_page(&self, payload: &Map<String, Value>, signal: &Signal) -> Result<Value> {
+        self.claims_backend()?;
+        let text = payload.get("text").and_then(Value::as_str).unwrap_or_default();
+        let scope = super::scope_of(payload.get("scope").unwrap_or(&json!("project")))?;
+        let topic = payload.get("topic").and_then(Value::as_str);
+        validate_page_input(text, scope, topic)?;
+        self.gate_page(text, scope, signal)?;
         let identity = self.page_identity(scope, payload)?;
         let id = Self::page_id(scope, &identity, topic);
         let mut metadata =

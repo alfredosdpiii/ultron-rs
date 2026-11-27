@@ -61,6 +61,78 @@ fn shown(record: &serde_json::Value, content: &str) -> (String, String) {
     (format!("{pretty}\n\n{content}\nsha256: {sha}"), sha)
 }
 
+fn refuse_decision(verb: &str, why: &str, err: &mut dyn Write) -> Result<i32, String> {
+    writeln!(err, "Error: skills {verb} is the user's decision; {why}.")
+        .map(|()| 1)
+        .map_err(io)
+}
+
+fn confirm_decision(
+    verb: &str,
+    id: &str,
+    record: &serde_json::Value,
+    content: &str,
+    terminal: &mut dyn BufRead,
+    out: &mut dyn Write,
+) -> Result<Option<String>, String> {
+    let (text, sha) = shown(record, content);
+    let question = format!(
+        "{verb} skill proposal {id} ({}, sha256 {})? Type yes to confirm: ",
+        record["name"].as_str().unwrap_or_default(),
+        &sha[..12]
+    );
+    write!(out, "{text}\n\n{question}")
+        .and_then(|()| out.flush())
+        .map_err(io)?;
+    let mut answer = String::new();
+    terminal.read_line(&mut answer).map_err(io)?;
+    Ok(matches!(answer.trim(), "yes" | "y").then_some(sha))
+}
+
+fn apply_decision(
+    verb: &str,
+    id: &str,
+    reason: &[String],
+    paths: &config::paths::AgentPaths,
+    sha: &str,
+) -> Result<String, String> {
+    let dir = paths.skill_proposals();
+    let now = jsrt::date::now_ms() as i64;
+    if verb == "approve" {
+        proposals::approve(&dir, id, &paths.skills_dir(), now, sha)
+            .map(|record| format!("Published {}", record["path"].as_str().unwrap_or_default()))
+    } else {
+        let reason = (!reason.is_empty()).then(|| reason.join(" "));
+        proposals::reject(&dir, id, reason.as_deref(), now).map(|_| format!("Rejected {id}"))
+    }
+}
+
+fn decide(
+    verb: &str,
+    id: &str,
+    reason: &[String],
+    env: &Env,
+    terminal: Option<&mut dyn BufRead>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, String> {
+    let paths = config::paths::AgentPaths::new(env.agent_dir());
+    if kernel::env::inside_kernel(|name| (env.var)(name)) {
+        return refuse_decision(verb, "it does not run inside an Ultron kernel", err);
+    }
+    let Some(terminal) = terminal else {
+        return refuse_decision(verb, "run it at a terminal (stdin is not one)", err);
+    };
+    let (record, content) = match proposals::show(&paths.skill_proposals(), id) {
+        Ok(found) => found,
+        Err(error) => return done(Err(error), out, err),
+    };
+    let Some(sha) = confirm_decision(verb, id, &record, &content, terminal, out)? else {
+        return writeln!(err, "Not confirmed; nothing changed.").map(|()| 1).map_err(io);
+    };
+    done(apply_decision(verb, id, reason, &paths, &sha), out, err)
+}
+
 /// [`run`] with the user's `terminal` (`None`: stdin is not one, and `approve`/`reject` refuse).
 pub fn run_with(
     args: &[String],
@@ -71,54 +143,12 @@ pub fn run_with(
 ) -> Option<Result<i32, String>> {
     let paths = config::paths::AgentPaths::new(env.agent_dir());
     let dir = paths.skill_proposals();
-    let (verb, id, reason) = match args {
+    match args {
         [verb, id, reason @ ..] if verb == "approve" && reason.is_empty() || verb == "reject" => {
-            (verb.as_str(), id.as_str(), reason)
+            Some(decide(verb, id, reason, env, terminal, out, err))
         }
-        _ => return reading(args, &dir, out, err),
-    };
-    let refuse = |why: &str, err: &mut dyn Write| {
-        Some(
-            writeln!(err, "Error: skills {verb} is the user's decision; {why}.")
-                .map(|()| 1)
-                .map_err(io),
-        )
-    };
-    if kernel::env::inside_kernel(|name| (env.var)(name)) {
-        return refuse("it does not run inside an Ultron kernel", err);
+        _ => reading(args, &dir, out, err),
     }
-    let Some(terminal) = terminal else {
-        return refuse("run it at a terminal (stdin is not one)", err);
-    };
-    let (record, content) = match proposals::show(&dir, id) {
-        Ok(found) => found,
-        Err(error) => return Some(done(Err(error), out, err)),
-    };
-    let (text, sha) = shown(&record, &content);
-    let question = format!(
-        "{verb} skill proposal {id} ({}, sha256 {})? Type yes to confirm: ",
-        record["name"].as_str().unwrap_or_default(),
-        &sha[..12]
-    );
-    if let Err(e) = write!(out, "{text}\n\n{question}").and_then(|()| out.flush()) {
-        return Some(Err(io(e)));
-    }
-    let mut answer = String::new();
-    if let Err(e) = terminal.read_line(&mut answer) {
-        return Some(Err(io(e)));
-    }
-    if !matches!(answer.trim(), "yes" | "y") {
-        return Some(writeln!(err, "Not confirmed; nothing changed.").map(|()| 1).map_err(io));
-    }
-    let now = jsrt::date::now_ms() as i64;
-    let result = if verb == "approve" {
-        proposals::approve(&dir, id, &paths.skills_dir(), now, &sha)
-            .map(|record| format!("Published {}", record["path"].as_str().unwrap_or_default()))
-    } else {
-        let reason = (!reason.is_empty()).then(|| reason.join(" "));
-        proposals::reject(&dir, id, reason.as_deref(), now).map(|_| format!("Rejected {id}"))
-    };
-    Some(done(result, out, err))
 }
 
 /// The commands that only read (`proposals`, `show`), help and usage.

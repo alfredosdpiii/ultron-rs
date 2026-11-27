@@ -72,45 +72,51 @@ pub fn clamp_effort(effort: Option<&str>) -> Result<Option<String>, ClaudeError>
     }
 }
 
+fn strip_null_from_type(out: &mut Map<String, Value>) {
+    let Some(Value::Array(types)) = out.get("type") else {
+        return;
+    };
+    let kept: Vec<Value> = types.iter().filter(|t| *t != "null").cloned().collect();
+    if kept.len() < types.len() {
+        let replaced = if kept.len() == 1 {
+            kept[0].clone()
+        } else {
+            Value::Array(kept)
+        };
+        out.insert("type".into(), replaced);
+    }
+}
+
+fn strip_null_from_union(out: &mut Map<String, Value>, key: &str) {
+    let Some(Value::Array(branches)) = out.get(key) else {
+        return;
+    };
+    let is_null = |b: &Value| b.get("type").is_some_and(|t| t == "null") && b.as_object().is_some_and(|m| m.len() == 1);
+    let kept: Vec<Value> = branches.iter().filter(|b| !is_null(b)).cloned().collect();
+    if kept.len() == branches.len() || kept.is_empty() {
+        return;
+    }
+    if kept.len() == 1 {
+        out.shift_remove(key);
+        if let Value::Object(single) = &kept[0] {
+            for (k, v) in single {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+    } else {
+        out.insert(key.into(), Value::Array(kept));
+    }
+}
+
 /// Drop the `null` branch of nullable unions (and `null` from type lists) everywhere in `schema`.
 fn strip_nullable_unions(schema: &Value) -> Value {
     match schema {
         Value::Array(items) => Value::Array(items.iter().map(strip_nullable_unions).collect()),
         Value::Object(map) => {
             let mut out: Map<String, Value> = map.iter().map(|(k, v)| (k.clone(), strip_nullable_unions(v))).collect();
-            if let Some(Value::Array(types)) = out.get("type") {
-                let kept: Vec<Value> = types.iter().filter(|t| *t != "null").cloned().collect();
-                if kept.len() < types.len() {
-                    let replaced = if kept.len() == 1 {
-                        kept[0].clone()
-                    } else {
-                        Value::Array(kept)
-                    };
-                    out.insert("type".into(), replaced);
-                }
-            }
-            for key in ["anyOf", "oneOf"] {
-                let Some(Value::Array(branches)) = out.get(key) else {
-                    continue;
-                };
-                let is_null = |b: &Value| {
-                    b.get("type").is_some_and(|t| t == "null") && b.as_object().is_some_and(|m| m.len() == 1)
-                };
-                let kept: Vec<Value> = branches.iter().filter(|b| !is_null(b)).cloned().collect();
-                if kept.len() == branches.len() || kept.is_empty() {
-                    continue;
-                }
-                if kept.len() == 1 {
-                    out.shift_remove(key);
-                    if let Value::Object(single) = &kept[0] {
-                        for (k, v) in single {
-                            out.insert(k.clone(), v.clone());
-                        }
-                    }
-                } else {
-                    out.insert(key.into(), Value::Array(kept));
-                }
-            }
+            strip_null_from_type(&mut out);
+            strip_null_from_union(&mut out, "anyOf");
+            strip_null_from_union(&mut out, "oneOf");
             Value::Object(out)
         }
         other => other.clone(),
@@ -137,51 +143,64 @@ pub fn normalize_input_schema(schema: &Value) -> Value {
     normalized
 }
 
-/// The extra body and the inert manifest (`request_body`). The only tool that may be advertised is `rlm`.
-pub fn request_body(params: &BodyParams<'_>) -> Result<Body, ClaudeError> {
-    let invalid = |message: &str| ClaudeError::Invalid(message.to_string());
-    let mut body = Map::new();
-    if let Some(reasoning) = &params.reasoning {
-        let effort = clamp_effort(reasoning.effort.as_deref())?;
-        if reasoning.enabled == Some(false) || effort.as_deref() == Some("none") {
-            if accepts_thinking_disable(params.model) {
-                body.insert("thinking".into(), json!({"type": "disabled"}));
-                body.insert("context_management".into(), json!({"edits": []}));
-            } else {
-                body.insert("output_config".into(), json!({"effort": "low"}));
-            }
+fn apply_reasoning(body: &mut Map<String, Value>, model: &str, reasoning: &Reasoning) -> Result<(), ClaudeError> {
+    let effort = clamp_effort(reasoning.effort.as_deref())?;
+    if reasoning.enabled == Some(false) || effort.as_deref() == Some("none") {
+        if accepts_thinking_disable(model) {
+            body.insert("thinking".into(), json!({"type": "disabled"}));
+            body.insert("context_management".into(), json!({"edits": []}));
         } else {
-            if reasoning.enabled == Some(true) && supports_adaptive_thinking(params.model) {
-                body.insert("thinking".into(), json!({"type": "adaptive", "display": "summarized"}));
-            }
-            if let Some(effort) = effort {
-                body.insert("output_config".into(), json!({"effort": effort}));
-            }
+            body.insert("output_config".into(), json!({"effort": "low"}));
         }
+        return Ok(());
     }
+    if reasoning.enabled == Some(true) && supports_adaptive_thinking(model) {
+        body.insert("thinking".into(), json!({"type": "adaptive", "display": "summarized"}));
+    }
+    if let Some(effort) = effort {
+        body.insert("output_config".into(), json!({"effort": effort}));
+    }
+    Ok(())
+}
+
+fn apply_generation_options(body: &mut Map<String, Value>, params: &BodyParams<'_>) -> Result<(), ClaudeError> {
     if let Some(schema) = &params.json_schema {
         if !schema.is_object() {
-            return Err(invalid("response_format requires a JSON Schema object"));
+            return Err(ClaudeError::Invalid(
+                "response_format requires a JSON Schema object".into(),
+            ));
         }
         let config = body.entry("output_config").or_insert_with(|| json!({}));
         config["format"] = json!({"type": "json_schema", "schema": schema});
     }
     if let Some(max_tokens) = params.max_tokens {
         if max_tokens < 1 {
-            return Err(invalid("max_tokens must be a positive integer"));
+            return Err(ClaudeError::Invalid("max_tokens must be a positive integer".into()));
         }
         body.insert("max_tokens".into(), json!(max_tokens));
     }
     if let Some(stop) = &params.stop_sequences {
         if stop.iter().any(String::is_empty) {
-            return Err(invalid("stop_sequences must be a list of nonempty strings"));
+            return Err(ClaudeError::Invalid(
+                "stop_sequences must be a list of nonempty strings".into(),
+            ));
         }
         body.insert("stop_sequences".into(), json!(stop));
     }
+    Ok(())
+}
+
+struct ToolEntries {
+    manifest: Vec<Value>,
+    offered: Vec<Value>,
+    names: BTreeSet<String>,
+}
+
+fn build_tool_entries(tools: &[Tool]) -> Result<ToolEntries, ClaudeError> {
     let mut manifest = Vec::new();
-    let mut tools = Vec::new();
+    let mut offered = Vec::new();
     let mut names = BTreeSet::new();
-    for tool in params.tools {
+    for tool in tools {
         if tool.name != TOOL {
             return Err(ClaudeError::Invalid(format!(
                 "claude-subscription advertises exactly one tool, `{TOOL}`; refusing to advertise `{}`",
@@ -189,17 +208,38 @@ pub fn request_body(params: &BodyParams<'_>) -> Result<Body, ClaudeError> {
             )));
         }
         if !names.insert(tool.name.clone()) {
-            return Err(invalid("Tool names must be unique"));
+            return Err(ClaudeError::Invalid("Tool names must be unique".into()));
         }
         if !tool.parameters.is_object() {
-            return Err(invalid("Tool schema must be an object and description a string"));
+            return Err(ClaudeError::Invalid(
+                "Tool schema must be an object and description a string".into(),
+            ));
         }
         let schema = normalize_input_schema(&tool.parameters);
         manifest.push(json!({"name": tool.name, "description": tool.description, "inputSchema": schema}));
-        tools.push(
+        offered.push(
             json!({"name": format!("{PREFIX}{}", tool.name), "description": tool.description, "input_schema": schema}),
         );
     }
+    Ok(ToolEntries {
+        manifest,
+        offered,
+        names,
+    })
+}
+
+/// The extra body and the inert manifest (`request_body`). The only tool that may be advertised is `rlm`.
+pub fn request_body(params: &BodyParams<'_>) -> Result<Body, ClaudeError> {
+    let mut body = Map::new();
+    if let Some(reasoning) = &params.reasoning {
+        apply_reasoning(&mut body, params.model, reasoning)?;
+    }
+    apply_generation_options(&mut body, params)?;
+    let ToolEntries {
+        manifest,
+        offered: tools,
+        names,
+    } = build_tool_entries(params.tools)?;
     body.insert("tools".into(), Value::Array(tools));
     let encoded = serde_json::to_string(&Value::Object(body)).map_err(|e| ClaudeError::Invalid(e.to_string()))?;
     Ok(Body {
@@ -288,77 +328,95 @@ fn push(frames: &mut Vec<Value>, role: &str, blocks: Vec<Value>) {
     frames.push(json!({"type": role, "message": {"role": role, "content": blocks}}));
 }
 
+fn assistant_blocks(assistant: &AssistantMessage, names: &BTreeSet<String>) -> Vec<Value> {
+    let mut blocks = Vec::new();
+    for block in &assistant.content {
+        match block {
+            AssistantContent::Text(t) if !t.text.trim().is_empty() => {
+                blocks.push(json!({"type": "text", "text": t.text}));
+            }
+            AssistantContent::ToolCall(call) => {
+                let name = if names.contains(&call.name) {
+                    format!("{PREFIX}{}", call.name)
+                } else {
+                    call.name.clone()
+                };
+                let input = if call.arguments.is_object() {
+                    call.arguments.clone()
+                } else {
+                    json!({})
+                };
+                blocks.push(json!({"type": "tool_use", "id": call.id, "name": name, "input": input}));
+            }
+            _ => {}
+        }
+    }
+    blocks
+}
+
+fn push_assistant_frame(
+    frames: &mut Vec<Value>,
+    assistant: &AssistantMessage,
+    names: &BTreeSet<String>,
+) -> Result<(), ClaudeError> {
+    if let Some(native) = carried(assistant)? {
+        for mut message in native {
+            if let Some(obj) = message.as_object_mut() {
+                obj.shift_remove("usage");
+            }
+            frames.push(json!({"type": "assistant", "message": message}));
+        }
+        return Ok(());
+    }
+    push(frames, "assistant", assistant_blocks(assistant, names));
+    Ok(())
+}
+
+fn push_tool_result_frame(frames: &mut Vec<Value>, result: &crate::types::ToolResultMessage) {
+    let mut block = json!({"type": "tool_result", "tool_use_id": result.tool_call_id});
+    match &result.content[..] {
+        [] => {}
+        [UserContent::Text(t)] => block["content"] = json!(t.text),
+        content => block["content"] = Value::Array(user_blocks(content)),
+    }
+    if result.is_error {
+        block["is_error"] = json!(true);
+    }
+    push(frames, "user", vec![block]);
+}
+
+fn push_user_frame(frames: &mut Vec<Value>, user: &crate::types::UserMessage) {
+    let blocks = match &user.content {
+        UserMessageContent::Text(text) if text.is_empty() => Vec::new(),
+        UserMessageContent::Text(text) => vec![json!({"type": "text", "text": text})],
+        UserMessageContent::Blocks(blocks) => user_blocks(blocks),
+    };
+    push(frames, "user", blocks);
+}
+
+fn push_message_frame(frames: &mut Vec<Value>, message: &Message, names: &BTreeSet<String>) -> Result<(), ClaudeError> {
+    match message {
+        Message::System(system) if !frames.is_empty() => {
+            let text = render_system_message_update(system);
+            if !text.is_empty() {
+                push(frames, "user", vec![json!({"type": "text", "text": text})]);
+            }
+        }
+        Message::System(_) => {}
+        Message::User(user) => push_user_frame(frames, user),
+        Message::Assistant(assistant) => push_assistant_frame(frames, assistant, names)?,
+        Message::ToolResult(result) => push_tool_result_frame(frames, result),
+    }
+    Ok(())
+}
+
 /// Stream-json frames for `messages` (the transcript after the leading system messages, already transformed for
 /// the target model). A later system message replays in place as user text, so the system prompt stays the
 /// conversation's stable prefix. `names` are the advertised host tool names.
 pub fn prepare_history(messages: &[Message], names: &BTreeSet<String>) -> Result<Vec<Value>, ClaudeError> {
     let mut frames: Vec<Value> = Vec::new();
     for message in messages {
-        match message {
-            Message::System(system) => {
-                if frames.is_empty() {
-                    continue;
-                }
-                let text = render_system_message_update(system);
-                if !text.is_empty() {
-                    push(&mut frames, "user", vec![json!({"type": "text", "text": text})]);
-                }
-            }
-            Message::User(user) => {
-                let blocks = match &user.content {
-                    UserMessageContent::Text(text) if text.is_empty() => Vec::new(),
-                    UserMessageContent::Text(text) => vec![json!({"type": "text", "text": text})],
-                    UserMessageContent::Blocks(blocks) => user_blocks(blocks),
-                };
-                push(&mut frames, "user", blocks);
-            }
-            Message::Assistant(assistant) => {
-                if let Some(native) = carried(assistant)? {
-                    for mut message in native {
-                        if let Some(obj) = message.as_object_mut() {
-                            obj.shift_remove("usage");
-                        }
-                        frames.push(json!({"type": "assistant", "message": message}));
-                    }
-                    continue;
-                }
-                let mut blocks = Vec::new();
-                for block in &assistant.content {
-                    match block {
-                        AssistantContent::Text(t) if !t.text.trim().is_empty() => {
-                            blocks.push(json!({"type": "text", "text": t.text}));
-                        }
-                        AssistantContent::ToolCall(call) => {
-                            let name = if names.contains(&call.name) {
-                                format!("{PREFIX}{}", call.name)
-                            } else {
-                                call.name.clone()
-                            };
-                            let input = if call.arguments.is_object() {
-                                call.arguments.clone()
-                            } else {
-                                json!({})
-                            };
-                            blocks.push(json!({"type": "tool_use", "id": call.id, "name": name, "input": input}));
-                        }
-                        _ => {}
-                    }
-                }
-                push(&mut frames, "assistant", blocks);
-            }
-            Message::ToolResult(result) => {
-                let mut block = json!({"type": "tool_result", "tool_use_id": result.tool_call_id});
-                match &result.content[..] {
-                    [] => {}
-                    [UserContent::Text(t)] => block["content"] = json!(t.text),
-                    content => block["content"] = Value::Array(user_blocks(content)),
-                }
-                if result.is_error {
-                    block["is_error"] = json!(true);
-                }
-                push(&mut frames, "user", vec![block]);
-            }
-        }
+        push_message_frame(&mut frames, message, names)?;
     }
     let ends_in_user = frames
         .last()

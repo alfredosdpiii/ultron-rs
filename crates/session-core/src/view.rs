@@ -90,34 +90,40 @@ impl Totals {
     }
 }
 
-/// `getSessionStats()`: totals over every entry, compacted and abandoned history included.
-pub fn stats(manager: &SessionManager, session_file: Option<&str>, session_id: &str, context_window: u64) -> Value {
-    let (mut users, mut assistants, mut tool_results, mut total, mut tool_calls) = (0, 0, 0, 0, 0);
-    let mut totals = Totals::default();
-    for entry in manager.entries() {
+#[derive(Default)]
+struct MessageCounts {
+    users: usize,
+    assistants: usize,
+    tool_results: usize,
+    total: usize,
+    tool_calls: usize,
+}
+
+impl MessageCounts {
+    fn observe_entry(&mut self, entry: &Value, totals: &mut Totals) {
         match str_of(entry, "type") {
             Some("usage") => totals.add(&entry["usage"]),
             Some("branch_summary" | "compaction") if entry.get("usage").is_some_and(|u| !u.is_null()) => {
                 totals.add(&entry["usage"]);
             }
+            Some("message") => self.observe_message(&entry["message"], totals),
             _ => {}
         }
-        if str_of(entry, "type") != Some("message") {
-            continue;
-        }
-        total += 1;
-        let message = &entry["message"];
+    }
+
+    fn observe_message(&mut self, message: &Value, totals: &mut Totals) {
+        self.total += 1;
         match str_of(message, "role") {
-            Some("user") => users += 1,
+            Some("user") => self.users += 1,
             Some("toolResult") => {
-                tool_results += 1;
+                self.tool_results += 1;
                 if let Some(usage) = message.get("usage").filter(|u| !u.is_null()) {
                     totals.add(usage);
                 }
             }
             Some("assistant") => {
-                assistants += 1;
-                tool_calls += message["content"]
+                self.assistants += 1;
+                self.tool_calls += message["content"]
                     .as_array()
                     .map_or(0, |c| c.iter().filter(|b| b["type"] == "toolCall").count());
                 totals.add(&message["usage"]);
@@ -125,16 +131,25 @@ pub fn stats(manager: &SessionManager, session_file: Option<&str>, session_id: &
             _ => {}
         }
     }
+}
+
+/// `getSessionStats()`: totals over every entry, compacted and abandoned history included.
+pub fn stats(manager: &SessionManager, session_file: Option<&str>, session_id: &str, context_window: u64) -> Value {
+    let mut counts = MessageCounts::default();
+    let mut totals = Totals::default();
+    for entry in manager.entries() {
+        counts.observe_entry(entry, &mut totals);
+    }
     let mut out = Map::new();
     if let Some(file) = session_file {
         out.insert("sessionFile".into(), file.into());
     }
     out.insert("sessionId".into(), session_id.into());
-    out.insert("userMessages".into(), users.into());
-    out.insert("assistantMessages".into(), assistants.into());
-    out.insert("toolCalls".into(), tool_calls.into());
-    out.insert("toolResults".into(), tool_results.into());
-    out.insert("totalMessages".into(), total.into());
+    out.insert("userMessages".into(), counts.users.into());
+    out.insert("assistantMessages".into(), counts.assistants.into());
+    out.insert("toolCalls".into(), counts.tool_calls.into());
+    out.insert("toolResults".into(), counts.tool_results.into());
+    out.insert("totalMessages".into(), counts.total.into());
     out.insert(
         "tokens".into(),
         json!({

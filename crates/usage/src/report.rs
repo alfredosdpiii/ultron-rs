@@ -311,6 +311,83 @@ fn cells_value(cells: &Cells) -> Value {
     json!({"count": jsrt::json::number(cells.count), "failed": jsrt::json::number(cells.failed), "apis": apis_value(&cells.apis)})
 }
 
+fn first_activity_at(log: &SessionLog, usage_roots: &Map<String, Value>) -> f64 {
+    let mut first = f64::INFINITY;
+    let mut record_at = |at: Option<f64>| {
+        if let Some(at) = at
+            && at > 0.0
+            && at < first
+        {
+            first = at;
+        }
+    };
+    for entry in &log.entries {
+        record_at(Some(entry.timestamp));
+    }
+    for op in log.operations.values() {
+        record_at(Some(op.started_at));
+    }
+    for root in usage_roots.values() {
+        record_at(root.get("startedAt").and_then(Value::as_f64));
+    }
+    first
+}
+
+fn has_external_marks(name: Option<&str>, usage_roots: &Map<String, Value>) -> bool {
+    name == Some("claude code")
+        || name.is_some_and(|n| n.starts_with("claude subagent ("))
+        || usage_roots.keys().any(|id| id.starts_with("turn:cc-"))
+}
+
+fn detect_mode(
+    log: &SessionLog,
+    main_entries: &[&LogEntry],
+    stats: Option<&Stats>,
+    external_marks: bool,
+) -> &'static str {
+    if stats.is_some_and(|s| s.external) || (stats.is_none() && main_entries.is_empty() && external_marks) {
+        return "ultron claude";
+    }
+    let has_claude_code_assistant = main_entries
+        .iter()
+        .any(|e| e.kind == EntryKind::Assistant && e.provider.as_deref() == Some(config::providers::CLAUDE_CODE));
+    if !log.values_of("ultron.claude-code.lanes").is_empty() || has_claude_code_assistant {
+        "ultron --claude"
+    } else {
+        "ultron"
+    }
+}
+
+fn sorted_root_models(root_models: IndexMap<String, f64>) -> Vec<Value> {
+    let mut list: Vec<(String, f64)> = root_models.into_iter().collect();
+    list.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| jsrt::collate::locale_compare(&a.0, &b.0))
+    });
+    list.into_iter()
+        .map(|(model, responses)| json!({"model": model, "responses": jsrt::json::number(responses)}))
+        .collect()
+}
+
+fn sorted_model_buckets(models: &IndexMap<String, Bucket>) -> Vec<Value> {
+    let mut list: Vec<(String, Bucket)> = models.clone().into_iter().collect();
+    list.sort_by(|a, b| {
+        b.1.total_tokens
+            .partial_cmp(&a.1.total_tokens)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| jsrt::collate::locale_compare(&a.0, &b.0))
+    });
+    list.into_iter()
+        .map(|(model, bucket)| {
+            let mut map = Map::new();
+            map.insert("model".into(), Value::String(model));
+            map.extend(bucket.fields());
+            Value::Object(map)
+        })
+        .collect()
+}
+
 /// Build the report from a session file's digest, given the providers whose costs are notional besides Claude Code
 /// (`subscriptionProviders`: every provider the session's runtime reaches through a subscription login).
 pub fn build_session_report(log: &SessionLog, subscription_providers: &[String]) -> Value {
@@ -320,15 +397,8 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
         .collect();
     let mut unrecorded = Map::new();
     let tasks = tasks_of(log);
-    let mut task_by_id: HashMap<&str, &Task> = HashMap::new();
-    for task in &tasks {
-        task_by_id.insert(&task.id, task);
-    }
-
-    let mut entry_by_id: HashMap<&str, &LogEntry> = HashMap::new();
-    for entry in &log.entries {
-        entry_by_id.insert(&entry.id, entry);
-    }
+    let task_by_id: HashMap<&str, &Task> = tasks.iter().map(|t| (t.id.as_str(), t)).collect();
+    let entry_by_id: HashMap<&str, &LogEntry> = log.entries.iter().map(|e| (e.id.as_str(), e)).collect();
     let sections::LaneAttribution { lanes, lane_models } = sections::resolve_lanes(log, &entry_by_id);
 
     let main_entries: Vec<&LogEntry> = log
@@ -347,43 +417,12 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
     let empty_roots = Map::new();
     let ledger = log.usage_ledger();
     let usage_roots = record(ledger.as_ref().and_then(|u| u.get("roots"))).unwrap_or(&empty_roots);
-    let external_marks = name == Some("claude code")
-        || name.is_some_and(|n| n.starts_with("claude subagent ("))
-        || usage_roots.keys().any(|id| id.starts_with("turn:cc-"));
-    let mut first_activity = f64::INFINITY;
-    let mut happened = |at: Option<f64>| {
-        if let Some(at) = at
-            && at > 0.0
-            && at < first_activity
-        {
-            first_activity = at;
-        }
-    };
-    for entry in &log.entries {
-        happened(Some(entry.timestamp));
-    }
-    for op in log.operations.values() {
-        happened(Some(op.started_at));
-    }
-    for root in usage_roots.values() {
-        happened(root.get("startedAt").and_then(Value::as_f64));
-    }
+    let external_marks = has_external_marks(name, usage_roots);
+    let first_activity = first_activity_at(log, usage_roots);
     let nothing_ran = first_activity == f64::INFINITY && tasks.is_empty() && !external_marks;
     let stats: Option<Stats> = parse_session_stats(log.value(ns::MODULE, SESSION_STATS_MODULE))
         .or_else(|| nothing_ran.then(|| Stats::empty(log.header.created_at)));
-    let mode = if stats.as_ref().is_some_and(|s| s.external)
-        || (stats.is_none() && main_entries.is_empty() && external_marks)
-    {
-        "ultron claude"
-    } else if !log.values_of("ultron.claude-code.lanes").is_empty()
-        || main_entries
-            .iter()
-            .any(|e| e.kind == EntryKind::Assistant && e.provider.as_deref() == Some(config::providers::CLAUDE_CODE))
-    {
-        "ultron --claude"
-    } else {
-        "ultron"
-    };
+    let mode = detect_mode(log, &main_entries, stats.as_ref(), external_marks);
     let external = mode == "ultron claude";
     let stats_cover = stats
         .as_ref()
@@ -440,19 +479,6 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
         );
     }
 
-    let mut root_model_list: Vec<(String, f64)> = root_models.into_iter().collect();
-    root_model_list.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| jsrt::collate::locale_compare(&a.0, &b.0))
-    });
-    let mut models: Vec<(String, Bucket)> = buckets.models.clone().into_iter().collect();
-    models.sort_by(|a, b| {
-        b.1.total_tokens
-            .partial_cmp(&a.1.total_tokens)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| jsrt::collate::locale_compare(&a.0, &b.0))
-    });
     json!({
         "schema": SESSION_REPORT_SCHEMA,
         "session": {
@@ -468,10 +494,7 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
         "mode": mode,
         "turns": turns,
         "root": {
-            "models": root_model_list
-                .into_iter()
-                .map(|(model, responses)| json!({"model": model, "responses": jsrt::json::number(responses)}))
-                .collect::<Vec<_>>(),
+            "models": sorted_root_models(root_models),
         },
         "cells": cells,
         "depth": depth,
@@ -482,15 +505,7 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
                 "subagents": buckets.lanes[2].fields(),
                 "other": buckets.lanes[3].fields(),
             },
-            "models": models
-                .into_iter()
-                .map(|(model, bucket)| {
-                    let mut map = Map::new();
-                    map.insert("model".into(), Value::String(model));
-                    map.extend(bucket.fields());
-                    Value::Object(map)
-                })
-                .collect::<Vec<_>>(),
+            "models": sorted_model_buckets(&buckets.models),
             "total": buckets.total.fields(),
         },
         "guardrails": guardrails,

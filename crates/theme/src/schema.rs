@@ -223,17 +223,24 @@ fn object<'a>(errors: &mut Errors, path: &str, value: &'a Value) -> Option<&'a M
     obj
 }
 
+fn check_color_fields(errors: &mut Errors, obj: &Map<String, Value>, prefix: &str, keys: &[&str]) {
+    for key in keys {
+        if let Some(value) = obj.get(*key) {
+            errors.color(&format!("{prefix}/{key}"), value);
+        }
+    }
+}
+
 fn schema_errors(json: &Value) -> Errors {
     let mut errors = Errors::default();
     let Some(root) = object(&mut errors, "/", json) else {
         return errors;
     };
     errors.required("/", root, &["name", "colors"]);
-    if let Some(v) = root.get("$schema") {
-        errors.string("/$schema", v);
-    }
-    if let Some(v) = root.get("name") {
-        errors.string("/name", v);
+    for (field, path) in [("$schema", "/$schema"), ("name", "/name")] {
+        if let Some(v) = root.get(field) {
+            errors.string(path, v);
+        }
     }
     if let Some(vars) = root.get("vars").and_then(|v| object(&mut errors, "/vars", v)) {
         for (key, value) in vars {
@@ -242,18 +249,10 @@ fn schema_errors(json: &Value) -> Errors {
     }
     if let Some(colors) = root.get("colors").and_then(|v| object(&mut errors, "/colors", v)) {
         errors.required("/colors", colors, &REQUIRED_COLORS);
-        for key in SCHEMA_COLORS {
-            if let Some(value) = colors.get(key) {
-                errors.color(&format!("/colors/{key}"), value);
-            }
-        }
+        check_color_fields(&mut errors, colors, "/colors", &SCHEMA_COLORS);
     }
     if let Some(export) = root.get("export").and_then(|v| object(&mut errors, "/export", v)) {
-        for key in ["pageBg", "cardBg", "infoBg"] {
-            if let Some(value) = export.get(key) {
-                errors.color(&format!("/export/{key}"), value);
-            }
-        }
+        check_color_fields(&mut errors, export, "/export", &["pageBg", "cardBg", "infoBg"]);
     }
     errors.0.truncate(MAX_ERRORS);
     errors

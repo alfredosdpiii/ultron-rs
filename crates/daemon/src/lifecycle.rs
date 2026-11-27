@@ -111,6 +111,21 @@ impl Lifecycle {
         }
     }
 
+    fn spawn_lapse_timer(self: &Arc<Self>, key: String, token: u64) {
+        let weak: Weak<Lifecycle> = Arc::downgrade(self);
+        let delay = self.orphan_grace;
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            if let Some(this) = weak.upgrade() {
+                let mut inner = this.lock();
+                if inner.demands.get(&key).and_then(|d| d.lapsing) == Some(token) {
+                    inner.demands.remove(&key);
+                    this.reconcile(inner);
+                }
+            }
+        });
+    }
+
     pub fn server_disconnected(self: &Arc<Self>, server: &str) {
         let mut inner = self.lock();
         let rearm = inner.owner.as_deref() == Some(server) && inner.initial_timer.is_some();
@@ -132,18 +147,7 @@ impl Lifecycle {
             self.arm_initial(self.orphan_grace);
         }
         for (key, token) in lapsing {
-            let weak: Weak<Lifecycle> = Arc::downgrade(self);
-            let delay = self.orphan_grace;
-            std::thread::spawn(move || {
-                std::thread::sleep(delay);
-                if let Some(this) = weak.upgrade() {
-                    let mut inner = this.lock();
-                    if inner.demands.get(&key).and_then(|d| d.lapsing) == Some(token) {
-                        inner.demands.remove(&key);
-                        this.reconcile(inner);
-                    }
-                }
-            });
+            self.spawn_lapse_timer(key, token);
         }
     }
 

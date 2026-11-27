@@ -99,29 +99,25 @@ impl SessionsModule {
         Ok(json!({"sessions": sessions, "current": self.session_id}))
     }
 
-    fn search(&self, payload: &Map<String, Value>, request: &Request<'_>) -> Result<Value, String> {
-        let ignore_case = match payload.get("ignore_case") {
-            None => true,
-            Some(Value::Bool(yes)) => *yes,
-            _ => return Err("sessions.search ignore_case must be True or False".into()),
-        };
-        let matcher = match (payload.get("pattern"), payload.get("terms")) {
-            (Some(Value::String(pattern)), None) if !pattern.is_empty() => Matcher::pattern(pattern, ignore_case)?,
-            (None, Some(terms)) => Matcher::terms(&strings(Some(terms), "terms")?)?,
-            _ => return Err("sessions.search takes a pattern or terms".into()),
-        };
-        let query = Query {
+    fn build_query(&self, payload: &Map<String, Value>) -> Result<Query, String> {
+        let matcher = parse_matcher(payload)?;
+        let (limit, per_session, snippet) = parse_search_limits(payload)?;
+        Ok(Query {
             matcher,
             cwd: self.scope(payload)?,
             sessions: strings(payload.get("sessions"), "sessions")?,
             since_ms: self.since(payload)?,
             branch: branch(payload)?,
             roles: strings(payload.get("roles"), "roles")?,
-            limit: count(payload, "limit", DEFAULT_LIMIT, 1)?.min(MAX_LIMIT),
-            per_session: count(payload, "per_session", DEFAULT_PER_SESSION, 1)?.min(MAX_LIMIT),
-            snippet: count(payload, "snippet", DEFAULT_SNIPPET, 1)?,
+            limit,
+            per_session,
+            snippet,
             max_bytes: self.max_bytes,
-        };
+        })
+    }
+
+    fn search(&self, payload: &Map<String, Value>, request: &Request<'_>) -> Result<Value, String> {
+        let query = self.build_query(payload)?;
         let found = search::grep(&self.roots, &query, &|| request.signal.is_aborted());
         let hits: Vec<Value> = found
             .hits
@@ -150,13 +146,8 @@ impl SessionsModule {
         }))
     }
 
-    fn read(&self, payload: &Map<String, Value>) -> Result<Value, String> {
-        let text = |key: &str| match payload.get(key) {
-            None | Some(Value::Null) => Ok(None),
-            Some(Value::String(text)) if !text.is_empty() => Ok(Some(text.clone())),
-            _ => Err(format!("sessions.read {key} must be a nonempty string")),
-        };
-        let span = match text("span")? {
+    fn parse_span(&self, payload: &Map<String, Value>) -> Result<SpanRef, String> {
+        match optional_text(payload, "span")? {
             Some(span) => {
                 if ["session", "from_entry", "to_entry"]
                     .iter()
@@ -164,28 +155,34 @@ impl SessionsModule {
                 {
                     return Err("sessions.read takes a span or session/from_entry/to_entry, not both".into());
                 }
-                SpanRef::parse(&span)?
+                SpanRef::parse(&span)
             }
-            None => SpanRef {
-                session: text("session")?.unwrap_or_else(|| self.session_id.clone()),
-                from: text("from_entry")?,
-                to: text("to_entry")?,
-            },
-        };
+            None => Ok(SpanRef {
+                session: optional_text(payload, "session")?.unwrap_or_else(|| self.session_id.clone()),
+                from: optional_text(payload, "from_entry")?,
+                to: optional_text(payload, "to_entry")?,
+            }),
+        }
+    }
+
+    fn build_read_query(&self, payload: &Map<String, Value>) -> Result<ReadQuery, String> {
+        let span = self.parse_span(payload)?;
         let lane = match branch(payload)? {
             Branch::Lane(lane) => lane,
             Branch::All => return Err("sessions.read reads one branch: a lane name, not \"all\"".into()),
         };
-        let read = search::read(
-            &self.roots,
-            &ReadQuery {
-                span,
-                lane,
-                around: count(payload, "around", 0, 0)?,
-                limit: count(payload, "limit", DEFAULT_READ_LIMIT, 1)?,
-                tool_chars: count(payload, "tool_chars", DEFAULT_TOOL_CHARS, 1)?,
-            },
-        )?;
+        Ok(ReadQuery {
+            span,
+            lane,
+            around: count(payload, "around", 0, 0)?,
+            limit: count(payload, "limit", DEFAULT_READ_LIMIT, 1)?,
+            tool_chars: count(payload, "tool_chars", DEFAULT_TOOL_CHARS, 1)?,
+        })
+    }
+
+    fn read(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        let query = self.build_read_query(payload)?;
+        let read = search::read(&self.roots, &query)?;
         let m = &read.metadata;
         Ok(json!({
             "session": {
@@ -202,6 +199,34 @@ impl SessionsModule {
             "entries": read.entries.iter().map(entry).collect::<Vec<_>>(),
             "truncated": read.truncated,
         }))
+    }
+}
+
+fn parse_matcher(payload: &Map<String, Value>) -> Result<Matcher, String> {
+    let ignore_case = match payload.get("ignore_case") {
+        None => true,
+        Some(Value::Bool(yes)) => *yes,
+        _ => return Err("sessions.search ignore_case must be True or False".into()),
+    };
+    match (payload.get("pattern"), payload.get("terms")) {
+        (Some(Value::String(pattern)), None) if !pattern.is_empty() => Matcher::pattern(pattern, ignore_case),
+        (None, Some(terms)) => Matcher::terms(&strings(Some(terms), "terms")?),
+        _ => Err("sessions.search takes a pattern or terms".into()),
+    }
+}
+
+fn parse_search_limits(payload: &Map<String, Value>) -> Result<(usize, usize, usize), String> {
+    let limit = count(payload, "limit", DEFAULT_LIMIT, 1)?.min(MAX_LIMIT);
+    let per_session = count(payload, "per_session", DEFAULT_PER_SESSION, 1)?.min(MAX_LIMIT);
+    let snippet = count(payload, "snippet", DEFAULT_SNIPPET, 1)?;
+    Ok((limit, per_session, snippet))
+}
+
+fn optional_text(payload: &Map<String, Value>, key: &str) -> Result<Option<String>, String> {
+    match payload.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) if !text.is_empty() => Ok(Some(text.clone())),
+        _ => Err(format!("sessions.read {key} must be a nonempty string")),
     }
 }
 

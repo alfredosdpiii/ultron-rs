@@ -12,6 +12,12 @@ use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+mod history;
+mod validation;
+
+use history::{call_from, fold_root, last_activity, normalize_measurement};
+use validation::{finite_integer, invalid, validate_document};
+
 pub const MAX_ADMITTED_TASKS_ENV: &str = "ULTRON_MAX_ADMITTED_TASKS";
 pub const MAX_COST_USD_ENV: &str = "ULTRON_MAX_COST_USD";
 pub const MAX_TOTAL_TOKENS_ENV: &str = "ULTRON_MAX_TOTAL_TOKENS";
@@ -50,29 +56,46 @@ pub struct UsageLimits {
     pub max_calls: BTreeMap<String, u64>,
 }
 
+fn is_unlimited_text(raw: &str) -> bool {
+    ["none", "off", "unlimited"].contains(&raw.to_lowercase().as_str())
+}
+
+fn parse_env_integer(
+    var: &dyn Fn(&str) -> Option<String>,
+    name: &str,
+    fallback: Option<u64>,
+    minimum: u64,
+) -> Option<u64> {
+    let text = var(name).map_or_default(|t| t.trim().to_string());
+    if text.is_empty() {
+        return fallback;
+    }
+    if is_unlimited_text(&text) {
+        return None;
+    }
+    match text.parse::<f64>() {
+        Ok(n) if jsrt::number::is_safe_integer(n) && n >= minimum as f64 => Some(n as u64),
+        _ => fallback,
+    }
+}
+
+fn parse_positive_setting(settings: &Value, key: &str) -> Option<u64> {
+    settings
+        .get(key)
+        .and_then(Value::as_f64)
+        .filter(|n| n.fract() == 0.0 && *n >= 1.0)
+        .map(|n| n as u64)
+}
+
 /// `nativeUsageLimitsFromEnv(env, settings)`: `settings` is `rootBudget` ({maxTotalTokens?, maxTotalTurns?}). Rust
 /// adds `maxTotalTokens: "off"` (any case, or none/unlimited): no token cap, as `ULTRON_MAX_TOTAL_TOKENS=off`; a set
 /// variable still wins. Unset is TypeScript's default cap; the app passes `"off"` for it ([`root_budget_settings`]).
 /// Rust adds per-kind call ceilings: `maxCalls: {task?, model?}` (positive integers), each overridden by its variable
 /// ([`MAX_TASK_CALLS_ENV`], [`MAX_MODEL_CALLS_ENV`]; `off` removes it).
 pub fn limits_from_env(var: &dyn Fn(&str) -> Option<String>, settings: &Value) -> UsageLimits {
-    let unlimited = |raw: &str| ["none", "off", "unlimited"].contains(&raw.to_lowercase().as_str());
-    let integer = |name: &str, fallback: Option<u64>, minimum: u64| -> Option<u64> {
-        let text = var(name).map_or_default(|t| t.trim().to_string());
-        if text.is_empty() {
-            return fallback;
-        }
-        if unlimited(&text) {
-            return None;
-        }
-        match text.parse::<f64>() {
-            Ok(n) if jsrt::number::is_safe_integer(n) && n >= minimum as f64 => Some(n as u64),
-            _ => fallback,
-        }
-    };
     let mut limits = UsageLimits {
-        max_admitted_tasks: integer(MAX_ADMITTED_TASKS_ENV, Some(DEFAULT_MAX_ADMITTED_TASKS), 0),
-        max_wall_ms: integer(MAX_WALL_MS_ENV, Some(DEFAULT_MAX_WALL_MS), 1),
+        max_admitted_tasks: parse_env_integer(var, MAX_ADMITTED_TASKS_ENV, Some(DEFAULT_MAX_ADMITTED_TASKS), 0),
+        max_wall_ms: parse_env_integer(var, MAX_WALL_MS_ENV, Some(DEFAULT_MAX_WALL_MS), 1),
         ..UsageLimits::default()
     };
     let cost = var(MAX_COST_USD_ENV)
@@ -82,23 +105,22 @@ pub fn limits_from_env(var: &dyn Fn(&str) -> Option<String>, settings: &Value) -
     if let Some(cost) = cost.filter(|c| c.is_finite() && *c >= 0.0) {
         limits.max_cost_usd = Some(cost);
     }
-    let setting = |key: &str| {
-        settings
-            .get(key)
-            .and_then(Value::as_f64)
-            .filter(|n| n.fract() == 0.0 && *n >= 1.0)
-            .map(|n| n as u64)
-    };
     let tokens_off = settings
         .get("maxTotalTokens")
         .and_then(Value::as_str)
-        .is_some_and(unlimited);
-    let tokens = integer(
+        .is_some_and(is_unlimited_text);
+    let tokens = parse_env_integer(
+        var,
         MAX_TOTAL_TOKENS_ENV,
-        (!tokens_off).then(|| setting("maxTotalTokens").unwrap_or(0)),
+        (!tokens_off).then(|| parse_positive_setting(settings, "maxTotalTokens").unwrap_or(0)),
         1,
     );
-    let turns = integer(MAX_TOTAL_TURNS_ENV, Some(setting("maxTotalTurns").unwrap_or(0)), 1);
+    let turns = parse_env_integer(
+        var,
+        MAX_TOTAL_TURNS_ENV,
+        Some(parse_positive_setting(settings, "maxTotalTurns").unwrap_or(0)),
+        1,
+    );
     match tokens {
         Some(0) => limits.default_max_total_tokens = Some(DEFAULT_MAX_TOTAL_TOKENS),
         Some(n) => limits.max_total_tokens = Some(n),
@@ -112,7 +134,7 @@ pub fn limits_from_env(var: &dyn Fn(&str) -> Option<String>, settings: &Value) -
             .as_f64()
             .filter(|n| jsrt::number::is_safe_integer(*n) && *n >= 1.0)
             .map(|n| n as u64);
-        if let Some(ceiling) = integer(name, set, 1) {
+        if let Some(ceiling) = parse_env_integer(var, name, set, 1) {
             limits.max_calls.insert(kind.into(), ceiling);
         }
     }
@@ -307,230 +329,6 @@ fn empty_document() -> Value {
 
 fn empty_root(root_id: &str) -> Value {
     json!({ "rootId": root_id, "startedAt": null, "deadlineAt": null, "reservations": [], "calls": [] })
-}
-
-fn invalid(what: &str) -> String {
-    format!("Invalid usage ledger {what}")
-}
-
-fn object(value: &Value) -> Result<&Map<String, Value>, String> {
-    value
-        .as_object()
-        .ok_or_else(|| "Invalid usage ledger document".to_string())
-}
-
-fn finite(value: &Value, name: &str) -> Result<f64, String> {
-    value.as_f64().filter(|n| n.is_finite()).ok_or_else(|| invalid(name))
-}
-
-fn finite_integer(value: &Value, name: &str, minimum: f64) -> Result<f64, String> {
-    value
-        .as_f64()
-        .filter(|n| jsrt::number::is_safe_integer(*n) && *n >= minimum)
-        .ok_or_else(|| invalid(name))
-}
-
-fn optional_finite(value: &Value, name: &str) -> Result<(), String> {
-    if value.is_null() {
-        Ok(())
-    } else {
-        finite(value, name).map(|_| ())
-    }
-}
-
-fn optional_nonempty(item: &Map<String, Value>, key: &str, error: &str) -> Result<(), String> {
-    match item.get(key) {
-        None => Ok(()),
-        Some(Value::String(text)) if !text.is_empty() => Ok(()),
-        Some(_) => Err(error.into()),
-    }
-}
-
-fn validate_measurement(value: &Value) -> Result<(), String> {
-    let item = object(value)?;
-    for key in ["inputTokens", "outputTokens", "totalTokens", "cost", "wallMs"] {
-        if !item.contains_key(key) {
-            return Err(invalid("measurement"));
-        }
-    }
-    for key in ["inputTokens", "outputTokens", "totalTokens", "cost"] {
-        optional_finite(&item[key], key)?;
-    }
-    if finite(&item["wallMs"], "wallMs")? < 0.0 {
-        return Err(invalid("wallMs"));
-    }
-    Ok(())
-}
-
-fn validate_reservation(value: &Value) -> Result<(), String> {
-    let item = object(value)?;
-    let nonempty = |key: &str| item.get(key).and_then(Value::as_str).is_some_and(|s| !s.is_empty());
-    if !nonempty("id") || !nonempty("rootId") {
-        return Err(invalid("reservation"));
-    }
-    if !item
-        .get("kind")
-        .and_then(Value::as_str)
-        .is_some_and(|k| STORED_KINDS.contains(&k))
-    {
-        return Err(invalid("reservation kind"));
-    }
-    optional_nonempty(item, "taskId", "Invalid usage ledger task ID")?;
-    optional_nonempty(item, "parentTaskId", "Invalid usage ledger parent task ID")?;
-    optional_nonempty(item, "requestKey", "Invalid usage ledger request key")?;
-    optional_nonempty(item, "budgetId", "Invalid usage ledger budget ID")?;
-    if finite(item.get("admittedAt").unwrap_or(&Value::Null), "admittedAt")? < 0.0 {
-        return Err(invalid("admittedAt"));
-    }
-    optional_finite(item.get("deadlineAt").unwrap_or(&Value::Bool(false)), "deadlineAt")
-}
-
-fn validate_call(value: &Value) -> Result<(), String> {
-    let item = object(value)?;
-    let nonempty = |key: &str| item.get(key).and_then(Value::as_str).is_some_and(|s| !s.is_empty());
-    if !nonempty("id") || !nonempty("reservationId") {
-        return Err(invalid("call"));
-    }
-    if !nonempty("rootId") {
-        return Err(invalid("call root ID"));
-    }
-    if !item
-        .get("kind")
-        .and_then(Value::as_str)
-        .is_some_and(|k| STORED_KINDS.contains(&k))
-    {
-        return Err(invalid("call kind"));
-    }
-    optional_nonempty(item, "requestKey", "Invalid usage ledger call request key")?;
-    optional_nonempty(item, "budgetId", "Invalid usage ledger call budget ID")?;
-    optional_nonempty(item, "taskId", "Invalid usage ledger call task ID")?;
-    optional_nonempty(item, "parentTaskId", "Invalid usage ledger call task ID")?;
-    finite(item.get("admittedAt").unwrap_or(&Value::Null), "admittedAt")?;
-    finite(item.get("settledAt").unwrap_or(&Value::Null), "settledAt")?;
-    if !item
-        .get("status")
-        .and_then(Value::as_str)
-        .is_some_and(|s| STATUSES.contains(&s))
-    {
-        return Err(invalid("call status"));
-    }
-    validate_measurement(item.get("usage").unwrap_or(&Value::Null))
-}
-
-fn validate_totals(value: &Value) -> Result<(), String> {
-    let item = object(value)?;
-    for name in ["calls", "taskCalls", "modelCalls", "unknownCalls"] {
-        finite_integer(item.get(name).unwrap_or(&Value::Null), &format!("history {name}"), 0.0)?;
-    }
-    if finite(item.get("wallMs").unwrap_or(&Value::Null), "history wallMs")? < 0.0 {
-        return Err(invalid("history wallMs"));
-    }
-    for name in ["inputTokens", "outputTokens", "totalTokens", "cost"] {
-        let Some(value) = item.get(name) else {
-            return Err(invalid("history totals"));
-        };
-        optional_finite(value, &format!("history {name}"))?;
-    }
-    Ok(())
-}
-
-fn validate_history(value: &Value) -> Result<(), String> {
-    let item = object(value)?;
-    let field = |name: &str| item.get(name).unwrap_or(&Value::Null);
-    finite_integer(field("roots"), "history roots", 0.0)?;
-    finite_integer(field("importedRoots"), "history importedRoots", 0.0)?;
-    optional_finite(
-        item.get("firstStartedAt").unwrap_or(&Value::Bool(false)),
-        "history firstStartedAt",
-    )?;
-    optional_finite(
-        item.get("lastSettledAt").unwrap_or(&Value::Bool(false)),
-        "history lastSettledAt",
-    )?;
-    validate_totals(field("usage"))?;
-    let by_kind = object(field("byKind"))?;
-    for kind in ["task", "model"] {
-        validate_totals(by_kind.get(kind).unwrap_or(&Value::Null))?;
-    }
-    finite(field("spentUsd"), "history spentUsd")?;
-    finite_integer(field("unknownPricedCalls"), "history unknownPricedCalls", 0.0)?;
-    let admissions = object(field("taskAdmissions"))?;
-    for status in STATUSES {
-        finite_integer(
-            admissions.get(status).unwrap_or(&Value::Null),
-            "history taskAdmissions",
-            0.0,
-        )?;
-    }
-    Ok(())
-}
-
-fn validate_document(value: &Value) -> Result<(), String> {
-    let document = object(value)?;
-    if document.get("version").and_then(Value::as_f64) != Some(1.0) {
-        return Err("Unsupported usage ledger version".into());
-    }
-    if let Some(history) = document.get("history") {
-        validate_history(history)?;
-    }
-    let roots = object(document.get("roots").unwrap_or(&Value::Null))?;
-    for (root_id, root) in roots {
-        let root = object(root)?;
-        if root.get("rootId").and_then(Value::as_str) != Some(root_id.as_str()) || root_id.is_empty() {
-            return Err(invalid("root"));
-        }
-        optional_finite(root.get("startedAt").unwrap_or(&Value::Bool(false)), "startedAt")?;
-        optional_finite(root.get("deadlineAt").unwrap_or(&Value::Bool(false)), "deadlineAt")?;
-        let (Some(reservations), Some(calls)) = (
-            root.get("reservations").and_then(Value::as_array),
-            root.get("calls").and_then(Value::as_array),
-        ) else {
-            return Err(invalid("root records"));
-        };
-        if let Some(turns) = root.get("turns") {
-            let turns = object(turns)?;
-            let field = |name: &str| turns.get(name).unwrap_or(&Value::Null);
-            finite_integer(field("count"), "turn count", 0.0)?;
-            if finite(field("tokens"), "turn tokens")? < 0.0 {
-                return Err(invalid("turn tokens"));
-            }
-            finite(field("lastAt"), "turn lastAt")?;
-            if let Some(cost) = turns.get("cost")
-                && finite(cost, "turn cost")? < 0.0
-            {
-                return Err(invalid("turn cost"));
-            }
-            if let Some(unpriced) = turns.get("unpriced") {
-                finite_integer(unpriced, "turn unpriced", 0.0)?;
-            }
-        }
-        if let Some(imported) = root.get("imported") {
-            let imported = object(imported)?;
-            if imported.get("source").and_then(Value::as_str).is_none_or(str::is_empty) {
-                return Err(invalid("import"));
-            }
-            finite_integer(imported.get("entries").unwrap_or(&Value::Null), "import entries", 0.0)?;
-        }
-        let mut ids: Vec<&str> = Vec::new();
-        for reservation in reservations {
-            validate_reservation(reservation)?;
-            let id = reservation["id"].as_str().unwrap_or_default();
-            if ids.contains(&id) {
-                return Err("Duplicate usage ledger reservation".into());
-            }
-            ids.push(id);
-        }
-        let mut ids: Vec<&str> = Vec::new();
-        for call in calls {
-            validate_call(call)?;
-            let id = call["id"].as_str().unwrap_or_default();
-            if ids.contains(&id) {
-                return Err("Duplicate usage ledger call".into());
-            }
-            ids.push(id);
-        }
-    }
-    Ok(())
 }
 
 fn finite_limit(limit: Option<u64>) -> f64 {
@@ -856,31 +654,125 @@ impl UsageLedger {
         format!("{prefix}{}", (state.ids)())
     }
 
+    fn validate_reserve_timing(request: &ReserveRequest) -> Result<(), String> {
+        if let Some(timeout) = request.timeout_ms {
+            finite_integer(&json::number(timeout), "timeoutMs", 1.0)?;
+        }
+        if request.deadline_at.is_some_and(|d| !d.is_finite()) {
+            return Err(invalid("deadlineAt"));
+        }
+        Ok(())
+    }
+
+    fn validate_reserve_request(&self, state: &State, request: &ReserveRequest) -> Result<String, String> {
+        let root_id = request.root_id.clone().unwrap_or_else(|| self.root_id.clone());
+        if root_id.trim().is_empty() || root_id.contains('\0') {
+            return Err("Usage rootId must be a nonempty string without NUL".into());
+        }
+        if !state.document["roots"][&root_id]["imported"].is_null() {
+            return Err(format!("Usage root {root_id} is an imported history root"));
+        }
+        if !RESERVABLE_KINDS.iter().any(|(kind, _)| *kind == request.kind) {
+            return Err("Invalid usage kind".into());
+        }
+        if request.request_key.as_ref().is_some_and(|k| k.trim().is_empty()) {
+            return Err("Usage requestKey is empty".into());
+        }
+        if request.budget_id.as_ref().is_some_and(|k| k.trim().is_empty()) {
+            return Err("Usage budgetId is empty".into());
+        }
+        Self::validate_reserve_timing(request)?;
+        Ok(root_id)
+    }
+
+    fn ensure_root_started(&self, state: &mut State, root_id: &str, root: &mut Value, now: f64, goal: bool) {
+        if !root["startedAt"].is_null() {
+            return;
+        }
+        root["startedAt"] = json::number(now);
+        root["deadlineAt"] = match self.limits.max_wall_ms.filter(|_| !goal) {
+            Some(wall) => json::number(now + wall as f64),
+            None => Value::Null,
+        };
+        if state.document["roots"].get(root_id).is_some() {
+            state.document["roots"][root_id] = root.clone();
+        }
+    }
+
+    fn check_model_quotas(&self, root: &Value, request: &ReserveRequest) -> Result<(), String> {
+        let model_work = request.kind == "model" || request.model_backed != Some(false);
+        if model_work && let Some(exhausted) = self.exhaustion(root) {
+            return Err(self.refused(exhausted.reason));
+        }
+        if let Some(reached) = self.call_ceiling(root, &request.kind) {
+            return Err(self.refused(reached));
+        }
+        let unit = format!("this {}", request.kind);
+        if model_work && let Some(crossing) = self.crosses(root, request.estimated_cost_usd, &unit) {
+            return Err(self.refused(crossing));
+        }
+        Ok(())
+    }
+
+    fn check_reserve_limits(
+        &self,
+        root_id: &str,
+        root: &Value,
+        request: &ReserveRequest,
+        now: f64,
+        goal: bool,
+    ) -> Result<Option<f64>, String> {
+        let root_deadline = root["deadlineAt"].as_f64();
+        if root_deadline.is_some_and(|d| now >= d) {
+            return Err(self.refused(format!("Usage wall deadline exceeded for root {root_id}")));
+        }
+        let admitted = reservations_of(root).iter().filter(|r| r["kind"] == "task").count() as f64;
+        if !goal && request.kind == "task" && admitted >= finite_limit(self.limits.max_admitted_tasks) {
+            return Err(self.refused(format!("Usage admitted-task limit exceeded for root {root_id}")));
+        }
+        self.check_model_quotas(root, request)?;
+        let asked = request.deadline_at.or_else(|| request.timeout_ms.map(|t| now + t));
+        let deadline = match (asked, root_deadline) {
+            (None, root) => root,
+            (Some(asked), None) => Some(asked),
+            (Some(asked), Some(root)) => Some(asked.min(root)),
+        };
+        if deadline.is_some_and(|d| d <= now) {
+            return Err(self.refused(format!("Usage deadline has expired for root {root_id}")));
+        }
+        Ok(deadline)
+    }
+
+    fn build_reservation_entry(
+        state: &mut State,
+        root_id: &str,
+        request: &ReserveRequest,
+        now: f64,
+        deadline: Option<f64>,
+    ) -> Value {
+        let mut reservation = Map::new();
+        reservation.insert("id".into(), Value::String(Self::mint(state, "ultron-usage-")));
+        reservation.insert("rootId".into(), Value::String(root_id.to_string()));
+        reservation.insert("kind".into(), Value::String(request.kind.clone()));
+        for (key, value) in [
+            ("taskId", &request.task_id),
+            ("parentTaskId", &request.parent_task_id),
+            ("requestKey", &request.request_key),
+            ("budgetId", &request.budget_id),
+        ] {
+            if let Some(value) = value {
+                reservation.insert(key.into(), Value::String(value.clone()));
+            }
+        }
+        reservation.insert("admittedAt".into(), json::number(now));
+        reservation.insert("deadlineAt".into(), known(deadline));
+        Value::Object(reservation)
+    }
+
     /// `reserve(request)`: admission. A known request key returns its open reservation.
     pub fn reserve(&self, request: &ReserveRequest) -> Result<Reservation, String> {
         self.step(|state| {
-            let root_id = request.root_id.clone().unwrap_or_else(|| self.root_id.clone());
-            if root_id.trim().is_empty() || root_id.contains('\0') {
-                return Err("Usage rootId must be a nonempty string without NUL".into());
-            }
-            if !state.document["roots"][&root_id]["imported"].is_null() {
-                return Err(format!("Usage root {root_id} is an imported history root"));
-            }
-            if !RESERVABLE_KINDS.iter().any(|(kind, _)| *kind == request.kind) {
-                return Err("Invalid usage kind".into());
-            }
-            if request.request_key.as_ref().is_some_and(|k| k.trim().is_empty()) {
-                return Err("Usage requestKey is empty".into());
-            }
-            if request.budget_id.as_ref().is_some_and(|k| k.trim().is_empty()) {
-                return Err("Usage budgetId is empty".into());
-            }
-            if let Some(timeout) = request.timeout_ms {
-                finite_integer(&json::number(timeout), "timeoutMs", 1.0)?;
-            }
-            if request.deadline_at.is_some_and(|d| !d.is_finite()) {
-                return Err(invalid("deadlineAt"));
-            }
+            let root_id = self.validate_reserve_request(state, request)?;
             let mut root = state.document["roots"]
                 .get(&root_id)
                 .cloned()
@@ -892,61 +784,9 @@ impl UsageLedger {
             }
             let now = (self.now)();
             let goal = root_id.starts_with(GOAL_USAGE_ROOT_PREFIX);
-            if root["startedAt"].is_null() {
-                root["startedAt"] = json::number(now);
-                root["deadlineAt"] = match self.limits.max_wall_ms.filter(|_| !goal) {
-                    Some(wall) => json::number(now + wall as f64),
-                    None => Value::Null,
-                };
-                if state.document["roots"].get(&root_id).is_some() {
-                    state.document["roots"][&root_id] = root.clone();
-                }
-            }
-            let root_deadline = root["deadlineAt"].as_f64();
-            if root_deadline.is_some_and(|d| now >= d) {
-                return Err(self.refused(format!("Usage wall deadline exceeded for root {root_id}")));
-            }
-            let admitted = reservations_of(&root).iter().filter(|r| r["kind"] == "task").count() as f64;
-            if !goal && request.kind == "task" && admitted >= finite_limit(self.limits.max_admitted_tasks) {
-                return Err(self.refused(format!("Usage admitted-task limit exceeded for root {root_id}")));
-            }
-            let model_work = request.kind == "model" || request.model_backed != Some(false);
-            if model_work && let Some(exhausted) = self.exhaustion(&root) {
-                return Err(self.refused(exhausted.reason));
-            }
-            if let Some(reached) = self.call_ceiling(&root, &request.kind) {
-                return Err(self.refused(reached));
-            }
-            let unit = format!("this {}", request.kind);
-            if model_work && let Some(crossing) = self.crosses(&root, request.estimated_cost_usd, &unit) {
-                return Err(self.refused(crossing));
-            }
-            let asked = request.deadline_at.or_else(|| request.timeout_ms.map(|t| now + t));
-            let deadline = match (asked, root_deadline) {
-                (None, root) => root,
-                (Some(asked), None) => Some(asked),
-                (Some(asked), Some(root)) => Some(asked.min(root)),
-            };
-            if deadline.is_some_and(|d| d <= now) {
-                return Err(self.refused(format!("Usage deadline has expired for root {root_id}")));
-            }
-            let mut reservation = Map::new();
-            reservation.insert("id".into(), Value::String(Self::mint(state, "ultron-usage-")));
-            reservation.insert("rootId".into(), Value::String(root_id.clone()));
-            reservation.insert("kind".into(), Value::String(request.kind.clone()));
-            for (key, value) in [
-                ("taskId", &request.task_id),
-                ("parentTaskId", &request.parent_task_id),
-                ("requestKey", &request.request_key),
-                ("budgetId", &request.budget_id),
-            ] {
-                if let Some(value) = value {
-                    reservation.insert(key.into(), Value::String(value.clone()));
-                }
-            }
-            reservation.insert("admittedAt".into(), json::number(now));
-            reservation.insert("deadlineAt".into(), known(deadline));
-            let reservation = Value::Object(reservation);
+            self.ensure_root_started(state, &root_id, &mut root, now, goal);
+            let deadline = self.check_reserve_limits(&root_id, &root, request, now, goal)?;
+            let reservation = Self::build_reservation_entry(state, &root_id, request, now, deadline);
             if let Some(list) = root["reservations"].as_array_mut() {
                 list.push(reservation.clone());
             }
@@ -1286,102 +1126,5 @@ impl UsageLedger {
     /// The stored document as it is now (for reconciliation and inspection).
     pub fn document(&self) -> Result<Value, String> {
         self.step(|state| Ok(state.document.clone()))
-    }
-}
-
-fn normalize_measurement(measurement: Option<&Measurement>, elapsed: f64) -> Result<Value, String> {
-    let wall = measurement.and_then(|m| m.wall_ms).unwrap_or(elapsed);
-    if !wall.is_finite() || wall < 0.0 {
-        return Err("Usage wallMs must be a non-negative finite number".into());
-    }
-    let fields = measurement.cloned().unwrap_or_default();
-    for (name, value) in [
-        ("inputTokens", fields.input_tokens),
-        ("outputTokens", fields.output_tokens),
-        ("totalTokens", fields.total_tokens),
-        ("cost", fields.cost),
-    ] {
-        if value.is_some_and(|n| !n.is_finite()) {
-            return Err(invalid(name));
-        }
-    }
-    Ok(json!({
-        "inputTokens": known(fields.input_tokens), "outputTokens": known(fields.output_tokens),
-        "totalTokens": known(fields.total_tokens), "cost": known(fields.cost), "wallMs": json::number(wall),
-    }))
-}
-
-/// A settled call from a reservation; `budget`: whether `budgetId` is copied (reconciliation does not copy it).
-fn call_from(reservation: &Value, id: String, now: f64, status: &str, usage: Value, budget: bool) -> Value {
-    let mut call = Map::new();
-    call.insert("id".into(), Value::String(id));
-    call.insert("reservationId".into(), reservation["id"].clone());
-    call.insert("rootId".into(), reservation["rootId"].clone());
-    call.insert("kind".into(), reservation["kind"].clone());
-    let mut keys = vec!["taskId", "parentTaskId", "requestKey"];
-    if budget {
-        keys.push("budgetId");
-    }
-    for key in keys {
-        if let Some(value) = reservation.get(key) {
-            call.insert(key.into(), value.clone());
-        }
-    }
-    call.insert("admittedAt".into(), reservation["admittedAt"].clone());
-    call.insert("settledAt".into(), json::number(now));
-    call.insert("status".into(), Value::String(status.into()));
-    call.insert("usage".into(), usage);
-    Value::Object(call)
-}
-
-fn last_activity(root: &Value) -> f64 {
-    let mut latest = root["startedAt"].as_f64().unwrap_or(f64::NEG_INFINITY);
-    for call in calls_of(root) {
-        latest = latest
-            .max(call["settledAt"].as_f64().unwrap_or(f64::NEG_INFINITY))
-            .max(call["admittedAt"].as_f64().unwrap_or(f64::NEG_INFINITY));
-    }
-    for reservation in reservations_of(root) {
-        latest = latest.max(reservation["admittedAt"].as_f64().unwrap_or(f64::NEG_INFINITY));
-    }
-    if let Some(at) = root["turns"]["lastAt"].as_f64() {
-        latest = latest.max(at);
-    }
-    latest
-}
-
-fn fold_root(history: &mut Value, root: &Value, spend: &Value) {
-    let add = |value: &Value, n: f64| json::number(value.as_f64().unwrap_or(0.0) + n);
-    history["roots"] = add(&history["roots"], 1.0);
-    if !root["imported"].is_null() {
-        history["importedRoots"] = add(&history["importedRoots"], 1.0);
-    }
-    let calls = calls_of(root);
-    let started = root["startedAt"]
-        .as_f64()
-        .or_else(|| calls.iter().filter_map(|c| c["admittedAt"].as_f64()).reduce(f64::min));
-    if let Some(started) = started {
-        let first = history["firstStartedAt"].as_f64().map_or(started, |f| f.min(started));
-        history["firstStartedAt"] = json::number(first);
-    }
-    for call in calls {
-        let settled = call["settledAt"].as_f64().unwrap_or(0.0);
-        let last = history["lastSettledAt"].as_f64().map_or(settled, |l| l.max(settled));
-        history["lastSettledAt"] = json::number(last);
-    }
-    history["usage"] = merge_totals(&history["usage"], &totals(calls));
-    for kind in ["task", "model"] {
-        let of_kind: Vec<Value> = calls.iter().filter(|c| c["kind"] == kind).cloned().collect();
-        history["byKind"][kind] = merge_totals(&history["byKind"][kind], &totals(&of_kind));
-    }
-    history["spentUsd"] = add(&history["spentUsd"], spend["spentUsd"].as_f64().unwrap_or(0.0));
-    history["unknownPricedCalls"] = add(
-        &history["unknownPricedCalls"],
-        spend["unknownPricedCalls"].as_f64().unwrap_or(0.0),
-    );
-    for call in calls.iter().filter(|c| c["kind"] == "task") {
-        if let Some(status) = call["status"].as_str() {
-            history["taskAdmissions"][status] = add(&history["taskAdmissions"][status], 1.0);
-        }
     }
 }

@@ -119,28 +119,47 @@ pub enum TaskStoreError {
     StateResultMismatch,
 }
 
+impl TaskStoreError {
+    fn storage_message(&self) -> Option<&'static str> {
+        match self {
+            TaskStoreError::Durability => Some("Task store durability is uncertain; reopen the owner"),
+            TaskStoreError::ReadFailed => Some("Task store could not be read"),
+            TaskStoreError::InvalidDocument => Some("Invalid task document"),
+            TaskStoreError::InvalidResult => Some("Invalid task result"),
+            TaskStoreError::InvalidDefinition => Some("definition must be id@version"),
+            TaskStoreError::InvalidFingerprint => Some("fingerprint must be a lowercase SHA-256 hex string"),
+            _ => None,
+        }
+    }
+
+    fn task_message(&self) -> Option<&'static str> {
+        match self {
+            TaskStoreError::InvalidKey => Some("idempotency key must be nonempty"),
+            TaskStoreError::KeyReused => Some("Idempotency key reused for a different task"),
+            TaskStoreError::InvalidId => Some("task ID must be nonempty"),
+            TaskStoreError::UnknownTask => Some("Unknown Ultron task"),
+            TaskStoreError::InvalidTransition => Some("Invalid task transition"),
+            TaskStoreError::StateResultMismatch => Some("Task state and result do not match"),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for TaskStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TaskStoreError::Durability => f.write_str("Task store durability is uncertain; reopen the owner"),
-            TaskStoreError::ReadFailed => f.write_str("Task store could not be read"),
-            TaskStoreError::InvalidDocument => f.write_str("Invalid task document"),
-            TaskStoreError::UnsupportedVersion(version) => write!(
+        if let TaskStoreError::UnsupportedVersion(version) = self {
+            return write!(
                 f,
                 "Cannot resume: session value ultron.tasks/root has format version {}, but this Ultron reads only \
                  format version 1. It was left unchanged; open the session with the Ultron version that wrote it, or upgrade.",
                 jsrt::json::stringify(version)
-            ),
-            TaskStoreError::InvalidResult => f.write_str("Invalid task result"),
-            TaskStoreError::InvalidDefinition => f.write_str("definition must be id@version"),
-            TaskStoreError::InvalidFingerprint => f.write_str("fingerprint must be a lowercase SHA-256 hex string"),
-            TaskStoreError::InvalidKey => f.write_str("idempotency key must be nonempty"),
-            TaskStoreError::KeyReused => f.write_str("Idempotency key reused for a different task"),
-            TaskStoreError::InvalidId => f.write_str("task ID must be nonempty"),
-            TaskStoreError::UnknownTask => f.write_str("Unknown Ultron task"),
-            TaskStoreError::InvalidTransition => f.write_str("Invalid task transition"),
-            TaskStoreError::StateResultMismatch => f.write_str("Task state and result do not match"),
+            );
         }
+        let message = self
+            .storage_message()
+            .or_else(|| self.task_message())
+            .unwrap_or("Task store error");
+        f.write_str(message)
     }
 }
 
@@ -218,43 +237,55 @@ fn nonempty(value: Option<&Value>) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn parse_task(value: &Value) -> Option<Task> {
-    let map = value.as_object()?;
-    if !map.keys().all(|k| TASK_KEYS.contains(&k.as_str())) {
-        return None;
-    }
-    let fingerprint = map.get("fingerprint")?.as_str().filter(|s| is_fingerprint(s))?;
-    let definition = map.get("definition")?.as_str().filter(|s| is_definition(s))?;
-    let state = TaskState::parse(map.get("state")?.as_str()?)?;
+fn parse_task_result(map: &Map<String, Value>, state: TaskState) -> Option<Option<Value>> {
     let result = match map.get("result") {
         None => None,
         Some(result) if is_result(result) => Some(result.clone()),
         Some(_) => return None,
     };
-    let parent_id = match map.get("parentId") {
-        None => None,
-        some => Some(nonempty(some)?),
-    };
     let valid_result = match &result {
         None => !state.is_terminal(),
         Some(result) => state.is_terminal() && result["status"] == state.result_status(),
     };
-    if !valid_result {
+    valid_result.then_some(result)
+}
+
+fn parse_task_parent(map: &Map<String, Value>) -> Option<Option<String>> {
+    match map.get("parentId") {
+        None => Some(None),
+        some => Some(Some(nonempty(some)?)),
+    }
+}
+
+fn parse_task_identity(map: &Map<String, Value>) -> Option<(String, String, String, String)> {
+    let id = nonempty(map.get("id"))?;
+    let key = nonempty(map.get("key"))?;
+    let fingerprint = map.get("fingerprint")?.as_str().filter(|s| is_fingerprint(s))?;
+    let definition = map.get("definition")?.as_str().filter(|s| is_definition(s))?;
+    Some((id, key, fingerprint.into(), definition.into()))
+}
+
+fn parse_task(value: &Value) -> Option<Task> {
+    let map = value.as_object()?;
+    if !map.keys().all(|k| TASK_KEYS.contains(&k.as_str())) {
         return None;
     }
+    let state = map.get("state").and_then(Value::as_str).and_then(TaskState::parse)?;
+    let result = parse_task_result(map, state)?;
+    let parent_id = parse_task_parent(map)?;
+    let (id, key, fingerprint, definition) = parse_task_identity(map)?;
     Some(Task {
-        id: nonempty(map.get("id"))?,
-        key: nonempty(map.get("key"))?,
-        fingerprint: fingerprint.into(),
-        definition: definition.into(),
+        id,
+        key,
+        fingerprint,
+        definition,
         state,
         result,
         parent_id,
     })
 }
 
-/// `readVersioned` then the schema and invariant checks of the saved document.
-pub(crate) fn parse_document(saved: &Value) -> Result<Vec<Task>, TaskStoreError> {
+fn document_items(saved: &Value) -> Result<&Vec<Value>, TaskStoreError> {
     let map = saved.as_object().ok_or(TaskStoreError::InvalidDocument)?;
     if let Some(version) = map.get("version")
         && version.as_f64() != Some(1.0)
@@ -264,10 +295,14 @@ pub(crate) fn parse_document(saved: &Value) -> Result<Vec<Task>, TaskStoreError>
     if !map.keys().all(|k| k == "version" || k == "tasks") {
         return Err(TaskStoreError::InvalidDocument);
     }
-    let items = map
-        .get("tasks")
+    map.get("tasks")
         .and_then(Value::as_array)
-        .ok_or(TaskStoreError::InvalidDocument)?;
+        .ok_or(TaskStoreError::InvalidDocument)
+}
+
+/// `readVersioned` then the schema and invariant checks of the saved document.
+pub(crate) fn parse_document(saved: &Value) -> Result<Vec<Task>, TaskStoreError> {
+    let items = document_items(saved)?;
     let mut tasks: Vec<Task> = Vec::with_capacity(items.len());
     for item in items {
         let task = parse_task(item).ok_or(TaskStoreError::InvalidDocument)?;
@@ -431,6 +466,10 @@ impl<S: DocumentStore> TaskJournal<S> {
             self.assert_healthy()?;
             return Ok(self.records.clone());
         }
+        self.reopen_loaded(keep)
+    }
+
+    fn reopen_loaded(&mut self, keep: &mut dyn FnMut(&Task) -> bool) -> Result<Vec<Task>, TaskStoreError> {
         self.begin()?;
         let recovered = std::mem::take(&mut self.recovered);
         let mut changed = false;
@@ -549,23 +588,7 @@ impl<S: DocumentStore> TaskJournal<S> {
         if current.state.is_terminal() {
             return Ok(current.clone());
         }
-        if state == TaskState::Running {
-            if current.state != TaskState::Admitted || result.is_some() {
-                return Err(TaskStoreError::InvalidTransition);
-            }
-        } else {
-            let can_finish = current.state == TaskState::Running
-                || (current.state == TaskState::Admitted && state == TaskState::Cancelled);
-            let Some(result) = result.as_ref().filter(|_| can_finish && state.is_terminal()) else {
-                return Err(TaskStoreError::InvalidTransition);
-            };
-            if !is_result(result) {
-                return Err(TaskStoreError::InvalidResult);
-            }
-            if result["status"] != state.result_status() {
-                return Err(TaskStoreError::StateResultMismatch);
-            }
-        }
+        validate_transition(current.state, state, result.as_ref())?;
         let next_task = Task {
             state,
             result,
@@ -576,4 +599,32 @@ impl<S: DocumentStore> TaskJournal<S> {
         self.write(next)?;
         Ok(next_task)
     }
+}
+
+fn validate_transition(current: TaskState, state: TaskState, result: Option<&Value>) -> Result<(), TaskStoreError> {
+    if state == TaskState::Running {
+        if current != TaskState::Admitted || result.is_some() {
+            return Err(TaskStoreError::InvalidTransition);
+        }
+        return Ok(());
+    }
+    validate_terminal_transition(current, state, result)
+}
+
+fn validate_terminal_transition(
+    current: TaskState,
+    state: TaskState,
+    result: Option<&Value>,
+) -> Result<(), TaskStoreError> {
+    let can_finish = current == TaskState::Running || (current == TaskState::Admitted && state == TaskState::Cancelled);
+    let Some(result) = result.filter(|_| can_finish && state.is_terminal()) else {
+        return Err(TaskStoreError::InvalidTransition);
+    };
+    if !is_result(result) {
+        return Err(TaskStoreError::InvalidResult);
+    }
+    if result["status"] != state.result_status() {
+        return Err(TaskStoreError::StateResultMismatch);
+    }
+    Ok(())
 }

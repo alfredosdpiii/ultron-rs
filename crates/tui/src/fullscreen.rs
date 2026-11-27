@@ -10,6 +10,11 @@
 //! for the application to copy (through its injected clipboard), which then reports with
 //! [`FullscreenViewport::copied`]. Time is passed in: timers are deadlines that [`FullscreenViewport::poll`] expires.
 
+mod mouse;
+mod selection;
+
+pub use selection::word_selection;
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -19,16 +24,10 @@ use crate::frame::is_image_line;
 use crate::keybindings::KeybindingsManager;
 use crate::keys::is_key_release;
 use crate::mouse::parse_sgr_mouse;
-use crate::mouse::{MouseButton, MouseEvent, MouseEventType, MouseResult};
+use crate::mouse::{MouseButton, MouseEvent, MouseResult};
 use crate::overlay::composite_line;
-use crate::scroll_view::{
-    Rect, ScrollView, Scrollbar, ScrollbarGeometry, grapheme_cell_range, paint_scrollbar, scrollbar_geometry,
-    slice_by_column,
-};
-use crate::utils::{
-    ansi_len, extract_ansi_code, grapheme_width, strip_terminal_sequences, truncate_to_width, visible_width,
-};
-use jsrt::string;
+use crate::scroll_view::{Rect, ScrollView, Scrollbar, paint_scrollbar, scrollbar_geometry, slice_by_column};
+use crate::utils::{ansi_len, grapheme_width, truncate_to_width, visible_width};
 
 /// Rows a page scroll keeps from the previous page (`PAGE_SCROLL_OVERLAP`).
 pub const PAGE_SCROLL_OVERLAP: usize = 4;
@@ -126,8 +125,28 @@ fn osc8_url(code: &str) -> Option<&str> {
     (!params.contains(';') && !url.contains(['\x07', '\x1b'])).then_some(url)
 }
 
-/// A viewport key's effect.
-type ViewportAction<'a> = dyn Fn(&mut FullscreenViewport) + 'a;
+#[derive(Clone, Copy)]
+enum ViewportKeyAction {
+    ScrollPage(i64),
+    ScrollHalf(i64),
+    ScrollLine(i64),
+    Prompt(i64),
+    Top,
+    Bottom,
+}
+
+const VIEWPORT_BINDINGS: [(&str, ViewportKeyAction); 10] = [
+    ("tui.altScreen.pageUp", ViewportKeyAction::ScrollPage(-1)),
+    ("tui.altScreen.pageDown", ViewportKeyAction::ScrollPage(1)),
+    ("tui.altScreen.halfPageUp", ViewportKeyAction::ScrollHalf(-1)),
+    ("tui.altScreen.halfPageDown", ViewportKeyAction::ScrollHalf(1)),
+    ("tui.altScreen.lineUp", ViewportKeyAction::ScrollLine(-1)),
+    ("tui.altScreen.lineDown", ViewportKeyAction::ScrollLine(1)),
+    ("tui.altScreen.previousPrompt", ViewportKeyAction::Prompt(-1)),
+    ("tui.altScreen.nextPrompt", ViewportKeyAction::Prompt(1)),
+    ("tui.altScreen.top", ViewportKeyAction::Top),
+    ("tui.altScreen.bottom", ViewportKeyAction::Bottom),
+];
 
 /// `TuiMouseDispatchTarget`: the component that took an event and where its box was on the screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -490,37 +509,6 @@ impl FullscreenViewport {
         self.selection_text().is_some()
     }
 
-    /// `getActiveSelectionText`.
-    pub fn selection_text(&self) -> Option<String> {
-        let (start, end) = self.bounds()?;
-        let source: &[String] = if start.scroll {
-            self.rect?;
-            &self.content
-        } else {
-            &self.screen
-        };
-        let mut lines = Vec::new();
-        for row in start.row..=end.row {
-            let line = source.get(row).map_or("", String::as_str);
-            let (a, b) = selection_columns(
-                line,
-                row as i64,
-                to_screen(start, 0),
-                to_screen(end, 0),
-                0,
-                visible_width(line),
-            );
-            let text = slice_by_column(line, a, b.saturating_sub(a));
-            lines.push(
-                strip_terminal_sequences(&text)
-                    .trim_end_matches(string::is_space)
-                    .to_string(),
-            );
-        }
-        let text = lines.join("\n");
-        (!text.is_empty()).then_some(text)
-    }
-
     /// Route `data` (`handleViewportInput`): focus reports, wheel, mouse, then the viewport keys.
     pub fn handle_input(&mut self, data: &str, keys: &KeybindingsManager, now: Instant) -> ViewportInput {
         self.handle_input_with(data, keys, now, &mut NoMouseTargets)
@@ -537,38 +525,14 @@ impl FullscreenViewport {
         targets: &mut dyn MouseTargets,
     ) -> ViewportInput {
         if data == FOCUS_OUT {
-            let had_active = self.press_active;
-            self.press_active = false;
-            self.stop_auto_scroll();
-            self.set_hover(false);
-            self.scrollbar_drag = None;
-            self.pressed_url = None;
-            self.dragged = false;
-            self.clear_component_gesture();
-            self.last_component_click = None;
-            if had_active {
-                self.anchor = None;
-                self.focus = None;
-                self.granularity = Granularity::Character;
-                self.initial = None;
-            }
-            self.last_click = None;
-            return ViewportInput::Consumed;
+            return self.handle_focus_out();
         }
-        if data == FOCUS_IN {
+        if data == FOCUS_IN || is_mouse_sequence(data) && parse_sgr_mouse(data).is_none() && parse_wheel(data).is_none()
+        {
             return ViewportInput::Consumed;
         }
         if let Some((direction, x, y, button)) = parse_wheel(data) {
-            let lines = direction * self.wheel_scroll_lines(button);
-            let mut event = self.mouse_event(MouseEventType::Wheel, button, x, y, None);
-            event.wheel_delta = Some(lines);
-            if let Some(d) = targets.dispatch_at(&event) {
-                self.apply_dispatch(d);
-                return ViewportInput::Consumed;
-            }
-            self.view.scroll_by(lines);
-            self.update_hover(x, y);
-            return ViewportInput::Consumed;
+            return self.handle_wheel(direction, x, y, button, targets);
         }
         if let Some(m) = parse_sgr_mouse(data) {
             return self.handle_mouse(
@@ -582,29 +546,29 @@ impl FullscreenViewport {
                 targets,
             );
         }
-        if is_mouse_sequence(data) {
-            return ViewportInput::Consumed;
-        }
-        let release = is_key_release(data);
+        self.handle_viewport_key(data, keys)
+    }
+
+    fn apply_viewport_action(&mut self, action: ViewportKeyAction) {
         let height = self.view.viewport_height();
         let page = height.saturating_sub(PAGE_SCROLL_OVERLAP).max(1) as i64;
         let half = (height / 2).max(1) as i64;
-        let actions: [(&str, &ViewportAction); 10] = [
-            ("tui.altScreen.pageUp", &|v| v.scroll(-page)),
-            ("tui.altScreen.pageDown", &|v| v.scroll(page)),
-            ("tui.altScreen.halfPageUp", &|v| v.scroll(-half)),
-            ("tui.altScreen.halfPageDown", &|v| v.scroll(half)),
-            ("tui.altScreen.lineUp", &|v| v.scroll(-1)),
-            ("tui.altScreen.lineDown", &|v| v.scroll(1)),
-            ("tui.altScreen.previousPrompt", &|v| v.scroll_to_prompt(-1)),
-            ("tui.altScreen.nextPrompt", &|v| v.scroll_to_prompt(1)),
-            ("tui.altScreen.top", &|v| v.view.scroll_to_start()),
-            ("tui.altScreen.bottom", &|v| v.view.scroll_to_end()),
-        ];
-        for (binding, action) in actions {
+        match action {
+            ViewportKeyAction::ScrollPage(dir) => self.scroll(dir * page),
+            ViewportKeyAction::ScrollHalf(dir) => self.scroll(dir * half),
+            ViewportKeyAction::ScrollLine(dir) => self.scroll(dir),
+            ViewportKeyAction::Prompt(dir) => self.scroll_to_prompt(dir),
+            ViewportKeyAction::Top => self.view.scroll_to_start(),
+            ViewportKeyAction::Bottom => self.view.scroll_to_end(),
+        }
+    }
+
+    fn handle_viewport_key(&mut self, data: &str, keys: &KeybindingsManager) -> ViewportInput {
+        let release = is_key_release(data);
+        for (binding, action) in VIEWPORT_BINDINGS {
             if keys.matches(data, binding) {
                 if !release {
-                    action(self);
+                    self.apply_viewport_action(action);
                 }
                 return ViewportInput::Consumed;
             }
@@ -630,543 +594,6 @@ impl FullscreenViewport {
             }
             row += direction;
         }
-    }
-
-    fn wheel_scroll_lines(&self, button: u32) -> i64 {
-        if button & 8 != 0 {
-            self.wheel_lines * ALT_WHEEL_SCROLL_MULTIPLIER
-        } else {
-            self.wheel_lines
-        }
-    }
-
-    /// `createMouseEvent`: screen coordinates over the whole terminal.
-    fn mouse_event(&self, kind: MouseEventType, button: u32, x: i64, y: i64, click_count: Option<u32>) -> MouseEvent {
-        MouseEvent {
-            kind,
-            button: if kind == MouseEventType::Wheel {
-                MouseButton::None
-            } else {
-                decode_button(button)
-            },
-            x,
-            y,
-            screen_x: x,
-            screen_y: y,
-            width: self.cols.max(1),
-            height: self.rows.max(1),
-            shift: button & 4 != 0,
-            alt: button & 8 != 0,
-            ctrl: button & 16 != 0,
-            wheel_delta: None,
-            click_count,
-        }
-    }
-
-    /// `applyMouseDispatchResult`: a capture keeps the following events on the component.
-    fn apply_dispatch(&mut self, dispatch: MouseDispatch) {
-        if dispatch.result.capture == Some(true) {
-            self.mouse_capture = Some(dispatch.target);
-        }
-    }
-
-    /// `clearComponentMouseGesture`.
-    fn clear_component_gesture(&mut self) {
-        self.mouse_capture = None;
-        self.press_target = None;
-        self.press_point = None;
-        self.press_moved = false;
-    }
-
-    fn component_click_count(&mut self, target: &MouseTarget, x: i64, y: i64, now: Instant) -> u32 {
-        let count = match self.last_component_click {
-            Some((at, count, id, px, py))
-                if now.saturating_duration_since(at) <= DOUBLE_CLICK_INTERVAL
-                    && id == target.id
-                    && px == x
-                    && py == y =>
-            {
-                count % 3 + 1
-            }
-            _ => 1,
-        };
-        self.last_component_click = Some((now, count, target.id, x, y));
-        count
-    }
-
-    fn clear_text_selection(&mut self) {
-        self.stop_auto_scroll();
-        self.press_active = false;
-        self.anchor = None;
-        self.focus = None;
-        self.granularity = Granularity::Character;
-        self.initial = None;
-        self.pressed_url = None;
-        self.dragged = false;
-    }
-
-    /// `handleMouseEvent`: the component gesture in progress, the jump-to-end indicator, the scrollbar, the
-    /// component under the pointer, right-click paste, then text selection.
-    fn handle_mouse(&mut self, ev: Sgr, now: Instant, targets: &mut dyn MouseTargets) -> ViewportInput {
-        let kind = if ev.release {
-            MouseEventType::Release
-        } else if ev.button & 32 != 0 {
-            if decode_button(ev.button) == MouseButton::None {
-                MouseEventType::Move
-            } else {
-                MouseEventType::Drag
-            }
-        } else {
-            MouseEventType::Press
-        };
-        let event = self.mouse_event(kind, ev.button, ev.x, ev.y, None);
-        if let Some(target) = self.mouse_capture.or(self.press_target) {
-            if self.press_point.is_some_and(|p| p != (ev.x, ev.y)) {
-                self.press_moved = true;
-                self.last_component_click = None;
-            }
-            if let Some(d) = targets.dispatch_to(&target, &retarget_mouse_event(&event, &target)) {
-                self.apply_dispatch(d);
-            }
-            if ev.release {
-                if !self.press_moved && self.press_point == Some((ev.x, ev.y)) {
-                    let count = self.component_click_count(&target, ev.x, ev.y, now);
-                    let click = self.mouse_event(MouseEventType::Click, ev.button, ev.x, ev.y, Some(count));
-                    if let Some(d) = targets.dispatch_to(&target, &retarget_mouse_event(&click, &target)) {
-                        self.apply_dispatch(d);
-                    }
-                }
-                self.clear_component_gesture();
-            }
-            return ViewportInput::Consumed;
-        }
-        if self.indicator_click(ev) {
-            return ViewportInput::Consumed;
-        }
-        let handled = self.scrollbar_mouse(ev);
-        if self.scrollbar_drag.is_none() {
-            self.update_hover(ev.x, ev.y);
-        }
-        if handled {
-            return ViewportInput::Consumed;
-        }
-        if let Some(d) = targets.dispatch_at(&event) {
-            self.apply_dispatch(d);
-            if kind == MouseEventType::Press {
-                self.clear_text_selection();
-                self.press_target = Some(d.target);
-                self.press_point = Some((ev.x, ev.y));
-                self.press_moved = false;
-            }
-            return ViewportInput::Consumed;
-        }
-        if self.right_click_paste && is_right_click_press(ev.button, ev.release) {
-            return ViewportInput::RightClickPaste;
-        }
-        self.selection_mouse(ev, now, targets)
-    }
-
-    fn indicator_click(&mut self, ev: Sgr) -> bool {
-        let Some((row, column, width)) = self.indicator_rect else {
-            return false;
-        };
-        if ev.release || ev.button & 32 != 0 || ev.button & 3 != 0 {
-            return false;
-        }
-        if ev.y != row as i64 || ev.x < column as i64 || ev.x >= (column + width) as i64 {
-            return false;
-        }
-        self.view.scroll_to_end();
-        true
-    }
-
-    fn scrollbar_target(&self, x: i64, y: i64, include_hidden: bool) -> Option<ScrollbarGeometry> {
-        let rect = self.rect?;
-        if !rect.contains(x, y) {
-            return None;
-        }
-        let g = scrollbar_geometry(&self.view, rect, self.content.len(), include_hidden)?;
-        (x == g.column as i64 && y >= g.track_top as i64 && y < (g.track_top + g.track_height) as i64).then_some(g)
-    }
-
-    fn set_hover(&mut self, hover: bool) {
-        if hover == self.scrollbar_hover {
-            return;
-        }
-        self.scrollbar_hover = hover;
-        self.view.set_scrollbar_active(hover);
-    }
-
-    fn update_hover(&mut self, x: i64, y: i64) {
-        let hover = self.scrollbar_target(x, y, true).is_some();
-        self.set_hover(hover);
-    }
-
-    fn scroll_to_pointer(&mut self, g: ScrollbarGeometry, pointer_y: i64, grab: i64) {
-        let max_thumb = (g.track_height - g.thumb_height) as i64;
-        let offset = (pointer_y - g.track_top as i64 - grab).clamp(0, max_thumb.max(0));
-        let top = if max_thumb == 0 {
-            0
-        } else {
-            (offset as f64 / max_thumb as f64 * g.max_scroll_top as f64 + 0.5).floor() as i64
-        };
-        self.view.scroll_to(top, false);
-    }
-
-    fn scrollbar_mouse(&mut self, ev: Sgr) -> bool {
-        if let Some(grab) = self.scrollbar_drag {
-            if ev.release {
-                self.scrollbar_drag = None;
-                return true;
-            }
-            if let Some(rect) = self.rect
-                && let Some(g) = scrollbar_geometry(&self.view, rect, self.content.len(), false)
-            {
-                self.scroll_to_pointer(g, ev.y, grab);
-            }
-            return true;
-        }
-        if ev.release || ev.button & 32 != 0 || ev.button & 3 != 0 {
-            return false;
-        }
-        let Some(g) = self.scrollbar_target(ev.x, ev.y, false) else {
-            return false;
-        };
-        self.stop_auto_scroll();
-        self.press_active = false;
-        self.anchor = None;
-        self.focus = None;
-        self.granularity = Granularity::Character;
-        self.initial = None;
-        self.last_click = None;
-        self.pressed_url = None;
-        self.dragged = false;
-        self.set_hover(true);
-        let on_thumb = ev.y >= g.thumb_top as i64 && ev.y < (g.thumb_top + g.thumb_height) as i64;
-        let grab = if on_thumb {
-            ev.y - g.thumb_top as i64
-        } else {
-            (g.thumb_height / 2) as i64
-        };
-        if !on_thumb {
-            self.scroll_to_pointer(g, ev.y, grab);
-        }
-        self.scrollbar_drag = Some(grab);
-        true
-    }
-
-    /// `getScrollSelectionPoint`.
-    fn scroll_point(&self, x: i64, y: i64) -> Option<Point> {
-        let rect = self.rect?;
-        if rect.height == 0 {
-            return None;
-        }
-        let top = rect.y as i64;
-        let bottom = (self.rows as i64 - 1).min((rect.y + rect.height) as i64 - 1);
-        if bottom < top {
-            return None;
-        }
-        let pointer = y.clamp(top, bottom);
-        let max_row = self.content.len().max(1) as i64 - 1;
-        Some(Point {
-            row: (self.view.scroll_top() as i64 + pointer - top).clamp(0, max_row) as usize,
-            col: (x - rect.x as i64).clamp(0, rect.width as i64 - 1) as usize,
-            scroll: true,
-            boundary: false,
-        })
-    }
-
-    /// `getSelectionPoint`.
-    fn point(&self, x: i64, y: i64, scroll: bool) -> Point {
-        if scroll && let Some(p) = self.scroll_point(x, y) {
-            return p;
-        }
-        Point {
-            row: y.clamp(0, (self.rows as i64 - 1).max(0)) as usize,
-            col: x.clamp(0, (self.cols as i64 - 1).max(0)) as usize,
-            scroll: false,
-            boundary: false,
-        }
-    }
-
-    fn source_line(&self, p: Point) -> &str {
-        let lines = if p.scroll && self.rect.is_some() {
-            &self.content
-        } else {
-            &self.screen
-        };
-        lines.get(p.row).map_or("", String::as_str)
-    }
-
-    /// `getWordSelection`: the word (paths and kebab-case kept whole) under `p`.
-    fn word(&self, p: Point) -> Option<Range> {
-        let (from, to) = word_selection(&strip_terminal_sequences(self.source_line(p)), p.col)?;
-        Some(Range {
-            start: Point { col: from, ..p },
-            end: Point {
-                col: to,
-                boundary: true,
-                ..p
-            },
-        })
-    }
-
-    /// `getLineSelection`.
-    fn line(&self, p: Point) -> Range {
-        Range {
-            start: Point { col: 0, ..p },
-            end: Point {
-                col: visible_width(self.source_line(p)),
-                boundary: true,
-                ..p
-            },
-        }
-    }
-
-    /// `updateSelectionFocus`.
-    fn update_focus(&mut self, p: Point) {
-        let Some(initial) = self.initial.filter(|_| self.granularity != Granularity::Character) else {
-            self.focus = Some(p);
-            return;
-        };
-        let range = if self.granularity == Granularity::Word {
-            self.word(p)
-        } else {
-            Some(self.line(p))
-        };
-        let Some(range) = range else {
-            return;
-        };
-        let before = range.start.row < initial.start.row
-            || (range.start.row == initial.start.row && range.start.col < initial.start.col);
-        if before {
-            self.anchor = Some(initial.end);
-            self.focus = Some(range.start);
-        } else {
-            self.anchor = Some(initial.start);
-            self.focus = Some(range.end);
-        }
-    }
-
-    fn click_count(&mut self, p: Point, word: Option<Range>, now: Instant) -> u32 {
-        let count = match (word, self.last_click) {
-            (Some(w), Some(prev))
-                if now.saturating_duration_since(prev.at) <= DOUBLE_CLICK_INTERVAL
-                    && prev.row == p.row
-                    && prev.scroll == p.scroll
-                    && prev.word_start == w.start.col
-                    && prev.word_end == w.end.col =>
-            {
-                prev.count % 3 + 1
-            }
-            _ => 1,
-        };
-        self.last_click = word.map(|w| Click {
-            at: now,
-            count,
-            row: p.row,
-            scroll: p.scroll,
-            word_start: w.start.col,
-            word_end: w.end.col,
-        });
-        count
-    }
-
-    /// `updateSelectionAutoScroll`.
-    fn update_auto_scroll(&mut self, ev: Sgr, now: Instant) {
-        let scroll = self.anchor.is_some_and(|a| a.scroll);
-        let Some(rect) = self.rect.filter(|r| scroll && r.height > 0) else {
-            self.stop_auto_scroll();
-            return;
-        };
-        let top = rect.y as i64;
-        let bottom = (self.rows as i64 - 1).min((rect.y + rect.height) as i64 - 1);
-        self.drag_pointer = Some((ev.x, ev.y));
-        self.auto_direction = if ev.y <= top { -1 } else { i64::from(ev.y >= bottom) };
-        if self.auto_direction == 0 {
-            self.stop_auto_scroll();
-            return;
-        }
-        if self.auto_next.is_none() {
-            self.auto_next = Some(now + AUTO_SCROLL_INTERVAL);
-        }
-    }
-
-    /// One tick of the held drag's auto-scroll (`autoScrollSelection`). True when it scrolled.
-    pub fn auto_scroll_tick(&mut self) -> bool {
-        let scroll = self.anchor.is_some_and(|a| a.scroll);
-        let (Some((x, y)), true) = (self.drag_pointer, scroll) else {
-            self.stop_auto_scroll();
-            return false;
-        };
-        let direction = self.auto_direction;
-        if direction == 0 {
-            self.stop_auto_scroll();
-            return false;
-        }
-        if self.view.scroll_by(direction) == direction {
-            self.stop_auto_scroll();
-            return false;
-        }
-        if let Some(p) = self.scroll_point(x, y) {
-            self.update_focus(p);
-        }
-        true
-    }
-
-    /// A held drag is auto-scrolling (its interval runs).
-    pub fn is_auto_scrolling(&self) -> bool {
-        self.auto_next.is_some()
-    }
-
-    fn stop_auto_scroll(&mut self) {
-        self.auto_next = None;
-        self.auto_direction = 0;
-        self.drag_pointer = None;
-    }
-
-    /// `handleSelectionMouseEvent`.
-    fn selection_mouse(&mut self, ev: Sgr, now: Instant, targets: &mut dyn MouseTargets) -> ViewportInput {
-        let button = ev.button & 3;
-        if button != 0 && !(ev.release && button == 3) {
-            return ViewportInput::Consumed;
-        }
-        let anchor_scroll = self.anchor.is_some_and(|a| a.scroll);
-        let point = self.point(ev.x, ev.y, anchor_scroll);
-        if ev.release {
-            if !self.press_active {
-                return ViewportInput::Consumed;
-            }
-            self.press_active = false;
-            self.stop_auto_scroll();
-            if self.anchor.is_none() {
-                return ViewportInput::Consumed;
-            }
-            self.update_focus(point);
-            let is_click = !self.dragged
-                && self
-                    .anchor
-                    .is_some_and(|a| a.scroll == point.scroll && a.row == point.row && a.col == point.col);
-            let clicked = self.pressed_url.take().filter(|_| is_click);
-            if let (Some(url), Some(open)) = (clicked, self.open_url.clone()) {
-                self.anchor = None;
-                self.focus = None;
-                open(&url);
-                return ViewportInput::Consumed;
-            }
-            if is_click {
-                let count = self.last_click.map_or(1, |c| c.count);
-                let click = self.mouse_event(MouseEventType::Click, ev.button, ev.x, ev.y, Some(count));
-                if let Some(d) = targets.dispatch_at(&click) {
-                    self.apply_dispatch(d);
-                    self.clear_text_selection();
-                    return ViewportInput::Consumed;
-                }
-            }
-            if self.copy_on_select
-                && let Some(text) = self.selection_text()
-            {
-                return ViewportInput::Copy(text);
-            }
-            return ViewportInput::Consumed;
-        }
-        if ev.button & 32 != 0 {
-            if !self.press_active || self.anchor.is_none() {
-                return ViewportInput::Consumed;
-            }
-            self.dragged = true;
-            self.last_click = None;
-            self.pressed_url = None;
-            self.update_focus(point);
-            self.update_auto_scroll(ev, now);
-            return ViewportInput::Consumed;
-        }
-        self.stop_auto_scroll();
-        self.press_active = true;
-        let in_view = self.rect.is_some_and(|r| r.contains(ev.x, ev.y));
-        let anchor = self.point(ev.x, ev.y, in_view);
-        let word = self.word(anchor);
-        let count = self.click_count(anchor, word, now);
-        let range = match count {
-            2 => word,
-            3 => Some(self.line(anchor)),
-            _ => None,
-        };
-        self.granularity = match (range, count) {
-            (Some(_), 2) => Granularity::Word,
-            (Some(_), _) => Granularity::Line,
-            _ => Granularity::Character,
-        };
-        self.initial = range;
-        self.anchor = Some(range.map_or(anchor, |r| r.start));
-        self.focus = Some(range.map_or(anchor, |r| r.end));
-        self.dragged = false;
-        self.pressed_url = if range.is_some() {
-            None
-        } else {
-            let row = ev.y.clamp(0, (self.rows as i64 - 1).max(0)) as usize;
-            let col = ev.x.clamp(0, (self.cols as i64 - 1).max(0)) as usize;
-            self.screen.get(row).and_then(|line| osc8_link_at_column(line, col))
-        };
-        ViewportInput::Consumed
-    }
-
-    /// `getSelectionBounds`: ordered, or `None` when empty or across views.
-    fn bounds(&self) -> Option<(Point, Point)> {
-        let (a, f) = (self.anchor?, self.focus?);
-        if a.scroll != f.scroll || (a.row == f.row && a.col == f.col) {
-            return None;
-        }
-        let a_first = a.row < f.row || (a.row == f.row && a.col < f.col);
-        Some(if a_first { (a, f) } else { (f, a) })
-    }
-
-    fn apply_selection(&self, screen: Vec<String>) -> Vec<String> {
-        let Some((start, end)) = self.bounds() else {
-            return screen;
-        };
-        let (mut min_row, mut max_row) = (0i64, screen.len() as i64 - 1);
-        let (mut min_col, mut max_col) = (0, self.cols);
-        let (mut s, mut e) = (to_screen(start, 0), to_screen(end, 0));
-        if start.scroll {
-            let Some(rect) = self.rect else {
-                return screen;
-            };
-            min_row = rect.y as i64;
-            max_row = max_row.min((rect.y + rect.height) as i64 - 1);
-            min_col = rect.x;
-            max_col = self.cols.min(rect.x + rect.width);
-            let shift = rect.y as i64 - self.view.scroll_top() as i64;
-            s = ScreenPoint {
-                row: start.row as i64 + shift,
-                col: rect.x + start.col,
-                boundary: start.boundary,
-            };
-            e = ScreenPoint {
-                row: end.row as i64 + shift,
-                col: rect.x + end.col,
-                boundary: end.boundary,
-            };
-        }
-        screen
-            .into_iter()
-            .enumerate()
-            .map(|(row, line)| {
-                let r = row as i64;
-                if r < min_row || r > max_row || r < s.row || r > e.row || is_image_line(&line) {
-                    return line;
-                }
-                let width = visible_width(&line);
-                let (a, b) = selection_columns(&line, r, s, e, min_col, max_col);
-                if b <= a {
-                    return line;
-                }
-                let before = slice_by_column(&line, 0, a);
-                let selected = slice_by_column(&line, a, b - a);
-                let after = slice_by_column(&line, b, width.saturating_sub(b));
-                format!("{before}{}{after}", selection_highlight(&selected))
-            })
-            .collect()
     }
 
     /// `compositeScrollToEndIndicator`.
@@ -1223,90 +650,6 @@ impl FullscreenViewport {
         }
         screen
     }
-}
-
-/// `getWordSelection` on a plain `line`: the columns `[start, end)` of the word under column `col` (`/` and `-`
-/// join selectable neighbours, so paths and kebab-case stay whole), or `None` past the line's end.
-pub fn word_selection(line: &str, col: usize) -> Option<(usize, usize)> {
-    let mut segments: Vec<(usize, usize, bool, bool)> = Vec::new();
-    let mut start = 0;
-    for (segment, word_like) in crate::word_segment::word_segments(line) {
-        let end = start + visible_width(segment);
-        let joiner = segment == "/" || segment == "-";
-        segments.push((start, end, word_like || joiner, joiner));
-        start = end;
-    }
-    let clicked = segments.iter().position(|s| col >= s.0 && col < s.1)?;
-    let join = |l: (usize, usize, bool, bool), r: (usize, usize, bool, bool)| l.2 && r.2 && (l.3 || r.3);
-    let (mut from, mut to) = (segments[clicked].0, segments[clicked].1);
-    let mut i = clicked;
-    while i > 0 && join(segments[i - 1], segments[i]) {
-        from = segments[i - 1].0;
-        i -= 1;
-    }
-    let mut i = clicked;
-    while i + 1 < segments.len() && join(segments[i], segments[i + 1]) {
-        to = segments[i + 1].1;
-        i += 1;
-    }
-    Some((from, to))
-}
-
-fn to_screen(p: Point, shift: i64) -> ScreenPoint {
-    ScreenPoint {
-        row: p.row as i64 + shift,
-        col: p.col,
-        boundary: p.boundary,
-    }
-}
-
-/// `getSelectionColumns`: the columns of `line` (screen or content row `row`) inside the selection `s`..`e`.
-fn selection_columns(
-    line: &str,
-    row: i64,
-    s: ScreenPoint,
-    e: ScreenPoint,
-    min_col: usize,
-    max_col: usize,
-) -> (usize, usize) {
-    let width = visible_width(line);
-    let mut start = min_col;
-    let mut end = width.min(max_col);
-    if row == s.row {
-        start = grapheme_cell_range(line, s.col).map_or(s.col.min(width), |r| r.0);
-    }
-    if row == e.row {
-        end = if e.boundary {
-            e.col.min(width)
-        } else {
-            grapheme_cell_range(line, e.col).map_or((e.col + 1).min(width), |r| r.1)
-        };
-    }
-    (start.max(min_col), end.min(max_col))
-}
-
-/// `applySelectionHighlight`: inverse video that survives the text's own SGR codes.
-fn selection_highlight(text: &str) -> String {
-    let mut out = String::from("\x1b[7m");
-    let mut i = 0;
-    while i < text.len() {
-        match extract_ansi_code(text, i) {
-            Some(code) => {
-                out.push_str(code);
-                if code.ends_with('m') {
-                    out.push_str("\x1b[7m");
-                }
-                i += code.len();
-            }
-            None => {
-                let c = text[i..].chars().next().unwrap_or('\0');
-                out.push(c);
-                i += c.len_utf8().max(1);
-            }
-        }
-    }
-    out.push_str("\x1b[27m");
-    out
 }
 
 /// `parseWheelEvent`: (direction, x, y, button) of a vertical wheel report (SGR or X10).

@@ -40,17 +40,7 @@ impl Core {
             ));
         }
         let name = crate::subagents::subagent_name(&self.session, id).unwrap_or_else(|| format!("revived-{id}"));
-        let mut kwargs = Map::new();
-        kwargs.insert("name".into(), name.into());
-        if let Some(model) = &input.model {
-            kwargs.insert("model".into(), format!("{}/{}", model.provider, model.model_id).into());
-        }
-        if let Some(thinking) = &input.thinking {
-            kwargs.insert("thinking".into(), thinking.clone().into());
-        }
-        if let Some(timeout) = input.timeout_ms {
-            kwargs.insert("timeout_ms".into(), timeout.into());
-        }
+        let kwargs = revive_spawn_kwargs(name, &input);
         let spawned = delegation.handle(
             "rlm.spawn",
             json!({"prompt": input.prompt, "kwargs": kwargs}),
@@ -65,4 +55,19 @@ impl Core {
             .ok_or_else(|| format!("No transcript for agent {id}"))?;
         Ok(json!({"id": id, "busy": busy, "messages": messages}))
     }
+}
+
+fn revive_spawn_kwargs(name: String, input: &harness::chat::children::ChildInput) -> Map<String, Value> {
+    let mut kwargs = Map::new();
+    kwargs.insert("name".into(), name.into());
+    if let Some(model) = &input.model {
+        kwargs.insert("model".into(), format!("{}/{}", model.provider, model.model_id).into());
+    }
+    if let Some(thinking) = &input.thinking {
+        kwargs.insert("thinking".into(), thinking.clone().into());
+    }
+    if let Some(timeout) = input.timeout_ms {
+        kwargs.insert("timeout_ms".into(), timeout.into());
+    }
+    kwargs
 }

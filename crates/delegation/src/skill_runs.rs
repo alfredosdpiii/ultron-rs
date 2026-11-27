@@ -274,27 +274,22 @@ impl SkillRuns {
         Ok(status)
     }
 
-    fn start(&self, request: &Request<'_>) -> Result<Value, String> {
-        let payload = request.payload;
-        kernel::ops::fields("procedure.start", payload)?;
-        let name = jsrt::payload::nonempty_string(payload.get("name"), "name")?;
-        let version = payload.get("version").and_then(Value::as_str);
-        let input = payload.get("input").cloned().unwrap_or(Value::Null);
-        if let Some(slot) = jsrt::sync::lock(&self.book.runs).get(request.lane) {
-            let (skill, id, segment) = match slot {
-                Slot::Ready(run) => (&run.skill.name, &run.id, &run.procedure.segments[run.index].name),
-                Slot::Stepping { id, skill, segment, .. } => (skill, id, segment),
-            };
-            return Err(format!(
-                "This lane is running skill {skill} (run {id}, segment {segment}): finish it or abort it first"
-            ));
-        }
-        let skill = self.skills.pinned_skill(&name, version)?;
-        let raw = procedure::raw_of(&skill.content)?
-            .ok_or_else(|| format!("Skill {name} has no procedure: read it with skills.load and follow its steps"))?;
-        let procedure = procedure::parse(&raw, &input).map_err(|error| format!("Skill {name}: {error}"))?;
-        let started = (self.now)();
-        let mut run = Run {
+    fn ensure_lane_idle(&self, lane: &str) -> Result<(), String> {
+        let runs = jsrt::sync::lock(&self.book.runs);
+        let Some(slot) = runs.get(lane) else {
+            return Ok(());
+        };
+        let (skill, id, segment) = match slot {
+            Slot::Ready(run) => (&run.skill.name, &run.id, &run.procedure.segments[run.index].name),
+            Slot::Stepping { id, skill, segment, .. } => (skill, id, segment),
+        };
+        Err(format!(
+            "This lane is running skill {skill} (run {id}, segment {segment}): finish it or abort it first"
+        ))
+    }
+
+    fn new_run(&self, skill: PinnedSkill, procedure: Procedure, started: i64) -> Run {
+        Run {
             id: jsrt::random::uuid_v4(),
             skill,
             procedure,
@@ -311,7 +306,32 @@ impl SkillRuns {
             results: Vec::new(),
             evidence: Value::Null,
             started,
-        };
+        }
+    }
+
+    fn load_skill_procedure(
+        &self,
+        name: &str,
+        version: Option<&str>,
+        input: &Value,
+    ) -> Result<(PinnedSkill, Procedure), String> {
+        let skill = self.skills.pinned_skill(name, version)?;
+        let raw = procedure::raw_of(&skill.content)?
+            .ok_or_else(|| format!("Skill {name} has no procedure: read it with skills.load and follow its steps"))?;
+        let procedure = procedure::parse(&raw, input).map_err(|error| format!("Skill {name}: {error}"))?;
+        Ok((skill, procedure))
+    }
+
+    fn start(&self, request: &Request<'_>) -> Result<Value, String> {
+        let payload = request.payload;
+        kernel::ops::fields("procedure.start", payload)?;
+        let name = jsrt::payload::nonempty_string(payload.get("name"), "name")?;
+        let version = payload.get("version").and_then(Value::as_str);
+        let input = payload.get("input").cloned().unwrap_or(Value::Null);
+        self.ensure_lane_idle(request.lane)?;
+        let (skill, procedure) = self.load_skill_procedure(&name, version, &input)?;
+        let started = (self.now)();
+        let mut run = self.new_run(skill, procedure, started);
         let base = json!({
             "id": run.id,
             "at": started,
@@ -416,44 +436,49 @@ impl SkillRuns {
         )
     }
 
+    fn take_ready_run(&self, lane: &str, id: &str, named: &str) -> Result<Run, String> {
+        let mut runs = jsrt::sync::lock(&self.book.runs);
+        let skill = match runs.get(lane) {
+            Some(Slot::Ready(current)) if current.id == id => {
+                let at = &current.procedure.segments[current.index].name;
+                if *at != named {
+                    return Err(format!("Run {id} is at segment {at}, not {named}"));
+                }
+                current.skill.name.clone()
+            }
+            Some(Slot::Stepping { id: stepping, .. }) if *stepping == id => {
+                return Err(format!("Run {id} is already running a step"));
+            }
+            _ => return Err(format!("No skill run {id} is in progress on this lane")),
+        };
+        let stepping = Slot::Stepping {
+            id: id.to_string(),
+            skill,
+            segment: named.to_string(),
+            abort: None,
+        };
+        match runs.insert(lane.to_string(), stepping) {
+            Some(Slot::Ready(run)) => Ok(*run),
+            _ => unreachable!("checked above"),
+        }
+    }
+
+    fn take_pending_abort(&self, lane: &str) -> Option<Option<String>> {
+        match jsrt::sync::lock(&self.book.runs).get_mut(lane) {
+            Some(Slot::Stepping { abort, .. }) => abort.take(),
+            _ => None,
+        }
+    }
+
     fn step(&self, request: &Request<'_>) -> Result<Value, String> {
         let payload = request.payload;
         kernel::ops::fields("procedure.step", payload)?;
         let id = jsrt::payload::nonempty_string(payload.get("run"), "run")?;
         let named = jsrt::payload::nonempty_string(payload.get("segment"), "segment")?;
-        let mut run = {
-            let mut runs = jsrt::sync::lock(&self.book.runs);
-            let skill = match runs.get(request.lane) {
-                Some(Slot::Ready(current)) if current.id == id => {
-                    let at = &current.procedure.segments[current.index].name;
-                    if *at != named {
-                        return Err(format!("Run {id} is at segment {at}, not {named}"));
-                    }
-                    current.skill.name.clone()
-                }
-                Some(Slot::Stepping { id: stepping, .. }) if *stepping == id => {
-                    return Err(format!("Run {id} is already running a step"));
-                }
-                _ => return Err(format!("No skill run {id} is in progress on this lane")),
-            };
-            let stepping = Slot::Stepping {
-                id,
-                skill,
-                segment: named,
-                abort: None,
-            };
-            match runs.insert(request.lane.to_string(), stepping) {
-                Some(Slot::Ready(run)) => *run,
-                _ => unreachable!("checked above"),
-            }
-        };
+        let mut run = self.take_ready_run(request.lane, &id, &named)?;
         let decided = self.decide(&mut run, request, payload.get("state"));
         run.stepped = true;
-        let abort = match jsrt::sync::lock(&self.book.runs).get_mut(request.lane) {
-            Some(Slot::Stepping { abort, .. }) => abort.take(),
-            _ => None,
-        };
-        if let Some(reason) = abort {
+        if let Some(reason) = self.take_pending_abort(request.lane) {
             return self.finish(request.lane, run, "aborted", reason);
         }
         let decision = match decided {
@@ -466,38 +491,54 @@ impl SkillRuns {
         self.advance(request, run, decision)
     }
 
+    fn decide_check_step(
+        &self,
+        run: &mut Run,
+        segment: &procedure::Segment,
+        check: &HostCheck,
+        signal: &Signal,
+    ) -> Result<Decision, String> {
+        let report = self.evaluate(&segment.writes, vec![check.clone()], &run.baseline, signal)?;
+        let entry = report["checks"]
+            .as_array()
+            .and_then(|checks| checks.last())
+            .cloned()
+            .unwrap_or(Value::Null);
+        run.evidence = json!({"segment": segment.name, "check": entry["check"], "exit_code": entry["exit_code"],
+                              "stdout": tail(entry["stdout"].as_str().unwrap_or_default()),
+                              "stderr": tail(entry["stderr"].as_str().unwrap_or_default())});
+        Ok(match report["verdict"] == "verified" {
+            true => Decision::Pass(report),
+            false => Decision::Fail(report),
+        })
+    }
+
+    fn decide_judge_step(
+        &self,
+        run: &Run,
+        segment: &procedure::Segment,
+        request: &Request<'_>,
+        state: Option<&Value>,
+    ) -> Result<Decision, String> {
+        let decision = self.judge(run, request, state)?;
+        match (decision, &segment.writes) {
+            (Decision::Pass(summary), Some(_)) => {
+                let report = self.evaluate(&segment.writes, Vec::new(), &run.baseline, request.signal)?;
+                Ok(match report["verdict"] == "verified" {
+                    true => Decision::Pass(summary),
+                    false => Decision::Fail(json!({"judge": summary, "contract": report})),
+                })
+            }
+            (decision, _) => Ok(decision),
+        }
+    }
+
     /// The segment's step, then the boundary violations the lane's cells showed since its last step.
     fn decide(&self, run: &mut Run, request: &Request<'_>, state: Option<&Value>) -> Result<Decision, String> {
         let segment = run.procedure.segments[run.index].clone();
         let decision = match &segment.step {
-            Step::Check(check) => {
-                let report = self.evaluate(&segment.writes, vec![check.clone()], &run.baseline, request.signal)?;
-                let entry = report["checks"]
-                    .as_array()
-                    .and_then(|checks| checks.last())
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                run.evidence = json!({"segment": segment.name, "check": entry["check"], "exit_code": entry["exit_code"],
-                                      "stdout": tail(entry["stdout"].as_str().unwrap_or_default()),
-                                      "stderr": tail(entry["stderr"].as_str().unwrap_or_default())});
-                match report["verdict"] == "verified" {
-                    true => Decision::Pass(report),
-                    false => Decision::Fail(report),
-                }
-            }
-            Step::Judge { .. } => {
-                let decision = self.judge(run, request, state)?;
-                match (decision, &segment.writes) {
-                    (Decision::Pass(summary), Some(_)) => {
-                        let report = self.evaluate(&segment.writes, Vec::new(), &run.baseline, request.signal)?;
-                        match report["verdict"] == "verified" {
-                            true => Decision::Pass(summary),
-                            false => Decision::Fail(json!({"judge": summary, "contract": report})),
-                        }
-                    }
-                    (decision, _) => decision,
-                }
-            }
+            Step::Check(check) => self.decide_check_step(run, &segment, check, request.signal)?,
+            Step::Judge { .. } => self.decide_judge_step(run, &segment, request, state)?,
             Step::Agent { .. } => self.agent(run, request)?,
         };
         let violations = std::mem::take(&mut run.violations);
@@ -508,6 +549,37 @@ impl SkillRuns {
             })),
             (decision, _) => decision,
         })
+    }
+
+    fn advance_pass(
+        &self,
+        request: &Request<'_>,
+        mut run: Run,
+        result: Value,
+        evidence: Value,
+    ) -> Result<Value, String> {
+        let lane = request.lane;
+        run.results.push(result);
+        let step = json!({"passed": true, "evidence": evidence});
+        if run.index + 1 == run.procedure.segments.len() {
+            let mut status = self.final_check(lane, run, request.signal)?;
+            status["step"] = step;
+            return Ok(status);
+        }
+        run.index += 1;
+        if let Err(reason) = self.enter(&mut run, request.host, request.signal) {
+            let mut status = self.finish(lane, run, "blocked", Some(reason))?;
+            status["step"] = step;
+            return Ok(status);
+        }
+        let recorded = self.record(
+            &run,
+            json!({"at_segment": run.procedure.segments[run.index].name, "segments": run.results}),
+        );
+        let mut status = self.status(&run, "running");
+        status["step"] = step;
+        self.book.put(lane, run);
+        recorded.map(|()| status)
     }
 
     fn advance(&self, request: &Request<'_>, mut run: Run, decision: Decision) -> Result<Value, String> {
@@ -541,29 +613,7 @@ impl SkillRuns {
                 status["step"] = json!({"passed": false, "evidence": evidence});
                 Ok(status)
             }
-            Decision::Pass(_) => {
-                run.results.push(result);
-                let step = json!({"passed": true, "evidence": evidence});
-                if run.index + 1 == run.procedure.segments.len() {
-                    let mut status = self.final_check(lane, run, request.signal)?;
-                    status["step"] = step;
-                    return Ok(status);
-                }
-                run.index += 1;
-                if let Err(reason) = self.enter(&mut run, request.host, request.signal) {
-                    let mut status = self.finish(lane, run, "blocked", Some(reason))?;
-                    status["step"] = step;
-                    return Ok(status);
-                }
-                let recorded = self.record(
-                    &run,
-                    json!({"at_segment": run.procedure.segments[run.index].name, "segments": run.results}),
-                );
-                let mut status = self.status(&run, "running");
-                status["step"] = step;
-                self.book.put(lane, run);
-                recorded.map(|()| status)
-            }
+            Decision::Pass(_) => self.advance_pass(request, run, result, evidence),
         }
     }
 

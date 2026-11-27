@@ -109,6 +109,52 @@ pub fn jj_root(cwd: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
+fn excluded_untracked_files(top: &Path, items: &[&str], max_file_bytes: u64) -> Vec<String> {
+    let mut excluded: Vec<String> = items
+        .iter()
+        .filter(|item| item.starts_with("? "))
+        .map(|item| item[2..].trim_end_matches('/'))
+        .filter(|path| {
+            std::fs::symlink_metadata(top.join(path)).is_ok_and(|m| m.is_file() && m.size() > max_file_bytes)
+        })
+        .map(str::to_string)
+        .collect();
+    excluded.sort();
+    excluded
+}
+
+fn matches_previous_git_tree(previous: Option<&Checkpoint>, top: &Path, tree: &str) -> bool {
+    previous.is_some_and(|prev| {
+        prev.vcs == "git" && prev.root == top.display().to_string() && prev.tree.as_deref() == Some(tree)
+    })
+}
+
+fn finalize_git_capture(
+    top: &Path,
+    head: Option<String>,
+    previous: Option<&Checkpoint>,
+    excluded: Vec<String>,
+) -> Result<Capture, String> {
+    let (commit, tree) = commit_tree(top, head.as_deref(), &excluded)?;
+    if matches_previous_git_tree(previous, top, &tree)
+        && let Some(previous) = previous
+    {
+        return Ok(Capture::Unchanged(previous.clone()));
+    }
+    let commit = match commit {
+        Some(commit) => commit,
+        None => make_commit(top, &tree, head.as_deref())?,
+    };
+    Ok(Capture::Taken(Checkpoint {
+        vcs: "git".into(),
+        root: top.display().to_string(),
+        head,
+        commit,
+        tree: Some(tree),
+        excluded,
+    }))
+}
+
 /// Record `cwd`'s working tree. `previous`: the session's last checkpoint (an unchanged tree reuses it); `jj`: the
 /// `jj` executable when the session's PATH has one.
 pub fn capture(
@@ -148,52 +194,23 @@ pub fn capture(
             limits.max_files
         )));
     }
-    let mut excluded: Vec<String> = items
-        .iter()
-        .filter(|item| item.starts_with("? "))
-        .map(|item| item[2..].trim_end_matches('/'))
-        .filter(|path| {
-            std::fs::symlink_metadata(top.join(path)).is_ok_and(|m| m.is_file() && m.size() > limits.max_file_bytes)
-        })
-        .map(str::to_string)
-        .collect();
-    excluded.sort();
-    let (commit, tree) = commit_tree(&top, info.head.as_deref(), &excluded)?;
-    if let Some(previous) = previous
-        && previous.vcs == "git"
-        && previous.root == top.display().to_string()
-        && previous.tree.as_deref() == Some(tree.as_str())
-    {
-        return Ok(Capture::Unchanged(previous.clone()));
-    }
-    let commit = match commit {
-        Some(commit) => commit,
-        None => make_commit(&top, &tree, info.head.as_deref())?,
-    };
-    Ok(Capture::Taken(Checkpoint {
-        vcs: "git".into(),
-        root: top.display().to_string(),
-        head: info.head,
-        commit,
-        tree: Some(tree),
-        excluded,
-    }))
+    let excluded = excluded_untracked_files(&top, &items, limits.max_file_bytes);
+    finalize_git_capture(&top, info.head, previous, excluded)
 }
 
-/// The working tree's tree object (from a copy of the index, `excluded` left out); `Some(HEAD)` as the commit when
-/// it is HEAD's tree.
-fn commit_tree(top: &Path, head: Option<&str>, excluded: &[String]) -> Result<(Option<String>, String), String> {
+fn seed_temp_index(top: &Path, head: Option<&str>, temp_index: &Path, env: &[(&str, &str)]) -> Result<(), String> {
     let error = |e: WorktreeError| e.message;
     let index_path = git_ok(top, &["rev-parse", "--path-format=absolute", "--git-path", "index"]).map_err(error)?;
-    let temporary = TempIndex(temporary_index("checkpoint-index"));
-    let index = temporary.0.display().to_string();
-    let env = [("GIT_INDEX_FILE", index.as_str()), ("GIT_OPTIONAL_LOCKS", "0")];
-    if copy_index(Path::new(index_path.trim()), &temporary.0).is_err()
+    if copy_index(Path::new(index_path.trim()), temp_index).is_err()
         && let Some(head) = head
     {
-        git_ok_with(top, &["read-tree", head], opts(&env)).map_err(error)?;
+        git_ok_with(top, &["read-tree", head], opts(env)).map_err(error)?;
     }
-    clear_index_flags(top, &env)?;
+    Ok(())
+}
+
+fn write_tree_excluding(top: &Path, excluded: &[String], env: &[(&str, &str)]) -> Result<String, String> {
+    let error = |e: WorktreeError| e.message;
     let mut specs = vec![".".to_string()];
     specs.extend(excluded.iter().map(|path| format!(":(exclude,literal){path}")));
     let mut input = specs.join("\0").into_bytes();
@@ -207,12 +224,23 @@ fn commit_tree(top: &Path, head: Option<&str>, excluded: &[String]) -> Result<(O
         },
     )
     .map_err(error)?;
-    let tree = git_ok_with(top, &["write-tree"], opts(&env))
+    Ok(git_ok_with(top, &["write-tree"], opts(env))
         .map_err(error)?
         .trim()
-        .to_string();
+        .to_string())
+}
+
+/// The working tree's tree object (from a copy of the index, `excluded` left out); `Some(HEAD)` as the commit when
+/// it is HEAD's tree.
+fn commit_tree(top: &Path, head: Option<&str>, excluded: &[String]) -> Result<(Option<String>, String), String> {
+    let temporary = TempIndex(temporary_index("checkpoint-index"));
+    let index = temporary.0.display().to_string();
+    let env = [("GIT_INDEX_FILE", index.as_str()), ("GIT_OPTIONAL_LOCKS", "0")];
+    seed_temp_index(top, head, &temporary.0, &env)?;
+    clear_index_flags(top, &env)?;
+    let tree = write_tree_excluding(top, excluded, &env)?;
     if let Some(head) = head {
-        let head_tree = git_ok(top, &["rev-parse", &format!("{head}^{{tree}}")]).map_err(error)?;
+        let head_tree = git_ok(top, &["rev-parse", &format!("{head}^{{tree}}")]).map_err(|e| e.message)?;
         if head_tree.trim() == tree {
             return Ok((Some(head.to_string()), tree));
         }
@@ -322,13 +350,7 @@ fn prune_empty_parents(top: &Path, path: &Path) {
     }
 }
 
-/// Make the working tree hold `target`'s files: the current files are recorded first (the returned
-/// [`Restored::safety`]); files the target lacks are deleted, the others written from it.
-pub fn restore(cwd: &Path, target: &Checkpoint, limits: &Limits, jj: Option<&Path>) -> Result<Restored, String> {
-    if target.vcs == "jj" {
-        let jj = jj.ok_or("This checkpoint was recorded by jj, and jj is not on the session's PATH")?;
-        return jj_restore(Path::new(&target.root), jj, target, limits);
-    }
+fn validate_git_restore_target(cwd: &Path, target: &Checkpoint) -> Result<PathBuf, String> {
     let info = repo_info(cwd).map_err(|e| e.message)?;
     let top = info.top;
     if top.display().to_string() != target.root {
@@ -344,39 +366,30 @@ pub fn restore(cwd: &Path, target: &Checkpoint, limits: &Limits, jj: Option<&Pat
             "Checkpoint {short} is no longer in the repository (Git may have pruned it); nothing was restored"
         ));
     }
-    let safety = match capture(cwd, None, limits, None)? {
-        Capture::Taken(checkpoint) | Capture::Unchanged(checkpoint) => checkpoint,
-        Capture::Skipped(note) => {
-            return Err(format!(
-                "The current files could not be saved first ({note}); nothing was restored"
-            ));
-        }
-        Capture::Outside => return Err("Not in a Git working tree; nothing was restored".into()),
-    };
-    let safety_tree = safety.tree.clone().unwrap_or_default();
-    let target_tree = match &target.tree {
-        Some(tree) => tree.clone(),
-        None => git_ok(&top, &["rev-parse", &format!("{}^{{tree}}", target.commit)])
+    Ok(top)
+}
+
+fn capture_safety_checkpoint(cwd: &Path, limits: &Limits) -> Result<Checkpoint, String> {
+    match capture(cwd, None, limits, None)? {
+        Capture::Taken(checkpoint) | Capture::Unchanged(checkpoint) => Ok(checkpoint),
+        Capture::Skipped(note) => Err(format!(
+            "The current files could not be saved first ({note}); nothing was restored"
+        )),
+        Capture::Outside => Err("Not in a Git working tree; nothing was restored".into()),
+    }
+}
+
+fn resolve_target_tree(top: &Path, target: &Checkpoint) -> Result<String, String> {
+    match &target.tree {
+        Some(tree) => Ok(tree.clone()),
+        None => Ok(git_ok(top, &["rev-parse", &format!("{}^{{tree}}", target.commit)])
             .map_err(|e| e.message)?
             .trim()
-            .to_string(),
-    };
-    let raw = git_ok(
-        &top,
-        &[
-            "-c",
-            "core.quotepath=off",
-            "diff-tree",
-            "-r",
-            "-z",
-            "--no-renames",
-            "--raw",
-            &safety_tree,
-            &target_tree,
-        ],
-    )
-    .map_err(|e| e.message)?;
-    let changes = parse_raw(&raw);
+            .to_string()),
+    }
+}
+
+fn check_unsaved_overwrites(top: &Path, changes: &[Change]) -> Result<(), String> {
     let unsaved: Vec<&str> = changes
         .iter()
         .filter(|c| c.status == 'A' && c.dst_mode != GITLINK)
@@ -389,48 +402,103 @@ pub fn restore(cwd: &Path, target: &Checkpoint, limits: &Limits, jj: Option<&Pat
             unsaved.join(", ")
         ));
     }
+    Ok(())
+}
+
+fn delete_removed_files(top: &Path, changes: &[Change], safety: &Checkpoint) -> Result<Vec<String>, String> {
     let mut deleted = Vec::new();
     for change in changes.iter().filter(|c| c.status == 'D' && c.src_mode != GITLINK) {
         let path = top.join(&change.path);
         if std::fs::symlink_metadata(&path).is_ok_and(|m| !m.is_dir()) {
-            std::fs::remove_file(&path).map_err(|e| interrupted(&safety, &format!("{}: {e}", change.path)))?;
+            std::fs::remove_file(&path).map_err(|e| interrupted(safety, &format!("{}: {e}", change.path)))?;
             deleted.push(change.path.clone());
         }
-        prune_empty_parents(&top, &path);
+        prune_empty_parents(top, &path);
     }
+    Ok(deleted)
+}
+
+fn checkout_written_files(
+    top: &Path,
+    target_tree: &str,
+    written: &[String],
+    safety: &Checkpoint,
+) -> Result<(), String> {
+    if written.is_empty() {
+        return Ok(());
+    }
+    let temporary = TempIndex(temporary_index("restore-index"));
+    let index = temporary.0.display().to_string();
+    let env = [("GIT_INDEX_FILE", index.as_str())];
+    git_ok_with(top, &["read-tree", target_tree], opts(&env)).map_err(|e| interrupted(safety, &e.message))?;
+    for path in written {
+        let full = top.join(path);
+        if std::fs::symlink_metadata(&full).is_ok_and(|m| m.is_dir()) {
+            std::fs::remove_dir(&full).map_err(|e| interrupted(safety, &format!("{path}: {e}")))?;
+        }
+    }
+    let mut input = written.join("\0").into_bytes();
+    input.push(0);
+    git_ok_with(
+        top,
+        &quiet(&["checkout-index", "-f", "-z", "--stdin"]),
+        GitOptions {
+            env: env.iter().map(|(k, v)| (*k, v.to_string())).collect(),
+            input: Some(input),
+        },
+    )
+    .map_err(|e| interrupted(safety, &e.message))?;
+    Ok(())
+}
+
+fn diff_checkpoint_trees(top: &Path, safety_tree: &str, target_tree: &str) -> Result<Vec<Change>, String> {
+    let raw = git_ok(
+        top,
+        &[
+            "-c",
+            "core.quotepath=off",
+            "diff-tree",
+            "-r",
+            "-z",
+            "--no-renames",
+            "--raw",
+            safety_tree,
+            target_tree,
+        ],
+    )
+    .map_err(|e| e.message)?;
+    Ok(parse_raw(&raw))
+}
+
+fn restore_git(cwd: &Path, target: &Checkpoint, limits: &Limits) -> Result<Restored, String> {
+    let top = validate_git_restore_target(cwd, target)?;
+    let safety = capture_safety_checkpoint(cwd, limits)?;
+    let safety_tree = safety.tree.clone().unwrap_or_default();
+    let target_tree = resolve_target_tree(&top, target)?;
+    let changes = diff_checkpoint_trees(&top, &safety_tree, &target_tree)?;
+    check_unsaved_overwrites(&top, &changes)?;
+    let deleted = delete_removed_files(&top, &changes, &safety)?;
     let written: Vec<String> = changes
         .iter()
         .filter(|c| c.status != 'D' && c.dst_mode != GITLINK)
         .map(|c| c.path.clone())
         .collect();
-    if !written.is_empty() {
-        let temporary = TempIndex(temporary_index("restore-index"));
-        let index = temporary.0.display().to_string();
-        let env = [("GIT_INDEX_FILE", index.as_str())];
-        git_ok_with(&top, &["read-tree", &target_tree], opts(&env)).map_err(|e| interrupted(&safety, &e.message))?;
-        for path in &written {
-            let full = top.join(path);
-            if std::fs::symlink_metadata(&full).is_ok_and(|m| m.is_dir()) {
-                std::fs::remove_dir(&full).map_err(|e| interrupted(&safety, &format!("{path}: {e}")))?;
-            }
-        }
-        let mut input = written.join("\0").into_bytes();
-        input.push(0);
-        git_ok_with(
-            &top,
-            &quiet(&["checkout-index", "-f", "-z", "--stdin"]),
-            GitOptions {
-                env: env.iter().map(|(k, v)| (*k, v.to_string())).collect(),
-                input: Some(input),
-            },
-        )
-        .map_err(|e| interrupted(&safety, &e.message))?;
-    }
+    checkout_written_files(&top, &target_tree, &written, &safety)?;
     Ok(Restored {
         safety,
         written,
         deleted,
     })
+}
+
+/// Make the working tree hold `target`'s files: the current files are recorded first (the returned
+/// [`Restored::safety`]); files the target lacks are deleted, the others written from it.
+pub fn restore(cwd: &Path, target: &Checkpoint, limits: &Limits, jj: Option<&Path>) -> Result<Restored, String> {
+    if target.vcs == "jj" {
+        let jj = jj.ok_or("This checkpoint was recorded by jj, and jj is not on the session's PATH")?;
+        return jj_restore(Path::new(&target.root), jj, target, limits);
+    }
+    restore_git(cwd, target, limits)
 }
 
 /// A restore that stopped part way: the files before it are in `safety`.

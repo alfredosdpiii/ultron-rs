@@ -99,20 +99,28 @@ fn animated_png(b: &[u8]) -> bool {
     false
 }
 
+fn bmp_planes_and_bits(b: &[u8], dib: u64) -> Option<(u64, u64)> {
+    match dib {
+        12 => Some((u16_le(b, 22), u16_le(b, 24))),
+        40..=124 if b.len() >= 30 => Some((u16_le(b, 26), u16_le(b, 28))),
+        _ => None,
+    }
+}
+
 fn bmp(b: &[u8]) -> bool {
     if b.len() < 26 {
         return false;
     }
     let (size, pixels, dib) = (u32_le(b, 2), u32_le(b, 10), u32_le(b, 14));
-    if (size != 0 && size < 26) || pixels < 14 + dib || (size != 0 && pixels >= size) {
+    let bad_size = size != 0 && (size < 26 || pixels >= size);
+    if bad_size || pixels < 14 + dib {
         return false;
     }
-    let (planes, bits) = match dib {
-        12 => (u16_le(b, 22), u16_le(b, 24)),
-        40..=124 if b.len() >= 30 => (u16_le(b, 26), u16_le(b, 28)),
-        _ => return false,
-    };
-    planes == 1 && [1, 4, 8, 16, 24, 32].contains(&bits)
+    bmp_planes_and_bits(b, dib).is_some_and(|(planes, bits)| planes == 1 && [1, 4, 8, 16, 24, 32].contains(&bits))
+}
+
+fn is_static_png(b: &[u8]) -> bool {
+    b.len() >= 16 && u32_be(b, 8) == 13 && ascii_at(b, 12, "IHDR") && !animated_png(b)
 }
 
 /// The image type by content (utils/mime.ts detectSupportedImageMimeType).
@@ -121,8 +129,7 @@ pub fn detect_image_mime_type(b: &[u8]) -> Option<&'static str> {
         return (b.get(3) != Some(&0xf7)).then_some("image/jpeg");
     }
     if b.starts_with(&PNG_SIGNATURE) {
-        let png = b.len() >= 16 && u32_be(b, 8) == 13 && ascii_at(b, 12, "IHDR");
-        return (png && !animated_png(b)).then_some("image/png");
+        return is_static_png(b).then_some("image/png");
     }
     if ascii_at(b, 0, "GIF87a") || ascii_at(b, 0, "GIF89a") {
         return Some("image/gif");
@@ -181,6 +188,57 @@ fn base64_len(bytes: usize) -> f64 {
     bytes.div_ceil(3) as f64 * 4.0
 }
 
+fn fit_dimensions(width: u32, height: u32, max_width: u32, max_height: u32) -> (u32, u32) {
+    let (mut w, mut h) = (width, height);
+    if w > max_width {
+        h = jsrt::number::round(f64::from(h) * f64::from(max_width) / f64::from(w)) as u32;
+        w = max_width;
+    }
+    if h > max_height {
+        w = jsrt::number::round(f64::from(w) * f64::from(max_height) / f64::from(h)) as u32;
+        h = max_height;
+    }
+    (w, h)
+}
+
+fn jpeg_qualities(primary: u8) -> Vec<u8> {
+    let mut qualities = vec![primary];
+    for q in [85, 70, 55, 40] {
+        if !qualities.contains(&q) {
+            qualities.push(q);
+        }
+    }
+    qualities
+}
+
+fn encode_within_budget(image: &DynamicImage, max_bytes: f64, qualities: &[u8]) -> Result<Option<CellImage>, ()> {
+    let png = encode_png(image).ok_or(())?;
+    if base64_len(png.len()) < max_bytes {
+        return Ok(Some(CellImage {
+            mime_type: "image/png",
+            data: png,
+        }));
+    }
+    for &q in qualities {
+        let jpeg = encode_jpeg(image, q).ok_or(())?;
+        if base64_len(jpeg.len()) < max_bytes {
+            return Ok(Some(CellImage {
+                mime_type: "image/jpeg",
+                data: jpeg,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+fn shrink_side(side: u32) -> u32 {
+    if side == 1 {
+        1
+    } else {
+        ((f64::from(side) * 0.75).floor() as u32).max(1)
+    }
+}
+
 /// resizeImageInProcess: None when the image cannot be decoded or brought under `max_bytes`.
 fn resize(bytes: &[u8], mime: &'static str, limits: ResizeLimits) -> Option<CellImage> {
     let max_width = limits.max_width.unwrap_or(2000);
@@ -195,54 +253,18 @@ fn resize(bytes: &[u8], mime: &'static str, limits: ResizeLimits) -> Option<Cell
             data: bytes.to_vec(),
         });
     }
-    let (mut w, mut h) = (width, height);
-    if w > max_width {
-        h = jsrt::number::round(f64::from(h) * f64::from(max_width) / f64::from(w)) as u32;
-        w = max_width;
-    }
-    if h > max_height {
-        w = jsrt::number::round(f64::from(w) * f64::from(max_height) / f64::from(h)) as u32;
-        h = max_height;
-    }
-    let mut qualities = vec![quality];
-    for q in [85, 70, 55, 40] {
-        if !qualities.contains(&q) {
-            qualities.push(q);
-        }
-    }
+    let (mut w, mut h) = fit_dimensions(width, height, max_width, max_height);
+    let qualities = jpeg_qualities(quality);
     loop {
         let resized = image.resize_exact(w, h, FilterType::Lanczos3);
-        let png = encode_png(&resized)?;
-        if base64_len(png.len()) < max_bytes {
-            return Some(CellImage {
-                mime_type: "image/png",
-                data: png,
-            });
+        if let Some(encoded) = encode_within_budget(&resized, max_bytes, &qualities).ok()? {
+            return Some(encoded);
         }
-        for &q in &qualities {
-            let jpeg = encode_jpeg(&resized, q)?;
-            if base64_len(jpeg.len()) < max_bytes {
-                return Some(CellImage {
-                    mime_type: "image/jpeg",
-                    data: jpeg,
-                });
-            }
-        }
-        if w == 1 && h == 1 {
+        let next = (shrink_side(w), shrink_side(h));
+        if next == (w, h) {
             return None;
         }
-        let next = |side: u32| {
-            if side == 1 {
-                1
-            } else {
-                ((f64::from(side) * 0.75).floor() as u32).max(1)
-            }
-        };
-        let (nw, nh) = (next(w), next(h));
-        if (nw, nh) == (w, h) {
-            return None;
-        }
-        (w, h) = (nw, nh);
+        (w, h) = next;
     }
 }
 
@@ -264,6 +286,65 @@ fn format_bytes(bytes: u64) -> String {
 
 fn format_name(mime: &str) -> String {
     mime.split('/').nth(1).unwrap_or(mime).to_uppercase()
+}
+
+fn read_image_source(payload: &Map<String, Value>) -> Result<Vec<u8>, String> {
+    let path = match payload.get("path") {
+        Some(Value::String(path)) if !path.is_empty() => path,
+        _ => return Err("view_image: path must be a non-empty string".into()),
+    };
+    let size = std::fs::metadata(path)
+        .map_err(|error| jsrt::fs::error_message(&error, "stat", std::path::Path::new(path)))?
+        .len();
+    if size > MAX_VIEW_IMAGE_SOURCE_BYTES {
+        return Err(format!(
+            "view_image: {} is over the {} limit",
+            format_bytes(size),
+            format_bytes(MAX_VIEW_IMAGE_SOURCE_BYTES)
+        ));
+    }
+    std::fs::read(path).map_err(|error| error.to_string())
+}
+
+fn normalize_image(bytes: Vec<u8>, mime: &'static str) -> Result<CellImage, String> {
+    if mime != "image/bmp" {
+        return Ok(CellImage {
+            mime_type: mime,
+            data: bytes,
+        });
+    }
+    let png = decode(&bytes)
+        .and_then(|image| encode_png(&image))
+        .ok_or("view_image: Image omitted: could not be converted to a supported inline image format.")?;
+    Ok(CellImage {
+        mime_type: "image/png",
+        data: png,
+    })
+}
+
+fn format_image_description(
+    index: usize,
+    original: Option<(u32, u32)>,
+    source_mime: &'static str,
+    processed: &CellImage,
+) -> String {
+    let shown = dimensions(&processed.data, processed.mime_type);
+    let mut description = format!(
+        "image {index}: {}{}, {}",
+        shown.map_or(String::new(), |(w, h)| format!("{w}x{h} ")),
+        format_name(processed.mime_type),
+        format_bytes(processed.data.len() as u64)
+    );
+    match (original, shown) {
+        (Some(original), Some(shown)) if original != shown => {
+            description.push_str(&format!(" (downscaled from {}x{})", original.0, original.1));
+        }
+        _ if processed.mime_type != source_mime => {
+            description.push_str(&format!(" (converted from {})", format_name(source_mime)));
+        }
+        _ => {}
+    }
+    description
 }
 
 /// Pi's read tool note, said once per cell when the current model takes no image input.
@@ -303,62 +384,19 @@ impl CellImages {
                 "view_image: at most {MAX_IMAGES_PER_CELL} images per cell; view the rest in a later cell"
             ));
         }
-        let path = match payload.get("path") {
-            Some(Value::String(path)) if !path.is_empty() => path,
-            _ => return Err("view_image: path must be a non-empty string".into()),
-        };
-        let size = std::fs::metadata(path)
-            .map_err(|error| jsrt::fs::error_message(&error, "stat", std::path::Path::new(path)))?
-            .len();
-        if size > MAX_VIEW_IMAGE_SOURCE_BYTES {
-            return Err(format!(
-                "view_image: {} is over the {} limit",
-                format_bytes(size),
-                format_bytes(MAX_VIEW_IMAGE_SOURCE_BYTES)
-            ));
-        }
-        let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+        let bytes = read_image_source(payload)?;
         let mime = detect_image_mime_type(&bytes)
             .ok_or("view_image: not a supported image (png, jpeg, gif or webp, detected by content)")?;
         let original = dimensions(&bytes, mime);
         let detail = payload.get("detail").and_then(Value::as_str);
-        let normalized = if mime == "image/bmp" {
-            let png = decode(&bytes)
-                .and_then(|image| encode_png(&image))
-                .ok_or("view_image: Image omitted: could not be converted to a supported inline image format.")?;
-            CellImage {
-                mime_type: "image/png",
-                data: png,
-            }
-        } else {
-            CellImage {
-                mime_type: mime,
-                data: bytes,
-            }
-        };
+        let normalized = normalize_image(bytes, mime)?;
         let processed = if self.options.auto_resize {
             resize(&normalized.data, normalized.mime_type, self.limits(detail))
                 .ok_or("view_image: Image omitted: could not be resized below the inline image size limit.")?
         } else {
             normalized
         };
-        let shown = dimensions(&processed.data, processed.mime_type);
-        let mut description = format!(
-            "image {}: {}{}, {}",
-            self.images.len() + 1,
-            shown.map_or(String::new(), |(w, h)| format!("{w}x{h} ")),
-            format_name(processed.mime_type),
-            format_bytes(processed.data.len() as u64)
-        );
-        match (original, shown) {
-            (Some(original), Some(shown)) if original != shown => {
-                description.push_str(&format!(" (downscaled from {}x{})", original.0, original.1));
-            }
-            _ if processed.mime_type != mime => {
-                description.push_str(&format!(" (converted from {})", format_name(mime)));
-            }
-            _ => {}
-        }
+        let description = format_image_description(self.images.len() + 1, original, mime, &processed);
         self.images.push(processed);
         Ok(match non_vision_note(self.options.model.as_ref()) {
             Some(note) => json!({ "description": description, "note": note }),

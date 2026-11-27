@@ -17,6 +17,47 @@ pub(super) struct ModelRow {
     pub(super) current: String,
 }
 
+fn model_choice(m: &ModelInfo) -> ModelChoice {
+    (
+        model_ref(m),
+        m.id.clone(),
+        (!m.name.is_empty() && m.name != m.id).then(|| m.name.clone()),
+        Some(m.provider.clone()),
+    )
+}
+
+fn plain_choice(v: &str, l: &str) -> ModelChoice {
+    (v.to_string(), l.to_string(), None, None)
+}
+
+fn with_head(head: ModelChoice, rest: &[ModelChoice]) -> Vec<ModelChoice> {
+    std::iter::once(head).chain(rest.iter().cloned()).collect()
+}
+
+fn claude_alias(v: &Option<String>) -> Option<String> {
+    v.as_ref().map(|v| format!("{CLAUDE_CODE}/{v}"))
+}
+
+fn setting_display(v: &Option<String>, fallback: String) -> String {
+    v.as_ref().map_or(fallback, |v| format!("{v} (setting)"))
+}
+
+fn review_display(review: &Option<String>, effective_frame: &Option<String>, session: &str) -> String {
+    match (review, effective_frame) {
+        (Some(r), _) => format!("{r} (setting)"),
+        (None, Some(f)) => format!("{f} (frame model)"),
+        _ => format!("same as session ({session})"),
+    }
+}
+
+fn race_models_display(picked: Vec<String>) -> String {
+    if picked.is_empty() {
+        "none (skills choose)".into()
+    } else {
+        picked.join(", ")
+    }
+}
+
 impl SettingsSelector {
     pub(super) fn thinking_summary(&self) -> String {
         match self.model_thinking.len() {
@@ -25,44 +66,53 @@ impl SettingsSelector {
         }
     }
 
+    fn build_model_row(
+        &self,
+        id: &str,
+        label: &str,
+        description: &str,
+        display: String,
+        choices: Vec<ModelChoice>,
+        current: Option<String>,
+    ) -> ModelRow {
+        let env = self.input.env_overrides.get(id);
+        ModelRow {
+            id: id.into(),
+            label: label.into(),
+            description: description.into(),
+            display: env.map_or(display, |(name, value)| format!("{value} (set by {name})")),
+            locked: env.map(|(name, _)| {
+                format!("Set by {name}; unset it to choose here (the variable wins over the setting).")
+            }),
+            heading: false,
+            choices,
+            current: current.unwrap_or_default(),
+        }
+    }
+
+    fn session_saved_default(&self, durable: &Option<Option<String>>) -> String {
+        match durable {
+            Some(model) => format!(
+                "{} (durable.model)",
+                model.as_deref().unwrap_or(CLAUDE_CODE_DEFAULT_REF)
+            ),
+            None => match (self.input.text("defaultProvider"), self.input.text("defaultModel")) {
+                (Some(p), Some(m)) => format!("{p}/{m}"),
+                _ => "none".into(),
+            },
+        }
+    }
+
     pub(super) fn model_rows(&self) -> Vec<ModelRow> {
         let c = &self.input;
-        let choice = |m: &ModelInfo| {
-            (
-                model_ref(m),
-                m.id.clone(),
-                (!m.name.is_empty() && m.name != m.id).then(|| m.name.clone()),
-                Some(m.provider.clone()),
-            )
-        };
-        let all: Vec<_> = c.models.iter().map(choice).collect();
+        let all: Vec<_> = c.models.iter().map(model_choice).collect();
         let claude: Vec<_> = c
             .models
             .iter()
             .filter(|m| m.provider == CLAUDE_CODE)
-            .map(choice)
+            .map(model_choice)
             .collect();
         let session = c.session.as_ref().map_or("none".to_string(), model_ref);
-        let plain = |v: &str, l: &str| (v.to_string(), l.to_string(), None, None);
-        let with = |head: ModelChoice, rest: &[ModelChoice]| {
-            std::iter::once(head).chain(rest.iter().cloned()).collect::<Vec<_>>()
-        };
-        let row =
-            |id: &str, label: &str, description: &str, display: String, choices: Vec<_>, current: Option<String>| {
-                let env = c.env_overrides.get(id);
-                ModelRow {
-                    id: id.into(),
-                    label: label.into(),
-                    description: description.into(),
-                    display: env.map_or(display, |(name, value)| format!("{value} (set by {name})")),
-                    locked: env.map(|(name, _)| {
-                        format!("Set by {name}; unset it to choose here (the variable wins over the setting).")
-                    }),
-                    heading: false,
-                    choices,
-                    current: current.unwrap_or_default(),
-                }
-            };
         let frame = c.text("rlm.frameModel");
         let effective_frame = c
             .env_overrides
@@ -76,23 +126,10 @@ impl SettingsSelector {
         let cc_frame = c.text("claudeCode.frameModel");
         let cc_child = c.text("claudeCode.childModel");
         let cc_ultron = c.text("claudeCode.ultronChildModel");
-        let saved_default = match (c.text("defaultProvider"), c.text("defaultModel")) {
-            (Some(p), Some(m)) => Some(format!("{p}/{m}")),
-            _ => None,
-        };
-        let alias = |v: &Option<String>| v.as_ref().map(|v| format!("{CLAUDE_CODE}/{v}"));
-        let setting = |v: &Option<String>, fallback: String| v.as_ref().map_or(fallback, |v| format!("{v} (setting)"));
         let durable = c.get("durable").is_object().then(|| c.text("durable.model"));
-        let durable_default = CLAUDE_CODE_DEFAULT_REF.to_string();
-        let session_saved = match &durable {
-            Some(model) => format!(
-                "{} (durable.model)",
-                model.clone().unwrap_or_else(|| durable_default.clone())
-            ),
-            None => saved_default.unwrap_or_else(|| "none".into()),
-        };
+        let session_saved = self.session_saved_default(&durable);
         let mut rows = vec![
-            row(
+            self.build_model_row(
                 "session",
                 "Session model",
                 &format!(
@@ -102,53 +139,46 @@ impl SettingsSelector {
                 all.clone(),
                 c.session.as_ref().map(model_ref),
             ),
-            row(
+            self.build_model_row(
                 "rlm.frameModel",
                 "Frame model",
                 "Code-free rlm.infer / rlm.map frames that name no model= (and /review frames without a review model). Order: model= > ULTRON_RLM_FRAME_MODEL > this setting > the session model.",
-                setting(&frame, format!("same as session ({session})")),
-                with(plain("", "Same as session model"), &all),
+                setting_display(&frame, format!("same as session ({session})")),
+                with_head(plain_choice("", "Same as session model"), &all),
                 frame.clone(),
             ),
-            row(
+            self.build_model_row(
                 "review.model",
                 "Review model",
                 "/review frames. Order: --model > ULTRON_REVIEW_MODEL > this setting > the frame model.",
-                match (&review, &effective_frame) {
-                    (Some(r), _) => format!("{r} (setting)"),
-                    (None, Some(f)) => format!("{f} (frame model)"),
-                    _ => format!("same as session ({session})"),
-                },
-                with(plain("", "Same as frame model"), &all),
+                review_display(&review, &effective_frame, &session),
+                with_head(plain_choice("", "Same as frame model"), &all),
                 review.clone(),
             ),
-            row(
+            self.build_model_row(
                 "rlm.childModel",
                 "Sub-agent model",
                 "rlm.spawn sub-agents that name no model= (claude-code models run on the Claude subscription).",
-                setting(&child, format!("same as session ({session})")),
-                with(plain("", "Same as session model"), &all),
+                setting_display(&child, format!("same as session ({session})")),
+                with_head(plain_choice("", "Same as session model"), &all),
                 child.clone(),
             ),
-            row(
+            self.build_model_row(
                 RACE_MODELS,
                 "Race models",
                 "Models that subagent races (arena, swarm model races) run on, one arm each. Pick to toggle; none: the skills choose.",
-                match c.race_models() {
-                    picked if picked.is_empty() => "none (skills choose)".into(),
-                    picked => picked.join(", "),
-                },
-                with(plain("", "Clear"), &all),
+                race_models_display(c.race_models()),
+                with_head(plain_choice("", "Clear"), &all),
                 None,
             ),
-            row(
+            self.build_model_row(
                 "rlm.frameThinking",
                 "Frame thinking",
                 "Thinking level of inference frames (claude-code frames pass it as --effort).",
-                setting(&frame_thinking, "same as session".into()),
-                with(
-                    plain("", "Same as session"),
-                    &["off", "low", "medium", "high"].map(|l| plain(l, l)),
+                setting_display(&frame_thinking, "same as session".into()),
+                with_head(
+                    plain_choice("", "Same as session"),
+                    &["off", "low", "medium", "high"].map(|l| plain_choice(l, l)),
                 ),
                 frame_thinking.clone(),
             ),
@@ -162,93 +192,104 @@ impl SettingsSelector {
                 choices: Vec::new(),
                 current: String::new(),
             },
-            row(
+            self.build_model_row(
                 "claudeCode.model",
                 "Claude Code root model",
                 "The model Claude Code itself runs (claude --model); ULTRON_CLAUDE_MODEL overrides it.",
-                setting(&cc_root, format!("{CLAUDE_CODE_DEFAULT_MODEL} (default)")),
-                with(plain("", &format!("Default ({CLAUDE_CODE_DEFAULT_MODEL})")), &claude),
-                alias(&cc_root),
+                setting_display(&cc_root, format!("{CLAUDE_CODE_DEFAULT_MODEL} (default)")),
+                with_head(
+                    plain_choice("", &format!("Default ({CLAUDE_CODE_DEFAULT_MODEL})")),
+                    &claude,
+                ),
+                claude_alias(&cc_root),
             ),
-            row(
+            self.build_model_row(
                 "claudeCode.frameModel",
                 "Claude Code frame model",
                 "rlm.map / rlm.infer frames under `ultron claude`; ULTRON_CLAUDE_FRAME_MODEL overrides it.",
-                setting(&cc_frame, format!("{CLAUDE_CODE_DEFAULT_REF} (default)")),
-                with(plain("", &format!("Default ({CLAUDE_CODE_DEFAULT_REF})")), &all),
+                setting_display(&cc_frame, format!("{CLAUDE_CODE_DEFAULT_REF} (default)")),
+                with_head(plain_choice("", &format!("Default ({CLAUDE_CODE_DEFAULT_REF})")), &all),
                 cc_frame.clone(),
             ),
-            row(
+            self.build_model_row(
                 "claudeCode.childModel",
                 "Claude Code sub-agent model",
                 "Model of Claude Code sub-agents (children=claude); ULTRON_CLAUDE_CHILD_MODEL overrides it.",
-                setting(&cc_child, format!("{CLAUDE_CODE_DEFAULT_MODEL} (default)")),
-                with(plain("", &format!("Default ({CLAUDE_CODE_DEFAULT_MODEL})")), &claude),
-                alias(&cc_child),
+                setting_display(&cc_child, format!("{CLAUDE_CODE_DEFAULT_MODEL} (default)")),
+                with_head(
+                    plain_choice("", &format!("Default ({CLAUDE_CODE_DEFAULT_MODEL})")),
+                    &claude,
+                ),
+                claude_alias(&cc_child),
             ),
-            row(
+            self.build_model_row(
                 "claudeCode.ultronChildModel",
                 "Ultron sub-agent model",
                 "Model of Ultron sub-agents under `ultron claude` (children=ultron); unset, they run on the root's Claude subscription model.",
-                setting(&cc_ultron, "root's subscription model".into()),
-                with(plain("", "Root's subscription model"), &all),
+                setting_display(&cc_ultron, "root's subscription model".into()),
+                with_head(plain_choice("", "Root's subscription model"), &all),
                 cc_ultron.clone(),
             ),
         ];
-        if c.rust_rows
-            && let Some(at) = rows.iter().position(|r| r.id == "claude-code-heading")
-        {
-            let observer = c.text("observer.model");
-            rows.insert(
-                at,
-                row(
-                    "observer.model",
-                    "Observer model",
-                    "Conversation observer checks. Unset uses the current session model. Changes apply to the next check; the session model is unchanged.",
-                    setting(&observer, format!("same as session ({session})")),
-                    with(plain("", "Same as session model"), &all),
-                    observer,
-                ),
-            );
-            let fallback = c.text("judge.fallbackModel");
-            let escalate = c.text("judge.escalateModel");
-            rows.insert(
-                at,
-                row(
-                    "judge.fallbackModel",
-                    "Judge fallback model",
-                    "judge.decide when neither Jev nor d1 answers; none: the verdict abstains.",
-                    setting(&fallback, "none".into()),
-                    with(plain("", "None"), &all),
-                    fallback.clone(),
-                ),
-            );
-            rows.insert(
-                at + 1,
-                row(
-                    "judge.escalateModel",
-                    "Judge escalation model",
-                    "judge.decide answers under their confidence threshold go to it; it must be of another family than the model that answered. Default: the cheapest model of the session model's family.",
-                    setting(&escalate, "cheapest of the session's family".into()),
-                    with(plain("", "Default (cheapest of the session's family)"), &all),
-                    escalate.clone(),
-                ),
-            );
-        }
-        if let Some(model) = durable {
-            rows.insert(
-                1,
-                row(
-                    "durable.model",
-                    "Durable default model",
-                    "The model new sessions of the durable instance (ultron durable, ultron-s) start on when no --model names one, ahead of the default model; /model and Ctrl+P save here. claude-code models run tool lanes on the Claude subscription.",
-                    setting(&model, format!("{durable_default} (default)")),
-                    with(plain("", &format!("Default ({durable_default})")), &all),
-                    model.clone(),
-                ),
-            );
-        }
+        self.insert_rust_model_rows(&mut rows, &all, &session);
+        self.insert_durable_model_row(&mut rows, &all, durable);
         rows
+    }
+
+    fn insert_rust_model_rows(&self, rows: &mut Vec<ModelRow>, all: &[ModelChoice], session: &str) {
+        if !self.input.rust_rows {
+            return;
+        }
+        let Some(at) = rows.iter().position(|r| r.id == "claude-code-heading") else {
+            return;
+        };
+        let observer = self.input.text("observer.model");
+        let fallback = self.input.text("judge.fallbackModel");
+        let escalate = self.input.text("judge.escalateModel");
+        let extra = [
+            self.build_model_row(
+                "judge.fallbackModel",
+                "Judge fallback model",
+                "judge.decide when neither Jev nor d1 answers; none: the verdict abstains.",
+                setting_display(&fallback, "none".into()),
+                with_head(plain_choice("", "None"), all),
+                fallback,
+            ),
+            self.build_model_row(
+                "judge.escalateModel",
+                "Judge escalation model",
+                "judge.decide answers under their confidence threshold go to it; it must be of another family than the model that answered. Default: the cheapest model of the session model's family.",
+                setting_display(&escalate, "cheapest of the session's family".into()),
+                with_head(plain_choice("", "Default (cheapest of the session's family)"), all),
+                escalate,
+            ),
+            self.build_model_row(
+                "observer.model",
+                "Observer model",
+                "Conversation observer checks. Unset uses the current session model. Changes apply to the next check; the session model is unchanged.",
+                setting_display(&observer, format!("same as session ({session})")),
+                with_head(plain_choice("", "Same as session model"), all),
+                observer,
+            ),
+        ];
+        rows.splice(at..at, extra);
+    }
+
+    fn insert_durable_model_row(&self, rows: &mut Vec<ModelRow>, all: &[ModelChoice], durable: Option<Option<String>>) {
+        let Some(model) = durable else {
+            return;
+        };
+        rows.insert(
+            1,
+            self.build_model_row(
+                "durable.model",
+                "Durable default model",
+                "The model new sessions of the durable instance (ultron durable, ultron-s) start on when no --model names one, ahead of the default model; /model and Ctrl+P save here. claude-code models run tool lanes on the Claude subscription.",
+                setting_display(&model, format!("{CLAUDE_CODE_DEFAULT_REF} (default)")),
+                with_head(plain_choice("", &format!("Default ({CLAUDE_CODE_DEFAULT_REF})")), all),
+                model,
+            ),
+        );
     }
 
     pub(super) fn models_summary(&self) -> String {
@@ -472,6 +513,13 @@ impl SettingsSelector {
     }
 
     pub(super) fn thinking_step(&self) -> Sub {
+        match &self.thinking_model {
+            None => self.thinking_model_picker(),
+            Some(key) => self.thinking_level_picker(key),
+        }
+    }
+
+    fn thinking_model_picker(&self) -> Sub {
         let t = Rc::clone(&self.theme);
         let keys = self.keys.clone();
         let current_key = self.input.session.as_ref().map(model_ref);
@@ -479,91 +527,90 @@ impl SettingsSelector {
             (Some(p), Some(m)) => Some(format!("{p}/{m}")),
             _ => None,
         };
-        match &self.thinking_model {
-            None => {
-                let mut models: Vec<&ModelInfo> = self.input.models.iter().collect();
-                let rank = |m: &ModelInfo| {
-                    let key = model_ref(m);
-                    if Some(&key) == current_key.as_ref() {
-                        0
-                    } else if Some(&key) == default_key.as_ref() {
-                        1
-                    } else {
-                        2
-                    }
-                };
-                models.sort_by(|a, b| rank(a).cmp(&rank(b)).then(a.provider.cmp(&b.provider)));
-                let mut items: Vec<SelectItem> = models
-                    .iter()
-                    .map(|m| SelectItem {
-                        value: model_ref(m),
-                        label: format!("{} {}", m.id, t.fg(Fg::Muted, &format!("[{}]", m.provider))),
-                        description: self.model_thinking.get(&model_ref(m)).cloned(),
-                    })
-                    .collect();
-                if items.is_empty() {
-                    items.push(SelectItem {
-                        value: "__none__".into(),
-                        label: "No models available".into(),
-                        description: Some("Log in to a provider or configure an API key first".into()),
-                    });
-                }
-                let preselect = current_key.or(default_key).unwrap_or_default();
-                Sub::Select {
-                    kind: SubKind::ModelThinking,
-                    menu: SelectSubmenu::new(
-                        t,
-                        keys,
-                        ("Per-Model Thinking Level", "Step 1/2 · Select a model to configure"),
-                        items,
-                        &preselect,
-                        true,
-                        (12, 46),
-                    ),
-                }
+        let mut models: Vec<&ModelInfo> = self.input.models.iter().collect();
+        let rank = |m: &ModelInfo| {
+            let key = model_ref(m);
+            if Some(&key) == current_key.as_ref() {
+                0
+            } else if Some(&key) == default_key.as_ref() {
+                1
+            } else {
+                2
             }
-            Some(key) => {
-                let model = self.input.models.iter().find(|m| model_ref(m) == *key);
-                let levels: Vec<String> = match model {
-                    Some(m) if m.reasoning => m.levels(),
-                    _ => vec!["off".into()],
-                };
-                let active = self.model_thinking.get(key).cloned();
-                let mut items: Vec<SelectItem> = levels
-                    .iter()
-                    .map(|l| SelectItem {
-                        value: l.clone(),
-                        label: format!("{}{l}", if Some(l) == active.as_ref() { "✓ " } else { "  " }),
-                        description: Some(thinking_description(l).into()),
-                    })
-                    .collect();
-                if active.is_some() {
-                    items.push(SelectItem {
-                        value: CLEAR_OVERRIDE.into(),
-                        label: "  (clear override)".into(),
-                        description: Some(format!(
-                            "Revert to global default ({})",
-                            self.input.str("defaultThinkingLevel", "medium")
-                        )),
-                    });
-                }
-                let title = match model {
-                    Some(m) => format!("Thinking Level for {} [{}]", m.id, m.provider),
-                    None => format!("Thinking Level for {key}"),
-                };
-                Sub::Select {
-                    kind: SubKind::ModelThinking,
-                    menu: SelectSubmenu::new(
-                        t,
-                        keys,
-                        (&title, "Step 2/2 · Select default thinking level for this model"),
-                        items,
-                        active.as_deref().unwrap_or(""),
-                        false,
-                        (12, 32),
-                    ),
-                }
-            }
+        };
+        models.sort_by(|a, b| rank(a).cmp(&rank(b)).then(a.provider.cmp(&b.provider)));
+        let mut items: Vec<SelectItem> = models
+            .iter()
+            .map(|m| SelectItem {
+                value: model_ref(m),
+                label: format!("{} {}", m.id, t.fg(Fg::Muted, &format!("[{}]", m.provider))),
+                description: self.model_thinking.get(&model_ref(m)).cloned(),
+            })
+            .collect();
+        if items.is_empty() {
+            items.push(SelectItem {
+                value: "__none__".into(),
+                label: "No models available".into(),
+                description: Some("Log in to a provider or configure an API key first".into()),
+            });
+        }
+        let preselect = current_key.or(default_key).unwrap_or_default();
+        Sub::Select {
+            kind: SubKind::ModelThinking,
+            menu: SelectSubmenu::new(
+                t,
+                keys,
+                ("Per-Model Thinking Level", "Step 1/2 · Select a model to configure"),
+                items,
+                &preselect,
+                true,
+                (12, 46),
+            ),
+        }
+    }
+
+    fn thinking_level_picker(&self, key: &str) -> Sub {
+        let t = Rc::clone(&self.theme);
+        let keys = self.keys.clone();
+        let model = self.input.models.iter().find(|m| model_ref(m) == key);
+        let levels: Vec<String> = match model {
+            Some(m) if m.reasoning => m.levels(),
+            _ => vec!["off".into()],
+        };
+        let active = self.model_thinking.get(key).cloned();
+        let mut items: Vec<SelectItem> = levels
+            .iter()
+            .map(|l| SelectItem {
+                value: l.clone(),
+                label: format!("{}{l}", if Some(l) == active.as_ref() { "✓ " } else { "  " }),
+                description: Some(thinking_description(l).into()),
+            })
+            .collect();
+        if active.is_some() {
+            items.push(SelectItem {
+                value: CLEAR_OVERRIDE.into(),
+                label: "  (clear override)".into(),
+                description: Some(format!(
+                    "Revert to global default ({})",
+                    self.input.str("defaultThinkingLevel", "medium")
+                )),
+            });
+        }
+        let title = match model {
+            Some(m) => format!("Thinking Level for {} [{}]", m.id, m.provider),
+            None => format!("Thinking Level for {key}"),
+        };
+        Sub::Select {
+            kind: SubKind::ModelThinking,
+            menu: SelectSubmenu::new(
+                t,
+                keys,
+                (&title, "Step 2/2 · Select default thinking level for this model"),
+                items,
+                active.as_deref().unwrap_or(""),
+                false,
+                (12, 32),
+            ),
         }
     }
 }

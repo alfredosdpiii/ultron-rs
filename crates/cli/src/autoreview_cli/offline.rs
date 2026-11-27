@@ -96,6 +96,116 @@ fn array_copy(value: Option<&Value>) -> Value {
     }
 }
 
+fn format_offline_finding(
+    index: usize,
+    finding: &Value,
+    inline: &HashSet<usize>,
+    in_body: &HashSet<usize>,
+    ranks: &HashMap<usize, usize>,
+    empty: &Map<String, Value>,
+) -> Value {
+    let finding = object(Some(finding), empty);
+    let text = |field: &str| finding.get(field).and_then(Value::as_str);
+    let level = level_of(text("level"), text("severity"));
+    let mut out = Map::new();
+    let posted = if inline.contains(&index) {
+        "inline"
+    } else if in_body.contains(&index) {
+        "body"
+    } else {
+        "counted"
+    };
+    out.insert("posted".into(), posted.into());
+    out.insert("rank".into(), ranks.get(&index).map_or(Value::Null, |rank| json!(rank)));
+    put_present(&mut out, "unpinned", finding, "unpinned");
+    put_present(&mut out, "consequence", finding, "consequence");
+    if finding.get("unclear") == Some(&Value::Bool(true)) {
+        out.insert("unclear".into(), Value::Bool(true));
+    }
+    put_present(&mut out, "file", finding, "file");
+    put_present(&mut out, "line", finding, "line");
+    put_present(&mut out, "endLine", finding, "endLine");
+    out.insert("severity".into(), severity_of(level).into());
+    out.insert("level".into(), level.into());
+    out.insert(
+        "finderSeverity".into(),
+        or_else(finding, "finderSeverity", severity_of(level).into()),
+    );
+    out.insert("finderLevel".into(), or_else(finding, "finderLevel", level.into()));
+    put_present(&mut out, "verifierLevel", finding, "verifierLevel");
+    put_present(&mut out, "verifierScenarioHolds", finding, "verifierScenarioHolds");
+    put_present(&mut out, "levelReason", finding, "levelReason");
+    out.insert("scenario".into(), or_else(finding, "scenario", "".into()));
+    put_present(&mut out, "category", finding, "category");
+    put_present(&mut out, "claim", finding, "claim");
+    put_present(&mut out, "why", finding, "why");
+    put_present(&mut out, "suggestedFix", finding, "suggestedFix");
+    put_present(&mut out, "verification", finding, "verification");
+    put_present(&mut out, "confidence", finding, "confidence");
+    put_present(&mut out, "alsoAt", finding, "alsoAt");
+    out.insert("source".into(), or_else(finding, "source", "fast".into()));
+    put_present(&mut out, "verifiedBy", finding, "verifiedBy");
+    out.insert("evidence".into(), or_else(finding, "evidence", "".into()));
+    out.insert("howVerified".into(), or_else(finding, "howVerified", "".into()));
+    Value::Object(out)
+}
+
+fn format_offline_dropped(result: &Map<String, Value>, empty: &Map<String, Value>) -> Map<String, Value> {
+    let dropped_in = object(result.get("dropped"), empty);
+    let mut dropped = Map::new();
+    put_present(&mut dropped, "rejected", dropped_in, "rejected");
+    put_present(&mut dropped, "duplicates", dropped_in, "duplicates");
+    dropped.insert("generic".into(), or_else(dropped_in, "generic", json!(0)));
+    dropped.insert("refutedByTest".into(), or_else(dropped_in, "refutedByTest", json!(0)));
+    dropped.insert("duplicateOf".into(), or_else(dropped_in, "duplicateOf", json!([])));
+    put_present(&mut dropped, "preexisting", dropped_in, "preexisting");
+    put_when(&mut dropped, "refutedByInvestigator", dropped_in, |entries| {
+        entries.as_array().is_some_and(|items| !items.is_empty())
+    });
+    put_when(&mut dropped, "contradicted", dropped_in, |count| {
+        count.as_u64().is_some_and(|n| n > 0)
+    });
+    dropped
+}
+
+fn format_offline_timing(timing_in: &Map<String, Value>, startup_ms: Option<u64>) -> Map<String, Value> {
+    let mut timing = Map::new();
+    for key in ["totalMs", "scopeMs", "findMs", "verifyMs"] {
+        put_present(&mut timing, key, timing_in, key);
+    }
+    if let Some(ms) = startup_ms {
+        timing.insert("startupMs".into(), json!(ms));
+    }
+    if let Some(stages) = timing_in.get("stages").filter(|stages| !stages.is_null()) {
+        timing.insert("stages".into(), stages.clone());
+    }
+    timing.insert("frames".into(), array_copy(timing_in.get("frames")));
+    timing.insert("investigators".into(), array_copy(timing_in.get("investigators")));
+    if let Some(reference) = timing_in
+        .get("reference")
+        .filter(|value| jsrt::value::truthy(Some(value)))
+    {
+        timing.insert("reference".into(), reference.clone());
+    }
+    timing
+}
+
+fn format_offline_usage(result: &Map<String, Value>, empty: &Map<String, Value>) -> Map<String, Value> {
+    let usage_in = object(result.get("usage"), empty);
+    let mut usage = Map::new();
+    put_present(&mut usage, "inputTokens", usage_in, "inputTokens");
+    put_present(&mut usage, "outputTokens", usage_in, "outputTokens");
+    put_present(&mut usage, "costUsd", usage_in, "costUsd");
+    put_present(&mut usage, "frames", usage_in, "frames");
+    if let Some(by_phase) = usage_in.get("byPhase") {
+        usage.insert("byPhase".into(), by_phase.clone());
+    }
+    put_when(&mut usage, "judge", usage_in, |judge| {
+        judge["calls"].as_u64().is_some_and(|n| n > 0)
+    });
+    usage
+}
+
 /// `offlineJson`: the JSON `review --repo-dir ... --json` prints, with where each finding would go (inline, named in
 /// the body, or only counted) computed by the same ranking and cap the poster uses.
 pub fn offline_json(
@@ -134,98 +244,12 @@ pub fn offline_json(
         .map_or_default(Vec::as_slice)
         .iter()
         .enumerate()
-        .map(|(index, finding)| {
-            let finding = object(Some(finding), &empty);
-            let text = |field: &str| finding.get(field).and_then(Value::as_str);
-            let level = level_of(text("level"), text("severity"));
-            let mut out = Map::new();
-            let posted = if inline.contains(&index) {
-                "inline"
-            } else if in_body.contains(&index) {
-                "body"
-            } else {
-                "counted"
-            };
-            out.insert("posted".into(), posted.into());
-            out.insert("rank".into(), ranks.get(&index).map_or(Value::Null, |rank| json!(rank)));
-            put_present(&mut out, "unpinned", finding, "unpinned");
-            put_present(&mut out, "consequence", finding, "consequence");
-            if finding.get("unclear") == Some(&Value::Bool(true)) {
-                out.insert("unclear".into(), Value::Bool(true));
-            }
-            put_present(&mut out, "file", finding, "file");
-            put_present(&mut out, "line", finding, "line");
-            put_present(&mut out, "endLine", finding, "endLine");
-            out.insert("severity".into(), severity_of(level).into());
-            out.insert("level".into(), level.into());
-            out.insert(
-                "finderSeverity".into(),
-                or_else(finding, "finderSeverity", severity_of(level).into()),
-            );
-            out.insert("finderLevel".into(), or_else(finding, "finderLevel", level.into()));
-            put_present(&mut out, "verifierLevel", finding, "verifierLevel");
-            put_present(&mut out, "verifierScenarioHolds", finding, "verifierScenarioHolds");
-            put_present(&mut out, "levelReason", finding, "levelReason");
-            out.insert("scenario".into(), or_else(finding, "scenario", "".into()));
-            put_present(&mut out, "category", finding, "category");
-            put_present(&mut out, "claim", finding, "claim");
-            put_present(&mut out, "why", finding, "why");
-            put_present(&mut out, "suggestedFix", finding, "suggestedFix");
-            put_present(&mut out, "verification", finding, "verification");
-            put_present(&mut out, "confidence", finding, "confidence");
-            put_present(&mut out, "alsoAt", finding, "alsoAt");
-            out.insert("source".into(), or_else(finding, "source", "fast".into()));
-            put_present(&mut out, "verifiedBy", finding, "verifiedBy");
-            out.insert("evidence".into(), or_else(finding, "evidence", "".into()));
-            out.insert("howVerified".into(), or_else(finding, "howVerified", "".into()));
-            Value::Object(out)
-        })
+        .map(|(index, finding)| format_offline_finding(index, finding, &inline, &in_body, &ranks, &empty))
         .collect();
-    let dropped_in = object(result.get("dropped"), &empty);
-    let mut dropped = Map::new();
-    put_present(&mut dropped, "rejected", dropped_in, "rejected");
-    put_present(&mut dropped, "duplicates", dropped_in, "duplicates");
-    dropped.insert("generic".into(), or_else(dropped_in, "generic", json!(0)));
-    dropped.insert("refutedByTest".into(), or_else(dropped_in, "refutedByTest", json!(0)));
-    dropped.insert("duplicateOf".into(), or_else(dropped_in, "duplicateOf", json!([])));
-    put_present(&mut dropped, "preexisting", dropped_in, "preexisting");
-    put_when(&mut dropped, "refutedByInvestigator", dropped_in, |entries| {
-        entries.as_array().is_some_and(|items| !items.is_empty())
-    });
-    put_when(&mut dropped, "contradicted", dropped_in, |count| {
-        count.as_u64().is_some_and(|n| n > 0)
-    });
+    let dropped = format_offline_dropped(result, &empty);
     let timing_in = object(result.get("timing"), &empty);
-    let mut timing = Map::new();
-    for key in ["totalMs", "scopeMs", "findMs", "verifyMs"] {
-        put_present(&mut timing, key, timing_in, key);
-    }
-    if let Some(ms) = startup_ms {
-        timing.insert("startupMs".into(), json!(ms));
-    }
-    if let Some(stages) = timing_in.get("stages").filter(|stages| !stages.is_null()) {
-        timing.insert("stages".into(), stages.clone());
-    }
-    timing.insert("frames".into(), array_copy(timing_in.get("frames")));
-    timing.insert("investigators".into(), array_copy(timing_in.get("investigators")));
-    if let Some(reference) = timing_in
-        .get("reference")
-        .filter(|value| jsrt::value::truthy(Some(value)))
-    {
-        timing.insert("reference".into(), reference.clone());
-    }
-    let usage_in = object(result.get("usage"), &empty);
-    let mut usage = Map::new();
-    put_present(&mut usage, "inputTokens", usage_in, "inputTokens");
-    put_present(&mut usage, "outputTokens", usage_in, "outputTokens");
-    put_present(&mut usage, "costUsd", usage_in, "costUsd");
-    put_present(&mut usage, "frames", usage_in, "frames");
-    if let Some(by_phase) = usage_in.get("byPhase") {
-        usage.insert("byPhase".into(), by_phase.clone());
-    }
-    put_when(&mut usage, "judge", usage_in, |judge| {
-        judge["calls"].as_u64().is_some_and(|n| n > 0)
-    });
+    let timing = format_offline_timing(timing_in, startup_ms);
+    let usage = format_offline_usage(result, &empty);
     let assurance: Vec<String> = result
         .get("assurance")
         .and_then(Value::as_array)
@@ -328,15 +352,11 @@ pub(super) fn index_knowledge(
     }
 }
 
-/// `register`: the failure-mode register and the Loki proposals (written beside the state, never applied).
-pub(super) fn register_command(
-    parsed: &Parsed,
+fn write_register_proposals(
     paths: &review::settings::AutoreviewPaths,
-    out: &mut dyn Write,
-) -> Result<i32, Failure> {
+    proposals: &[review::register::Proposal],
+) -> Result<PathBuf, Failure> {
     let io = |error: std::io::Error| Failure::Error(error.to_string());
-    let repo = parsed.repo.as_deref().map(review::register::repo_key);
-    let (register, proposals) = review::register::from_disk(paths, repo.as_deref());
     let file = Path::new(&paths.dir).join(review::register::PROPOSALS_FILE);
     if !proposals.is_empty() {
         let written = json!({
@@ -347,11 +367,14 @@ pub(super) fn register_command(
         std::fs::create_dir_all(&paths.dir).map_err(io)?;
         std::fs::write(&file, jsrt::json::stringify_indented(&written, " ")).map_err(io)?;
     }
-    if parsed.json {
-        let value = json!({ "register": register, "proposals": proposals });
-        writeln!(out, "{}", jsrt::json::stringify(&value)).map_err(io)?;
-        return Ok(0);
-    }
+    Ok(file)
+}
+
+fn format_register_lines(
+    register: &review::register::Register,
+    proposals: &[review::register::Proposal],
+    file: &Path,
+) -> Vec<String> {
     let proven = register.checks.iter().filter(|check| check.proven).count();
     let mut lines = vec![format!(
         "{} recorded review(s), {} fate(s); {proven} of {} checks count (each caught its planted bug).",
@@ -393,10 +416,88 @@ pub(super) fn register_command(
             )
         }));
     }
-    for line in lines {
+    lines
+}
+
+/// `register`: the failure-mode register and the Loki proposals (written beside the state, never applied).
+pub(super) fn register_command(
+    parsed: &Parsed,
+    paths: &review::settings::AutoreviewPaths,
+    out: &mut dyn Write,
+) -> Result<i32, Failure> {
+    let io = |error: std::io::Error| Failure::Error(error.to_string());
+    let repo = parsed.repo.as_deref().map(review::register::repo_key);
+    let (register, proposals) = review::register::from_disk(paths, repo.as_deref());
+    let file = write_register_proposals(paths, &proposals)?;
+    if parsed.json {
+        let value = json!({ "register": register, "proposals": proposals });
+        writeln!(out, "{}", jsrt::json::stringify(&value)).map_err(io)?;
+        return Ok(0);
+    }
+    for line in format_register_lines(&register, &proposals, &file) {
         writeln!(out, "{line}").map_err(io)?;
     }
     Ok(0)
+}
+
+fn load_label_cases(
+    path: &Path,
+) -> Result<Vec<(review::eval_labels::LabelCase, review::eval_labels::Recorded)>, Failure> {
+    let text = std::fs::read_to_string(path).map_err(|error| Failure::Error(format!("{}: {error}", path.display())))?;
+    let labels: review::eval_labels::Labels =
+        serde_json::from_str(&text).map_err(|error| Failure::Error(format!("{}: {error}", path.display())))?;
+    let base = path.parent().map_or_default(PathBuf::from);
+    let mut cases = Vec::new();
+    for case in labels.cases {
+        let file = base.join(&case.record);
+        let raw: Value = std::fs::read_to_string(&file)
+            .map_err(|error| error.to_string())
+            .and_then(|text| serde_json::from_str(&text).map_err(|error| error.to_string()))
+            .map_err(|error| Failure::Error(format!("{}: {error}", file.display())))?;
+        let recorded = review::eval_labels::parse_record(&raw)
+            .map_err(|error| Failure::Error(format!("{}: {error}", file.display())))?;
+        cases.push((case, recorded));
+    }
+    Ok(cases)
+}
+
+fn write_lines(out: &mut dyn Write, lines: impl IntoIterator<Item = String>) -> Result<(), Failure> {
+    let io = |error: std::io::Error| Failure::Error(error.to_string());
+    for line in lines {
+        writeln!(out, "{line}").map_err(io)?;
+    }
+    Ok(())
+}
+
+fn write_label_score_result(
+    parsed: &Parsed,
+    repo_given: bool,
+    result: Result<Value, Vec<String>>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, Failure> {
+    let io = |error: std::io::Error| Failure::Error(error.to_string());
+    match result {
+        Ok(scored) if parsed.json => {
+            writeln!(out, "{scored}").map_err(io)?;
+            Ok(0)
+        }
+        Ok(scored) => {
+            if !repo_given {
+                writeln!(
+                    err,
+                    "no repository given: the fixes were not checked to come after their heads"
+                )
+                .map_err(io)?;
+            }
+            write_lines(out, review::eval_labels::summary_lines(&scored))?;
+            Ok(0)
+        }
+        Err(problems) => {
+            write_lines(err, problems)?;
+            Ok(1)
+        }
+    }
 }
 
 /// `eval --labels <file> [<repo-dir>]`: recorded reviews scored against adjudicated labels (review::eval_labels), with
@@ -408,24 +509,10 @@ pub(super) fn labels_command(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<i32, Failure> {
-    use review::eval_labels::{Labels, packet, parse_record, score, summary_lines};
+    use review::eval_labels::{packet, score};
     let io = |error: std::io::Error| Failure::Error(error.to_string());
     let path = absolute(&env.cwd, parsed.labels.as_deref().unwrap_or_default());
-    let text =
-        std::fs::read_to_string(&path).map_err(|error| Failure::Error(format!("{}: {error}", path.display())))?;
-    let labels: Labels =
-        serde_json::from_str(&text).map_err(|error| Failure::Error(format!("{}: {error}", path.display())))?;
-    let base = path.parent().map_or_default(PathBuf::from);
-    let mut cases = Vec::new();
-    for case in labels.cases {
-        let file = base.join(&case.record);
-        let raw: Value = std::fs::read_to_string(&file)
-            .map_err(|error| error.to_string())
-            .and_then(|text| serde_json::from_str(&text).map_err(|error| error.to_string()))
-            .map_err(|error| Failure::Error(format!("{}: {error}", file.display())))?;
-        let recorded = parse_record(&raw).map_err(|error| Failure::Error(format!("{}: {error}", file.display())))?;
-        cases.push((case, recorded));
-    }
+    let cases = load_label_cases(&path)?;
     if parsed.packet {
         let packets: Vec<Value> = cases.iter().map(|(_, recorded)| packet(recorded)).collect();
         writeln!(out, "{:#}", json!({ "cases": packets })).map_err(io)?;
@@ -436,26 +523,187 @@ pub(super) fn labels_command(
         .as_deref()
         .map(|target| absolute(&env.cwd, target).display().to_string());
     let runner = ov.runner();
-    match score(&cases, repo.as_deref().map(|repo| (&*runner, repo))) {
-        Ok(scored) if parsed.json => writeln!(out, "{scored}").map_err(io)?,
-        Ok(scored) => {
-            if repo.is_none() {
-                writeln!(
-                    err,
-                    "no repository given: the fixes were not checked to come after their heads"
-                )
-                .map_err(io)?;
-            }
-            for line in summary_lines(&scored) {
-                writeln!(out, "{line}").map_err(io)?;
-            }
+    let result = score(&cases, repo.as_deref().map(|repo| (&*runner, repo)));
+    write_label_score_result(parsed, repo.is_some(), result, out, err)
+}
+
+fn case_kind_label(kind: review::eval::CaseKind) -> &'static str {
+    match kind {
+        review::eval::CaseKind::Reverted => "reverted",
+        review::eval::CaseKind::FixInducing => "fix-inducing",
+        review::eval::CaseKind::Control => "control",
+    }
+}
+
+fn short_sha(sha: &str) -> String {
+    sha.chars().take(8).collect()
+}
+
+fn filter_eval_cases(cases: &mut Vec<review::eval::Case>, only: Option<&[String]>, err: &mut dyn Write) -> bool {
+    let Some(only) = only else {
+        return true;
+    };
+    cases.retain(|case| {
+        only.iter()
+            .any(|prefix| !prefix.is_empty() && case.sha.starts_with(prefix.as_str()))
+    });
+    if cases.is_empty() {
+        let _ = writeln!(err, "no case's commit starts with {}", only.join(", "));
+        return false;
+    }
+    true
+}
+
+fn write_eval_list(parsed: &Parsed, cases: &[review::eval::Case], out: &mut dyn Write) -> Result<i32, Failure> {
+    let io = |error: std::io::Error| Failure::Error(error.to_string());
+    if parsed.json {
+        writeln!(out, "{}", json!({ "cases": cases })).map_err(io)?;
+        return Ok(0);
+    }
+    for case in cases {
+        let by: Vec<String> = case.by.iter().map(|sha| short_sha(sha)).collect();
+        let by = if by.is_empty() {
+            String::new()
+        } else {
+            format!(" (by {})", by.join(", "))
+        };
+        writeln!(
+            out,
+            "{} {} {}{by}",
+            case_kind_label(case.kind),
+            short_sha(&case.sha),
+            case.subject
+        )
+        .map_err(io)?;
+    }
+    Ok(0)
+}
+
+fn format_eval_progress(case: &review::eval::Case, result: &Result<EngineResult, String>, block_at: &str) -> String {
+    match result {
+        Ok(typed) => {
+            let got = review::eval::score(case, typed, block_at);
+            let located = match got.located {
+                Some(true) => ", located",
+                Some(false) => ", not located",
+                None => "",
+            };
+            format!(
+                "{}{located}, {} confirmed",
+                if got.blocked { "blocked" } else { "not blocked" },
+                got.confirmed
+            )
         }
-        Err(problems) => {
-            for problem in problems {
-                writeln!(err, "{problem}").map_err(io)?;
-            }
-            return Ok(1);
+        Err(error) => format!("failed: {error}"),
+    }
+}
+
+fn run_eval_workers(
+    engine: &Arc<dyn ReviewEngine>,
+    cases: &[review::eval::Case],
+    specs: &[Value],
+    config: &AutoreviewConfig,
+    err: &mut dyn Write,
+) -> Vec<Option<Result<EngineResult, String>>> {
+    let workers = (config.concurrency.0.max(1.0) as usize).min(cases.len());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let (sender, received) = std::sync::mpsc::channel::<(usize, Result<EngineResult, String>)>();
+    let mut results: Vec<Option<Result<EngineResult, String>>> = vec![None; cases.len()];
+    let _ = writeln!(err, "reviewing {} commit(s), {workers} at a time", cases.len());
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let (sender, engine, next) = (sender.clone(), engine.clone(), &next);
+            scope.spawn(move || eval_worker_loop(sender, engine, specs, next));
         }
+        drop(sender);
+        for (done, (index, result)) in received.iter().enumerate() {
+            let case = &cases[index];
+            let line = format_eval_progress(case, &result, &config.block_at);
+            let _ = writeln!(
+                err,
+                "[{}/{}] {} {} {}: {line}",
+                done + 1,
+                cases.len(),
+                case_kind_label(case.kind),
+                short_sha(&case.sha),
+                case.subject
+            );
+            results[index] = Some(result);
+        }
+    });
+    results
+}
+
+fn eval_worker_loop(
+    sender: std::sync::mpsc::Sender<(usize, Result<EngineResult, String>)>,
+    engine: Arc<dyn ReviewEngine>,
+    specs: &[Value],
+    next: &std::sync::atomic::AtomicUsize,
+) {
+    loop {
+        let index = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let Some(spec) = specs.get(index) else {
+            break;
+        };
+        let reviewed = engine.review(spec, None).and_then(|raw| EngineResult::parse(&raw));
+        if sender.send((index, reviewed)).is_err() {
+            break;
+        }
+    }
+}
+
+fn score_eval_results(
+    cases: &[review::eval::Case],
+    results: Vec<Option<Result<EngineResult, String>>>,
+    block_at: &str,
+) -> (Vec<(review::eval::Case, review::eval::CaseScore)>, Vec<Value>) {
+    let mut scored = Vec::new();
+    let mut rows = Vec::new();
+    for (case, result) in cases.iter().zip(results) {
+        let mut row = serde_json::to_value(case).unwrap_or(Value::Null);
+        match result {
+            Some(Ok(typed)) => {
+                let got = review::eval::score(case, &typed, block_at);
+                row["score"] = serde_json::to_value(&got).unwrap_or(Value::Null);
+                scored.push((case.clone(), got));
+            }
+            Some(Err(error)) => row["error"] = error.into(),
+            None => row["error"] = "not reviewed".into(),
+        }
+        rows.push(row);
+    }
+    (scored, rows)
+}
+
+fn write_eval_report(
+    parsed: &Parsed,
+    config: &AutoreviewConfig,
+    repo_dir: &Path,
+    dir: &Path,
+    rows: Vec<Value>,
+    totals: &Value,
+    out: &mut dyn Write,
+) -> Result<i32, Failure> {
+    let io = |error: std::io::Error| Failure::Error(error.to_string());
+    let name = repo_dir
+        .file_name()
+        .map_or_else(|| "repo".into(), |name| name.to_string_lossy().into_owned());
+    let report_dir = dir.join("evals");
+    let report = report_dir.join(format!("{name}-{}.json", jsrt::date::now_ms()));
+    let document = json!({
+        "repo": repo_dir.display().to_string(), "blockAt": config.block_at, "mode": config.mode,
+        "model": config.model, "cases": rows, "summary": totals,
+    });
+    std::fs::create_dir_all(&report_dir)
+        .and_then(|()| std::fs::write(&report, format!("{document:#}\n")))
+        .map_err(io)?;
+    if parsed.json {
+        let mut shown = document;
+        shown["report"] = report.display().to_string().into();
+        writeln!(out, "{shown}").map_err(io)?;
+    } else {
+        write_lines(out, review::eval::summary_lines(totals, &config.block_at))?;
+        writeln!(out, "Report: {}", report.display()).map_err(io)?;
     }
     Ok(0)
 }
@@ -477,7 +725,7 @@ pub(super) fn eval_command(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<i32, Failure> {
-    use review::eval::{CaseKind, EvalOptions, build_cases, score, summary, summary_lines};
+    use review::eval::{EvalOptions, build_cases, summary};
     let target = parsed
         .target
         .as_deref()
@@ -490,39 +738,12 @@ pub(super) fn eval_command(
         controls: parsed.controls.map_or(limit, |n| n as usize),
         ..EvalOptions::default()
     };
-    let io = |error: std::io::Error| Failure::Error(error.to_string());
     let mut cases = build_cases(&*ov.runner(), &repo_dir.display().to_string(), &options).map_err(Failure::Error)?;
-    if let Some(only) = &parsed.only {
-        cases.retain(|case| {
-            only.iter()
-                .any(|prefix| !prefix.is_empty() && case.sha.starts_with(prefix.as_str()))
-        });
-        if cases.is_empty() {
-            let _ = writeln!(err, "no case's commit starts with {}", only.join(", "));
-            return Ok(1);
-        }
+    if !filter_eval_cases(&mut cases, parsed.only.as_deref(), err) {
+        return Ok(1);
     }
-    let kind = |kind: CaseKind| match kind {
-        CaseKind::Reverted => "reverted",
-        CaseKind::FixInducing => "fix-inducing",
-        CaseKind::Control => "control",
-    };
-    let short = |sha: &str| sha.chars().take(8).collect::<String>();
     if parsed.list {
-        if parsed.json {
-            writeln!(out, "{}", json!({ "cases": cases })).map_err(io)?;
-        } else {
-            for case in &cases {
-                let by: Vec<String> = case.by.iter().map(|sha| short(sha)).collect();
-                let by = if by.is_empty() {
-                    String::new()
-                } else {
-                    format!(" (by {})", by.join(", "))
-                };
-                writeln!(out, "{} {} {}{by}", kind(case.kind), short(&case.sha), case.subject).map_err(io)?;
-            }
-        }
-        return Ok(0);
+        return write_eval_list(parsed, &cases, out);
     }
     if cases.is_empty() {
         let _ = writeln!(
@@ -549,97 +770,43 @@ pub(super) fn eval_command(
             spec
         })
         .collect();
-    let workers = (config.concurrency.0.max(1.0) as usize).min(cases.len());
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let (sender, received) = std::sync::mpsc::channel::<(usize, Result<EngineResult, String>)>();
-    let mut results: Vec<Option<Result<EngineResult, String>>> = vec![None; cases.len()];
-    let _ = writeln!(err, "reviewing {} commit(s), {workers} at a time", cases.len());
-    std::thread::scope(|scope| {
-        for _ in 0..workers {
-            let (sender, engine, specs, next) = (sender.clone(), engine.clone(), &specs, &next);
-            scope.spawn(move || {
-                loop {
-                    let index = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    let Some(spec) = specs.get(index) else {
-                        break;
-                    };
-                    let reviewed = engine.review(spec, None).and_then(|raw| EngineResult::parse(&raw));
-                    if sender.send((index, reviewed)).is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-        drop(sender);
-        for (done, (index, result)) in received.iter().enumerate() {
-            let case = &cases[index];
-            let line = match &result {
-                Ok(typed) => {
-                    let got = score(case, typed, &config.block_at);
-                    format!(
-                        "{}{}, {} confirmed",
-                        if got.blocked { "blocked" } else { "not blocked" },
-                        match got.located {
-                            Some(true) => ", located",
-                            Some(false) => ", not located",
-                            None => "",
-                        },
-                        got.confirmed
-                    )
-                }
-                Err(error) => format!("failed: {error}"),
-            };
-            let _ = writeln!(
-                err,
-                "[{}/{}] {} {} {}: {line}",
-                done + 1,
-                cases.len(),
-                kind(case.kind),
-                short(&case.sha),
-                case.subject
-            );
-            results[index] = Some(result);
-        }
-    });
-    let mut scored = Vec::new();
-    let mut rows = Vec::new();
-    for (case, result) in cases.iter().zip(results) {
-        let mut row = serde_json::to_value(case).unwrap_or(Value::Null);
-        match result {
-            Some(Ok(typed)) => {
-                let got = score(case, &typed, &config.block_at);
-                row["score"] = serde_json::to_value(&got).unwrap_or(Value::Null);
-                scored.push((case.clone(), got));
-            }
-            Some(Err(error)) => row["error"] = error.into(),
-            None => row["error"] = "not reviewed".into(),
-        }
-        rows.push(row);
-    }
+    let results = run_eval_workers(&engine, &cases, &specs, config, err);
+    let (scored, rows) = score_eval_results(&cases, results, &config.block_at);
     let totals = summary(&scored);
-    let name = repo_dir
-        .file_name()
-        .map_or_else(|| "repo".into(), |name| name.to_string_lossy().into_owned());
-    let report_dir = dir.join("evals");
-    let report = report_dir.join(format!("{name}-{}.json", jsrt::date::now_ms()));
-    let document = json!({
-        "repo": repo_dir.display().to_string(), "blockAt": config.block_at, "mode": config.mode,
-        "model": config.model, "cases": rows, "summary": totals,
-    });
-    std::fs::create_dir_all(&report_dir)
-        .and_then(|()| std::fs::write(&report, format!("{document:#}\n")))
-        .map_err(io)?;
-    if parsed.json {
-        let mut shown = document;
-        shown["report"] = report.display().to_string().into();
-        writeln!(out, "{shown}").map_err(io)?;
-    } else {
-        for line in summary_lines(&totals, &config.block_at) {
-            writeln!(out, "{line}").map_err(io)?;
+    write_eval_report(parsed, config, &repo_dir, &dir, rows, &totals, out)
+}
+
+fn insert_test_env(
+    spec: &mut Map<String, Value>,
+    parsed: &Parsed,
+    env: &Env,
+    repo_dir: &Path,
+    lent: Option<&str>,
+    prepared: Option<&review::prepare_env::Prepared>,
+) {
+    if let Some(test_env) = &parsed.test_env {
+        spec.insert(
+            "testEnv".into(),
+            absolute(&env.cwd, test_env).display().to_string().into(),
+        );
+        spec.insert("testEnvKind".into(), "testEnv".into());
+    } else if let Some(prepared) = prepared {
+        spec.insert("testCheckout".into(), prepared.dir.clone().into());
+        let paths: Vec<Value> = prepared
+            .toolchain
+            .iter()
+            .map(|entry| entry.path.clone().into())
+            .collect();
+        spec.insert("testToolchain".into(), Value::Array(paths));
+        spec.insert("testEnvKind".into(), "prepared".into());
+        if !prepared.failures.is_empty() {
+            spec.insert("testEnvFailures".into(), prepared.failures.clone().into());
         }
-        writeln!(out, "Report: {}", report.display()).map_err(io)?;
+    } else {
+        let checkout = lent.map_or_else(|| repo_dir.display().to_string(), String::from);
+        spec.insert("testCheckout".into(), checkout.into());
+        spec.insert("testEnvKind".into(), "checkout".into());
     }
-    Ok(0)
 }
 
 /// The engine spec of a local review (`review --repo-dir`).
@@ -660,35 +827,7 @@ pub(super) fn offline_spec(
     }
     let run_tests = config.mode != "fast" && parsed.run_tests.unwrap_or(config.run_tests);
     spec.insert("runTests".into(), run_tests.into());
-    match &parsed.test_env {
-        Some(test_env) => {
-            spec.insert(
-                "testEnv".into(),
-                absolute(&env.cwd, test_env).display().to_string().into(),
-            );
-            spec.insert("testEnvKind".into(), "testEnv".into());
-        }
-        None => match prepared {
-            Some(prepared) => {
-                spec.insert("testCheckout".into(), prepared.dir.clone().into());
-                let paths: Vec<Value> = prepared
-                    .toolchain
-                    .iter()
-                    .map(|entry| entry.path.clone().into())
-                    .collect();
-                spec.insert("testToolchain".into(), Value::Array(paths));
-                spec.insert("testEnvKind".into(), "prepared".into());
-                if !prepared.failures.is_empty() {
-                    spec.insert("testEnvFailures".into(), prepared.failures.clone().into());
-                }
-            }
-            None => {
-                let checkout = lent.map_or_else(|| repo_dir.display().to_string(), String::from);
-                spec.insert("testCheckout".into(), checkout.into());
-                spec.insert("testEnvKind".into(), "checkout".into());
-            }
-        },
-    }
+    insert_test_env(&mut spec, parsed, env, repo_dir, lent, prepared);
     if !config.guides.is_empty() {
         let home = env.home.display().to_string();
         let guides: Vec<Value> = config

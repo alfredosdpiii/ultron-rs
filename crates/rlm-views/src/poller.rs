@@ -110,28 +110,42 @@ impl RlmPoller {
         if let Some((round, id)) = tag.strip_prefix("progress:").and_then(|rest| rest.split_once(':')) {
             return self.progress_answered(round.parse().unwrap_or_default(), id, result);
         }
-        match (tag, result) {
-            ("agents", Ok(value)) => {
+        if tag == "agents" {
+            return self.agents_answered(result, inspect);
+        }
+        match tag {
+            "frames" => {
+                if let Ok(value) = result {
+                    self.frames = parse_frames(&value);
+                }
+            }
+            "pool" => self.pool = result.ok().and_then(|v| parse_pool(&v)),
+            "context" => self.context = result.ok().and_then(|v| parse_context_state(&v)),
+            "instances" => {
+                if let Ok(value) = result {
+                    self.retained = parse_retained(&value);
+                }
+            }
+            _ => return Answered::NotMine,
+        }
+        Answered::Other
+    }
+
+    fn agents_answered(&mut self, result: Result<Value, String>, inspect: &mut dyn FnMut(Inspect)) -> Answered {
+        match result {
+            Ok(value) => {
                 self.status = Some(parse_agents_status(&value));
                 self.error = None;
-                return Answered::Agents;
             }
-            ("agents", Err(error)) => {
+            Err(error) => {
                 if !self.plain_listing && error.contains("Unknown payload field") {
                     self.plain_listing = true;
                     self.inspect_agents_status(inspect);
                 }
                 self.error = Some(error);
-                return Answered::Agents;
             }
-            ("frames", Ok(value)) => self.frames = parse_frames(&value),
-            ("pool", result) => self.pool = result.ok().and_then(|v| parse_pool(&v)),
-            ("context", result) => self.context = result.ok().and_then(|v| parse_context_state(&v)),
-            ("instances", Ok(value)) => self.retained = parse_retained(&value),
-            ("frames" | "instances", Err(_)) => {}
-            _ => return Answered::NotMine,
         }
-        Answered::Other
+        Answered::Agents
     }
 
     /// A new progress round: `progress.assess` of `running` (the caller's running tasks, at most [`MAX_ASSESSED`]

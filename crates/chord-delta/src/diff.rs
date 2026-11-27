@@ -87,29 +87,29 @@ fn with(path: &[Seg], segment: Seg) -> Path {
     next
 }
 
-fn diff_array(before: &[Value], after: &[Value], path: &[Seg], ops: &mut Vec<Op>) {
-    if before.len() == after.len() {
-        let mismatches = before.iter().zip(after).filter(|(b, a)| b != a).count();
-        if mismatches == 0 {
-            return;
-        }
-        if mismatches > 1 {
-            if let Some(order) = permutation(before, after) {
-                ops.push(Op::Move(path.to_vec(), order));
-                return;
-            }
-            if emit_same_length_shift(before, after, path, ops) {
-                return;
-            }
-        }
-        for (index, (b, a)) in before.iter().zip(after).enumerate() {
-            if ops.len() > MAX_DELTA_OPERATIONS {
-                return;
-            }
-            diff_value(b, a, &with(path, Seg::Index(index)), ops);
-        }
+fn diff_same_length_array(before: &[Value], after: &[Value], path: &[Seg], ops: &mut Vec<Op>) {
+    let mismatches = before.iter().zip(after).filter(|(b, a)| b != a).count();
+    if mismatches == 0 {
         return;
     }
+    if mismatches > 1 {
+        if let Some(order) = permutation(before, after) {
+            ops.push(Op::Move(path.to_vec(), order));
+            return;
+        }
+        if emit_same_length_shift(before, after, path, ops) {
+            return;
+        }
+    }
+    for (index, (b, a)) in before.iter().zip(after).enumerate() {
+        if ops.len() > MAX_DELTA_OPERATIONS {
+            return;
+        }
+        diff_value(b, a, &with(path, Seg::Index(index)), ops);
+    }
+}
+
+fn diff_resized_array(before: &[Value], after: &[Value], path: &[Seg], ops: &mut Vec<Op>) {
     let shortest = before.len().min(after.len());
     let mut prefix = 0;
     while prefix < shortest && before[prefix] == after[prefix] {
@@ -125,6 +125,14 @@ fn diff_array(before: &[Value], after: &[Value], path: &[Seg], ops: &mut Vec<Op>
         before.len() - prefix - suffix,
         after[prefix..after.len() - suffix].to_vec(),
     ));
+}
+
+fn diff_array(before: &[Value], after: &[Value], path: &[Seg], ops: &mut Vec<Op>) {
+    if before.len() == after.len() {
+        diff_same_length_array(before, after, path, ops);
+    } else {
+        diff_resized_array(before, after, path, ops);
+    }
 }
 
 fn diff_object(before: &Map<String, Value>, after: &Map<String, Value>, path: &[Seg], ops: &mut Vec<Op>) {

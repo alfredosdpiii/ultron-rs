@@ -7,6 +7,7 @@
 //! [`route`] to a link thread, which owns the [`Link`] and answers through UI events.
 
 mod link;
+mod link_handlers;
 mod support;
 
 pub use support::{apply_presentation_plugins, import_pi, login_options, pi_agent_dir, pi_sessions};
@@ -58,6 +59,111 @@ pub fn mark_checkpoints(mut tree: Value, checkpoints: &Value) -> Value {
     tree
 }
 
+fn spawn_startup_changelog(env: Env, ui: mpsc::Sender<UiEvent>) {
+    std::thread::spawn(move || {
+        if let Some(notice) = crate::startup_checks::startup_changelog(&env) {
+            let _ = ui.send(UiEvent::Lane(LaneEvent::StartupNotice(notice)));
+        }
+    });
+}
+
+fn spawn_subscription_auth_warning(env: Env, ui: mpsc::Sender<UiEvent>, provider: String) {
+    std::thread::spawn(move || {
+        if crate::startup_checks::subscription_auth_warns(&env, &provider) {
+            let notice = interactive::lane::StartupNotice::SubscriptionAuth;
+            let _ = ui.send(UiEvent::Lane(LaneEvent::StartupNotice(notice)));
+        }
+    });
+}
+
+fn start_oauth_login(
+    env: &Env,
+    ui: &mpsc::Sender<UiEvent>,
+    commands: &mpsc::Sender<Command>,
+    login: &Arc<crate::tui_login::LoginSlot>,
+    login_id: u64,
+    provider: String,
+    name: String,
+) {
+    if !crate::tui_login::supported(env, &provider) {
+        let _ = ui.send(UiEvent::Lane(LaneEvent::Status(format!(
+            "Error: Failed to login to {name}: signing in with an account is not available in the Rust build yet; use an API key"
+        ))));
+        return;
+    }
+    let event_ui = ui.clone();
+    let events: Arc<dyn Fn(LaneEvent) + Send + Sync> = Arc::new(move |event| {
+        let _ = event_ui.send(UiEvent::Lane(event));
+    });
+    let (saved_commands, id, label) = (commands.clone(), provider.clone(), name.clone());
+    let saved = Box::new(move || {
+        let _ = saved_commands.send(Command::LoginSaved(id, label));
+    });
+    crate::tui_login::start(env.clone(), login_id, provider, name, events, login.clone(), saved);
+}
+
+fn spawn_abort_op(link: &client::session::LinkHandle, ui: mpsc::Sender<UiEvent>, op: Op) {
+    let started = start_call(
+        &link.connection(),
+        protocol::names::SESSION_OPS,
+        "op",
+        json!([op.to_json()]),
+    );
+    std::thread::spawn(move || {
+        let result = started.and_then(|(connection, request)| connection.wait(&request).map_err(client::lost::message));
+        if let Err(error) = result {
+            let _ = ui.send(UiEvent::Lane(LaneEvent::Error(error)));
+        }
+    });
+}
+
+fn route_control_command(
+    command: LaneCommand,
+    link: &client::session::LinkHandle,
+    ui: &mpsc::Sender<UiEvent>,
+    cancels: &Cancels,
+) -> Option<LaneCommand> {
+    match command {
+        LaneCommand::Abort => spawn_abort_op(link, ui.clone(), Op::Abort),
+        LaneCommand::AbortRetry => spawn_abort_op(link, ui.clone(), Op::AbortRetry),
+        LaneCommand::AbortBash => spawn_abort_op(link, ui.clone(), Op::AbortBash),
+        LaneCommand::CancelShare => jsrt::sync::lock(&cancels.share).abort("cancelled"),
+        LaneCommand::CancelBugReport => cancels.bug.store(true, std::sync::atomic::Ordering::SeqCst),
+        other => return Some(other),
+    }
+    None
+}
+
+fn route_command(
+    command: LaneCommand,
+    link: &client::session::LinkHandle,
+    commands: &mpsc::Sender<Command>,
+    env: &Env,
+    ui: &mpsc::Sender<UiEvent>,
+    cancels: &Cancels,
+    login: &Arc<crate::tui_login::LoginSlot>,
+) {
+    let Some(command) = route_control_command(command, link, ui, cancels) else {
+        return;
+    };
+    match command {
+        LaneCommand::StartupChangelog => spawn_startup_changelog(env.clone(), ui.clone()),
+        LaneCommand::SubscriptionAuthWarning(provider) => {
+            spawn_subscription_auth_warning(env.clone(), ui.clone(), provider);
+        }
+        LaneCommand::OAuthLogin { id, provider, name } => {
+            start_oauth_login(env, ui, commands, login, id, provider, name);
+        }
+        LaneCommand::LoginReply { id, answer } => login.reply(id, answer),
+        command => {
+            if matches!(command, LaneCommand::Share { .. }) {
+                *jsrt::sync::lock(&cancels.share) = kernel::Signal::new();
+            }
+            let _ = commands.send(Command::Lane(command));
+        }
+    }
+}
+
 /// The TUI's commands, in order: the ones that must not wait behind the link thread's current command (an abort, a
 /// cancel, a login's answer, a startup check) are answered here; the rest go to the link thread.
 fn route(
@@ -68,80 +174,9 @@ fn route(
     ui: mpsc::Sender<UiEvent>,
     cancels: Cancels,
 ) {
-    let send = |event: LaneEvent| {
-        let _ = ui.send(UiEvent::Lane(event));
-    };
     let login: Arc<crate::tui_login::LoginSlot> = Arc::default();
     for command in lane {
-        match command {
-            LaneCommand::StartupChangelog => {
-                let (env, ui) = (env.clone(), ui.clone());
-                std::thread::spawn(move || {
-                    if let Some(notice) = crate::startup_checks::startup_changelog(&env) {
-                        let _ = ui.send(UiEvent::Lane(LaneEvent::StartupNotice(notice)));
-                    }
-                });
-            }
-            LaneCommand::SubscriptionAuthWarning(provider) => {
-                let (env, ui) = (env.clone(), ui.clone());
-                std::thread::spawn(move || {
-                    if crate::startup_checks::subscription_auth_warns(&env, &provider) {
-                        let notice = interactive::lane::StartupNotice::SubscriptionAuth;
-                        let _ = ui.send(UiEvent::Lane(LaneEvent::StartupNotice(notice)));
-                    }
-                });
-            }
-            LaneCommand::OAuthLogin { provider, name, .. } if !crate::tui_login::supported(&env, &provider) => {
-                send(LaneEvent::Status(format!(
-                    "Error: Failed to login to {name}: signing in with an account is not available in the Rust build yet; use an API key"
-                )));
-            }
-            LaneCommand::OAuthLogin {
-                id: login_id,
-                provider,
-                name,
-            } => {
-                let ui = ui.clone();
-                let events: Arc<dyn Fn(LaneEvent) + Send + Sync> = Arc::new(move |event| {
-                    let _ = ui.send(UiEvent::Lane(event));
-                });
-                let (saved_commands, id, label) = (commands.clone(), provider.clone(), name.clone());
-                let saved = Box::new(move || {
-                    let _ = saved_commands.send(Command::LoginSaved(id, label));
-                });
-                crate::tui_login::start(env.clone(), login_id, provider, name, events, login.clone(), saved);
-            }
-            LaneCommand::LoginReply { id, answer } => login.reply(id, answer),
-            command @ (LaneCommand::Abort | LaneCommand::AbortRetry | LaneCommand::AbortBash) => {
-                let op = match command {
-                    LaneCommand::AbortRetry => Op::AbortRetry,
-                    LaneCommand::AbortBash => Op::AbortBash,
-                    _ => Op::Abort,
-                };
-                let started = start_call(
-                    &link.connection(),
-                    protocol::names::SESSION_OPS,
-                    "op",
-                    json!([op.to_json()]),
-                );
-                let ui = ui.clone();
-                std::thread::spawn(move || {
-                    let result = started
-                        .and_then(|(connection, request)| connection.wait(&request).map_err(client::lost::message));
-                    if let Err(error) = result {
-                        let _ = ui.send(UiEvent::Lane(LaneEvent::Error(error)));
-                    }
-                });
-            }
-            LaneCommand::CancelShare => jsrt::sync::lock(&cancels.share).abort("cancelled"),
-            LaneCommand::CancelBugReport => cancels.bug.store(true, std::sync::atomic::Ordering::SeqCst),
-            command => {
-                if matches!(command, LaneCommand::Share { .. }) {
-                    *jsrt::sync::lock(&cancels.share) = kernel::Signal::new();
-                }
-                let _ = commands.send(Command::Lane(command));
-            }
-        }
+        route_command(command, &link, &commands, &env, &ui, &cancels, &login);
     }
 }
 
@@ -268,27 +303,33 @@ pub fn is_worker_restart(event: &Value) -> bool {
         && event["message"] == client::session::WORKER_RESTARTED
 }
 
+fn radius_connection_state(event: &Value) -> client::radius::ConnectionState {
+    match event["state"].as_str() {
+        Some("connecting") => client::radius::ConnectionState::Connecting,
+        Some("connected") => client::radius::ConnectionState::Connected,
+        _ => client::radius::ConnectionState::Disconnected,
+    }
+}
+
+fn radius_attachment_state(event: &Value) -> (client::radius::AttachmentState, String) {
+    let id = event["sessionId"].as_str().unwrap_or_default().to_string();
+    let state = if event["state"] == "attached" {
+        client::radius::AttachmentState::Attached(id.clone())
+    } else {
+        client::radius::AttachmentState::Attaching(id.clone())
+    };
+    (state, id)
+}
+
 /// What a remote link's recovery events show (client-tui.ts `#handleConnectionState`, `#handleAttachmentState`,
 /// `#handleLocalConnectionState`), given whether the lane is open: the TUI events, and whether the session is to be
 /// shown again (the lane reopened after a reattachment).
 pub fn recovery_events(event: &Value, lane_open: &mut bool) -> (Vec<LaneEvent>, bool) {
-    use client::radius::{AttachmentState, ConnectionState, attachment_state_view, connection_state_view};
+    use client::radius::{attachment_state_view, connection_state_view};
     let view = match event["type"].as_str() {
-        Some("radius_connection") => {
-            let state = match event["state"].as_str() {
-                Some("connecting") => ConnectionState::Connecting,
-                Some("connected") => ConnectionState::Connected,
-                _ => ConnectionState::Disconnected,
-            };
-            connection_state_view(state, *lane_open)
-        }
+        Some("radius_connection") => connection_state_view(radius_connection_state(event), *lane_open),
         Some("radius_attachment") => {
-            let id = event["sessionId"].as_str().unwrap_or_default().to_string();
-            let state = if event["state"] == "attached" {
-                AttachmentState::Attached(id.clone())
-            } else {
-                AttachmentState::Attaching(id.clone())
-            };
+            let (state, id) = radius_attachment_state(event);
             attachment_state_view(&state, &id)
         }
         Some("connection") if event["state"] == "lost" => {
@@ -369,19 +410,155 @@ pub fn presentation_settings(parsed: &Args, settings: &serde_json::Map<String, V
     Value::Object(settings)
 }
 
+fn make_watch_sink(
+    ui: mpsc::Sender<UiEvent>,
+    commands: mpsc::Sender<Command>,
+    herdr: Option<Arc<crate::herdr_report::TuiReport>>,
+) -> client::session::WatchSink {
+    let lane_open = std::sync::Mutex::new(true);
+    let stream = std::sync::Mutex::new(TuiStream::default());
+    Arc::new(move |event: Value| {
+        if let Some(herdr) = &herdr {
+            herdr.lane_event(&event);
+        }
+        if event["type"] == "run_end" {
+            let _ = commands.send(Command::RefreshName);
+        }
+        if is_worker_restart(&event) {
+            let _ = commands.send(Command::WorkerStopped);
+        }
+        let (recovery, reopen) = recovery_events(&event, &mut jsrt::sync::lock(&lane_open));
+        let shown = jsrt::sync::lock(&stream).events(&event);
+        for lane_event in shown.into_iter().chain(recovery) {
+            let _ = ui.send(UiEvent::Lane(lane_event));
+        }
+        if reopen {
+            let _ = commands.send(Command::Reopen);
+        }
+    })
+}
+
+fn resolve_external_editor(settings: &config::settings::SettingsManager, env: &Env) -> Option<String> {
+    settings
+        .settings()
+        .get("externalEditor")
+        .and_then(Value::as_str)
+        .filter(|c| !c.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| (env.var)("VISUAL").filter(|v| !v.is_empty()))
+        .or_else(|| (env.var)("EDITOR").filter(|v| !v.is_empty()))
+        .or_else(|| Some("nano".to_string()))
+}
+
+fn spawn_version_check(env: Env, ui: mpsc::Sender<UiEvent>) {
+    std::thread::spawn(move || {
+        if let Some(version) = crate::startup_checks::check_for_new_version(&env, config::version()) {
+            let notice = interactive::lane::StartupNotice::NewVersion(version);
+            let _ = ui.send(UiEvent::Lane(LaneEvent::StartupNotice(notice)));
+        }
+    });
+}
+
+fn configure_app(
+    app: &mut App,
+    parsed: &Args,
+    env: &Env,
+    settings: &config::settings::SettingsManager,
+    presentation: &Value,
+    caps: &tui::Capabilities,
+    ui_tx: &mpsc::Sender<UiEvent>,
+) {
+    let theme_setting = parsed.use_theme.clone().or_else(|| settings.theme());
+    let hide_thinking = settings.settings().get("hideThinkingBlock") == Some(&Value::Bool(true));
+    let enabled_models: Vec<String> = parsed
+        .models
+        .clone()
+        .unwrap_or_else(|| config::keys::enabled_models(settings.settings()));
+    app.set_hide_thinking(hide_thinking);
+    app.set_enabled_models(enabled_models);
+    let wezterm = (env.var)("WEZTERM_PANE").is_some_and(|v| !v.is_empty())
+        || (env.var)("TERM_PROGRAM").is_some_and(|v| v.eq_ignore_ascii_case("wezterm"));
+    app.set_image_protocol(caps.images.filter(|p| *p == tui::ImageProtocol::Kitty), wezterm);
+    let mut registry = theme::registry::ThemeRegistry::new(
+        config::paths::AgentPaths::new(env.agent_dir()).custom_themes_dir(),
+        tui::color_mode(caps),
+    );
+    let _ = registry.set_registered_themes(crate::themes::load(env, registry.mode).themes);
+    app.set_theme_controller(interactive::theme_setup::ThemeController::new(
+        registry,
+        theme_setting,
+        (env.var)("COLORFGBG").as_deref(),
+    ));
+    app.apply_startup_settings(presentation, &|k| (env.var)(k));
+    let tree_filter = settings
+        .settings()
+        .get("treeFilterMode")
+        .and_then(Value::as_str)
+        .unwrap_or("default")
+        .to_string();
+    let skip_summary = settings.branch_summary_settings()["skipPrompt"] == true;
+    app.set_tree_settings(&tree_filter, skip_summary);
+    app.set_auto_compact(settings.compaction_enabled() != false);
+    app.set_external_editor(resolve_external_editor(settings, env));
+    spawn_version_check(env.clone(), ui_tx.clone());
+    let wake = ui_tx.clone();
+    app.set_autocomplete_waker(move || {
+        let _ = wake.send(UiEvent::Wake);
+    });
+    let (debug, termux) = terminal_debug(env, std::path::Path::new(tui::RENDER_DUMP_DIR));
+    app.set_terminal_debug(debug, termux);
+}
+
+fn build_app_options(
+    parsed: &Args,
+    env: &Env,
+    presentation: &Value,
+    theme: Rc<theme::Theme>,
+    server_id: String,
+) -> AppOptions {
+    let model = crate::print_mode::resolve_model(parsed, env)
+        .ok()
+        .map_or_default(|m| catalog_info(&m));
+    let splash =
+        !(env.var)(SPLASH_ENV).is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false"));
+    let platform = crate::terminal_settings::platform(env);
+    let user_keys = user_keybindings(&env.agent_dir(), platform);
+    let key_context = tui::KeyContext::from_env(&|k| (env.var)(k));
+    let keys = KeybindingsManager::new(native_app_keybindings(platform), user_keys, key_context);
+    let highlight = interactive::rlm_highlight::rlm_highlighter(&theme);
+    AppOptions {
+        theme,
+        keys,
+        version: config::version().to_string(),
+        cwd: env.cwd.display().to_string(),
+        home: Some(env.home.display().to_string()).filter(|h| !h.is_empty()),
+        server_id,
+        models: catalog(env),
+        model,
+        thinking_level: parsed.thinking.clone().unwrap_or_else(|| "medium".into()),
+        splash,
+        history: PromptHistoryStore::new(
+            Some(env.agent_dir().join(PROMPT_HISTORY_FILE)),
+            &env.cwd.display().to_string(),
+        ),
+        fd_path: crate::tools_manager::ensure_fd(env, crate::tools_manager::GITHUB),
+        highlight,
+        qol: interactive::qol::QolSettings::from_settings(presentation, &|k| (env.var)(k)),
+        bug_report_target: (
+            crate::bug_report::gateway_host(&crate::bug_report::gateway_url(env)),
+            config::env::offline(&*env.var),
+        ),
+    }
+}
+
 /// Run the TUI over the link `open_link` opens (its watch events go to the TUI) until the user exits.
 fn run_tui(
     parsed: &Args,
     env: &Env,
     open_link: Box<dyn FnOnce(client::session::WatchSink) -> Result<Link, String>>,
 ) -> Result<i32, String> {
-    let model = crate::print_mode::resolve_model(parsed, env).ok();
-    let models = catalog(env);
-    let splash =
-        !(env.var)(SPLASH_ENV).is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false"));
     let settings = config::settings::SettingsManager::for_worker(&env.cwd, &env.agent_dir(), &env.home);
     let presentation = presentation_settings(parsed, settings.settings());
-    let qol = interactive::qol::QolSettings::from_settings(&presentation, &|k| (env.var)(k));
     let caps = crate::terminal_settings::capabilities(env, &settings);
     let theme_setting = parsed.use_theme.clone().or_else(|| settings.theme());
     let theme = Rc::new(crate::themes::resolve(
@@ -394,50 +571,14 @@ fn run_tui(
         hyperlinks: caps.hyperlinks,
         code_block_indent: Some(config::keys::code_block_indent(settings.settings())),
     });
-    let platform = crate::terminal_settings::platform(env);
-    let user_keys = user_keybindings(&env.agent_dir(), platform);
-    let key_context = tui::KeyContext::from_env(&|k| (env.var)(k));
-    let keys = || KeybindingsManager::new(native_app_keybindings(platform), user_keys.clone(), key_context);
-    let fd_path = crate::tools_manager::ensure_fd(env, crate::tools_manager::GITHUB);
 
     let (ui_tx, ui_rx) = mpsc::channel::<UiEvent>();
     let (command_tx, command_rx) = mpsc::channel::<Command>();
     let herdr = crate::herdr_report::TuiReport::start(parsed, env).map(Arc::new);
-    let watch = {
-        let (ui, commands) = (ui_tx.clone(), command_tx.clone());
-        let lane_open = std::sync::Mutex::new(true);
-        let stream = std::sync::Mutex::new(TuiStream::default());
-        let herdr = herdr.clone();
-        move |event: Value| {
-            if let Some(herdr) = &herdr {
-                herdr.lane_event(&event);
-            }
-            if event["type"] == "run_end" {
-                let _ = commands.send(Command::RefreshName);
-            }
-            if is_worker_restart(&event) {
-                let _ = commands.send(Command::WorkerStopped);
-            }
-            let (recovery, reopen) = recovery_events(
-                &event,
-                &mut lane_open.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
-            );
-            let shown = stream
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .events(&event);
-            for lane_event in shown.into_iter().chain(recovery) {
-                let _ = ui.send(UiEvent::Lane(lane_event));
-            }
-            if reopen {
-                let _ = commands.send(Command::Reopen);
-            }
-        }
-    };
-    let link = open_link(Arc::new(watch))?;
+    let watch = make_watch_sink(ui_tx.clone(), command_tx.clone(), herdr.clone());
+    let link = open_link(watch)?;
     let handle = link.handle();
     let server_id = link.connection().server_id.clone();
-    let no_session = parsed.no_session;
     let signalled = Arc::new(std::sync::atomic::AtomicI32::new(0));
     let cancels = Cancels::default();
     let (link_alive, link_ended) = mpsc::channel::<()>();
@@ -446,7 +587,7 @@ fn run_tui(
         let signalled = signalled.clone();
         let catalog_env = env.clone();
         let reporter = crate::bug_report::Reporter::new(cancels.bug.clone(), parsed.api_key.is_some());
-        let (herdr, cancels) = (herdr.clone(), cancels.clone());
+        let (herdr, cancels, no_session) = (herdr.clone(), cancels.clone(), parsed.no_session);
         std::thread::spawn(move || {
             let _alive = link_alive;
             link_thread(
@@ -467,98 +608,15 @@ fn run_tui(
         let (commands, env, ui) = (command_tx.clone(), env.clone(), ui_tx.clone());
         std::thread::spawn(move || route(handle, lane_rx, commands, env, ui, cancels))
     };
-    let model = model.map_or_default(|m| catalog_info(&m));
-    let hide_thinking = settings.settings().get("hideThinkingBlock") == Some(&Value::Bool(true));
-    let enabled_models: Vec<String> = parsed
-        .models
-        .clone()
-        .unwrap_or_else(|| config::keys::enabled_models(settings.settings()));
-    let highlight = interactive::rlm_highlight::rlm_highlighter(&theme);
-    let options = AppOptions {
-        theme,
-        keys: keys(),
-        version: config::version().to_string(),
-        cwd: env.cwd.display().to_string(),
-        home: Some(env.home.display().to_string()).filter(|h| !h.is_empty()),
-        server_id,
-        models,
-        model,
-        thinking_level: parsed.thinking.clone().unwrap_or_else(|| "medium".into()),
-        splash,
-        history: PromptHistoryStore::new(
-            Some(env.agent_dir().join(PROMPT_HISTORY_FILE)),
-            &env.cwd.display().to_string(),
-        ),
-        fd_path,
-        highlight,
-        qol,
-        bug_report_target: (
-            crate::bug_report::gateway_host(&crate::bug_report::gateway_url(env)),
-            config::env::offline(&*env.var),
-        ),
-    };
+    let options = build_app_options(parsed, env, &presentation, theme, server_id);
     let mut app = App::new(options, lane_tx);
     let (code, end) = (signalled, std::sync::Mutex::new(ui_tx.clone()));
     crate::print_mode::exit_on_signal(move |exit| {
         code.store(exit, std::sync::atomic::Ordering::SeqCst);
-        let _ = end
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .send(UiEvent::InputClosed);
+        let _ = jsrt::sync::lock(&end).send(UiEvent::InputClosed);
     });
-    app.set_hide_thinking(hide_thinking);
-    app.set_enabled_models(enabled_models);
-    let wezterm = (env.var)("WEZTERM_PANE").is_some_and(|v| !v.is_empty())
-        || (env.var)("TERM_PROGRAM").is_some_and(|v| v.eq_ignore_ascii_case("wezterm"));
-    app.set_image_protocol(caps.images.filter(|p| *p == tui::ImageProtocol::Kitty), wezterm);
-    let mut registry = theme::registry::ThemeRegistry::new(
-        config::paths::AgentPaths::new(env.agent_dir()).custom_themes_dir(),
-        tui::color_mode(&caps),
-    );
-    let _ = registry.set_registered_themes(crate::themes::load(env, registry.mode).themes);
-    app.set_theme_controller(interactive::theme_setup::ThemeController::new(
-        registry,
-        theme_setting,
-        (env.var)("COLORFGBG").as_deref(),
-    ));
-    app.apply_startup_settings(&presentation, &|k| (env.var)(k));
-    let tree_filter = settings
-        .settings()
-        .get("treeFilterMode")
-        .and_then(Value::as_str)
-        .unwrap_or("default")
-        .to_string();
-    let skip_summary = settings.branch_summary_settings()["skipPrompt"] == true;
-    app.set_tree_settings(&tree_filter, skip_summary);
-    app.set_auto_compact(settings.compaction_enabled() != false);
-    let external_editor = settings
-        .settings()
-        .get("externalEditor")
-        .and_then(Value::as_str)
-        .filter(|c| !c.trim().is_empty())
-        .map(str::to_string)
-        .or_else(|| (env.var)("VISUAL").filter(|v| !v.is_empty()))
-        .or_else(|| (env.var)("EDITOR").filter(|v| !v.is_empty()))
-        .or_else(|| Some("nano".to_string()));
-    app.set_external_editor(external_editor);
-    {
-        let (env, ui) = (env.clone(), ui_tx.clone());
-        std::thread::spawn(move || {
-            if let Some(version) = crate::startup_checks::check_for_new_version(&env, config::version()) {
-                let notice = interactive::lane::StartupNotice::NewVersion(version);
-                let _ = ui.send(UiEvent::Lane(LaneEvent::StartupNotice(notice)));
-            }
-        });
-    }
-    {
-        let wake = ui_tx.clone();
-        app.set_autocomplete_waker(move || {
-            let _ = wake.send(UiEvent::Wake);
-        });
-    }
+    configure_app(&mut app, parsed, env, &settings, &presentation, &caps, &ui_tx);
     spawn_gated_input(ui_tx, app.input_gate());
-    let (debug, termux) = terminal_debug(env, std::path::Path::new(tui::RENDER_DUMP_DIR));
-    app.set_terminal_debug(debug, termux);
     let result = run_stdout(&mut app, &ui_rx, &tui::size);
     drop(app);
     let _ = router.join();

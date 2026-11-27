@@ -56,45 +56,48 @@ fn entries(value: &Value) -> Vec<(String, Value)> {
     }
 }
 
+fn push_account(accounts: &mut Vec<Account>, login: &str, host: &str, active: bool) {
+    if !login.is_empty() && !host.is_empty() && !accounts.iter().any(|a| a.login == login && a.host == host) {
+        accounts.push(Account {
+            login: login.into(),
+            host: host.into(),
+            active,
+        });
+    }
+}
+
+fn parse_auth_json(parsed: &Value, accounts: &mut Vec<Account>) -> bool {
+    let hosts = parsed.get("hosts").filter(|hosts| !hosts.is_null());
+    for (host, list) in hosts.map_or_default(entries) {
+        let Value::Array(list) = list else { continue };
+        for entry in list {
+            if entry.is_null() {
+                return false;
+            }
+            let state = entry.get("state");
+            if let Some(Value::String(login)) = entry.get("login")
+                && (state.is_none() || state == Some(&Value::String("success".into())))
+            {
+                push_account(accounts, login, &host, entry.get("active") == Some(&Value::Bool(true)));
+            }
+        }
+    }
+    true
+}
+
 /// Accounts from `gh auth status --json hosts`, or from its text form on a `gh` that has no `--json`.
 pub fn parse_auth_status(stdout: &str, stderr: &str) -> Vec<Account> {
     let mut accounts: Vec<Account> = Vec::new();
-    let mut add = |login: &str, host: &str, active: bool| {
-        if !login.is_empty() && !host.is_empty() && !accounts.iter().any(|a| a.login == login && a.host == host) {
-            accounts.push(Account {
-                login: login.into(),
-                host: host.into(),
-                active,
-            });
-        }
-    };
-    let parsed = serde_json::from_str::<Value>(stdout).ok();
-    if let Some(parsed) = parsed.filter(|value| !value.is_null()) {
-        let mut failed = false;
-        let hosts = parsed.get("hosts").filter(|hosts| !hosts.is_null());
-        'hosts: for (host, list) in hosts.map_or_default(entries) {
-            let Value::Array(list) = list else { continue };
-            for entry in list {
-                if entry.is_null() {
-                    failed = true;
-                    break 'hosts;
-                }
-                let state = entry.get("state");
-                if let Some(Value::String(login)) = entry.get("login")
-                    && (state.is_none() || state == Some(&Value::String("success".into())))
-                {
-                    add(login, &host, entry.get("active") == Some(&Value::Bool(true)));
-                }
-            }
-        }
-        if !failed {
-            return accounts;
-        }
+    let parsed = serde_json::from_str::<Value>(stdout).ok().filter(|v| !v.is_null());
+    if let Some(parsed) = parsed
+        && parse_auth_json(&parsed, &mut accounts)
+    {
+        return accounts;
     }
     let pattern = Regex::new(r"Logged in to (\S+) (?:account|as) (\S+)").expect("static pattern");
     for line in format!("{stdout}\n{stderr}").split('\n') {
         if let Some(found) = pattern.captures(line) {
-            add(&found[2], &found[1], false);
+            push_account(&mut accounts, &found[2], &found[1], false);
         }
     }
     accounts

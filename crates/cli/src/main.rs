@@ -8,74 +8,70 @@ use std::path::PathBuf;
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+fn exit_err(message: impl std::fmt::Display) -> ! {
+    eprintln!("{message}");
+    std::process::exit(1);
+}
+
+fn maybe_run_inert_mcp(argv: &[String]) {
+    let [internal, role, args @ ..] = argv else {
+        return;
+    };
+    if internal != "__internal" || role != "inert-mcp" {
+        return;
+    }
+    if let Err(message) = cli::inert_mcp::run(args) {
+        exit_err(message);
+    }
+    std::process::exit(0);
+}
+
+fn maybe_run_daemon_role(argv: &[String], env: &cli::Env, source: &cli::assets::Source) {
+    let role = match daemon::process::role(argv) {
+        Err(message) => exit_err(message),
+        Ok(Some(found)) => found,
+        Ok(None) => return,
+    };
+    let result = match role.0 {
+        daemon::process::Role::Coordinator => {
+            daemon::process::trace_startup("coordinator.entry");
+            daemon::coordinator::run(role.1).map_err(|e| e.to_string())
+        }
+        daemon::process::Role::Server => {
+            daemon::server::run_server_process(role.1, Some(cli::radius_relay::relay_config(env)))
+        }
+        daemon::process::Role::SessionWorker => {
+            daemon::process::trace_startup("worker.entry");
+            let package = source.ready().unwrap_or_else(|message| exit_err(message));
+            daemon::worker::run(role.1, package)
+        }
+    };
+    if let Err(message) = result {
+        exit_err(message);
+    }
+    std::process::exit(0);
+}
+
 fn main() {
     if let Err(error) = signals::install() {
         eprintln!("Signal handling unavailable: {error}");
     }
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    if let [internal, role, args @ ..] = &argv[..]
-        && internal == "__internal"
-        && role == "inert-mcp"
-    {
-        if let Err(message) = cli::inert_mcp::run(args) {
-            eprintln!("{message}");
-            std::process::exit(1);
-        }
-        std::process::exit(0);
-    }
+    maybe_run_inert_mcp(&argv);
     let home = std::env::var_os("HOME").map_or_default(PathBuf::from);
-    let source = match cli::assets::source(&|k| std::env::var(k).ok(), &home) {
-        Ok(source) => source,
-        Err(message) => {
-            eprintln!("{message}");
-            std::process::exit(1);
-        }
-    };
-    let ready_package = || match source.ready() {
-        Ok(dir) => dir,
-        Err(message) => {
-            eprintln!("{message}");
-            std::process::exit(1);
-        }
-    };
+    let source = cli::assets::source(&|k| std::env::var(k).ok(), &home).unwrap_or_else(|message| exit_err(message));
     let env = cli::Env {
         cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         var: std::sync::Arc::new(|k| std::env::var(k).ok()),
         package: source.dir(),
         home,
     };
-    match daemon::process::role(&argv) {
-        Err(message) => {
-            eprintln!("{message}");
-            std::process::exit(1);
-        }
-        Ok(Some((role, args))) => {
-            let result = match role {
-                daemon::process::Role::Coordinator => {
-                    daemon::process::trace_startup("coordinator.entry");
-                    daemon::coordinator::run(args).map_err(|e| e.to_string())
-                }
-                daemon::process::Role::Server => {
-                    daemon::server::run_server_process(args, Some(cli::radius_relay::relay_config(&env)))
-                }
-                daemon::process::Role::SessionWorker => {
-                    daemon::process::trace_startup("worker.entry");
-                    daemon::worker::run(args, ready_package())
-                }
-            };
-            if let Err(message) = result {
-                eprintln!("{message}");
-                std::process::exit(1);
-            }
-            std::process::exit(0);
-        }
-        Ok(None) => {}
-    }
+    maybe_run_daemon_role(&argv, &env, &source);
     let invoked = std::env::args().next().unwrap_or_default();
-    if cli::durable_client::is_home_command(&invoked) {
-        let code = cli::durable_client::run_home(&argv, &env, &mut std::io::stdout(), &mut std::io::stderr());
-        std::process::exit(code);
-    }
-    let code = cli::run(&argv, &env, &mut std::io::stdout(), &mut std::io::stderr());
+    let code = if cli::durable_client::is_home_command(&invoked) {
+        cli::durable_client::run_home(&argv, &env, &mut std::io::stdout(), &mut std::io::stderr())
+    } else {
+        cli::run(&argv, &env, &mut std::io::stdout(), &mut std::io::stderr())
+    };
     std::process::exit(code);
 }

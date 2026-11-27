@@ -16,7 +16,9 @@ use crate::autocomplete::{
     AbortSignal, AutocompleteItem, AutocompleteSuggestions, BackgroundSuggestions, SuggestionsJob,
     is_autocomplete_separator,
 };
-use crate::select::{SelectAction, SelectEvent, SelectItem};
+use crate::mouse::{MouseButton, MouseEvent, MouseEventType, MouseResult};
+use crate::select::{SelectAction, SelectEvent, SelectItem, SelectList};
+use crate::utils::{is_cjk_break, visible_width};
 
 pub(super) const DEFAULT_TRIGGER_CHARACTERS: [char; 2] = ['@', '#'];
 
@@ -117,6 +119,18 @@ fn ends_with_trigger_token(text: &str, heads: &[char], quoted_at: bool) -> bool 
     false
 }
 
+fn single_char(s: &str) -> Option<char> {
+    let mut it = s.chars();
+    match (it.next(), it.next()) {
+        (Some(c), None) => Some(c),
+        _ => None,
+    }
+}
+
+fn is_word_or_path_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') || is_cjk_break(c)
+}
+
 fn to_select_item(item: &AutocompleteItem) -> SelectItem {
     SelectItem {
         value: item.value.clone(),
@@ -131,8 +145,7 @@ impl Editor {
         self.cancel_autocomplete();
         let mut chars = DEFAULT_TRIGGER_CHARACTERS.to_vec();
         for t in provider.trigger_characters() {
-            let mut it = t.chars();
-            let (Some(c), None) = (it.next(), it.next()) else {
+            let Some(c) = single_char(&t) else {
                 continue;
             };
             if c.len_utf16() != 1 || c == '/' || string::is_space(c) || chars.contains(&c) {
@@ -195,6 +208,10 @@ impl Editor {
         self.cursor_line == 0 && before.trim_start_matches(string::is_space).starts_with('/')
     }
 
+    fn in_completion_context(&self, before: &str) -> bool {
+        self.is_in_slash_command_context(before) || self.trigger_pattern(before)
+    }
+
     /// The trigger checks at the end of `insertCharacter`.
     pub(super) fn after_insert_character(&mut self, ch: &str) {
         if self.picker.is_some() {
@@ -202,24 +219,17 @@ impl Editor {
             return;
         }
         let before = self.before_cursor().to_string();
-        let single = {
-            let mut it = ch.chars();
-            match (it.next(), it.next()) {
-                (Some(c), None) => Some(c),
-                _ => None,
-            }
-        };
         if ch == "/" && self.is_at_start_of_message() {
             self.request_autocomplete(false, false);
-        } else if single.is_some_and(|c| self.trigger_chars.contains(&c)) {
+            return;
+        }
+        if single_char(ch).is_some_and(|c| self.trigger_chars.contains(&c)) {
             if self.trigger_pattern(&before) {
                 self.request_autocomplete(false, false);
             }
-        } else if ch
-            .chars()
-            .any(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') || is_cjk_break(c))
-            && (self.is_in_slash_command_context(&before) || self.trigger_pattern(&before))
-        {
+            return;
+        }
+        if ch.chars().any(is_word_or_path_char) && self.in_completion_context(&before) {
             self.request_autocomplete(false, false);
         }
     }
@@ -418,41 +428,53 @@ impl Editor {
         true
     }
 
+    fn move_picker_selection(&mut self, up: bool) {
+        let action = if up { SelectAction::Up } else { SelectAction::Down };
+        if let Some(picker) = &mut self.picker {
+            picker.list.apply_action(action);
+        }
+    }
+
+    fn accept_picker_tab(&mut self) {
+        if self.apply_selected() {
+            self.cancel_autocomplete();
+            self.changed();
+        }
+    }
+
+    fn confirm_picker(&mut self) -> bool {
+        let slash = self.picker.as_ref().is_some_and(|p| p.prefix.starts_with('/'));
+        if !self.apply_selected() {
+            return true;
+        }
+        self.cancel_autocomplete();
+        if slash {
+            return true;
+        }
+        self.changed();
+        false
+    }
+
     /// Keys while the picker is open; true when the key should go on to normal handling.
     pub(super) fn handle_picker_key(&mut self, data: &str) -> bool {
-        let kb = |id: &str| self.keys.matches(data, id);
-        if kb("tui.select.cancel") {
+        if self.keys.matches(data, "tui.select.cancel") {
             self.cancel_autocomplete();
             return false;
         }
-        if kb("tui.select.up") || kb("tui.select.down") {
-            let action = if kb("tui.select.up") {
-                SelectAction::Up
-            } else {
-                SelectAction::Down
-            };
-            if let Some(picker) = &mut self.picker {
-                picker.list.apply_action(action);
-            }
+        if self.keys.matches(data, "tui.select.up") {
+            self.move_picker_selection(true);
             return false;
         }
-        if kb("tui.input.tab") {
-            if self.apply_selected() {
-                self.cancel_autocomplete();
-                self.changed();
-            }
+        if self.keys.matches(data, "tui.select.down") {
+            self.move_picker_selection(false);
             return false;
         }
-        if kb("tui.select.confirm") {
-            let slash = self.picker.as_ref().is_some_and(|p| p.prefix.starts_with('/'));
-            if self.apply_selected() {
-                self.cancel_autocomplete();
-                if slash {
-                    return true;
-                }
-                self.changed();
-                return false;
-            }
+        if self.keys.matches(data, "tui.input.tab") {
+            self.accept_picker_tab();
+            return false;
+        }
+        if self.keys.matches(data, "tui.select.confirm") {
+            return self.confirm_picker();
         }
         true
     }
@@ -463,33 +485,58 @@ impl Editor {
         self.picker = None;
     }
 
+    fn is_picker_mouse_hit(&self, y: i64) -> bool {
+        let picker_start = self.rendered_visible_lines as i64 + 2;
+        self.picker.is_some() && y >= picker_start && y < picker_start + self.rendered_picker_height as i64
+    }
+
+    fn handle_picker_mouse(&mut self, event: &MouseEvent, padding_x: usize) -> Option<MouseResult> {
+        let picker_start = self.rendered_visible_lines as i64 + 2;
+        let local = MouseEvent {
+            x: event.x - padding_x as i64,
+            y: event.y - picker_start,
+            width: event.width.saturating_sub(padding_x * 2).max(1),
+            height: self.rendered_picker_height,
+            ..*event
+        };
+        let mut events = Vec::new();
+        let result = self.picker.as_mut()?.list.handle_mouse(&local, &mut events);
+        for e in events {
+            if let SelectEvent::Selected(_) = e
+                && self.apply_selected()
+            {
+                self.cancel_autocomplete();
+                self.changed();
+            }
+        }
+        result.map(|r| MouseResult { focus: Some(true), ..r })
+    }
+
+    fn click_byte_column(&self, chunk: &str, target: usize, is_last: bool) -> usize {
+        let mut column = 0;
+        let mut target_index = chunk.len();
+        let mut last_index = 0;
+        for (i, g) in self.graphemes(chunk) {
+            let next = column + visible_width(g);
+            last_index = i;
+            if target < next {
+                target_index = i;
+                break;
+            }
+            column = next;
+        }
+        if !is_last && target_index == chunk.len() && !chunk.is_empty() {
+            return last_index;
+        }
+        target_index
+    }
+
     /// `handleMouse`: picker rows pick completions; a left click on a text row moves the cursor there.
     pub fn handle_mouse(&mut self, event: &MouseEvent) -> Option<MouseResult> {
         let max_padding = event.width.saturating_sub(1) / 2;
         let padding_x = self.padding_x.min(max_padding);
-        let picker_start = self.rendered_visible_lines as i64 + 2;
-        if self.picker.is_some()
-            && event.y >= picker_start
-            && event.y < picker_start + self.rendered_picker_height as i64
-        {
-            let local = MouseEvent {
-                x: event.x - padding_x as i64,
-                y: event.y - picker_start,
-                width: event.width.saturating_sub(padding_x * 2).max(1),
-                height: self.rendered_picker_height,
-                ..*event
-            };
-            let mut events = Vec::new();
-            let result = self.picker.as_mut()?.list.handle_mouse(&local, &mut events);
-            for e in events {
-                if let SelectEvent::Selected(_) = e
-                    && self.apply_selected()
-                {
-                    self.cancel_autocomplete();
-                    self.changed();
-                }
-            }
-            return result.map(|r| MouseResult { focus: Some(true), ..r });
+        if self.is_picker_mouse_hit(event.y) {
+            return self.handle_picker_mouse(event, padding_x);
         }
         if event.kind != MouseEventType::Click || event.button != MouseButton::Left {
             return None;
@@ -510,22 +557,8 @@ impl Editor {
         let line = self.lines[vl.logical].clone();
         let chunk = &line[vl.start..vl.start + vl.len];
         let target = (event.x - padding_x as i64).max(0) as usize;
-        let mut column = 0;
-        let mut target_index = chunk.len();
-        let mut last_index = 0;
-        for (i, g) in self.graphemes(chunk) {
-            let next = column + visible_width(g);
-            last_index = i;
-            if target < next {
-                target_index = i;
-                break;
-            }
-            column = next;
-        }
         let is_last = index == vls.len() - 1 || vls[index + 1].logical != vl.logical;
-        if !is_last && target_index == chunk.len() && !chunk.is_empty() {
-            target_index = last_index;
-        }
+        let target_index = self.click_byte_column(chunk, target, is_last);
         self.cursor_line = vl.logical;
         self.set_cursor_col(vl.start + target_index);
         self.last_action = None;

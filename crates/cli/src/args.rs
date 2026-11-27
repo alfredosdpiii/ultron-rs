@@ -107,179 +107,247 @@ fn set_flag(flags: &mut Vec<(String, FlagValue)>, name: &str, value: FlagValue) 
     }
 }
 
+type BoolFlagHandler = fn(&mut Args);
+type ValueFlagHandler = fn(&mut Args, String);
+
+const BOOL_FLAGS: &[(&[&str], BoolFlagHandler)] = &[
+    (&["--help", "-h"], |r| r.help = true),
+    (&["--version", "-v"], |r| r.version = true),
+    (&["--continue", "-c"], |r| r.continue_ = true),
+    (&["--no-session"], |r| r.no_session = true),
+    (&["--no-tools", "-nt"], |r| r.no_tools = true),
+    (&["--no-builtin-tools", "-nbt"], |r| r.no_builtin_tools = true),
+    (&["--no-extensions", "-ne"], |r| r.no_extensions = true),
+    (&["--no-skills", "-ns"], |r| r.no_skills = true),
+    (&["--no-prompt-templates", "-np"], |r| r.no_prompt_templates = true),
+    (&["--no-themes"], |r| r.no_themes = true),
+    (&["--no-context-files", "-nc"], |r| r.no_context_files = true),
+    (&["--verbose"], |r| r.verbose = true),
+    (&["--approve", "-a"], |r| r.project_trust_override = Some(true)),
+    (&["--no-approve", "-na"], |r| r.project_trust_override = Some(false)),
+    (&["--offline"], |r| r.offline = true),
+    (&["--claude"], |r| r.claude = true),
+];
+
+const VALUE_FLAGS: &[(&[&str], ValueFlagHandler)] = &[
+    (&["--provider"], |r, v| r.provider = Some(v)),
+    (&["--model"], |r, v| r.model = Some(v)),
+    (&["--api-key"], |r, v| r.api_key = Some(v)),
+    (&["--system-prompt"], |r, v| r.system_prompt = Some(v)),
+    (&["--append-system-prompt"], |r, v| {
+        push_value(&mut r.append_system_prompt, v);
+    }),
+    (&["--session"], |r, v| r.session = Some(v)),
+    (&["--session-id"], |r, v| r.session_id = Some(v)),
+    (&["--fork"], |r, v| r.fork = Some(v)),
+    (&["--session-dir"], |r, v| r.session_dir = Some(v)),
+    (&["--models"], |r, v| r.models = Some(split_list(&v, false))),
+    (&["--tools", "-t"], |r, v| r.tools = Some(split_list(&v, true))),
+    (&["--exclude-tools", "-xt"], |r, v| {
+        r.exclude_tools = Some(split_list(&v, true));
+    }),
+    (&["--thinking"], set_thinking),
+    (&["--export"], |r, v| r.export = Some(v)),
+    (&["--extension", "-e"], |r, v| push_value(&mut r.extensions, v)),
+    (&["--skill"], |r, v| push_value(&mut r.skills, v)),
+    (&["--prompt-template"], |r, v| push_value(&mut r.prompt_templates, v)),
+    (&["--theme"], |r, v| push_value(&mut r.themes, v)),
+];
+
+type SpecialFlagHandler = fn(&mut Args, &[String], &mut usize);
+
+const SPECIAL_FLAGS: &[(&[&str], SpecialFlagHandler)] = &[
+    (&["--mode"], parse_mode),
+    (&["--resume", "-r"], parse_resume),
+    (&["--name", "-n"], parse_name),
+    (&["--print", "-p"], parse_print),
+    (&["--use-theme"], parse_use_theme),
+    (&["--list-models"], parse_list_models),
+    (&["--tui-mode"], parse_tui_mode),
+];
+
+fn next_arg(args: &[String], i: usize) -> Option<&str> {
+    args.get(i + 1).map(String::as_str)
+}
+
+fn push_value(list: &mut Option<Vec<String>>, value: String) {
+    list.get_or_insert_with(Vec::new).push(value);
+}
+
+fn set_thinking(r: &mut Args, level: String) {
+    if model_scope::THINKING_LEVELS.contains(&level.as_str()) {
+        r.thinking = Some(level);
+    } else {
+        r.diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::Warning,
+            message: format!(
+                "Invalid thinking level \"{level}\". Valid values: {}",
+                model_scope::THINKING_LEVELS.join(", ")
+            ),
+        });
+    }
+}
+
+fn parse_mode(r: &mut Args, args: &[String], i: &mut usize) {
+    match next_arg(args, *i) {
+        None => error(r, "--mode requires text, json, or rpc".into()),
+        Some(mode) if mode.starts_with('-') => error(r, "--mode requires text, json, or rpc".into()),
+        Some(mode) => {
+            *i += 1;
+            if matches!(mode, "text" | "json" | "rpc") {
+                r.mode = Some(mode.to_string());
+            } else {
+                error(r, format!("Invalid mode \"{mode}\". Valid values: text, json, rpc"));
+            }
+        }
+    }
+}
+
+fn parse_resume(r: &mut Args, args: &[String], i: &mut usize) {
+    r.resume = true;
+    if let Some(n) = next_arg(args, *i)
+        && !n.starts_with('-')
+        && !n.starts_with('@')
+    {
+        r.resume_selector = Some(n.to_string());
+        *i += 1;
+    }
+}
+
+fn parse_name(r: &mut Args, args: &[String], i: &mut usize) {
+    if let Some(value) = take(args, i) {
+        r.name = Some(value);
+    } else {
+        *i -= 1;
+        error(r, "--name requires a value".into());
+    }
+}
+
+fn parse_print(r: &mut Args, args: &[String], i: &mut usize) {
+    r.print = true;
+    if let Some(n) = next_arg(args, *i)
+        && !n.starts_with('@')
+        && (!n.starts_with('-') || n.starts_with("---"))
+    {
+        r.messages.push(n.to_string());
+        *i += 1;
+    }
+}
+
+fn parse_use_theme(r: &mut Args, args: &[String], i: &mut usize) {
+    match next_arg(args, *i) {
+        Some(name) if !name.starts_with('-') => {
+            r.use_theme = Some(name.to_string());
+            *i += 1;
+        }
+        _ => error(r, "--use-theme requires a theme name".into()),
+    }
+}
+
+fn parse_list_models(r: &mut Args, args: &[String], i: &mut usize) {
+    match next_arg(args, *i) {
+        Some(p) if !p.starts_with('-') && !p.starts_with('@') => {
+            r.list_models = Some(ListModels::Search(p.to_string()));
+            *i += 1;
+        }
+        _ => r.list_models = Some(ListModels::All),
+    }
+}
+
+fn parse_tui_mode(r: &mut Args, args: &[String], i: &mut usize) {
+    match next_arg(args, *i) {
+        Some(mode @ ("regular" | "fullscreen")) => {
+            r.tui_mode = Some(mode.to_string());
+            *i += 1;
+        }
+        None => error(r, "--tui-mode requires regular or fullscreen".into()),
+        Some(mode) if mode.starts_with('-') => error(r, "--tui-mode requires regular or fullscreen".into()),
+        Some(mode) => {
+            *i += 1;
+            error(
+                r,
+                format!("Invalid TUI mode \"{mode}\". Valid values: regular, fullscreen"),
+            );
+        }
+    }
+}
+
+fn parse_positional(r: &mut Args, positional: &str) {
+    match positional.strip_prefix('@') {
+        Some(file) => r.file_args.push(file.to_string()),
+        None => r.messages.push(positional.to_string()),
+    }
+}
+
+fn parse_unknown_or_positional(r: &mut Args, arg: &str, args: &[String], i: &mut usize) {
+    if let Some(file) = arg.strip_prefix('@') {
+        r.file_args.push(file.to_string());
+        return;
+    }
+    if let Some(flag) = arg.strip_prefix("--") {
+        parse_unknown_long_flag(r, flag, args, i);
+        return;
+    }
+    if arg.starts_with('-') {
+        error(r, format!("Unknown option: {arg}"));
+    } else {
+        r.messages.push(arg.to_string());
+    }
+}
+
+fn parse_unknown_long_flag(r: &mut Args, flag: &str, args: &[String], i: &mut usize) {
+    if let Some((name, value)) = flag.split_once('=') {
+        set_flag(&mut r.unknown_flags, name, FlagValue::Text(value.to_string()));
+        return;
+    }
+    match next_arg(args, *i) {
+        Some(n) if !n.starts_with('-') && !n.starts_with('@') => {
+            set_flag(&mut r.unknown_flags, flag, FlagValue::Text(n.to_string()));
+            *i += 1;
+        }
+        _ => set_flag(&mut r.unknown_flags, flag, FlagValue::True),
+    }
+}
+
 pub fn parse_args(args: &[String]) -> Args {
     let mut r = Args::default();
     let mut i = 0;
-    let next = |i: usize| args.get(i + 1).map(String::as_str);
     while i < args.len() {
         let arg = args[i].as_str();
-        let has_next = i + 1 < args.len();
-        match arg {
-            "--" => {
-                for positional in &args[i + 1..] {
-                    match positional.strip_prefix('@') {
-                        Some(file) => r.file_args.push(file.to_string()),
-                        None => r.messages.push(positional.clone()),
-                    }
-                }
-                break;
+        if arg == "--" {
+            for positional in &args[i + 1..] {
+                parse_positional(&mut r, positional);
             }
-            "--help" | "-h" => r.help = true,
-            "--version" | "-v" => r.version = true,
-            "--mode" => match next(i) {
-                None => error(&mut r, "--mode requires text, json, or rpc".into()),
-                Some(mode) if mode.starts_with('-') => error(&mut r, "--mode requires text, json, or rpc".into()),
-                Some(mode) => {
-                    i += 1;
-                    if matches!(mode, "text" | "json" | "rpc") {
-                        r.mode = Some(mode.to_string());
-                    } else {
-                        error(
-                            &mut r,
-                            format!("Invalid mode \"{mode}\". Valid values: text, json, rpc"),
-                        );
-                    }
-                }
-            },
-            "--continue" | "-c" => r.continue_ = true,
-            "--resume" | "-r" => {
-                r.resume = true;
-                if let Some(n) = next(i)
-                    && !n.starts_with('-')
-                    && !n.starts_with('@')
-                {
-                    r.resume_selector = Some(n.to_string());
-                    i += 1;
-                }
-            }
-            "--provider" if has_next => r.provider = take(args, &mut i),
-            "--model" if has_next => r.model = take(args, &mut i),
-            "--api-key" if has_next => r.api_key = take(args, &mut i),
-            "--system-prompt" if has_next => r.system_prompt = take(args, &mut i),
-            "--append-system-prompt" if has_next => push(&mut r.append_system_prompt, args, &mut i),
-            "--name" | "-n" => {
-                if has_next {
-                    r.name = take(args, &mut i);
-                } else {
-                    error(&mut r, "--name requires a value".into());
-                }
-            }
-            "--no-session" => r.no_session = true,
-            "--session" if has_next => r.session = take(args, &mut i),
-            "--session-id" if has_next => r.session_id = take(args, &mut i),
-            "--fork" if has_next => r.fork = take(args, &mut i),
-            "--session-dir" if has_next => r.session_dir = take(args, &mut i),
-            "--models" if has_next => r.models = take(args, &mut i).map(|v| split_list(&v, false)),
-            "--no-tools" | "-nt" => r.no_tools = true,
-            "--no-builtin-tools" | "-nbt" => r.no_builtin_tools = true,
-            "--tools" | "-t" if has_next => r.tools = take(args, &mut i).map(|v| split_list(&v, true)),
-            "--exclude-tools" | "-xt" if has_next => r.exclude_tools = take(args, &mut i).map(|v| split_list(&v, true)),
-            "--thinking" if has_next => {
-                let level = take(args, &mut i).unwrap_or_default();
-                if model_scope::THINKING_LEVELS.contains(&level.as_str()) {
-                    r.thinking = Some(level);
-                } else {
-                    r.diagnostics.push(Diagnostic {
-                        kind: DiagnosticKind::Warning,
-                        message: format!(
-                            "Invalid thinking level \"{level}\". Valid values: {}",
-                            model_scope::THINKING_LEVELS.join(", ")
-                        ),
-                    });
-                }
-            }
-            "--print" | "-p" => {
-                r.print = true;
-                if let Some(n) = next(i)
-                    && !n.starts_with('@')
-                    && (!n.starts_with('-') || n.starts_with("---"))
-                {
-                    r.messages.push(n.to_string());
-                    i += 1;
-                }
-            }
-            "--export" if has_next => r.export = take(args, &mut i),
-            "--extension" | "-e" if has_next => push(&mut r.extensions, args, &mut i),
-            "--no-extensions" | "-ne" => r.no_extensions = true,
-            "--skill" if has_next => push(&mut r.skills, args, &mut i),
-            "--prompt-template" if has_next => push(&mut r.prompt_templates, args, &mut i),
-            "--theme" if has_next => push(&mut r.themes, args, &mut i),
-            "--use-theme" => match next(i) {
-                Some(name) if !name.starts_with('-') => {
-                    r.use_theme = Some(name.to_string());
-                    i += 1;
-                }
-                _ => error(&mut r, "--use-theme requires a theme name".into()),
-            },
-            "--no-skills" | "-ns" => r.no_skills = true,
-            "--no-prompt-templates" | "-np" => r.no_prompt_templates = true,
-            "--no-themes" => r.no_themes = true,
-            "--no-context-files" | "-nc" => r.no_context_files = true,
-            "--list-models" => match next(i) {
-                Some(p) if !p.starts_with('-') && !p.starts_with('@') => {
-                    r.list_models = Some(ListModels::Search(p.to_string()));
-                    i += 1;
-                }
-                _ => r.list_models = Some(ListModels::All),
-            },
-            "--tui-mode" => match next(i) {
-                Some(mode @ ("regular" | "fullscreen")) => {
-                    r.tui_mode = Some(mode.to_string());
-                    i += 1;
-                }
-                None => error(&mut r, "--tui-mode requires regular or fullscreen".into()),
-                Some(mode) if mode.starts_with('-') => {
-                    error(&mut r, "--tui-mode requires regular or fullscreen".into());
-                }
-                Some(mode) => {
-                    i += 1;
-                    error(
-                        &mut r,
-                        format!("Invalid TUI mode \"{mode}\". Valid values: regular, fullscreen"),
-                    );
-                }
-            },
-            "--verbose" => r.verbose = true,
-            "--approve" | "-a" => r.project_trust_override = Some(true),
-            "--no-approve" | "-na" => r.project_trust_override = Some(false),
-            "--offline" => r.offline = true,
-            "--claude" => r.claude = true,
-            _ => {
-                if let Some(file) = arg.strip_prefix('@') {
-                    r.file_args.push(file.to_string());
-                } else if let Some(flag) = arg.strip_prefix("--") {
-                    if let Some((name, value)) = flag.split_once('=') {
-                        set_flag(&mut r.unknown_flags, name, FlagValue::Text(value.to_string()));
-                    } else {
-                        match next(i) {
-                            Some(n) if !n.starts_with('-') && !n.starts_with('@') => {
-                                set_flag(&mut r.unknown_flags, flag, FlagValue::Text(n.to_string()));
-                                i += 1;
-                            }
-                            _ => set_flag(&mut r.unknown_flags, flag, FlagValue::True),
-                        }
-                    }
-                } else if arg.starts_with('-') {
-                    error(&mut r, format!("Unknown option: {arg}"));
-                } else {
-                    r.messages.push(arg.to_string());
-                }
-            }
+            break;
         }
+        parse_one_arg(&mut r, arg, args, &mut i);
         i += 1;
     }
     r
 }
 
+fn parse_one_arg(r: &mut Args, arg: &str, args: &[String], i: &mut usize) {
+    if let Some((_, apply)) = BOOL_FLAGS.iter().find(|(names, _)| names.contains(&arg)) {
+        apply(r);
+        return;
+    }
+    if let Some((_, apply)) = SPECIAL_FLAGS.iter().find(|(names, _)| names.contains(&arg)) {
+        apply(r, args, i);
+        return;
+    }
+    if *i + 1 < args.len()
+        && let Some((_, apply)) = VALUE_FLAGS.iter().find(|(names, _)| names.contains(&arg))
+        && let Some(value) = take(args, i)
+    {
+        apply(r, value);
+        return;
+    }
+    parse_unknown_or_positional(r, arg, args, i);
+}
+
 fn take(args: &[String], i: &mut usize) -> Option<String> {
     *i += 1;
     args.get(*i).cloned()
-}
-
-fn push(list: &mut Option<Vec<String>>, args: &[String], i: &mut usize) {
-    if let Some(value) = take(args, i) {
-        list.get_or_insert_with(Vec::new).push(value);
-    }
 }
 
 impl Args {

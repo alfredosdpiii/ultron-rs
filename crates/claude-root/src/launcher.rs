@@ -58,6 +58,65 @@ pub struct LauncherOptions {
     pub claude_args: Vec<String>,
 }
 
+pub(crate) fn next_arg_value(args: &[String], index: &mut usize, flag: &str) -> Result<String, UsageError> {
+    let next = args
+        .get(*index + 1)
+        .ok_or_else(|| UsageError(format!("{flag} needs a value")))?;
+    *index += 1;
+    Ok(next.clone())
+}
+
+pub(crate) fn parse_children_mode(
+    args: &[String],
+    index: &mut usize,
+) -> Result<crate::settings::ChildrenMode, UsageError> {
+    let raw = next_arg_value(args, index, "--children")?;
+    crate::settings::ChildrenMode::parse(&raw).ok_or_else(|| UsageError("--children must be claude or ultron".into()))
+}
+
+pub(crate) fn format_launch_command(bin: &str, args: &[String], env: &[(String, String)]) -> String {
+    let env_prefix: String = env.iter().map(|(k, v)| format!("{k}={} ", shell_quote(v))).collect();
+    let command = std::iter::once(bin)
+        .chain(args.iter().map(String::as_str))
+        .map(shell_quote)
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{env_prefix}{command}")
+}
+
+pub(crate) fn env_json_map(env: &[(String, String)]) -> Map<String, Value> {
+    env.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect()
+}
+
+fn apply_launcher_bool_flag(arg: &str, options: &mut LauncherOptions) -> bool {
+    match arg {
+        "--print-config" => options.print_config = true,
+        "--keep-mcp" => options.keep_mcp = true,
+        "--keep-settings" => options.keep_settings = true,
+        "--watch" => options.watch = true,
+        "--no-hooks" => options.hooks = false,
+        "--no-context-files" | "-nc" => options.no_context_files = true,
+        "--no-skills" | "-ns" => options.no_skills = true,
+        _ => return false,
+    }
+    true
+}
+
+fn apply_launcher_value_flag(
+    arg: &str,
+    args: &[String],
+    index: &mut usize,
+    options: &mut LauncherOptions,
+) -> Result<bool, UsageError> {
+    match arg {
+        "--frame-model" => options.frame_model = Some(next_arg_value(args, index, arg)?),
+        "--child-model" => options.child_model = Some(next_arg_value(args, index, arg)?),
+        "--children" => options.children = Some(parse_children_mode(args, index)?),
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
 /// Split `ultron claude` arguments into Ultron's options and claude's; `None` for `--help`.
 pub fn parse_launcher_args(args: &[String]) -> Result<Option<LauncherOptions>, UsageError> {
     let mut options = LauncherOptions {
@@ -67,33 +126,17 @@ pub fn parse_launcher_args(args: &[String]) -> Result<Option<LauncherOptions>, U
     let mut index = 0;
     while index < args.len() {
         let arg = args[index].as_str();
-        let mut value = || -> Result<String, UsageError> {
-            let next = args
-                .get(index + 1)
-                .ok_or_else(|| UsageError(format!("{arg} needs a value")))?;
-            index += 1;
-            Ok(next.clone())
-        };
-        match arg {
-            "--" => {
-                options.claude_args.extend(args[index + 1..].iter().cloned());
-                break;
-            }
-            "--help" | "-h" => return Ok(None),
-            "--print-config" => options.print_config = true,
-            "--keep-mcp" => options.keep_mcp = true,
-            "--keep-settings" => options.keep_settings = true,
-            "--watch" => options.watch = true,
-            "--no-hooks" => options.hooks = false,
-            "--no-context-files" | "-nc" => options.no_context_files = true,
-            "--no-skills" | "-ns" => options.no_skills = true,
-            "--frame-model" => options.frame_model = Some(value()?),
-            "--child-model" => options.child_model = Some(value()?),
-            "--children" => {
-                let mode = crate::settings::ChildrenMode::parse(&value()?);
-                options.children = Some(mode.ok_or_else(|| UsageError("--children must be claude or ultron".into()))?);
-            }
-            other => options.claude_args.push(other.to_string()),
+        if arg == "--" {
+            options.claude_args.extend(args[index + 1..].iter().cloned());
+            break;
+        }
+        if matches!(arg, "--help" | "-h") {
+            return Ok(None);
+        }
+        if !apply_launcher_bool_flag(arg, &mut options)
+            && !apply_launcher_value_flag(arg, args, &mut index, &mut options)?
+        {
+            options.claude_args.push(arg.to_string());
         }
         index += 1;
     }
@@ -160,21 +203,17 @@ fn root_model(options: &LauncherOptions, var: &dyn Fn(&str) -> Option<String>) -
     }
 }
 
-/// `buildClaudeLaunch`. Unlike TypeScript, the server is told the root's model (`--root-model`, when it is not the
-/// default): Ultron children that name no model run on it (crate::mcp_server::subscription_model).
-pub fn build_claude_launch(input: &LaunchInput) -> ClaudeLaunch {
+fn build_claude_mcp_config(input: &LaunchInput, root: Option<&String>, wake_hooks: bool) -> String {
     let options = input.options;
     let self_cmd = input.self_cmd;
-    let (model, model_in_args) = root_model(options, input.var);
-    let root = (model.trim() != CLAUDE_CODE_DEFAULT_MODEL).then(|| model.trim().to_string());
     let mut mcp_args: Vec<String> = self_cmd.args.clone();
     mcp_args.extend(["mcp", "--no-instructions", "--socket", input.socket].map(String::from));
     let children = options.children.map(|mode| mode.as_str().to_string());
     for (flag, value) in [
-        ("--frame-model", &options.frame_model),
-        ("--children", &children),
-        ("--child-model", &options.child_model),
-        ("--root-model", &root),
+        ("--frame-model", options.frame_model.as_ref()),
+        ("--children", children.as_ref()),
+        ("--child-model", options.child_model.as_ref()),
+        ("--root-model", root),
     ] {
         if let Some(value) = value {
             mcp_args.extend([flag.to_string(), value.clone()]);
@@ -186,19 +225,21 @@ pub fn build_claude_launch(input: &LaunchInput) -> ClaudeLaunch {
     if options.no_skills {
         mcp_args.push("--no-skills".into());
     }
-    let print = options.claude_args.iter().any(|a| a == "-p" || a == "--print");
-    let wake_hooks = options.hooks && !print;
     if crate::guide::wakes(input.var, wake_hooks) {
         mcp_args.push("--wake".into());
     }
-    let mcp_config = jsrt::json::stringify(&json!({
+    jsrt::json::stringify(&json!({
         "mcpServers": {"ultron": {"type": "stdio", "command": self_cmd.command, "args": mcp_args}}
-    }));
-    let command = |event: HookEvent| shell_command(self_cmd, &["hook", event.command(), "--socket", input.socket]);
+    }))
+}
+
+fn build_claude_settings(input: &LaunchInput, wake_hooks: bool) -> String {
+    let command =
+        |event: HookEvent| shell_command(input.self_cmd, &["hook", event.command(), "--socket", input.socket]);
     let hook = |event: HookEvent| json!({"hooks": [{"type": "command", "command": command(event), "timeout": event.timeout_secs()}]});
     let mut settings = Map::new();
     settings.insert("permissions".into(), json!({"allow": [CLAUDE_RLM_TOOL]}));
-    if options.hooks {
+    if input.options.hooks {
         let mut hooks = json!({});
         for event in SESSION_HOOKS {
             hooks[event.claude_event()] = json!([hook(event)]);
@@ -220,7 +261,62 @@ pub fn build_claude_launch(input: &LaunchInput) -> ClaudeLaunch {
         }
         settings.insert("hooks".into(), hooks);
     }
-    let settings = jsrt::json::stringify(&Value::Object(settings));
+    jsrt::json::stringify(&Value::Object(settings))
+}
+
+fn build_claude_cli_args(
+    input: &LaunchInput,
+    mcp_arg: String,
+    settings_arg: String,
+    prompt_arg: Result<String, String>,
+    model: Option<String>,
+) -> Vec<String> {
+    let options = input.options;
+    let mut args: Vec<String> = Vec::new();
+    if !options.keep_mcp {
+        args.push("--strict-mcp-config".into());
+    }
+    args.extend(["--mcp-config".into(), mcp_arg]);
+    args.extend(["--tools", "", "--allowedTools", CLAUDE_RLM_TOOL].map(String::from));
+    match prompt_arg {
+        Ok(path) => args.extend(["--system-prompt-file".into(), path]),
+        Err(inline) => args.extend(["--system-prompt".into(), inline]),
+    }
+    args.extend(["--settings".into(), settings_arg]);
+    if !options.keep_settings {
+        args.extend(["--setting-sources".into(), String::new()]);
+    }
+    if input.flags.contains("dangerously-skip-permissions") {
+        args.extend(input.skip_permissions.iter().cloned());
+    }
+    if let Some(model) = model {
+        args.extend(["--model".into(), model]);
+    }
+    args.extend(options.claude_args.iter().cloned());
+    args
+}
+
+fn build_claude_env(var: &dyn Fn(&str) -> Option<String>) -> Vec<(String, String)> {
+    let mut env = Vec::new();
+    if var("MCP_TOOL_TIMEOUT").is_none_or(|v| v.is_empty()) {
+        env.push(("MCP_TOOL_TIMEOUT".to_string(), (2 * 60 * 60 * 1000).to_string()));
+    }
+    if var("CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS").is_none_or(|v| v.is_empty()) {
+        env.push(("CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS".to_string(), "0".to_string()));
+    }
+    env
+}
+
+/// `buildClaudeLaunch`. Unlike TypeScript, the server is told the root's model (`--root-model`, when it is not the
+/// default): Ultron children that name no model run on it (crate::mcp_server::subscription_model).
+pub fn build_claude_launch(input: &LaunchInput) -> ClaudeLaunch {
+    let options = input.options;
+    let (model, model_in_args) = root_model(options, input.var);
+    let root = (model.trim() != CLAUDE_CODE_DEFAULT_MODEL).then(|| model.trim().to_string());
+    let print = options.claude_args.iter().any(|a| a == "-p" || a == "--print");
+    let wake_hooks = options.hooks && !print;
+    let mcp_config = build_claude_mcp_config(input, root.as_ref(), wake_hooks);
+    let settings = build_claude_settings(input, wake_hooks);
     let prompt = claude_system_prompt(
         Audience::Claude,
         &GuideOptions {
@@ -243,47 +339,28 @@ pub fn build_claude_launch(input: &LaunchInput) -> ClaudeLaunch {
     };
     let mcp_path = file("mcp.json", &mcp_config);
     let settings_path = file("settings.json", &settings);
-    let prompt_path = if input.flags.contains("system-prompt-file") {
-        file("system-prompt.md", &prompt)
-    } else {
-        None
-    };
-    let mut args: Vec<String> = Vec::new();
-    if !options.keep_mcp {
-        args.push("--strict-mcp-config".into());
-    }
-    args.extend(["--mcp-config".into(), mcp_path.unwrap_or(mcp_config)]);
-    args.extend(["--tools", "", "--allowedTools", CLAUDE_RLM_TOOL].map(String::from));
-    match prompt_path {
-        Some(path) => args.extend(["--system-prompt-file".into(), path]),
-        None => args.extend(["--system-prompt".into(), prompt.clone()]),
-    }
-    args.extend(["--settings".into(), settings_path.unwrap_or(settings)]);
-    if !options.keep_settings {
-        args.extend(["--setting-sources".into(), String::new()]);
-    }
-    if input.flags.contains("dangerously-skip-permissions") {
-        args.extend(input.skip_permissions.iter().cloned());
-    }
-    if !model_in_args {
-        args.extend(["--model".into(), model]);
-    }
-    args.extend(options.claude_args.iter().cloned());
-    let mut env = Vec::new();
-    if (input.var)("MCP_TOOL_TIMEOUT").is_none_or(|v| v.is_empty()) {
-        env.push(("MCP_TOOL_TIMEOUT".to_string(), (2 * 60 * 60 * 1000).to_string()));
-    }
-    if (input.var)("CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS").is_none_or(|v| v.is_empty()) {
-        env.push(("CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS".to_string(), "0".to_string()));
-    }
+    let prompt_path = input
+        .flags
+        .contains("system-prompt-file")
+        .then(|| file("system-prompt.md", &prompt))
+        .flatten();
+    let prompt_chars = prompt.encode_utf16().count();
+    let prompt_arg = prompt_path.ok_or(prompt);
+    let args = build_claude_cli_args(
+        input,
+        mcp_path.unwrap_or(mcp_config),
+        settings_path.unwrap_or(settings),
+        prompt_arg,
+        (!model_in_args).then_some(model),
+    );
     ClaudeLaunch {
         claude: input.claude.to_string(),
         args,
-        env,
+        env: build_claude_env(input.var),
         files,
         socket: input.socket.to_string(),
-        watch_command: shell_command(self_cmd, &["watch", "--socket", input.socket]),
-        prompt_chars: prompt.encode_utf16().count(),
+        watch_command: shell_command(input.self_cmd, &["watch", "--socket", input.socket]),
+        prompt_chars,
     }
 }
 
@@ -332,6 +409,90 @@ pub fn base36(mut n: u64) -> String {
     String::from_utf8(out).expect("ascii digits")
 }
 
+fn print_claude_config(
+    out: &mut dyn std::io::Write,
+    claude: &str,
+    auth: &ClaudeAuthStatus,
+    launch: &ClaudeLaunch,
+    resources: &PromptResources,
+    socket: &Path,
+) -> Result<i32, String> {
+    let mut system_prompt = Map::new();
+    system_prompt.insert("chars".into(), launch.prompt_chars.into());
+    if let Value::Object(described) = describe_prompt_resources(resources) {
+        system_prompt.extend(described);
+    }
+    let printed = json!({
+        "claude": claude,
+        "auth": {"loggedIn": auth.logged_in, "method": auth.describe()},
+        "args": launch.args,
+        "env": env_json_map(&launch.env),
+        "socket": socket.display().to_string(),
+        "watch": launch.watch_command,
+        "systemPrompt": system_prompt,
+        "command": format_launch_command(claude, &launch.args, &launch.env),
+    });
+    writeln!(
+        out,
+        "{}",
+        serde_json::to_string_pretty(&printed).expect("JSON values serialize")
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(0)
+}
+
+fn create_claude_launch_dir(
+    var: &dyn Fn(&str) -> Option<String>,
+    print_config: bool,
+) -> Result<Option<PathBuf>, String> {
+    if print_config {
+        return Ok(None);
+    }
+    let base = config::paths::tmpdir(var);
+    let dir =
+        config::paths::private_temp_dir(&base, "ultron-claude-").map_err(|e| format!("{}: {e}", base.display()))?;
+    Ok(Some(dir))
+}
+
+fn write_files_and_exec(
+    parsed: &LauncherOptions,
+    self_cmd: &SelfCommand,
+    launch: &ClaudeLaunch,
+    dir: &Path,
+    var: &dyn Fn(&str) -> Option<String>,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+) -> Result<i32, String> {
+    for (path, content) in &launch.files {
+        config::paths::write_private(path, content).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    let interactive = !parsed.claude_args.iter().any(|a| a == "-p" || a == "--print");
+    open_watch_pane(
+        parsed.watch,
+        interactive,
+        self_cmd,
+        &launch.socket,
+        &launch.watch_command,
+        var,
+        err,
+    )?;
+    let _ = err.flush();
+    let _ = out.flush();
+    Ok(exec_claude(launch, dir, err))
+}
+
+fn require_authenticated_claude(
+    var: &dyn Fn(&str) -> Option<String>,
+    print_config: bool,
+) -> Result<(String, BTreeSet<String>, ClaudeAuthStatus), String> {
+    let (claude, flags) = require_claude(var)?;
+    let auth: ClaudeAuthStatus = claude_cli::claude_auth_status(&claude)?;
+    if !auth.logged_in && !print_config {
+        return Err("Claude Code is not logged in. Run `claude auth login` (or `claude`, then /login) first.".into());
+    }
+    Ok((claude, flags, auth))
+}
+
 /// `ultron claude ...`; returns the exit code (or replaces this process with Claude Code).
 pub fn run(
     argv: &[String],
@@ -344,16 +505,11 @@ pub fn run(
         return Ok(0);
     };
     let var = &*ctx.env.var;
-    let agent_dir = ctx.env.agent_dir();
-    let claude_settings = crate::settings::ClaudeCodeSettings::load(&ctx.env.cwd, &agent_dir);
+    let claude_settings = crate::settings::ClaudeCodeSettings::load(&ctx.env.cwd, &ctx.env.agent_dir());
     if parsed.root_model.is_none() {
         parsed.root_model = claude_settings.model.clone();
     }
-    let (claude, flags) = require_claude(var)?;
-    let auth: ClaudeAuthStatus = claude_cli::claude_auth_status(&claude)?;
-    if !auth.logged_in && !parsed.print_config {
-        return Err("Claude Code is not logged in. Run `claude auth login` (or `claude`, then /login) first.".into());
-    }
+    let (claude, flags, auth) = require_authenticated_claude(var, parsed.print_config)?;
     let self_cmd = crate::self_cmd::self_command(var)?;
     let cwd = ctx.env.cwd.display().to_string();
     let socket = socket_path_for(&launch_id(), &crate::control::control_dir(var)?);
@@ -368,14 +524,7 @@ pub fn run(
     );
     let skip = claude_cli::skip_permissions_args(var, claude_cli::current_uid(), claude_settings.skip_permissions);
     let apis = crate::guide::runtime_apis(&ctx.env);
-    let dir = if parsed.print_config {
-        None
-    } else {
-        Some({
-            let base = config::paths::tmpdir(var);
-            config::paths::private_temp_dir(&base, "ultron-claude-").map_err(|e| format!("{}: {e}", base.display()))?
-        })
-    };
+    let dir = create_claude_launch_dir(var, parsed.print_config)?;
     let launch = build_claude_launch(&LaunchInput {
         claude: &claude,
         flags: &flags,
@@ -393,56 +542,10 @@ pub fn run(
         skip_permissions: skip,
         apis: Some(&apis),
     });
-    let Some(dir) = dir else {
-        let env_prefix: String = launch
-            .env
-            .iter()
-            .map(|(k, v)| format!("{k}={} ", shell_quote(v)))
-            .collect();
-        let mut system_prompt = Map::new();
-        system_prompt.insert("chars".into(), launch.prompt_chars.into());
-        if let Value::Object(described) = describe_prompt_resources(&resources) {
-            system_prompt.extend(described);
-        }
-        let command = std::iter::once(claude.as_str())
-            .chain(launch.args.iter().map(String::as_str))
-            .map(shell_quote)
-            .collect::<Vec<_>>()
-            .join(" ");
-        let printed = json!({
-            "claude": claude,
-            "auth": {"loggedIn": auth.logged_in, "method": auth.describe()},
-            "args": launch.args,
-            "env": launch.env.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect::<Map<_, _>>(),
-            "socket": socket.display().to_string(),
-            "watch": launch.watch_command,
-            "systemPrompt": system_prompt,
-            "command": format!("{env_prefix}{command}"),
-        });
-        writeln!(
-            out,
-            "{}",
-            serde_json::to_string_pretty(&printed).expect("JSON values serialize")
-        )
-        .map_err(|e| e.to_string())?;
-        return Ok(0);
-    };
-    for (path, content) in &launch.files {
-        config::paths::write_private(path, content).map_err(|e| format!("{}: {e}", path.display()))?;
+    match dir {
+        None => print_claude_config(out, &claude, &auth, &launch, &resources, &socket),
+        Some(dir) => write_files_and_exec(&parsed, &self_cmd, &launch, &dir, var, out, err),
     }
-    let interactive = !parsed.claude_args.iter().any(|a| a == "-p" || a == "--print");
-    open_watch_pane(
-        parsed.watch,
-        interactive,
-        &self_cmd,
-        &launch.socket,
-        &launch.watch_command,
-        var,
-        err,
-    )?;
-    let _ = err.flush();
-    let _ = out.flush();
-    Ok(exec_claude(&launch, &dir, err))
 }
 
 /// Opens `ultron watch` in a tmux split or `herdr-app` right pane when `--watch` is requested, else prints the watch

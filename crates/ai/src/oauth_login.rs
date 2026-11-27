@@ -288,6 +288,65 @@ async fn read_request_target(stream: &mut tokio::net::TcpStream) -> Option<Strin
     line.split(' ').nth(1).map(str::to_owned)
 }
 
+fn parse_checked_input(
+    input: &str,
+    check_state: &impl Fn(&AuthorizationInput) -> Result<(), String>,
+) -> Result<(Option<String>, Option<String>), String> {
+    if input.is_empty() {
+        return Ok((None, None));
+    }
+    let parsed = parse_authorization_input(input);
+    check_state(&parsed)?;
+    Ok((parsed.code, parsed.state))
+}
+
+async fn resolve_manual_fallback(
+    manual: Option<Result<String, String>>,
+    prompt: &mut crate::http::BoxFuture<'_, Result<String, String>>,
+    check_state: &impl Fn(&AuthorizationInput) -> Result<(), String>,
+) -> Result<(Option<String>, Option<String>), String> {
+    let mut found = match &manual {
+        Some(Ok(input)) => parse_checked_input(input, check_state)?,
+        Some(Err(error)) => return Err(error.clone()),
+        None => (None, None),
+    };
+    if found.0.as_deref().is_none_or(str::is_empty) {
+        let input = match manual {
+            Some(answer) => answer?,
+            None => prompt.await?,
+        };
+        found = parse_checked_input(&input, check_state)?;
+    }
+    Ok(found)
+}
+
+async fn race_server_or_manual(
+    ctx: &LoginContext<'_>,
+    server: Option<&mut CallbackServer>,
+    prompt: &mut crate::http::BoxFuture<'_, Result<String, String>>,
+    check_state: &impl Fn(&AuthorizationInput) -> Result<(), String>,
+) -> Result<(Option<String>, Option<String>), String> {
+    let mut manual: Option<Result<String, String>> = None;
+    let from_server = match server {
+        Some(server) => tokio::select! {
+            code = server.wait_for_code() => code,
+            answer = &mut *prompt => { manual = Some(answer); None }
+            () = ctx.signal.cancelled() => None,
+        },
+        None => {
+            manual = Some((&mut *prompt).await);
+            None
+        }
+    };
+    if let Some(Err(error)) = &manual {
+        return Err(error.clone());
+    }
+    if let Some((code, state)) = from_server {
+        return Ok((Some(code), Some(state)));
+    }
+    resolve_manual_fallback(manual, prompt, check_state).await
+}
+
 /// Waits for whichever comes first: the callback server's code, the manual prompt, or the login being aborted. Then
 /// mirrors upstream: a pasted answer is used when the browser delivered nothing; with no code yet, the manual prompt
 /// is awaited after all. Returns `(code, state)` as given (`state` from the pasted input, if any).
@@ -305,49 +364,7 @@ async fn race_callback_and_prompt(
         },
         Some(manual_signal.clone()),
     );
-    let result = async {
-        let mut manual: Option<Result<String, String>> = None;
-        let from_server = match server {
-            Some(server) => tokio::select! {
-                code = server.wait_for_code() => code,
-                answer = &mut prompt => { manual = Some(answer); None }
-                () = ctx.signal.cancelled() => None,
-            },
-            None => {
-                manual = Some((&mut prompt).await);
-                None
-            }
-        };
-        if let Some(Err(error)) = &manual {
-            return Err(error.clone());
-        }
-        if let Some((code, state)) = from_server {
-            return Ok((Some(code), Some(state)));
-        }
-        let parse = |input: &str| -> Result<(Option<String>, Option<String>), String> {
-            let parsed = parse_authorization_input(input);
-            check_state(&parsed)?;
-            Ok((parsed.code, parsed.state))
-        };
-        let mut found = (None, None);
-        if let Some(Ok(input)) = &manual
-            && !input.is_empty()
-        {
-            found = parse(input)?;
-        }
-        if found.0.as_deref().is_none_or(str::is_empty) {
-            let answer = match manual {
-                Some(answer) => answer,
-                None => (&mut prompt).await,
-            };
-            let input = answer?;
-            if !input.is_empty() {
-                found = parse(&input)?;
-            }
-        }
-        Ok(found)
-    }
-    .await;
+    let result = race_server_or_manual(ctx, server, &mut prompt, &check_state).await;
     manual_signal.abort();
     result
 }
@@ -509,106 +526,140 @@ async fn login_codex_browser(ctx: &LoginContext<'_>) -> Result<OAuthCredential, 
     codex_exchange(ctx, &code, &verifier, CODEX_REDIRECT_URI).await
 }
 
-async fn login_codex_device(ctx: &LoginContext<'_>) -> Result<OAuthCredential, String> {
-    let headers = [("Content-Type", "application/json")];
-    let body = jsrt::json::stringify(&json!({"client_id": CODEX_CLIENT_ID}));
-    let reply = codex_send(ctx, CODEX_DEVICE_USER_CODE_URL, &headers, body).await?;
+struct CodexDeviceAuth {
+    device_auth_id: String,
+    user_code: String,
+    interval: f64,
+}
+
+fn reply_error_suffix(text: &str) -> String {
+    if text.is_empty() {
+        String::new()
+    } else {
+        format!(": {text}")
+    }
+}
+
+fn parse_codex_interval(data: &Value) -> Option<f64> {
+    match data.get("interval") {
+        Some(Value::String(s)) => Some(jsrt::number::parse(s)),
+        Some(Value::Number(n)) => n.as_f64(),
+        _ => None,
+    }
+    .filter(|i| i.is_finite() && *i >= 0.0)
+}
+
+fn parse_codex_device_auth(reply: &Reply) -> Result<CodexDeviceAuth, String> {
     if !reply.ok() {
         if reply.status == 404 {
             return Err("OpenAI Codex device code login is not enabled for this server. Use browser login or verify the server URL.".into());
         }
-        let suffix = if reply.text.is_empty() {
-            String::new()
-        } else {
-            format!(": {}", reply.text)
-        };
         return Err(format!(
-            "OpenAI Codex device code request failed with status {}{suffix}",
-            reply.status
+            "OpenAI Codex device code request failed with status {}{}",
+            reply.status,
+            reply_error_suffix(&reply.text)
         ));
     }
     let data = jsrt::json_parse::parse_json(&reply.text).map_err(|e| format!("SyntaxError: {e}"))?;
-    let interval = match data.get("interval") {
-        Some(Value::String(s)) => Some(jsrt::number::parse(s)),
-        Some(Value::Number(n)) => n.as_f64(),
-        _ => None,
-    };
-    let invalid = || {
-        format!(
-            "Invalid OpenAI Codex device code response: {}",
-            jsrt::json::stringify(&data)
-        )
+    let truthy_str = |key: &str| {
+        data.get(key)
+            .and_then(Value::as_str)
+            .filter(|_| jsrt::value::truthy(data.get(key)))
+            .map(str::to_owned)
     };
     // ponytail: upstream also accepts non-string truthy ids/codes and passes them through; here they are invalid.
     let (Some(device_auth_id), Some(user_code), Some(interval)) = (
-        data.get("device_auth_id")
-            .and_then(Value::as_str)
-            .filter(|_| jsrt::value::truthy(data.get("device_auth_id"))),
-        data.get("user_code")
-            .and_then(Value::as_str)
-            .filter(|_| jsrt::value::truthy(data.get("user_code"))),
-        interval.filter(|i| i.is_finite() && *i >= 0.0),
+        truthy_str("device_auth_id"),
+        truthy_str("user_code"),
+        parse_codex_interval(&data),
     ) else {
-        return Err(invalid());
+        return Err(format!(
+            "Invalid OpenAI Codex device code response: {}",
+            jsrt::json::stringify(&data)
+        ));
     };
+    Ok(CodexDeviceAuth {
+        device_auth_id,
+        user_code,
+        interval,
+    })
+}
+
+fn codex_device_error_code(text: &str) -> Option<String> {
+    jsrt::json_parse::parse_json(text)
+        .ok()
+        .and_then(|json| match json.get("error") {
+            Some(Value::Object(error)) => error.get("code").and_then(Value::as_str).map(str::to_owned),
+            Some(Value::String(error)) => Some(error.clone()),
+            _ => None,
+        })
+}
+
+fn parse_codex_device_poll(reply: &Reply) -> Result<Poll<(String, String)>, String> {
+    if reply.ok() {
+        let data = jsrt::json_parse::parse_json(&reply.text).map_err(|e| format!("SyntaxError: {e}"))?;
+        let field = |key| data.get(key).and_then(Value::as_str).filter(|s| !s.is_empty());
+        return Ok(match (field("authorization_code"), field("code_verifier")) {
+            (Some(code), Some(verifier)) => Poll::Complete((code.to_owned(), verifier.to_owned())),
+            _ => Poll::Failed(format!(
+                "Invalid OpenAI Codex device auth token response: {}",
+                jsrt::json::stringify(&data)
+            )),
+        });
+    }
+    if matches!(reply.status, 403 | 404) {
+        return Ok(Poll::Pending);
+    }
+    Ok(match codex_device_error_code(&reply.text).as_deref() {
+        Some("deviceauth_authorization_pending") => Poll::Pending,
+        Some("slow_down") => Poll::SlowDown(None),
+        _ => Poll::Failed(format!(
+            "OpenAI Codex device auth failed with status {}{}",
+            reply.status,
+            reply_error_suffix(&reply.text)
+        )),
+    })
+}
+
+async fn login_codex_device(ctx: &LoginContext<'_>) -> Result<OAuthCredential, String> {
+    let headers = [("Content-Type", "application/json")];
+    let body = jsrt::json::stringify(&json!({"client_id": CODEX_CLIENT_ID}));
+    let reply = codex_send(ctx, CODEX_DEVICE_USER_CODE_URL, &headers, body).await?;
+    let auth = parse_codex_device_auth(&reply)?;
     ctx.interaction.notify(AuthEvent::DeviceCode {
-        user_code: user_code.into(),
+        user_code: auth.user_code.clone(),
         verification_uri: CODEX_DEVICE_VERIFICATION_URI.into(),
-        interval_seconds: Some(interval),
+        interval_seconds: Some(auth.interval),
         expires_in_seconds: Some(CODEX_DEVICE_TIMEOUT_SECONDS),
     });
-    let poll_body = jsrt::json::stringify(&json!({"device_auth_id": device_auth_id, "user_code": user_code}));
+    let poll_body = jsrt::json::stringify(&json!({
+        "device_auth_id": auth.device_auth_id,
+        "user_code": auth.user_code,
+    }));
     let (code, verifier) = poll_device_code_flow(
         ctx.env,
         Some(&ctx.signal),
-        Some(interval),
+        Some(auth.interval),
         Some(CODEX_DEVICE_TIMEOUT_SECONDS),
         false,
         || async {
             let reply = codex_send(ctx, CODEX_DEVICE_TOKEN_URL, &headers, poll_body.clone()).await?;
-            if reply.ok() {
-                let data = jsrt::json_parse::parse_json(&reply.text).map_err(|e| format!("SyntaxError: {e}"))?;
-                let field = |key| data.get(key).and_then(Value::as_str).filter(|s| !s.is_empty());
-                return Ok(match (field("authorization_code"), field("code_verifier")) {
-                    (Some(code), Some(verifier)) => Poll::Complete((code.to_owned(), verifier.to_owned())),
-                    _ => Poll::Failed(format!(
-                        "Invalid OpenAI Codex device auth token response: {}",
-                        jsrt::json::stringify(&data)
-                    )),
-                });
-            }
-            if matches!(reply.status, 403 | 404) {
-                return Ok(Poll::Pending);
-            }
-            let error_code = jsrt::json_parse::parse_json(&reply.text)
-                .ok()
-                .and_then(|json| match json.get("error") {
-                    Some(Value::Object(error)) => error.get("code").and_then(Value::as_str).map(str::to_owned),
-                    Some(Value::String(error)) => Some(error.clone()),
-                    _ => None,
-                });
-            Ok(match error_code.as_deref() {
-                Some("deviceauth_authorization_pending") => Poll::Pending,
-                Some("slow_down") => Poll::SlowDown(None),
-                _ => {
-                    let suffix = if reply.text.is_empty() {
-                        String::new()
-                    } else {
-                        format!(": {}", reply.text)
-                    };
-                    Poll::Failed(format!(
-                        "OpenAI Codex device auth failed with status {}{suffix}",
-                        reply.status
-                    ))
-                }
-            })
+            parse_codex_device_poll(&reply)
         },
     )
     .await?;
     codex_exchange(ctx, &code, &verifier, CODEX_DEVICE_REDIRECT_URI).await
 }
 
-async fn login_copilot(ctx: &LoginContext<'_>) -> Result<OAuthCredential, String> {
+struct CopilotDeviceCode {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    interval: Option<f64>,
+    expires_in: f64,
+}
+
+async fn prompt_copilot_enterprise(ctx: &LoginContext<'_>) -> Result<Option<String>, String> {
     let input = ctx
         .interaction
         .prompt(
@@ -626,23 +677,10 @@ async fn login_copilot(ctx: &LoginContext<'_>) -> Result<OAuthCredential, String
     if !input.trim().is_empty() && enterprise.is_none() {
         return Err("Invalid GitHub Enterprise URL/domain".into());
     }
-    let domain = enterprise.clone().unwrap_or_else(|| "github.com".into());
-    let signal = Some(&ctx.signal);
-    let form_headers = [
-        ("Accept", "application/json"),
-        ("Content-Type", "application/x-www-form-urlencoded"),
-        ("User-Agent", "GitHubCopilotChat/0.35.0"),
-    ];
+    Ok(enterprise)
+}
 
-    let raw = fetch_copilot_json(
-        ctx.transport,
-        "POST",
-        &format!("https://{domain}/login/device/code"),
-        &form_headers,
-        form_urlencode(&[("client_id", COPILOT_CLIENT_ID), ("scope", "read:user")]),
-        signal,
-    )
-    .await?;
+fn parse_copilot_device_code(raw: &Value) -> Result<CopilotDeviceCode, String> {
     if !raw.is_object() && !raw.is_array() {
         return Err("Invalid device code response".into());
     }
@@ -665,64 +703,112 @@ async fn login_copilot(ctx: &LoginContext<'_>) -> Result<OAuthCredential, String
         .filter(|url| matches!(url.scheme(), "https" | "http"))
         .ok_or("Untrusted verification_uri in device code response")?
         .to_string();
-    ctx.interaction.notify(AuthEvent::DeviceCode {
-        user_code: user_code.into(),
+    Ok(CopilotDeviceCode {
+        device_code: device_code.to_owned(),
+        user_code: user_code.to_owned(),
         verification_uri,
-        interval_seconds: interval,
-        expires_in_seconds: Some(expires_in),
-    });
+        interval,
+        expires_in,
+    })
+}
 
+fn parse_copilot_poll(raw: &Value) -> Poll<String> {
+    if let Some(token) = raw.get("access_token").and_then(Value::as_str) {
+        return Poll::Complete(token.to_owned());
+    }
+    let Some(error) = raw.get("error").and_then(Value::as_str) else {
+        return Poll::Failed("Invalid device token response".into());
+    };
+    match error {
+        "authorization_pending" => Poll::Pending,
+        "slow_down" => Poll::SlowDown(raw.get("interval").and_then(Value::as_f64)),
+        _ => {
+            let description = raw
+                .get("error_description")
+                .and_then(Value::as_str)
+                .filter(|d| !d.is_empty())
+                .map_or(String::new(), |d| format!(": {d}"));
+            Poll::Failed(format!("Device flow failed: {error}{description}"))
+        }
+    }
+}
+
+async fn enable_pending_copilot_models(
+    ctx: &LoginContext<'_>,
+    token: &str,
+    base_url: &str,
+    catalog: CopilotCatalog,
+) -> Result<Vec<String>, String> {
+    let mut available = catalog.available;
+    if catalog.policy.is_empty() {
+        return Ok(available);
+    }
+    ctx.interaction.notify(AuthEvent::Progress {
+        message: "Enabling models...".into(),
+    });
+    for id in enable_copilot_models(ctx, token, base_url, &catalog.policy).await? {
+        if !available.contains(&id) {
+            available.push(id);
+        }
+    }
+    Ok(available)
+}
+
+async fn login_copilot(ctx: &LoginContext<'_>) -> Result<OAuthCredential, String> {
+    let enterprise = prompt_copilot_enterprise(ctx).await?;
+    let domain = enterprise.as_deref().unwrap_or("github.com");
+    let signal = Some(&ctx.signal);
+    let form_headers = [
+        ("Accept", "application/json"),
+        ("Content-Type", "application/x-www-form-urlencoded"),
+        ("User-Agent", "GitHubCopilotChat/0.35.0"),
+    ];
+    let raw = fetch_copilot_json(
+        ctx.transport,
+        "POST",
+        &format!("https://{domain}/login/device/code"),
+        &form_headers,
+        form_urlencode(&[("client_id", COPILOT_CLIENT_ID), ("scope", "read:user")]),
+        signal,
+    )
+    .await?;
+    let device = parse_copilot_device_code(&raw)?;
+    ctx.interaction.notify(AuthEvent::DeviceCode {
+        user_code: device.user_code,
+        verification_uri: device.verification_uri,
+        interval_seconds: device.interval,
+        expires_in_seconds: Some(device.expires_in),
+    });
     let poll_body = form_urlencode(&[
         ("client_id", COPILOT_CLIENT_ID),
-        ("device_code", device_code),
+        ("device_code", &device.device_code),
         ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
     ]);
     let token_url = format!("https://{domain}/login/oauth/access_token");
-    let github_token = poll_device_code_flow(ctx.env, signal, interval, Some(expires_in), true, || async {
-        let raw = fetch_copilot_json(
-            ctx.transport,
-            "POST",
-            &token_url,
-            &form_headers,
-            poll_body.clone(),
-            signal,
-        )
-        .await?;
-        if let Some(token) = raw.get("access_token").and_then(Value::as_str) {
-            return Ok(Poll::Complete(token.to_owned()));
-        }
-        let Some(error) = raw.get("error").and_then(Value::as_str) else {
-            return Ok(Poll::Failed("Invalid device token response".into()));
-        };
-        Ok(match error {
-            "authorization_pending" => Poll::Pending,
-            "slow_down" => Poll::SlowDown(raw.get("interval").and_then(Value::as_f64)),
-            _ => {
-                let description = raw
-                    .get("error_description")
-                    .and_then(Value::as_str)
-                    .filter(|d| !d.is_empty())
-                    .map_or(String::new(), |d| format!(": {d}"));
-                Poll::Failed(format!("Device flow failed: {error}{description}"))
-            }
-        })
-    })
+    let github_token = poll_device_code_flow(
+        ctx.env,
+        signal,
+        device.interval,
+        Some(device.expires_in),
+        true,
+        || async {
+            let raw = fetch_copilot_json(
+                ctx.transport,
+                "POST",
+                &token_url,
+                &form_headers,
+                poll_body.clone(),
+                signal,
+            )
+            .await?;
+            Ok(parse_copilot_poll(&raw))
+        },
+    )
     .await?;
-
     let mut credential = copilot_access_token(ctx.transport, &github_token, enterprise.as_deref(), signal).await?;
     let base_url = copilot_base_url(Some(&credential.access), enterprise.as_deref());
     let catalog = fetch_copilot_models(ctx, &credential.access, &base_url).await?;
-    let mut available = catalog.available;
-    if !catalog.policy.is_empty() {
-        ctx.interaction.notify(AuthEvent::Progress {
-            message: "Enabling models...".into(),
-        });
-        for id in enable_copilot_models(ctx, &credential.access, &base_url, &catalog.policy).await? {
-            if !available.contains(&id) {
-                available.push(id);
-            }
-        }
-    }
+    let available = enable_pending_copilot_models(ctx, &credential.access, &base_url, catalog).await?;
     credential.extra.insert("availableModelIds".into(), json!(available));
     Ok(credential)
 }

@@ -378,6 +378,28 @@ impl GoalDriver {
         outcome
     }
 
+    fn record_started_job(
+        &self,
+        state: &mut State,
+        job: String,
+        early: &mut Vec<(String, Option<Value>)>,
+    ) -> Result<(), String> {
+        Self::goal_mut(state)?["job"] = job.as_str().into();
+        let persisted = self.persist(state);
+        let ended = early.iter().position(|(id, _)| *id == job).map(|at| early.remove(at));
+        match ended {
+            Some((id, result)) => persisted.and(self.job_ended(state, &id, result.as_ref())),
+            None => persisted,
+        }
+    }
+
+    fn is_waiting_for_run(state: &State, key: &str) -> bool {
+        state
+            .goal
+            .as_ref()
+            .is_some_and(|goal| goal["status"] == "active" && goal["job"].is_null() && run_key(goal) == key)
+    }
+
     /// A start returned: its job is the goal's when the goal still waits on that run, and is stopped otherwise (the
     /// goal was paused, cleared or replaced while it started).
     fn started(&self, state: &mut State, key: &str, started: Result<String, String>) -> Result<(), String> {
@@ -387,10 +409,7 @@ impl GoalDriver {
         } else {
             Vec::new()
         };
-        let waiting = state
-            .goal
-            .as_ref()
-            .is_some_and(|goal| goal["status"] == "active" && goal["job"].is_null() && run_key(goal) == key);
+        let waiting = Self::is_waiting_for_run(state, key);
         let result = match started {
             Ok(job) if !waiting => {
                 state.effects.push(Effect::Stop {
@@ -399,15 +418,7 @@ impl GoalDriver {
                 });
                 Ok(())
             }
-            Ok(job) => {
-                Self::goal_mut(state)?["job"] = job.as_str().into();
-                let persisted = self.persist(state);
-                let ended = early.iter().position(|(id, _)| *id == job).map(|at| early.remove(at));
-                match ended {
-                    Some((id, result)) => persisted.and(self.job_ended(state, &id, result.as_ref())),
-                    None => persisted,
-                }
-            }
+            Ok(job) => self.record_started_job(state, job, &mut early),
             Err(error) if waiting => {
                 let goal = Self::goal_mut(state)?;
                 goal["status"] = "paused".into();
@@ -557,55 +568,56 @@ impl GoalDriver {
         })
     }
 
-    fn command_step(&self, state: &mut State, text: &str) -> Result<Reply, String> {
-        if text.is_empty() || text == "status" {
-            return Ok(Reply::Status(""));
+    fn cmd_clear(&self, state: &mut State) -> Result<Reply, String> {
+        let Some(goal) = state.goal.as_mut() else {
+            return Ok(Reply::Text("No goal to clear.".into()));
+        };
+        stop_job(goal, &mut state.effects, "goal cleared");
+        state.goal = None;
+        self.persist(state)?;
+        Ok(Reply::Text("Goal cleared.".into()))
+    }
+
+    fn cmd_pause(&self, state: &mut State) -> Result<Reply, String> {
+        match state.goal.as_mut() {
+            Some(goal) if goal["status"] == "active" => stop_job(goal, &mut state.effects, "goal paused"),
+            _ => return Ok(Reply::Status("")),
         }
-        if text == "clear" {
-            let Some(goal) = state.goal.as_mut() else {
-                return Ok(Reply::Text("No goal to clear.".into()));
-            };
-            stop_job(goal, &mut state.effects, "goal cleared");
-            state.goal = None;
-            self.persist(state)?;
-            return Ok(Reply::Text("Goal cleared.".into()));
+        self.set_status(state, "paused", Some("paused by you; /goal resume continues"))?;
+        Ok(Reply::Status(""))
+    }
+
+    fn cmd_resume(&self, state: &mut State) -> Result<Reply, String> {
+        match state.goal.as_ref() {
+            Some(goal) if goal["status"] != "complete" && goal["status"] != "active" => {}
+            _ => return Ok(Reply::Status("")),
         }
-        if text == "pause" {
-            match state.goal.as_mut() {
-                Some(goal) if goal["status"] == "active" => stop_job(goal, &mut state.effects, "goal paused"),
-                _ => return Ok(Reply::Status("")),
-            }
-            self.set_status(state, "paused", Some("paused by you; /goal resume continues"))?;
-            return Ok(Reply::Status(""));
-        }
-        if text == "resume" {
-            match state.goal.as_ref() {
-                Some(goal) if goal["status"] != "complete" && goal["status"] != "active" => {}
-                _ => return Ok(Reply::Status("")),
-            }
-            self.set_status(state, "active", None)?;
-            Self::goal_mut(state)?["stuck"] = 0.into();
-            self.start_job(state)?;
-            return Ok(Reply::Status(""));
-        }
-        if text == "check" || text.starts_with("check ") {
-            let now = self.now();
-            let Some(goal) = state.goal.as_mut() else {
-                return Ok(Reply::Text("Set a goal first: /goal <objective>.".into()));
-            };
-            let command = jsrt::string::trim(&text["check".len()..]);
-            goal["check"] = if command.is_empty() {
-                Value::Null
-            } else {
-                jsrt::utf16::head(command, TEXT_MAX_CHARS).into()
-            };
-            goal["revision"] = (int_of(goal, "revision") + 1).into();
-            goal["stuck"] = 0.into();
-            goal["last_signature"] = Value::Null;
-            goal["updated_at"] = now.into();
-            self.persist(state)?;
-            return Ok(Reply::Status(""));
-        }
+        self.set_status(state, "active", None)?;
+        Self::goal_mut(state)?["stuck"] = 0.into();
+        self.start_job(state)?;
+        Ok(Reply::Status(""))
+    }
+
+    fn cmd_check(&self, state: &mut State, text: &str) -> Result<Reply, String> {
+        let now = self.now();
+        let Some(goal) = state.goal.as_mut() else {
+            return Ok(Reply::Text("Set a goal first: /goal <objective>.".into()));
+        };
+        let command = jsrt::string::trim(&text["check".len()..]);
+        goal["check"] = if command.is_empty() {
+            Value::Null
+        } else {
+            jsrt::utf16::head(command, TEXT_MAX_CHARS).into()
+        };
+        goal["revision"] = (int_of(goal, "revision") + 1).into();
+        goal["stuck"] = 0.into();
+        goal["last_signature"] = Value::Null;
+        goal["updated_at"] = now.into();
+        self.persist(state)?;
+        Ok(Reply::Status(""))
+    }
+
+    fn cmd_set(&self, state: &mut State, text: &str) -> Result<Reply, String> {
         let mut revision = 1;
         if let Some(goal) = state.goal.as_mut() {
             stop_job(goal, &mut state.effects, "goal replaced");
@@ -637,6 +649,19 @@ impl GoalDriver {
         ))
     }
 
+    fn command_step(&self, state: &mut State, text: &str) -> Result<Reply, String> {
+        if text.is_empty() || text == "status" {
+            return Ok(Reply::Status(""));
+        }
+        match text {
+            "clear" => self.cmd_clear(state),
+            "pause" => self.cmd_pause(state),
+            "resume" => self.cmd_resume(state),
+            _ if text == "check" || text.starts_with("check ") => self.cmd_check(state, text),
+            _ => self.cmd_set(state, text),
+        }
+    }
+
     /// A task ended (the worker's task-end observer; `result` is its `NativeResult`): a goal job that ended early is
     /// started again when its run made progress, otherwise the goal pauses.
     pub fn task_ended(&self, task_id: &str, result: Option<&Value>) -> Result<(), String> {
@@ -658,18 +683,7 @@ impl GoalDriver {
             return Ok(());
         }
         goal["job"] = Value::Null;
-        let answer = match result.map(|result| (&result["value"], result.get("error"))) {
-            Some((Value::String(value), _)) => value.clone(),
-            Some((_, Some(error))) if !error.is_null() => jsrt::value::string(Some(error)),
-            _ => String::new(),
-        };
-        goal["last_answer"] = if jsrt::utf16::len(&answer) > 1000 {
-            format!("{}…", jsrt::utf16::head(&answer, 999)).into()
-        } else if answer.is_empty() {
-            Value::Null
-        } else {
-            answer.into()
-        };
+        goal["last_answer"] = format_last_answer(result);
         goal["updated_at"] = now.into();
         if goal["status"] != "active" {
             return self.persist(state);
@@ -760,6 +774,55 @@ impl GoalDriver {
         })
     }
 
+    fn step_check(goal: &Value, payload: &Map<String, Value>) -> Result<Result<Value, PendingCheck>, String> {
+        kernel::ops::fields("goal.check", payload)?;
+        if goal["check"].is_null() {
+            return Err("This goal has no check command (the user sets one with /goal check)".into());
+        }
+        Ok(Err(PendingCheck {
+            id: text_of(goal, "id"),
+            command: text_of(goal, "check"),
+        }))
+    }
+
+    fn step_complete(
+        &self,
+        state: &mut State,
+        payload: &Map<String, Value>,
+    ) -> Result<Result<Value, PendingCheck>, String> {
+        kernel::ops::fields("goal.complete", payload)?;
+        let goal = Self::goal(state)?;
+        Self::current(goal, payload.get("revision"))?;
+        text(payload.get("summary"), "summary")?;
+        evidence_list(payload.get("evidence"))?;
+        if goal["check"].is_null() {
+            return self.complete(state, payload, false).map(Ok);
+        }
+        Ok(Err(PendingCheck {
+            id: text_of(goal, "id"),
+            command: text_of(goal, "check"),
+        }))
+    }
+
+    fn step_blocked(
+        &self,
+        state: &mut State,
+        payload: &Map<String, Value>,
+    ) -> Result<Result<Value, PendingCheck>, String> {
+        kernel::ops::fields("goal.blocked", payload)?;
+        let goal = Self::goal(state)?;
+        Self::current(goal, payload.get("revision"))?;
+        let reason = text(payload.get("reason"), "reason")?;
+        let checks = int_of(goal, "checks");
+        if !goal["check"].is_null() && checks < BLOCK_MIN_CHECKS {
+            return Err(format!(
+                "goal.blocked is accepted after {BLOCK_MIN_CHECKS} checks ({checks} so far): keep working, test with goal.check(), and try another approach"
+            ));
+        }
+        self.set_status(state, "blocked", Some(&reason))?;
+        Ok(Ok(json!({"status": "blocked", "reason": reason})))
+    }
+
     /// The part of a request before its check: `Ok` is the reply when no check is needed.
     fn request_step(
         &self,
@@ -777,43 +840,35 @@ impl GoalDriver {
         if lane != kernel::ROOT_LANE && Some(lane) != job.as_deref() {
             return Err("Only the goal's job or the root agent works the session goal; subagents report to it".into());
         }
-        let pending = || PendingCheck {
-            id: text_of(goal, "id"),
-            command: text_of(goal, "check"),
-        };
         match kind {
-            "goal.check" => {
-                kernel::ops::fields("goal.check", payload)?;
-                if goal["check"].is_null() {
-                    return Err("This goal has no check command (the user sets one with /goal check)".into());
-                }
-                Ok(Err(pending()))
-            }
-            "goal.complete" => {
-                kernel::ops::fields("goal.complete", payload)?;
-                Self::current(goal, payload.get("revision"))?;
-                text(payload.get("summary"), "summary")?;
-                evidence_list(payload.get("evidence"))?;
-                if goal["check"].is_null() {
-                    return self.complete(state, payload, false).map(Ok);
-                }
-                Ok(Err(pending()))
-            }
-            "goal.blocked" => {
-                kernel::ops::fields("goal.blocked", payload)?;
-                Self::current(goal, payload.get("revision"))?;
-                let reason = text(payload.get("reason"), "reason")?;
-                let checks = int_of(goal, "checks");
-                if !goal["check"].is_null() && checks < BLOCK_MIN_CHECKS {
-                    return Err(format!(
-                        "goal.blocked is accepted after {BLOCK_MIN_CHECKS} checks ({checks} so far): keep working, test with goal.check(), and try another approach"
-                    ));
-                }
-                self.set_status(state, "blocked", Some(&reason))?;
-                Ok(Ok(json!({"status": "blocked", "reason": reason})))
-            }
+            "goal.check" => Self::step_check(goal, payload),
+            "goal.complete" => self.step_complete(state, payload),
+            "goal.blocked" => self.step_blocked(state, payload),
             _ => Err(kernel::ops::not_wired(kind)),
         }
+    }
+
+    fn pause_stuck_goal(&self, state: &mut State, run: &mut Value) -> Result<(), String> {
+        let stuck = int_of(Self::goal(state)?, "stuck");
+        self.set_status(
+            state,
+            "paused",
+            Some(&format!(
+                "{stuck} failing checks in a row gave the same result; /goal resume continues"
+            )),
+        )?;
+        let goal = Self::goal_mut(state)?;
+        if let Some(stopping) = goal["job"].as_str().map(str::to_string) {
+            let jobs = self.jobs.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                let _ = jobs.stop_job(&stopping, "goal stuck");
+            });
+        }
+        goal["job"] = Value::Null;
+        run["paused"] = true.into();
+        run["reason"] = goal["reason"].clone();
+        Ok(())
     }
 
     /// The part of a request after its check ran (`run` is the recorded check).
@@ -837,25 +892,7 @@ impl GoalDriver {
         }
         let goal = Self::goal(state)?;
         if goal["status"] == "active" && int_of(goal, "stuck") >= STUCK_CHECKS {
-            let stuck = int_of(goal, "stuck");
-            self.set_status(
-                state,
-                "paused",
-                Some(&format!(
-                    "{stuck} failing checks in a row gave the same result; /goal resume continues"
-                )),
-            )?;
-            let goal = Self::goal_mut(state)?;
-            if let Some(stopping) = goal["job"].as_str().map(str::to_string) {
-                let jobs = self.jobs.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_millis(100));
-                    let _ = jobs.stop_job(&stopping, "goal stuck");
-                });
-            }
-            goal["job"] = Value::Null;
-            run["paused"] = true.into();
-            run["reason"] = goal["reason"].clone();
+            self.pause_stuck_goal(state, &mut run)?;
             return Ok(run);
         }
         run["paused"] = false.into();
@@ -871,6 +908,21 @@ impl GoalDriver {
         self.set_status(state, "complete", None)?;
         let goal = Self::goal(state)?;
         Ok(json!({"complete": true, "status": goal["status"], "verified": verified, "check": goal["last_check"]}))
+    }
+}
+
+fn format_last_answer(result: Option<&Value>) -> Value {
+    let answer = match result.map(|result| (&result["value"], result.get("error"))) {
+        Some((Value::String(value), _)) => value.clone(),
+        Some((_, Some(error))) if !error.is_null() => jsrt::value::string(Some(error)),
+        _ => String::new(),
+    };
+    if jsrt::utf16::len(&answer) > 1000 {
+        format!("{}…", jsrt::utf16::head(&answer, 999)).into()
+    } else if answer.is_empty() {
+        Value::Null
+    } else {
+        answer.into()
     }
 }
 

@@ -9,8 +9,8 @@
 //! Environment lookups go through the provider env first, like the rest of `google_auth.rs`.
 
 use super::{
-    AUTH_RETRY, AUTH_USER_AGENT, DEFAULT_UNIVERSE, Fail, NO_RETRY, ResponseType, SCOPE, absolute, gaxios, realpath,
-    sign_rs256,
+    AUTH_RETRY, AUTH_USER_AGENT, DEFAULT_UNIVERSE, Fail, NO_RETRY, ResponseType, SCOPE, absolute, gaxios,
+    read_checked_file, realpath, sign_rs256,
 };
 use crate::env::{ProviderEnv, provider_env_value};
 use crate::http::{HeaderMap, HttpRequest, Transport};
@@ -109,6 +109,25 @@ pub(crate) struct External {
     source: Source,
 }
 
+fn read_audience(json: &Value, workforce_pool_user_project: Option<&str>) -> Result<String, Fail> {
+    let audience = match camel_option(json, "audience") {
+        Some(Value::String(s)) => s.clone(),
+        None => {
+            return Err(Fail::typed(
+                "TypeError",
+                "Cannot read properties of undefined (reading 'match')",
+            ));
+        }
+        Some(_) => return Err(Fail::typed("TypeError", "this.audience.match is not a function")),
+    };
+    if workforce_pool_user_project.is_some() && !is_workforce_audience(&audience) {
+        return Err(Fail::new(
+            "workforcePoolUserProject should not be set for non-workforce pool credentials.",
+        ));
+    }
+    Ok(audience)
+}
+
 impl External {
     /// `ExternalAccountClient.fromJSON`: the constructor checks of the base client, then of the chosen subclass.
     pub(super) fn from_json(json: &Value) -> Result<External, Fail> {
@@ -122,25 +141,8 @@ impl External {
             let secret = truthy_string(json, "client_secret").unwrap_or_default();
             (id, secret)
         });
-        let audience = camel_option(json, "audience");
         let workforce_pool_user_project = truthy_string(json, "workforce_pool_user_project");
-        let read_audience = || match audience {
-            Some(Value::String(s)) => Ok(s.clone()),
-            None => Err(Fail::typed(
-                "TypeError",
-                "Cannot read properties of undefined (reading 'match')",
-            )),
-            Some(_) => Err(Fail::typed("TypeError", "this.audience.match is not a function")),
-        };
-        if workforce_pool_user_project.is_some() {
-            let audience = read_audience()?;
-            if !is_workforce_audience(&audience) {
-                return Err(Fail::new(
-                    "workforcePoolUserProject should not be set for non-workforce pool credentials.",
-                ));
-            }
-        }
-        let audience = read_audience()?;
+        let audience = read_audience(json, workforce_pool_user_project.as_deref())?;
         let lifetime = camel_option(json, "service_account_impersonation")
             .and_then(|v| camel_option(v, "token_lifetime_seconds"))
             .filter(|v| jsrt::value::truthy(Some(v)))
@@ -160,30 +162,13 @@ impl External {
         })
     }
 
-    /// `#internalRefreshAccessTokenAsync`: the subject token, the STS exchange, then the optional impersonation.
-    pub(super) async fn access_token(
-        &self,
-        env: Option<&ProviderEnv>,
-        transport: &dyn Transport,
-    ) -> Result<String, Fail> {
-        let (subject_token, mtls) = match &self.source {
-            Source::Certificate(source) => {
-                let token = source.subject_token(env)?;
-                let mtls = transport
-                    .with_client_identity(&token.cert, &token.key)
-                    .map_err(Fail::new)?;
-                (token.token, Some(mtls))
-            }
-            _ => (self.subject_token(env, transport).await?, None),
-        };
-        let transport: &dyn Transport = mtls.as_deref().unwrap_or(transport);
-        let scope = SCOPE.to_string();
+    fn sts_exchange_request(&self, subject_token: &str) -> HttpRequest {
         let mut fields: Vec<(&str, &str)> = vec![
             ("grant_type", STS_GRANT_TYPE),
             ("audience", &self.audience),
-            ("scope", &scope),
+            ("scope", SCOPE),
             ("requested_token_type", STS_REQUEST_TOKEN_TYPE),
-            ("subject_token", &subject_token),
+            ("subject_token", subject_token),
         ];
         if let Some(kind) = &self.subject_token_type {
             fields.push(("subject_token_type", kind));
@@ -206,33 +191,64 @@ impl External {
         if let Some((id, secret)) = &self.client {
             headers.insert("authorization".into(), basic(id, secret));
         }
-        let request = HttpRequest {
+        HttpRequest {
             method: "POST".into(),
             url: self.token_url.clone(),
             headers,
             body: form_urlencode(&fields),
-        };
-        let token = oauth_exchange(transport, request).await?;
-        let Some(url) = &self.impersonation_url else {
-            return Ok(token);
-        };
+        }
+    }
+
+    async fn impersonate_access_token(
+        &self,
+        transport: &dyn Transport,
+        url: &str,
+        token: &str,
+        is_mtls: bool,
+    ) -> Result<String, Fail> {
         let mut headers: HeaderMap = [
             ("content-type".to_string(), "application/json".to_string()),
             ("accept".to_string(), "application/json".to_string()),
             ("authorization".to_string(), format!("Bearer {token}")),
         ]
         .into();
-        if mtls.is_none() {
+        if !is_mtls {
             headers.insert("user-agent".into(), AUTH_USER_AGENT.into());
         }
         let request = HttpRequest {
             method: "POST".into(),
-            url: url.clone(),
+            url: url.to_string(),
             headers,
             body: json!({ "scope": [SCOPE], "lifetime": format!("{}s", self.lifetime) }).to_string(),
         };
         let response = gaxios(transport, request, &AUTH_RETRY, ResponseType::Json).await?;
         Ok(jsrt::value::string(response.data.get("accessToken")))
+    }
+
+    /// `#internalRefreshAccessTokenAsync`: the subject token, the STS exchange, then the optional impersonation.
+    pub(super) async fn access_token(
+        &self,
+        env: Option<&ProviderEnv>,
+        transport: &dyn Transport,
+    ) -> Result<String, Fail> {
+        let (subject_token, mtls) = match &self.source {
+            Source::Certificate(source) => {
+                let token = source.subject_token(env)?;
+                let mtls = transport
+                    .with_client_identity(&token.cert, &token.key)
+                    .map_err(Fail::new)?;
+                (token.token, Some(mtls))
+            }
+            _ => (self.subject_token(env, transport).await?, None),
+        };
+        let active_transport: &dyn Transport = mtls.as_deref().unwrap_or(transport);
+        let request = self.sts_exchange_request(&subject_token);
+        let token = oauth_exchange(active_transport, request).await?;
+        let Some(url) = &self.impersonation_url else {
+            return Ok(token);
+        };
+        self.impersonate_access_token(active_transport, url, &token, mtls.is_some())
+            .await
     }
 
     async fn subject_token(&self, env: Option<&ProviderEnv>, transport: &dyn Transport) -> Result<String, Fail> {
@@ -291,6 +307,59 @@ fn basic(id: &str, secret: &str) -> String {
     format!("Basic {}", jsrt::base64::encode(format!("{id}:{secret}").as_bytes()))
 }
 
+fn parse_source_format(source: &Value) -> Result<Format, Fail> {
+    let format_opts = camel_option(source, "format").cloned().unwrap_or(Value::Null);
+    let format_type = truthy_string(&format_opts, "type").unwrap_or_else(|| "text".into());
+    if format_type != "json" && format_type != "text" {
+        return Err(Fail::new(format!("Invalid credential_source format \"{format_type}\"")));
+    }
+    let field = truthy_string(&format_opts, "subject_token_field_name");
+    match (format_type.as_str(), field) {
+        ("json", Some(field)) => Ok(Format::Json(field)),
+        ("json", None) => Err(Fail::new(
+            "Missing subject_token_field_name for JSON credential_source format",
+        )),
+        _ => Ok(Format::Text),
+    }
+}
+
+fn parse_url_headers(source: &Value) -> HeaderMap {
+    match camel_option(source, "headers") {
+        Some(Value::Object(map)) => map
+            .iter()
+            .map(|(k, v)| (k.to_lowercase(), jsrt::value::string(Some(v))))
+            .collect(),
+        _ => HeaderMap::new(),
+    }
+}
+
+fn identity_pool_source(source: &Value, format: Format) -> Result<Source, Fail> {
+    let file = truthy_string(source, "file");
+    let url = truthy_string(source, "url");
+    let certificate = camel_option(source, "certificate").filter(|v| jsrt::value::truthy(Some(v)));
+    let count = [file.is_some(), url.is_some(), certificate.is_some()]
+        .into_iter()
+        .filter(|set| *set)
+        .count();
+    if count != 1 {
+        return Err(Fail::new(NO_SOURCE));
+    }
+    if let Some(path) = file {
+        return Ok(Source::File { path, format });
+    }
+    if let Some(url) = url {
+        return Ok(Source::Url {
+            url,
+            headers: parse_url_headers(source),
+            format,
+        });
+    }
+    match certificate {
+        Some(certificate) => super::certificate::CertificateSource::from_json(certificate).map(Source::Certificate),
+        None => Err(Fail::new(NO_SOURCE)),
+    }
+}
+
 /// The subclass `ExternalAccountClient.fromJSON` picks, with its constructor checks.
 fn credential_source(json: &Value) -> Result<Source, Fail> {
     let source = json.get("credential_source").filter(|v| !v.is_null());
@@ -305,63 +374,13 @@ fn credential_source(json: &Value) -> Result<Source, Fail> {
             "A credential source or subject token supplier must be specified.",
         ));
     };
-    let format_opts = camel_option(source, "format").cloned().unwrap_or(Value::Null);
-    let format_type = truthy_string(&format_opts, "type").unwrap_or_else(|| "text".into());
-    if format_type != "json" && format_type != "text" {
-        return Err(Fail::new(format!("Invalid credential_source format \"{format_type}\"")));
-    }
-    let field = truthy_string(&format_opts, "subject_token_field_name");
-    let format = match (format_type.as_str(), field) {
-        ("json", Some(field)) => Format::Json(field),
-        ("json", None) => {
-            return Err(Fail::new(
-                "Missing subject_token_field_name for JSON credential_source format",
-            ));
-        }
-        _ => Format::Text,
-    };
-    let file = truthy_string(source, "file");
-    let url = truthy_string(source, "url");
-    let certificate = camel_option(source, "certificate").filter(|v| jsrt::value::truthy(Some(v)));
-    let set = [file.is_some(), url.is_some(), certificate.is_some()];
-    if set.iter().filter(|s| **s).count() > 1 {
-        return Err(Fail::new(NO_SOURCE));
-    }
-    if let Some(path) = file {
-        return Ok(Source::File { path, format });
-    }
-    if let Some(url) = url {
-        let headers = match camel_option(source, "headers") {
-            Some(Value::Object(map)) => map
-                .iter()
-                .map(|(k, v)| (k.to_lowercase(), jsrt::value::string(Some(v))))
-                .collect(),
-            _ => HeaderMap::new(),
-        };
-        return Ok(Source::Url { url, headers, format });
-    }
-    if let Some(certificate) = certificate {
-        return super::certificate::CertificateSource::from_json(certificate).map(Source::Certificate);
-    }
-    Err(Fail::new(NO_SOURCE))
+    let format = parse_source_format(source)?;
+    identity_pool_source(source, format)
 }
 
 /// `FileSubjectTokenSupplier.getSubjectToken`.
 fn file_subject_token(path: &str, format: &Format) -> Result<String, Fail> {
-    let not_a_file = |shown: &str, inner: &str| {
-        Fail::new(format!(
-            "The file at {shown} does not exist, or it is not a file. {inner}"
-        ))
-    };
-    let real = realpath(&absolute(path)).map_err(|e| not_a_file(path, &e.to_string()))?;
-    let shown = real.display().to_string();
-    match std::fs::symlink_metadata(&real) {
-        Ok(meta) if meta.is_file() => {}
-        Ok(_) => return Err(not_a_file(&shown, "")),
-        Err(e) => return Err(not_a_file(&shown, &jsrt::fs::error_message(&e, "lstat", &real))),
-    }
-    let bytes = std::fs::read(&real).map_err(|e| Fail::new(jsrt::fs::error_message(&e, "open", &real)))?;
-    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let text = read_checked_file(path)?;
     let token = match format {
         Format::Text => Value::String(text),
         Format::Json(field) => {
@@ -644,6 +663,29 @@ fn executable_source(source: &Value) -> Result<Source, Fail> {
     })
 }
 
+fn scan_command_token(chars: &[char], mut i: usize) -> usize {
+    while i < chars.len() {
+        if !chars[i].is_whitespace() && chars[i] != '"' {
+            i += 1;
+        } else if chars[i] == '"'
+            && let Some(close) = chars[i + 1..].iter().position(|c| *c == '"')
+        {
+            i += close + 2;
+        } else {
+            break;
+        }
+    }
+    i
+}
+
+fn unquote_token(text: String) -> String {
+    if text.len() >= 2 && text.starts_with('"') && text.ends_with('"') {
+        text[1..text.len() - 1].to_string()
+    } else {
+        text
+    }
+}
+
 /// `PluggableAuthHandler.parseCommand`: runs of `[^\s"]+` and `"[^"]*"` glued together, each fully quoted one
 /// unquoted.
 fn parse_command(command: &str) -> Result<Vec<String>, Fail> {
@@ -651,27 +693,11 @@ fn parse_command(command: &str) -> Result<Vec<String>, Fail> {
     let mut components = Vec::new();
     let mut i = 0;
     while i < chars.len() {
-        let start = i;
-        loop {
-            if i < chars.len() && !chars[i].is_whitespace() && chars[i] != '"' {
-                i += 1;
-            } else if i < chars.len()
-                && chars[i] == '"'
-                && let Some(close) = chars[i + 1..].iter().position(|c| *c == '"')
-            {
-                i += close + 2;
-            } else {
-                break;
-            }
-        }
-        if i > start {
-            let text: String = chars[start..i].iter().collect();
-            let unquoted = if text.len() >= 2 && text.starts_with('"') && text.ends_with('"') {
-                text[1..text.len() - 1].to_string()
-            } else {
-                text
-            };
-            components.push(unquoted);
+        let end = scan_command_token(&chars, i);
+        if end > i {
+            let text: String = chars[i..end].iter().collect();
+            components.push(unquote_token(text));
+            i = end;
         } else {
             i += 1;
         }
@@ -770,7 +796,42 @@ fn executable_error(message: &str, code: &str) -> Fail {
     ))
 }
 
+fn validate_executable_response(response: ExecutableResponse, output_file: Option<&str>) -> Result<String, Fail> {
+    if response.version > 1.0 {
+        return Err(Fail::new(
+            "Version of executable is not currently supported, maximum supported version is 1.",
+        ));
+    }
+    if !response.success {
+        return Err(executable_error(&response.message, &response.code));
+    }
+    if output_file.is_some() && !jsrt::value::truthy(response.expiration.as_ref()) {
+        return Err(Fail::new(
+            "The executable response must contain the `expiration_time` field for successful responses when an output_file has been specified in the configuration.",
+        ));
+    }
+    if response.is_expired() {
+        return Err(Fail::new("Executable response is expired."));
+    }
+    Ok(response.token)
+}
+
 impl External {
+    fn executable_env_vars(&self, output_file: Option<&str>) -> Result<Vec<(String, String)>, Fail> {
+        let mut vars = vec![("GOOGLE_EXTERNAL_ACCOUNT_AUDIENCE".to_string(), self.audience.clone())];
+        if let Some(kind) = &self.subject_token_type {
+            vars.push(("GOOGLE_EXTERNAL_ACCOUNT_TOKEN_TYPE".into(), kind.clone()));
+        }
+        vars.push(("GOOGLE_EXTERNAL_ACCOUNT_INTERACTIVE".into(), "0".into()));
+        if let Some(path) = output_file {
+            vars.push(("GOOGLE_EXTERNAL_ACCOUNT_OUTPUT_FILE".into(), path.into()));
+        }
+        if let Some(email) = self.impersonated_email()? {
+            vars.push(("GOOGLE_EXTERNAL_ACCOUNT_IMPERSONATED_EMAIL".into(), email));
+        }
+        Ok(vars)
+    }
+
     /// `PluggableAuthClient.retrieveSubjectToken`.
     async fn executable_token(
         &self,
@@ -791,37 +852,11 @@ impl External {
         let response = match cached {
             Some(response) => response,
             None => {
-                let mut vars = vec![("GOOGLE_EXTERNAL_ACCOUNT_AUDIENCE".to_string(), self.audience.clone())];
-                if let Some(kind) = &self.subject_token_type {
-                    vars.push(("GOOGLE_EXTERNAL_ACCOUNT_TOKEN_TYPE".into(), kind.clone()));
-                }
-                vars.push(("GOOGLE_EXTERNAL_ACCOUNT_INTERACTIVE".into(), "0".into()));
-                if let Some(path) = output_file {
-                    vars.push(("GOOGLE_EXTERNAL_ACCOUNT_OUTPUT_FILE".into(), path.into()));
-                }
-                if let Some(email) = self.impersonated_email()? {
-                    vars.push(("GOOGLE_EXTERNAL_ACCOUNT_IMPERSONATED_EMAIL".into(), email));
-                }
+                let vars = self.executable_env_vars(output_file)?;
                 run_executable(command, timeout_ms, env, &vars).await?
             }
         };
-        if response.version > 1.0 {
-            return Err(Fail::new(
-                "Version of executable is not currently supported, maximum supported version is 1.",
-            ));
-        }
-        if !response.success {
-            return Err(executable_error(&response.message, &response.code));
-        }
-        if output_file.is_some() && !jsrt::value::truthy(response.expiration.as_ref()) {
-            return Err(Fail::new(
-                "The executable response must contain the `expiration_time` field for successful responses when an output_file has been specified in the configuration.",
-            ));
-        }
-        if response.is_expired() {
-            return Err(Fail::new("Executable response is expired."));
-        }
-        Ok(response.token)
+        validate_executable_response(response, output_file)
     }
 
     /// `getServiceAccountEmail`.
@@ -871,15 +906,11 @@ fn cached_response(path: &str) -> Result<Option<ExecutableResponse>, Fail> {
     }
 }
 
-/// `PluggableAuthHandler.retrieveResponseFromExecutable`: stdout and stderr share one pipe, so the output keeps the
-/// order the executable wrote it in; past the timeout the child is killed.
-async fn run_executable(
+fn spawn_executable(
     command: &[String],
-    timeout_ms: f64,
     env: Option<&ProviderEnv>,
     vars: &[(String, String)],
-) -> Result<ExecutableResponse, Fail> {
-    use tokio::io::AsyncReadExt;
+) -> Result<(tokio::process::Child, tokio::net::unix::pipe::Receiver), Fail> {
     let spawn_error = |e: std::io::Error| executable_error("", &(-e.raw_os_error().unwrap_or(1)).to_string());
     let (reader, writer) = std::io::pipe().map_err(spawn_error)?;
     let mut cmd = tokio::process::Command::new(&command[0]);
@@ -892,10 +923,35 @@ async fn run_executable(
         cmd.envs(env.iter().filter(|(_, v)| !v.is_empty()));
     }
     cmd.envs(vars.iter().map(|(k, v)| (k, v)));
-    let mut child = cmd.spawn().map_err(spawn_error)?;
+    let child = cmd.spawn().map_err(spawn_error)?;
     drop(cmd);
-    let mut receiver =
+    let receiver =
         tokio::net::unix::pipe::Receiver::from_owned_fd(reader.into()).map_err(|e| Fail::new(e.to_string()))?;
+    Ok((child, receiver))
+}
+
+fn parse_executable_output(output: &str, code: &str) -> Result<ExecutableResponse, Fail> {
+    if code != "0" {
+        return Err(executable_error(output, code));
+    }
+    let invalid = || Fail::new(format!("The executable returned an invalid response: {output}"));
+    if jsrt::json::parse(output).is_err() {
+        return Err(invalid());
+    }
+    let json: Value = serde_json::from_str(output).unwrap_or(Value::Null);
+    ExecutableResponse::parse(&json).map_err(|message| message.map_or_else(invalid, Fail::new))
+}
+
+/// `PluggableAuthHandler.retrieveResponseFromExecutable`: stdout and stderr share one pipe, so the output keeps the
+/// order the executable wrote it in; past the timeout the child is killed.
+async fn run_executable(
+    command: &[String],
+    timeout_ms: f64,
+    env: Option<&ProviderEnv>,
+    vars: &[(String, String)],
+) -> Result<ExecutableResponse, Fail> {
+    use tokio::io::AsyncReadExt;
+    let (mut child, mut receiver) = spawn_executable(command, env, vars)?;
     let run = async {
         let mut bytes = Vec::new();
         let _ = receiver.read_to_end(&mut bytes).await;
@@ -903,8 +959,7 @@ async fn run_executable(
         (String::from_utf8_lossy(&bytes).into_owned(), status)
     };
     let limit = Duration::from_millis(timeout_ms.max(1.0) as u64);
-    let outcome = tokio::time::timeout(limit, run).await;
-    let (output, status) = match outcome {
+    let (output, status) = match tokio::time::timeout(limit, run).await {
         Ok(done) => done,
         Err(_) => {
             let _ = child.kill().await;
@@ -917,15 +972,7 @@ async fn run_executable(
         .ok()
         .and_then(|s| s.code())
         .map_or_else(|| "null".to_string(), |c| c.to_string());
-    if code != "0" {
-        return Err(executable_error(&output, &code));
-    }
-    let invalid = || Fail::new(format!("The executable returned an invalid response: {output}"));
-    if jsrt::json::parse(&output).is_err() {
-        return Err(invalid());
-    }
-    let json: Value = serde_json::from_str(&output).unwrap_or(Value::Null);
-    ExecutableResponse::parse(&json).map_err(|message| message.map_or_else(invalid, Fail::new))
+    parse_executable_output(&output, &code)
 }
 
 /// A token request whose error response is reworded by `getErrorFromOAuthErrorResponse`.

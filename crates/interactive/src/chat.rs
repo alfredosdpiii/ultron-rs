@@ -199,6 +199,44 @@ struct ItemRegion {
     action: RegionAction,
 }
 
+impl ItemRegion {
+    fn contains(&self, x: usize, y: usize) -> bool {
+        y >= self.start && y < self.start + self.len && x >= self.x_start && x < self.x_end
+    }
+}
+
+fn custom_message_text(content: &Value) -> String {
+    match content {
+        Value::String(s) => s.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .map(|p| {
+                if p["type"] == "text" {
+                    p["text"].as_str().unwrap_or("")
+                } else {
+                    ""
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+fn apply_region_action(item: &mut Item, action: RegionAction, tools_expanded: bool) {
+    match action {
+        RegionAction::ToggleTool => {
+            if let Kind::Tool(tool) = &mut item.kind {
+                tool.expanded = Some(!tool.expanded.unwrap_or(tools_expanded));
+            }
+        }
+        RegionAction::ToggleThinking { run, hidden } => {
+            item.thinking.retain(|(r, _)| *r != run);
+            item.thinking.push((run, !hidden));
+        }
+    }
+}
+
 /// The rendering context components need.
 pub struct ChatStyle {
     pub theme: Rc<Theme>,
@@ -413,89 +451,74 @@ impl ChatView {
                 self.push(Kind::Spacer);
                 self.push(Kind::User(protocol::pi_message::text(message)));
             }
-            Some("assistant") => {
-                let view = assistant_view(message);
-                let index = match self.streaming.take() {
-                    Some(i) => i,
-                    None => self.push(Kind::Assistant(view.clone())),
-                };
-                self.items[index].kind = Kind::Assistant(view);
-                self.items[index].cache = None;
-                for call in tool_calls(message) {
-                    let i = self.tool(&call.0, &call.1, Some(call.2));
-                    if let Kind::Tool(t) = &mut self.items[i].kind {
-                        t.args_complete = true;
-                    }
-                    self.items[i].cache = None;
-                }
-            }
-            Some("toolResult") => {
-                let name = message["toolName"].as_str().unwrap_or("");
-                let id = message["toolCallId"].as_str().unwrap_or("");
-                let i = self.tool(name, id, None);
-                if let Kind::Tool(t) = &mut self.items[i].kind {
-                    t.result = Some(tool_result_view(message));
-                    t.partial = false;
-                }
-                self.items[i].cache = None;
-            }
-            Some("bashExecution") => {
-                let mut bash = self.bash_component(
-                    message["command"].as_str().unwrap_or(""),
-                    message["excludeFromContext"] == true,
-                );
-                if let Some(output) = message["output"].as_str().filter(|o| !o.is_empty()) {
-                    bash.append_output(output);
-                }
-                bash.set_complete(
-                    message["exitCode"].as_i64(),
-                    message["cancelled"] == true,
-                    message["truncated"] == true,
-                    message["fullOutputPath"].as_str(),
-                );
-                self.push(Kind::Bash(Box::new(bash)));
-            }
-            Some("custom") if message["customType"] == custom_types::NUDGE => {
-                let line = nudge_line(message);
-                let t = Rc::clone(&self.style.theme);
-                self.append_notice_text(&t.fg(Fg::Muted, &line));
-            }
-            Some("custom") if message["customType"] == custom_types::SCHEDULE => {
-                let line = schedule_line(message);
-                let t = Rc::clone(&self.style.theme);
-                self.append_notice_text(&t.fg(Fg::Muted, &line));
-            }
-            Some("custom") if message["customType"] == custom_types::RECALLED_MEMORY => {
-                let line = memory_line(message);
-                let t = Rc::clone(&self.style.theme);
-                self.append_notice_text(&t.fg(Fg::Muted, &line));
-            }
-            Some("custom") if message["customType"] == custom_types::MEMORY_KEPT => {
-                let t = Rc::clone(&self.style.theme);
-                self.append_notice_text(&t.fg(Fg::Muted, message["content"].as_str().unwrap_or_default()));
-            }
-            Some("custom") if message["display"] == true => {
-                let text = match &message["content"] {
-                    Value::String(s) => s.clone(),
-                    Value::Array(parts) => parts
-                        .iter()
-                        .map(|p| {
-                            if p["type"] == "text" {
-                                p["text"].as_str().unwrap_or("")
-                            } else {
-                                ""
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                    _ => String::new(),
-                };
-                let kind = message["customType"].as_str().unwrap_or("");
-                let t = Rc::clone(&self.style.theme);
-                self.append_notice_text(&t.fg(Fg::Muted, &format!("[{kind}]\n{text}")));
-            }
+            Some("assistant") => self.add_assistant_message(message),
+            Some("toolResult") => self.add_tool_result_message(message),
+            Some("bashExecution") => self.add_bash_message(message),
+            Some("custom") => self.add_custom_message(message),
             _ => {}
         }
+    }
+
+    fn add_assistant_message(&mut self, message: &Value) {
+        let view = assistant_view(message);
+        let index = match self.streaming.take() {
+            Some(i) => i,
+            None => self.push(Kind::Assistant(view.clone())),
+        };
+        self.items[index].kind = Kind::Assistant(view);
+        self.items[index].cache = None;
+        for call in tool_calls(message) {
+            let i = self.tool(&call.0, &call.1, Some(call.2));
+            if let Kind::Tool(t) = &mut self.items[i].kind {
+                t.args_complete = true;
+            }
+            self.items[i].cache = None;
+        }
+    }
+
+    fn add_tool_result_message(&mut self, message: &Value) {
+        let name = message["toolName"].as_str().unwrap_or("");
+        let id = message["toolCallId"].as_str().unwrap_or("");
+        let i = self.tool(name, id, None);
+        if let Kind::Tool(t) = &mut self.items[i].kind {
+            t.result = Some(tool_result_view(message));
+            t.partial = false;
+        }
+        self.items[i].cache = None;
+    }
+
+    fn add_bash_message(&mut self, message: &Value) {
+        let mut bash = self.bash_component(
+            message["command"].as_str().unwrap_or(""),
+            message["excludeFromContext"] == true,
+        );
+        if let Some(output) = message["output"].as_str().filter(|o| !o.is_empty()) {
+            bash.append_output(output);
+        }
+        bash.set_complete(
+            message["exitCode"].as_i64(),
+            message["cancelled"] == true,
+            message["truncated"] == true,
+            message["fullOutputPath"].as_str(),
+        );
+        self.push(Kind::Bash(Box::new(bash)));
+    }
+
+    fn add_custom_message(&mut self, message: &Value) {
+        let line = match message["customType"].as_str() {
+            Some(custom_types::NUDGE) => nudge_line(message),
+            Some(custom_types::SCHEDULE) => schedule_line(message),
+            Some(custom_types::RECALLED_MEMORY) => memory_line(message),
+            Some(custom_types::MEMORY_KEPT) => message["content"].as_str().unwrap_or_default().to_string(),
+            _ if message["display"] == true => {
+                let kind = message["customType"].as_str().unwrap_or("");
+                let text = custom_message_text(&message["content"]);
+                format!("[{kind}]\n{text}")
+            }
+            _ => return,
+        };
+        let t = Rc::clone(&self.style.theme);
+        self.append_notice_text(&t.fg(Fg::Muted, &line));
     }
 
     /// The streaming assistant message so far.
@@ -795,25 +818,11 @@ impl ChatView {
         use tui::{MouseButton, MouseEventType, MouseResult};
         let item = self.items.get_mut(i)?;
         let (x, y) = (usize::try_from(event.x).ok()?, usize::try_from(event.y).ok()?);
-        let region = *item
-            .regions
-            .iter()
-            .find(|r| y >= r.start && y < r.start + r.len && x >= r.x_start && x < r.x_end)?;
+        let region = *item.regions.iter().find(|r| r.contains(x, y))?;
         if event.kind != MouseEventType::Click || event.button != MouseButton::Left {
             return None;
         }
-        match region.action {
-            RegionAction::ToggleTool => {
-                let global = self.tools_expanded;
-                if let Kind::Tool(tool) = &mut item.kind {
-                    tool.expanded = Some(!tool.expanded.unwrap_or(global));
-                }
-            }
-            RegionAction::ToggleThinking { run, hidden } => {
-                item.thinking.retain(|(r, _)| *r != run);
-                item.thinking.push((run, !hidden));
-            }
-        }
+        apply_region_action(item, region.action, self.tools_expanded);
         item.cache = None;
         Some(MouseResult {
             handled: Some(true),

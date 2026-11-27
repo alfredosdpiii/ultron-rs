@@ -302,26 +302,7 @@ impl Core {
     /// An input that arrived while a compaction's work runs off the actor.
     fn while_compacting(&mut self, input: Input) {
         match input {
-            Input::Op(Op::Abort, reply) => {
-                self.abort();
-                reply(Ok(None));
-            }
-            Input::Op(Op::State, reply) => reply(Ok(Some(self.state()))),
-            Input::Op(Op::Observer { args }, reply) => {
-                reply(self.observer_command(&args).map(|text| Some(json!(text))));
-            }
-            Input::Op(Op::Prompt { .. } | Op::PromptAndWait { .. }, reply) if self.run.is_none() => {
-                reply(Err(if self.navigating {
-                    LANE_BUSY.into()
-                } else {
-                    PROMPT_WHILE_COMPACTING.into()
-                }));
-            }
-            Input::Op(Op::Navigate { .. }, reply) => reply(Err(NAVIGATE_WHILE_COMPACTING.into())),
-            Input::Op(compact @ Op::Compact { .. }, reply) => {
-                self.abort();
-                self.deferred.push_back(Input::Op(compact, reply));
-            }
+            Input::Op(op, reply) => self.while_compacting_op(op, reply),
             Input::ActivityTick => self.report_activity(),
             Input::MemoryKept(outcome) => self.memory_kept(outcome),
             close @ (Input::Close(_) | Input::HandOver(_)) => {
@@ -329,6 +310,32 @@ impl Core {
                 self.deferred.push_back(close);
             }
             other => self.deferred.push_back(other),
+        }
+    }
+
+    fn while_compacting_op(&mut self, op: Op, reply: Reply) {
+        match op {
+            Op::Abort => {
+                self.abort();
+                reply(Ok(None));
+            }
+            Op::State => reply(Ok(Some(self.state()))),
+            Op::Observer { args } => {
+                reply(self.observer_command(&args).map(|text| Some(json!(text))));
+            }
+            Op::Prompt { .. } | Op::PromptAndWait { .. } if self.run.is_none() => {
+                reply(Err(if self.navigating {
+                    LANE_BUSY.into()
+                } else {
+                    PROMPT_WHILE_COMPACTING.into()
+                }));
+            }
+            Op::Navigate { .. } => reply(Err(NAVIGATE_WHILE_COMPACTING.into())),
+            compact @ Op::Compact { .. } => {
+                self.abort();
+                self.deferred.push_back(Input::Op(compact, reply));
+            }
+            other => self.deferred.push_back(Input::Op(other, reply)),
         }
     }
 
@@ -419,40 +426,22 @@ impl Core {
                 break (Err(write), last);
             }
             scheduled = true;
-            self.emit(WatchEvent::RetryScheduled {
-                lane: MAIN_LANE.into(),
-                run_id: Some(run_id.into()),
-                step: step.into(),
-                attempt: number + 1,
-                max_attempts: retry.max_attempts(),
-                delay_ms: delay,
+            self.emit_summary_retry_scheduled(
+                (run_id, step),
+                number,
+                retry.max_attempts(),
+                delay,
                 not_before,
-                error_message: error.clone(),
-            });
-            let provider_error = last
-                .as_ref()
-                .and_then(|m| m.error_message.clone())
-                .unwrap_or_else(|| error.clone());
-            self.emit(WatchEvent::SummarizationRetryScheduled {
-                lane: MAIN_LANE.into(),
-                attempt: number,
-                max_attempts: retry.max_attempts() - 1,
-                delay_ms: delay,
-                error_message: provider_error,
-            });
+                &error,
+                last.as_ref(),
+            );
             let cancel = signal.clone();
             let _ = self.off_actor(move || wait_until(not_before, &cancel));
             if signal.aborted() {
                 break (Err(CANCELLED.into()), None);
             }
             number += 1;
-            self.emit(WatchEvent::RetryStart {
-                lane: MAIN_LANE.into(),
-                run_id: Some(run_id.into()),
-                step: step.into(),
-                attempt: number,
-            });
-            self.emit(attempt_start.clone());
+            self.emit_summary_retry_start((run_id, step), number, &attempt_start);
             if let Err(write) = journal(self, RetryStep::Retry) {
                 break (Err(write), None);
             }
@@ -461,6 +450,49 @@ impl Core {
             self.emit(WatchEvent::SummarizationRetryFinished { lane: MAIN_LANE.into() });
         }
         outcome
+    }
+
+    #[expect(clippy::too_many_arguments, reason = "internal summary retry event helper")]
+    fn emit_summary_retry_scheduled(
+        &mut self,
+        (run_id, step): (&str, &str),
+        number: u64,
+        max_attempts: u64,
+        delay: u64,
+        not_before: i64,
+        error: &str,
+        last: Option<&ai::AssistantMessage>,
+    ) {
+        self.emit(WatchEvent::RetryScheduled {
+            lane: MAIN_LANE.into(),
+            run_id: Some(run_id.into()),
+            step: step.into(),
+            attempt: number + 1,
+            max_attempts,
+            delay_ms: delay,
+            not_before,
+            error_message: error.to_string(),
+        });
+        let provider_error = last
+            .and_then(|m| m.error_message.clone())
+            .unwrap_or_else(|| error.to_string());
+        self.emit(WatchEvent::SummarizationRetryScheduled {
+            lane: MAIN_LANE.into(),
+            attempt: number,
+            max_attempts: max_attempts - 1,
+            delay_ms: delay,
+            error_message: provider_error,
+        });
+    }
+
+    fn emit_summary_retry_start(&mut self, (run_id, step): (&str, &str), number: u64, attempt_start: &WatchEvent) {
+        self.emit(WatchEvent::RetryStart {
+            lane: MAIN_LANE.into(),
+            run_id: Some(run_id.into()),
+            step: step.into(),
+            attempt: number,
+        });
+        self.emit(attempt_start.clone());
     }
 
     /// A manual compaction: `compaction_start`, the journaled operation (the summary, cancellable), the entry, `compaction_end`; answers Pi's `CompactionResult` fields of the compaction entry.
@@ -535,9 +567,21 @@ impl Core {
         }
         let retry = self.summary_retry();
         op.request(&mut lock_session(&self.session), retry)?;
+        let result = self.run_compaction_attempts(&mut op, &prepared.preparation, custom_instructions, retry, signal);
+        self.finalize_compaction_op(op, result, prepared.retained_tail, signal)
+    }
+
+    fn run_compaction_attempts(
+        &mut self,
+        op: &mut CompactionOp,
+        preparation: &compaction::CompactionPreparation,
+        custom_instructions: Option<&str>,
+        retry: RetryPolicy,
+        signal: &AbortSignal,
+    ) -> Result<compaction::CompactionResult, String> {
         let summarizer = self.summarizer();
         let (preparation, instructions, cancel) = (
-            prepared.preparation.clone(),
+            preparation.clone(),
             custom_instructions.map(str::to_string),
             signal.clone(),
         );
@@ -546,7 +590,7 @@ impl Core {
         let ids = (op.operation_id().to_string(), op.task_id().to_string());
         let mut journal =
             |core: &mut Core, step: RetryStep<'_>| op.journal_step(&mut lock_session(&core.session), step);
-        let (result, _) = self.summary_attempts(
+        self.summary_attempts(
             signal,
             retry,
             (&ids.0, &ids.1),
@@ -557,7 +601,17 @@ impl Core {
             },
             attempt,
             &mut journal,
-        );
+        )
+        .0
+    }
+
+    fn finalize_compaction_op(
+        &mut self,
+        op: CompactionOp,
+        result: Result<compaction::CompactionResult, String>,
+        retained_tail: Vec<Value>,
+        signal: &AbortSignal,
+    ) -> Result<String, String> {
         if signal.aborted() {
             op.abort(&mut lock_session(&self.session))?;
             return Err(CANCELLED.into());
@@ -571,9 +625,6 @@ impl Core {
         };
         let usage = serde_json::to_value(&result.usage).map_err(|e| e.to_string())?;
         op.record_usage(&mut lock_session(&self.session), &usage)?;
-        op.complete(
-            &mut lock_session(&self.session),
-            result.entry(prepared.retained_tail, usage),
-        )
+        op.complete(&mut lock_session(&self.session), result.entry(retained_tail, usage))
     }
 }

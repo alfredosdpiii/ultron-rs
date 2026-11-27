@@ -422,6 +422,61 @@ impl Connection {
         })
     }
 
+    fn attach_client_hooks(self: &Arc<Self>, client: &Client, generation: u64, stdio: Option<Arc<StdioTransport>>) {
+        let weak = Arc::downgrade(self);
+        let refreshed = client.clone();
+        client.on_notification("notifications/tools/list_changed", move |_| {
+            let (weak, client) = (weak.clone(), refreshed.clone());
+            std::thread::spawn(move || refresh_tools(&weak, generation, &client));
+        });
+        let weak = Arc::downgrade(self);
+        let refreshed = client.clone();
+        client.on_notification("notifications/resources/list_changed", move |_| {
+            let (weak, client) = (weak.clone(), refreshed.clone());
+            std::thread::spawn(move || refresh_resources(&weak, generation, &client));
+        });
+        let weak = Arc::downgrade(self);
+        client.on_close(move || {
+            if let Some(connection) = weak.upgrade() {
+                connection.client_closed(generation, stdio.as_deref());
+            }
+        });
+    }
+
+    fn finish_connect(&self, client: &Client, generation: u64) -> Result<(u64, Client), Error> {
+        let capabilities = client.server_capabilities().unwrap_or(Value::Null);
+        let has_resources = capabilities.get("resources").is_some();
+        let tools = if jsrt::value::truthy(capabilities.get("tools")) {
+            client.list_tools(RequestOptions::default())?
+        } else {
+            Vec::new()
+        };
+        let (resources, templates) = if has_resources {
+            fetch_resources(client)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let mut data = sync::lock(&self.data);
+        if data.closed {
+            return Err(Error::Other("shut down while connecting".into()));
+        }
+        if client.connection_state() != ConnState::Connected {
+            return Err(Error::Other("connection closed during setup".into()));
+        }
+        data.client = Some((generation, client.clone()));
+        data.tools = tools;
+        data.has_resources = has_resources;
+        data.resources = resources;
+        data.resource_templates = templates;
+        data.instructions = client
+            .instructions()
+            .map(|i| i.trim().to_string())
+            .filter(|i| !i.is_empty());
+        data.state = ServerState::Connected;
+        data.error = None;
+        Ok((generation, client.clone()))
+    }
+
     fn connect_once(self: &Arc<Self>) -> Result<(u64, Client), Box<ConnectFailure>> {
         let cwd = &self.env.cwd;
         let client = Client::new(ClientOptions {
@@ -448,56 +503,8 @@ impl Connection {
                 data.next_generation += 1;
                 data.next_generation
             };
-            let weak = Arc::downgrade(self);
-            let refreshed = client.clone();
-            client.on_notification("notifications/tools/list_changed", move |_| {
-                let (weak, client) = (weak.clone(), refreshed.clone());
-                std::thread::spawn(move || refresh_tools(&weak, generation, &client));
-            });
-            let weak = Arc::downgrade(self);
-            let refreshed = client.clone();
-            client.on_notification("notifications/resources/list_changed", move |_| {
-                let (weak, client) = (weak.clone(), refreshed.clone());
-                std::thread::spawn(move || refresh_resources(&weak, generation, &client));
-            });
-            let weak = Arc::downgrade(self);
-            let closed_stdio = stdio.clone();
-            client.on_close(move || {
-                if let Some(connection) = weak.upgrade() {
-                    connection.client_closed(generation, closed_stdio.as_deref());
-                }
-            });
-            let capabilities = client.server_capabilities().unwrap_or(Value::Null);
-            let has_resources = capabilities.get("resources").is_some();
-            let tools = if jsrt::value::truthy(capabilities.get("tools")) {
-                client.list_tools(RequestOptions::default())?
-            } else {
-                Vec::new()
-            };
-            let (resources, templates) = if has_resources {
-                fetch_resources(&client)
-            } else {
-                (Vec::new(), Vec::new())
-            };
-            let mut data = sync::lock(&self.data);
-            if data.closed {
-                return Err(Error::Other("shut down while connecting".into()));
-            }
-            if client.connection_state() != ConnState::Connected {
-                return Err(Error::Other("connection closed during setup".into()));
-            }
-            data.client = Some((generation, client.clone()));
-            data.tools = tools;
-            data.has_resources = has_resources;
-            data.resources = resources;
-            data.resource_templates = templates;
-            data.instructions = client
-                .instructions()
-                .map(|i| i.trim().to_string())
-                .filter(|i| !i.is_empty());
-            data.state = ServerState::Connected;
-            data.error = None;
-            Ok((generation, client.clone()))
+            self.attach_client_hooks(&client, generation, stdio.clone());
+            self.finish_connect(&client, generation)
         })();
         result.map_err(|error| {
             client.close();
@@ -574,6 +581,37 @@ impl Connection {
         client.close();
     }
 
+    fn should_retry_client_error(
+        &self,
+        generation: u64,
+        client: &Client,
+        error: Error,
+        read_only: bool,
+        attempt: u32,
+    ) -> Result<bool, String> {
+        let kind = http_error(&error).map(|(kind, _)| kind);
+        if read_only && attempt == 1 && kind.is_some_and(|k| k != HttpErrorKind::Network) && is_transient_error(&error)
+        {
+            std::thread::sleep(Duration::from_millis(CONNECT_RETRY_DELAYS_MS[0]));
+            return Ok(true);
+        }
+        if kind == Some(HttpErrorKind::SessionExpired) && attempt == 1 {
+            let mut data = sync::lock(&self.data);
+            if data.client.as_ref().map(|(g, _)| *g) == Some(generation) {
+                data.client = None;
+            }
+            return Ok(true);
+        }
+        if !self.needs_sign_in(&error) {
+            return Err(error.to_string());
+        }
+        self.drop_client(generation, client);
+        let mut data = sync::lock(&self.data);
+        data.state = ServerState::NeedsAuth;
+        data.error = None;
+        Err(self.sign_in_required_message())
+    }
+
     /// Runs a request, reconnecting when needed. `read_only` requests are retried once after a transient HTTP
     /// error; tool calls are not, since they may have run.
     fn with_client<T>(
@@ -587,32 +625,8 @@ impl Connection {
             match run(&client) {
                 Ok(value) => return Ok(value),
                 Err(error) => {
-                    let kind = http_error(&error).map(|(kind, _)| kind);
-                    if read_only
-                        && attempt == 1
-                        && kind.is_some_and(|k| k != HttpErrorKind::Network)
-                        && is_transient_error(&error)
-                    {
-                        std::thread::sleep(Duration::from_millis(CONNECT_RETRY_DELAYS_MS[0]));
-                        attempt += 1;
-                        continue;
-                    }
-                    if kind == Some(HttpErrorKind::SessionExpired) && attempt == 1 {
-                        let mut data = sync::lock(&self.data);
-                        if data.client.as_ref().map(|(g, _)| *g) == Some(generation) {
-                            data.client = None;
-                        }
-                        attempt += 1;
-                        continue;
-                    }
-                    if !self.needs_sign_in(&error) {
-                        return Err(error.to_string());
-                    }
-                    self.drop_client(generation, &client);
-                    let mut data = sync::lock(&self.data);
-                    data.state = ServerState::NeedsAuth;
-                    data.error = None;
-                    return Err(self.sign_in_required_message());
+                    self.should_retry_client_error(generation, &client, error, read_only, attempt)?;
+                    attempt += 1;
                 }
             }
         }

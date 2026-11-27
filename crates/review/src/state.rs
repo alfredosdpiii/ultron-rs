@@ -290,6 +290,34 @@ fn typed<T: serde::de::DeserializeOwned>(value: &Value) -> Option<T> {
     serde_json::from_value(value.clone()).ok()
 }
 
+fn normalize_pulls(pulls: &serde_json::Map<String, Value>) -> IndexMap<String, PullState> {
+    let mut out = IndexMap::new();
+    for (key, pull) in pulls {
+        let Value::Object(fields) = pull else { continue };
+        let mut fields = fields.clone();
+        if !matches!(fields.get("attempts"), Some(Value::Object(_))) {
+            fields.insert("attempts".into(), Value::Object(Default::default()));
+        }
+        if !matches!(fields.get("findings"), Some(Value::Array(_))) {
+            fields.insert("findings".into(), Value::Array(Vec::new()));
+        }
+        if let Some(pull) = typed(&Value::Object(fields)) {
+            out.insert(key.clone(), pull);
+        }
+    }
+    out
+}
+
+fn normalize_lessons(lessons: &serde_json::Map<String, Value>) -> IndexMap<String, Vec<Fate>> {
+    let mut out = IndexMap::new();
+    for (repo, fates) in lessons {
+        if let Value::Array(fates) = fates {
+            out.insert(repo.clone(), fates.iter().filter_map(typed).collect());
+        }
+    }
+    out
+}
+
 fn normalize(value: &Value) -> AutoreviewState {
     let mut state = empty_state();
     let Value::Object(raw) = value else { return state };
@@ -300,19 +328,7 @@ fn normalize(value: &Value) -> AutoreviewState {
             .collect();
     }
     if let Some(Value::Object(pulls)) = raw.get("pulls") {
-        for (key, pull) in pulls {
-            let Value::Object(fields) = pull else { continue };
-            let mut fields = fields.clone();
-            if !matches!(fields.get("attempts"), Some(Value::Object(_))) {
-                fields.insert("attempts".into(), Value::Object(Default::default()));
-            }
-            if !matches!(fields.get("findings"), Some(Value::Array(_))) {
-                fields.insert("findings".into(), Value::Array(Vec::new()));
-            }
-            if let Some(pull) = typed(&Value::Object(fields)) {
-                state.pulls.insert(key.clone(), pull);
-            }
-        }
+        state.pulls = normalize_pulls(pulls);
     }
     if let Some(Value::Array(recent)) = raw.get("recent") {
         state.recent = recent.iter().filter_map(typed).collect();
@@ -329,13 +345,7 @@ fn normalize(value: &Value) -> AutoreviewState {
         state.daemon = typed(daemon);
     }
     if let Some(Value::Object(lessons)) = raw.get("lessons") {
-        let mut out = IndexMap::new();
-        for (repo, fates) in lessons {
-            if let Value::Array(fates) = fates {
-                out.insert(repo.clone(), fates.iter().filter_map(typed).collect());
-            }
-        }
-        state.lessons = Some(out);
+        state.lessons = Some(normalize_lessons(lessons));
     }
     state
 }

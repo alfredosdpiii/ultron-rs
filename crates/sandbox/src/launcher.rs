@@ -364,132 +364,188 @@ impl Policy {
         let readable: Vec<&PathBuf> = self.readable.iter().filter(|p| exists(p)).collect();
         let hidden: Vec<&PathBuf> = self.hidden.iter().filter(|p| exists(p)).collect();
         match mechanism {
-            Mechanism::Bwrap => {
-                let mut out: Vec<String> = vec![s("bwrap"), s("--unshare-all")];
-                if self.network {
-                    out.push(s("--share-net"));
-                }
-                out.extend(["--die-with-parent", "--new-session", "--cap-drop", "ALL", "--clearenv"].map(s));
-                for (name, value) in &self.env {
-                    out.extend([s("--setenv"), name.clone(), value.clone()]);
-                }
-                for dir in SYSTEM_DIRS.iter().chain(INTERACTIVE_SYSTEM_EXTRA) {
-                    match layout.entry(Path::new(dir)) {
-                        Entry::Symlink(target) => out.extend([s("--symlink"), target, s(dir)]),
-                        _ if is_dir(layout, Path::new(dir)) => out.extend([s("--ro-bind"), s(dir), s(dir)]),
-                        _ => {}
-                    }
-                }
-                out.extend(["--ro-bind", "/etc", "/etc"].map(s));
-                if self.network {
-                    out.extend(["--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve"].map(s));
-                }
-                out.extend(["--proc", "/proc", "--dev", "/dev"].map(s));
-                match &self.tmp {
-                    Some(tmp) => out.extend([s("--bind"), p(tmp), s("/tmp")]),
-                    None => out.extend([s("--tmpfs"), s("/tmp")]),
-                }
-                if is_dir(layout, &self.home) {
-                    out.extend([s("--ro-bind"), p(&self.home), p(&self.home)]);
-                }
-                for path in &readable {
-                    out.extend([s("--ro-bind"), p(path), p(path)]);
-                }
-                for path in &writable {
-                    out.extend([s("--bind"), p(path), p(path)]);
-                }
-                for path in &hidden {
-                    if is_dir(layout, path) {
-                        out.extend([s("--tmpfs"), p(path)]);
-                    } else {
-                        out.extend([s("--ro-bind"), s("/dev/null"), p(path)]);
-                    }
-                }
-                for (is_writable, _, path) in nested(&writable, &readable, &hidden) {
-                    out.extend([s(if is_writable { "--bind" } else { "--ro-bind" }), p(path), p(path)]);
-                }
-                out.extend([s("--chdir"), p(cwd), s("--")]);
-                out.extend(argv.iter().cloned());
-                out
+            Mechanism::Bwrap => self.wrap_bwrap(layout, &writable, &readable, &hidden, argv, cwd),
+            Mechanism::Unshare => self.wrap_unshare(layout, &writable, &readable, &hidden, argv, cwd),
+            Mechanism::Docker => self.wrap_docker(layout, &writable, &readable, &hidden, argv, cwd),
+        }
+    }
+
+    fn wrap_bwrap(
+        &self,
+        layout: &dyn Layout,
+        writable: &[&PathBuf],
+        readable: &[&PathBuf],
+        hidden: &[&PathBuf],
+        argv: &[String],
+        cwd: &Path,
+    ) -> Vec<String> {
+        let mut out: Vec<String> = vec![s("bwrap"), s("--unshare-all")];
+        if self.network {
+            out.push(s("--share-net"));
+        }
+        out.extend(["--die-with-parent", "--new-session", "--cap-drop", "ALL", "--clearenv"].map(s));
+        for (name, value) in &self.env {
+            out.extend([s("--setenv"), name.clone(), value.clone()]);
+        }
+        self.push_bwrap_system_mounts(&mut out, layout);
+        self.push_bwrap_user_mounts(&mut out, layout, writable, readable, hidden);
+        out.extend([s("--chdir"), p(cwd), s("--")]);
+        out.extend(argv.iter().cloned());
+        out
+    }
+
+    fn push_bwrap_system_mounts(&self, out: &mut Vec<String>, layout: &dyn Layout) {
+        for dir in SYSTEM_DIRS.iter().chain(INTERACTIVE_SYSTEM_EXTRA) {
+            match layout.entry(Path::new(dir)) {
+                Entry::Symlink(target) => out.extend([s("--symlink"), target, s(dir)]),
+                _ if is_dir(layout, Path::new(dir)) => out.extend([s("--ro-bind"), s(dir), s(dir)]),
+                _ => {}
             }
-            Mechanism::Unshare => {
-                let mut out: Vec<String> = Vec::new();
-                if layout.which("setpriv") {
-                    out.extend(["setpriv", "--pdeathsig", "KILL", "--"].map(s));
-                }
-                out.extend(["unshare", "--user", "--map-root-user", "--mount"].map(s));
-                if !self.network {
-                    out.push(s("--net"));
-                }
-                out.extend(["--pid", "--fork", "--ipc", "--uts", "--kill-child", "env", "-i"].map(s));
-                out.extend(self.env.iter().map(|(name, value)| format!("{name}={value}")));
-                out.extend([s("sh"), s("-c"), s(INTERACTIVE_UNSHARE_SCRIPT), s("sandbox")]);
-                out.extend([self.uid.to_string(), self.gid.to_string(), p(&self.home), p(cwd)]);
-                out.push(self.tmp.as_deref().map_or_default(p));
-                for list in [&writable, &readable, &hidden] {
-                    out.push(list.len().to_string());
-                    out.extend(list.iter().map(|path| p(path)));
-                }
-                let nested = nested(&writable, &readable, &hidden);
-                out.push(nested.len().to_string());
-                for (is_writable, index, path) in nested {
-                    out.extend([format!("{}{index}", if is_writable { "w" } else { "r" }), p(path)]);
-                }
-                out.push(s("--"));
-                out.extend(argv.iter().cloned());
-                out
+        }
+        out.extend(["--ro-bind", "/etc", "/etc"].map(s));
+        if self.network {
+            out.extend(["--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve"].map(s));
+        }
+        out.extend(["--proc", "/proc", "--dev", "/dev"].map(s));
+        match &self.tmp {
+            Some(tmp) => out.extend([s("--bind"), p(tmp), s("/tmp")]),
+            None => out.extend([s("--tmpfs"), s("/tmp")]),
+        }
+    }
+
+    fn push_bwrap_user_mounts(
+        &self,
+        out: &mut Vec<String>,
+        layout: &dyn Layout,
+        writable: &[&PathBuf],
+        readable: &[&PathBuf],
+        hidden: &[&PathBuf],
+    ) {
+        if is_dir(layout, &self.home) {
+            out.extend([s("--ro-bind"), p(&self.home), p(&self.home)]);
+        }
+        for path in readable {
+            out.extend([s("--ro-bind"), p(path), p(path)]);
+        }
+        for path in writable {
+            out.extend([s("--bind"), p(path), p(path)]);
+        }
+        for path in hidden {
+            if is_dir(layout, path) {
+                out.extend([s("--tmpfs"), p(path)]);
+            } else {
+                out.extend([s("--ro-bind"), s("/dev/null"), p(path)]);
             }
-            Mechanism::Docker => {
-                let mut out: Vec<String> = Vec::new();
-                let setpriv = layout.which("setpriv");
-                if setpriv {
-                    out.extend(["setpriv", "--pdeathsig", "KILL", "--"].map(s));
-                }
-                let client = if setpriv { DOCKER_CLIENT } else { DOCKER_CLIENT_POLLING };
-                out.extend([s("bash"), s("-c"), s(client), s("ultron-docker")]);
-                out.extend(["docker", "run", "--rm", "--init", "-i", "--pull", "never"].map(s));
-                if !self.network {
-                    out.extend([s("--network"), s("none")]);
-                }
-                out.extend(
-                    [
-                        "--cap-drop",
-                        "ALL",
-                        "--security-opt",
-                        "no-new-privileges",
-                        "--pids-limit",
-                        "1024",
-                    ]
-                    .map(s),
-                );
-                out.extend([s("--user"), format!("{}:{}", self.uid, self.gid)]);
-                match &self.tmp {
-                    Some(tmp) => out.extend([s("-v"), format!("{}:/tmp:rw", p(tmp))]),
-                    None => out.extend([s("--tmpfs"), s("/tmp")]),
-                }
-                if is_dir(layout, &self.home) {
-                    out.extend([s("-v"), format!("{0}:{0}:ro", p(&self.home))]);
-                }
-                for path in readable {
-                    out.extend([s("-v"), format!("{0}:{0}:ro", p(path))]);
-                }
-                for path in writable {
-                    out.extend([s("-v"), format!("{0}:{0}:rw", p(path))]);
-                }
-                for path in hidden {
-                    if is_dir(layout, path) {
-                        out.extend([s("--tmpfs"), p(path)]);
-                    } else {
-                        out.extend([s("-v"), format!("/dev/null:{}:ro", p(path))]);
-                    }
-                }
-                out.extend([s("-w"), p(cwd)]);
-                out.push(self.image.clone().unwrap_or_default());
-                out.extend([s("sh"), s("-c"), s(DOCKER_TIED), s("sh")]);
-                out.extend([s("env"), s("-i")]);
-                out.extend(self.env.iter().map(|(name, value)| format!("{name}={value}")));
-                out.extend(argv.iter().cloned());
-                out
+        }
+        for (is_writable, _, path) in nested(writable, readable, hidden) {
+            out.extend([s(if is_writable { "--bind" } else { "--ro-bind" }), p(path), p(path)]);
+        }
+    }
+
+    fn wrap_unshare(
+        &self,
+        layout: &dyn Layout,
+        writable: &[&PathBuf],
+        readable: &[&PathBuf],
+        hidden: &[&PathBuf],
+        argv: &[String],
+        cwd: &Path,
+    ) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        if layout.which("setpriv") {
+            out.extend(["setpriv", "--pdeathsig", "KILL", "--"].map(s));
+        }
+        out.extend(["unshare", "--user", "--map-root-user", "--mount"].map(s));
+        if !self.network {
+            out.push(s("--net"));
+        }
+        out.extend(["--pid", "--fork", "--ipc", "--uts", "--kill-child", "env", "-i"].map(s));
+        out.extend(self.env.iter().map(|(name, value)| format!("{name}={value}")));
+        out.extend([s("sh"), s("-c"), s(INTERACTIVE_UNSHARE_SCRIPT), s("sandbox")]);
+        out.extend([self.uid.to_string(), self.gid.to_string(), p(&self.home), p(cwd)]);
+        out.push(self.tmp.as_deref().map_or_default(p));
+        for list in [writable, readable, hidden] {
+            out.push(list.len().to_string());
+            out.extend(list.iter().map(|path| p(path)));
+        }
+        let nested = nested(writable, readable, hidden);
+        out.push(nested.len().to_string());
+        for (is_writable, index, path) in nested {
+            out.extend([format!("{}{index}", if is_writable { "w" } else { "r" }), p(path)]);
+        }
+        out.push(s("--"));
+        out.extend(argv.iter().cloned());
+        out
+    }
+
+    fn wrap_docker(
+        &self,
+        layout: &dyn Layout,
+        writable: &[&PathBuf],
+        readable: &[&PathBuf],
+        hidden: &[&PathBuf],
+        argv: &[String],
+        cwd: &Path,
+    ) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let setpriv = layout.which("setpriv");
+        if setpriv {
+            out.extend(["setpriv", "--pdeathsig", "KILL", "--"].map(s));
+        }
+        let client = if setpriv { DOCKER_CLIENT } else { DOCKER_CLIENT_POLLING };
+        out.extend([s("bash"), s("-c"), s(client), s("ultron-docker")]);
+        out.extend(["docker", "run", "--rm", "--init", "-i", "--pull", "never"].map(s));
+        if !self.network {
+            out.extend([s("--network"), s("none")]);
+        }
+        out.extend(
+            [
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--pids-limit",
+                "1024",
+            ]
+            .map(s),
+        );
+        out.extend([s("--user"), format!("{}:{}", self.uid, self.gid)]);
+        self.push_docker_mounts(&mut out, layout, writable, readable, hidden);
+        out.extend([s("-w"), p(cwd)]);
+        out.push(self.image.clone().unwrap_or_default());
+        out.extend([s("sh"), s("-c"), s(DOCKER_TIED), s("sh")]);
+        out.extend([s("env"), s("-i")]);
+        out.extend(self.env.iter().map(|(name, value)| format!("{name}={value}")));
+        out.extend(argv.iter().cloned());
+        out
+    }
+
+    fn push_docker_mounts(
+        &self,
+        out: &mut Vec<String>,
+        layout: &dyn Layout,
+        writable: &[&PathBuf],
+        readable: &[&PathBuf],
+        hidden: &[&PathBuf],
+    ) {
+        match &self.tmp {
+            Some(tmp) => out.extend([s("-v"), format!("{}:/tmp:rw", p(tmp))]),
+            None => out.extend([s("--tmpfs"), s("/tmp")]),
+        }
+        if is_dir(layout, &self.home) {
+            out.extend([s("-v"), format!("{0}:{0}:ro", p(&self.home))]);
+        }
+        for path in readable {
+            out.extend([s("-v"), format!("{0}:{0}:ro", p(path))]);
+        }
+        for path in writable {
+            out.extend([s("-v"), format!("{0}:{0}:rw", p(path))]);
+        }
+        for path in hidden {
+            if is_dir(layout, path) {
+                out.extend([s("--tmpfs"), p(path)]);
+            } else {
+                out.extend([s("-v"), format!("/dev/null:{}:ro", p(path))]);
             }
         }
     }

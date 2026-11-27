@@ -25,39 +25,46 @@ pub fn list(env: &Env, out: &mut dyn Write) -> Result<i32, String> {
     Ok(0)
 }
 
+fn running_for(env: &Env, instance: &instance::Instance) -> Vec<instance::Running> {
+    instance::running(&env.home, explicit(env).as_deref())
+        .into_iter()
+        .filter(|r| r.dir == instance.dir)
+        .collect()
+}
+
+fn start_durable(env: &Env, instance: &instance::Instance, out: &mut dyn Write) -> Result<i32, String> {
+    let session_dir = crate::session::session_directory_of(None, env, instance);
+    let model = WorkerModel {
+        env: crate::startup::worker_env(&crate::startup::proxy_env(env)),
+        ..WorkerModel::default()
+    };
+    let options = ServerOptions::for_instance(instance, session_dir, &*env.var, model).map_err(io)?;
+    let route = activate_server(&options, true).map_err(io)?;
+    writeln!(out, "{}\t{}", route.server_id, route.path.display()).map_err(io)?;
+    Ok(0)
+}
+
+fn durable_status(env: &Env, instance: &instance::Instance, out: &mut dyn Write) -> Result<i32, String> {
+    let running = running_for(env, instance);
+    out.write_all(instance::render(&running).as_bytes()).map_err(io)?;
+    Ok(i32::from(running.is_empty()))
+}
+
+fn stop_durable(env: &Env, instance: &instance::Instance) -> Result<i32, String> {
+    for server in running_for(env, instance) {
+        daemon::process::kill(server.pid, rustix_term());
+    }
+    Ok(0)
+}
+
 /// `ultron durable`: `start` starts (or finds) the durable instance's server and prints its route; `status` lists it;
 /// `stop` ends it; anything else (nothing, `attach`, client options) runs a client attached to it.
 pub fn durable(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
     let instance = crate::instance(env, true);
-    let running = || {
-        instance::running(&env.home, explicit(env).as_deref())
-            .into_iter()
-            .filter(|r| r.dir == instance.dir)
-            .collect::<Vec<_>>()
-    };
     match args.first().map(String::as_str) {
-        Some("start") => {
-            let session_dir = crate::session::session_directory_of(None, env, &instance);
-            let model = WorkerModel {
-                env: crate::startup::worker_env(&crate::startup::proxy_env(env)),
-                ..WorkerModel::default()
-            };
-            let options = ServerOptions::for_instance(&instance, session_dir, &*env.var, model).map_err(io)?;
-            let route = activate_server(&options, true).map_err(io)?;
-            writeln!(out, "{}\t{}", route.server_id, route.path.display()).map_err(io)?;
-            Ok(0)
-        }
-        Some("status") => {
-            let running = running();
-            out.write_all(instance::render(&running).as_bytes()).map_err(io)?;
-            Ok(i32::from(running.is_empty()))
-        }
-        Some("stop") => {
-            for server in running() {
-                daemon::process::kill(server.pid, rustix_term());
-            }
-            Ok(0)
-        }
+        Some("start") => start_durable(env, &instance, out),
+        Some("status") => durable_status(env, &instance, out),
+        Some("stop") => stop_durable(env, &instance),
         None => crate::durable_client::run(&[], env, out, err),
         Some("attach") => crate::durable_client::run(&args[1..], env, out, err),
         Some(_) => crate::durable_client::run(args, env, out, err),

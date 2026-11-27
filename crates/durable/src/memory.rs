@@ -1,13 +1,13 @@
 //! In-memory reference backend, a port of upstream `storage/memory.ts`.
 
 use crate::{
-    ConversationId, ConversationQuery, ConversationRecord, Cursor, DocumentAddress, DocumentContent, DocumentCreate,
-    DocumentId, DocumentPoint, DocumentQuery, DocumentRecord, DocumentScope, EntryId, EntryQuery, EntryRecord,
-    MAX_SAFE_ID, Page, Result, ScanOrder, ScanStart, Seq, Storage, StorageWrite, StoredDocument, StoredEntry,
-    SubmissionId, SubmissionQuery, SubmissionRecord, SubmissionStatus, TaskId, TaskQuery, TaskRecord, TaskStatus,
-    cursor_after, failed, request, scan_start,
+    ConversationId, ConversationQuery, ConversationRecord, Cursor, DocumentAddress, DocumentContent,
+    DocumentCopySource, DocumentCreate, DocumentId, DocumentPoint, DocumentQuery, DocumentRecord, DocumentScope,
+    EntryId, EntryQuery, EntryRecord, MAX_SAFE_ID, Page, Result, ScanOrder, ScanStart, Seq, Storage, StorageWrite,
+    StoredDocument, StoredEntry, SubmissionId, SubmissionQuery, SubmissionRecord, SubmissionStatus, TaskId, TaskQuery,
+    TaskRecord, TaskStatus, cursor_after, failed, request, scan_start,
 };
-use crate::{DocumentAction, Table, check_global_ids, document_actions, page};
+use crate::{DocumentAction, Table, check_global_ids, document_actions, document_write_id, page};
 use chord_delta::{Op, apply_immutable_batches};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
@@ -63,6 +63,50 @@ fn bounded(ids: &BTreeSet<u64>, min: i64, max: i64) -> impl DoubleEndedIterator<
 
 fn insert_index<K: std::hash::Hash + Eq>(index: &mut HashMap<K, BTreeSet<u64>>, key: K, id: u64) {
     index.entry(key).or_default().insert(id);
+}
+
+fn update_status_index<S: std::hash::Hash + Eq + Copy>(
+    all_ids: &mut BTreeSet<u64>,
+    by_status: &mut HashMap<S, BTreeSet<u64>>,
+    id: u64,
+    previous: Option<S>,
+    next: S,
+) {
+    match previous {
+        None => {
+            all_ids.insert(id);
+            insert_index(by_status, next, id);
+        }
+        Some(prev) if prev != next => {
+            by_status.entry(prev).or_default().remove(&id);
+            insert_index(by_status, next, id);
+        }
+        Some(_) => {}
+    }
+}
+
+fn fork_source_matches(from: &DocumentCreate, record: &DocumentCreate) -> bool {
+    matches!(from.scope, DocumentScope::Conversation { .. })
+        && matches!(record.scope, DocumentScope::Conversation { .. })
+        && from.kind == record.kind
+        && from.key == record.key
+        && from.history == record.history
+        && from.fork == record.fork
+}
+
+fn check_existing_document_action(id: u64, existing: &StoredDoc, action: &DocumentAction) -> Result<AddressKey> {
+    if existing.record.retired_at.is_some() {
+        return failed(format!("Document {id} is retired"));
+    }
+    if let Some(DocumentContent::Delta { version, .. }) = &action.content {
+        let Some(previous) = existing.revisions.last() else {
+            return failed(format!("Document {id} delta has no base"));
+        };
+        if previous.content.version() != *version {
+            return failed(format!("Document {id} version transition requires a base"));
+        }
+    }
+    Ok(create_address(&existing.record.identity))
 }
 
 /// A validated commit whose writes have their document copies resolved to creations.
@@ -290,51 +334,41 @@ impl MemoryStorage {
         Ok(out)
     }
 
+    fn resolve_one_copy(
+        &self,
+        record: &DocumentCreate,
+        source: DocumentCopySource,
+        changed: &BTreeSet<u64>,
+    ) -> Result<DocumentContent> {
+        if changed.contains(&source.id.0) {
+            return failed(format!(
+                "Fork source document {} is changed in the copy batch",
+                source.id.0
+            ));
+        }
+        let Some(stored) = self.materialize(source.id, source.at)? else {
+            return failed(format!("Fork source document {} cannot be read", source.id.0));
+        };
+        if !fork_source_matches(&stored.record.identity, record) {
+            return failed(format!(
+                "Fork source document {} does not match the copied record",
+                source.id.0
+            ));
+        }
+        Ok(DocumentContent::Base {
+            version: stored.version,
+            value: stored.value,
+        })
+    }
+
     /// Replace each `document.copy` with a `document.create` of the source's materialized base.
     fn resolve_document_copies(&self, writes: &mut [StorageWrite]) -> Result<()> {
-        let changed: BTreeSet<u64> = writes
-            .iter()
-            .filter_map(|write| match write {
-                StorageWrite::DocumentCreate { record, .. } | StorageWrite::DocumentCopy { record, .. } => {
-                    Some(record.id.0)
-                }
-                StorageWrite::DocumentChange { id, .. } | StorageWrite::DocumentRetire { id } => Some(id.0),
-                _ => None,
-            })
-            .collect();
+        let changed: BTreeSet<u64> = writes.iter().filter_map(document_write_id).collect();
         for write in writes.iter_mut() {
             let StorageWrite::DocumentCopy { record, source } = write else {
                 continue;
             };
-            let resolved = (|| -> Result<DocumentContent> {
-                if changed.contains(&source.id.0) {
-                    return failed(format!(
-                        "Fork source document {} is changed in the copy batch",
-                        source.id.0
-                    ));
-                }
-                let Some(stored) = self.materialize(source.id, source.at)? else {
-                    return failed(format!("Fork source document {} cannot be read", source.id.0));
-                };
-                let from = &stored.record.identity;
-                if !matches!(from.scope, DocumentScope::Conversation { .. })
-                    || !matches!(record.scope, DocumentScope::Conversation { .. })
-                    || from.kind != record.kind
-                    || from.key != record.key
-                    || from.history != record.history
-                    || from.fork != record.fork
-                {
-                    return failed(format!(
-                        "Fork source document {} does not match the copied record",
-                        source.id.0
-                    ));
-                }
-                Ok(DocumentContent::Base {
-                    version: stored.version,
-                    value: stored.value,
-                })
-            })();
-            let Ok(content) = resolved else {
+            let Ok(content) = self.resolve_one_copy(record, *source, &changed) else {
                 return failed(format!("Document copy {} was rejected", record.id.0));
             };
             *write = StorageWrite::DocumentCreate {
@@ -345,49 +379,48 @@ impl MemoryStorage {
         Ok(())
     }
 
+    fn check_single_document_action(&self, id: u64, action: &DocumentAction) -> Result<AddressKey> {
+        match (&action.create, self.documents.get(&id)) {
+            (None, None) => failed(format!("Unknown document: {id}")),
+            (Some(_), Some(_)) => failed(format!("Document {id} already exists")),
+            (Some(create), None) => {
+                if !matches!(action.content, Some(DocumentContent::Base { .. })) {
+                    return failed(format!("Document {id} is created without a base"));
+                }
+                Ok(create_address(create))
+            }
+            (None, Some(existing)) => check_existing_document_action(id, existing, action),
+        }
+    }
+
+    fn update_live_count(
+        &self,
+        live_counts: &mut Vec<(AddressKey, i64)>,
+        key: AddressKey,
+        id: u64,
+        action: &DocumentAction,
+    ) {
+        let current = self.document_addresses.get(&key).and_then(|address| address.current);
+        let index = match live_counts.iter().position(|(k, _)| *k == key) {
+            Some(index) => index,
+            None => {
+                live_counts.push((key, i64::from(current.is_some())));
+                live_counts.len() - 1
+            }
+        };
+        if action.retire && current == Some(id) {
+            live_counts[index].1 -= 1;
+        }
+        if action.create.is_some() && !action.retire {
+            live_counts[index].1 += 1;
+        }
+    }
+
     fn check_document_actions(&self, actions: &[(u64, DocumentAction)]) -> Result<()> {
         let mut live_counts: Vec<(AddressKey, i64)> = Vec::new();
         for (id, action) in actions {
-            let existing = self.documents.get(id);
-            if action.create.is_none() && existing.is_none() {
-                return failed(format!("Unknown document: {id}"));
-            }
-            if action.create.is_some() && existing.is_some() {
-                return failed(format!("Document {id} already exists"));
-            }
-            if existing.is_some_and(|existing| existing.record.retired_at.is_some()) {
-                return failed(format!("Document {id} is retired"));
-            }
-            if action.create.is_some() && !matches!(action.content, Some(DocumentContent::Base { .. })) {
-                return failed(format!("Document {id} is created without a base"));
-            }
-            if let Some(DocumentContent::Delta { version, .. }) = &action.content {
-                let Some(previous) = existing.and_then(|existing| existing.revisions.last()) else {
-                    return failed(format!("Document {id} delta has no base"));
-                };
-                if previous.content.version() != *version {
-                    return failed(format!("Document {id} version transition requires a base"));
-                }
-            }
-            let key = match (&action.create, existing) {
-                (Some(create), _) => create_address(create),
-                (None, Some(existing)) => create_address(&existing.record.identity),
-                (None, None) => unreachable!("checked above"),
-            };
-            let current = self.document_addresses.get(&key).and_then(|address| address.current);
-            let index = match live_counts.iter().position(|(k, _)| *k == key) {
-                Some(index) => index,
-                None => {
-                    live_counts.push((key, i64::from(current.is_some())));
-                    live_counts.len() - 1
-                }
-            };
-            if action.retire && current == Some(*id) {
-                live_counts[index].1 -= 1;
-            }
-            if action.create.is_some() && !action.retire {
-                live_counts[index].1 += 1;
-            }
+            let key = self.check_single_document_action(*id, action)?;
+            self.update_live_count(&mut live_counts, key, *id, action);
         }
         if live_counts.iter().any(|(_, live)| *live > 1) {
             return failed("Document address already has a current incarnation");
@@ -395,133 +428,145 @@ impl MemoryStorage {
         Ok(())
     }
 
+    fn create_document(&mut self, id: u64, create: DocumentCreate, content: DocumentContent, retire: bool, seq: Seq) {
+        let key = create_address(&create);
+        let scope = create.scope;
+        let record = DocumentRecord {
+            identity: create,
+            created_at: seq,
+            retired_at: retire.then_some(seq),
+        };
+        self.documents.insert(
+            id,
+            StoredDoc {
+                record,
+                revisions: vec![Revision { seq, content }],
+            },
+        );
+        self.record_types.insert(id, Table::Document);
+        self.document_addresses.entry(key).or_default().ids.insert(id);
+        insert_index(&mut self.document_ids_by_scope, scope, id);
+        self.next_id = self.next_id.max(id + 1);
+    }
+
+    fn append_document_revision(&mut self, id: u64, content: DocumentContent, seq: Seq) {
+        let stored = self.documents.get_mut(&id).expect("checked: document exists");
+        let base = matches!(content, DocumentContent::Base { .. });
+        let revision = Revision { seq, content };
+        if base && stored.record.identity.is_current_only() {
+            stored.revisions = vec![revision];
+        } else {
+            stored.revisions.push(revision);
+        }
+    }
+
+    fn update_document_address_current(&mut self, id: u64, key: AddressKey, created: bool, retire: bool) {
+        let address = self.document_addresses.get_mut(&key).expect("indexed at creation");
+        if retire && address.current == Some(id) {
+            address.current = None;
+        }
+        if created && !retire {
+            address.current = Some(id);
+        }
+    }
+
+    fn apply_document_action(&mut self, id: u64, action: DocumentAction, seq: Seq) {
+        let created = action.create.is_some();
+        if let Some(create) = action.create {
+            let content = action.content.expect("checked: creation carries a base");
+            self.create_document(id, create, content, action.retire, seq);
+        } else if let Some(content) = action.content {
+            self.append_document_revision(id, content, seq);
+        }
+        let stored = self.documents.get_mut(&id).expect("checked: document exists");
+        if action.retire && !created {
+            stored.record.retired_at = Some(seq);
+        }
+        if action.retire && stored.record.identity.is_current_only() {
+            stored.revisions.clear();
+        }
+        if created || action.retire {
+            let key = create_address(&stored.record.identity);
+            self.update_document_address_current(id, key, created, action.retire);
+        }
+    }
+
     fn apply_document_actions(&mut self, actions: Vec<(u64, DocumentAction)>, seq: Seq) {
         for (id, action) in actions {
-            let created = action.create.is_some();
-            if let Some(create) = action.create {
-                let key = create_address(&create);
-                let scope = create.scope;
-                let content = action.content.expect("checked: creation carries a base");
-                let record = DocumentRecord {
-                    identity: create,
-                    created_at: seq,
-                    retired_at: action.retire.then_some(seq),
-                };
-                self.documents.insert(
-                    id,
-                    StoredDoc {
-                        record,
-                        revisions: vec![Revision { seq, content }],
-                    },
-                );
-                self.record_types.insert(id, Table::Document);
-                self.document_addresses.entry(key).or_default().ids.insert(id);
-                insert_index(&mut self.document_ids_by_scope, scope, id);
-                self.next_id = self.next_id.max(id + 1);
-            } else if let Some(content) = action.content {
-                let stored = self.documents.get_mut(&id).expect("checked: document exists");
-                let base = matches!(content, DocumentContent::Base { .. });
-                let revision = Revision { seq, content };
-                if base && stored.record.identity.is_current_only() {
-                    stored.revisions = vec![revision];
-                } else {
-                    stored.revisions.push(revision);
-                }
-            }
-            let stored = self.documents.get_mut(&id).expect("checked: document exists");
-            if action.retire && !created {
-                stored.record.retired_at = Some(seq);
-            }
-            if action.retire && stored.record.identity.is_current_only() {
-                stored.revisions.clear();
-            }
-            if created || action.retire {
-                let key = create_address(&stored.record.identity);
-                let address = self.document_addresses.get_mut(&key).expect("indexed at creation");
-                if action.retire && address.current == Some(id) {
-                    address.current = None;
-                }
-                if created && !action.retire {
-                    address.current = Some(id);
-                }
+            self.apply_document_action(id, action, seq);
+        }
+    }
+
+    fn apply_conversation_write(&mut self, value: ConversationRecord) {
+        let id = value.id.0;
+        self.record_types.insert(id, Table::Conversation);
+        self.conversation_ids.insert(id);
+        if let Some(owner) = value.owner {
+            insert_index(
+                &mut self.conversations_by_owner_conversation,
+                owner.conversation_id.0,
+                id,
+            );
+            insert_index(&mut self.conversations_by_owner_task, owner.task_id.0, id);
+        }
+        self.conversations.insert(id, value);
+        self.next_id = self.next_id.max(id + 1);
+    }
+
+    fn apply_entry_write(&mut self, value: EntryRecord, seq: Seq) {
+        let (id, conversation) = (value.id.0, value.conversation_id.0);
+        self.record_types.insert(id, Table::Entry);
+        insert_index(&mut self.entry_ids, conversation, id);
+        if value.head.is_some() {
+            insert_index(&mut self.head_entry_ids, conversation, id);
+        }
+        self.entries.insert(id, (value, seq));
+        self.next_id = self.next_id.max(id + 1);
+    }
+
+    fn apply_task_write(&mut self, value: TaskRecord) {
+        let (id, status) = (value.id.0, value.state.status());
+        self.record_types.insert(id, Table::Task);
+        let previous = self.tasks.get(&id).map(|previous| previous.state.status());
+        update_status_index(&mut self.task_ids, &mut self.task_ids_by_status, id, previous, status);
+        self.tasks.insert(id, value);
+        self.next_id = self.next_id.max(id + 1);
+    }
+
+    fn apply_submission_write(&mut self, value: SubmissionRecord) {
+        let id = value.id.0;
+        self.record_types.insert(id, Table::Submission);
+        let previous = self.submissions.get(&id);
+        let prev_status = previous.map(|previous| previous.status);
+        update_status_index(
+            &mut self.submission_ids,
+            &mut self.submission_ids_by_status,
+            id,
+            prev_status,
+            value.status,
+        );
+        if let Some(previous) = previous
+            && let Some(request_id) = &previous.request_id
+        {
+            let key = (previous.conversation_id.0, request_id.clone());
+            if self.submission_ids_by_request.get(&key) == Some(&id) {
+                self.submission_ids_by_request.remove(&key);
             }
         }
+        if let Some(request_id) = &value.request_id {
+            self.submission_ids_by_request
+                .insert((value.conversation_id.0, request_id.clone()), id);
+        }
+        self.submissions.insert(id, value);
+        self.next_id = self.next_id.max(id + 1);
     }
 
     fn apply_write(&mut self, write: StorageWrite, seq: Seq) {
         match write {
-            StorageWrite::Conversation { value } => {
-                let id = value.id.0;
-                self.record_types.insert(id, Table::Conversation);
-                self.conversation_ids.insert(id);
-                if let Some(owner) = value.owner {
-                    insert_index(
-                        &mut self.conversations_by_owner_conversation,
-                        owner.conversation_id.0,
-                        id,
-                    );
-                    insert_index(&mut self.conversations_by_owner_task, owner.task_id.0, id);
-                }
-                self.conversations.insert(id, value);
-                self.next_id = self.next_id.max(id + 1);
-            }
-            StorageWrite::Entry { value } => {
-                let (id, conversation) = (value.id.0, value.conversation_id.0);
-                self.record_types.insert(id, Table::Entry);
-                insert_index(&mut self.entry_ids, conversation, id);
-                if value.head.is_some() {
-                    insert_index(&mut self.head_entry_ids, conversation, id);
-                }
-                self.entries.insert(id, (value, seq));
-                self.next_id = self.next_id.max(id + 1);
-            }
-            StorageWrite::Task { value } => {
-                let (id, status) = (value.id.0, value.state.status());
-                self.record_types.insert(id, Table::Task);
-                match self.tasks.get(&id).map(|previous| previous.state.status()) {
-                    None => {
-                        self.task_ids.insert(id);
-                        insert_index(&mut self.task_ids_by_status, status, id);
-                    }
-                    Some(previous) if previous != status => {
-                        self.task_ids_by_status.entry(previous).or_default().remove(&id);
-                        insert_index(&mut self.task_ids_by_status, status, id);
-                    }
-                    Some(_) => {}
-                }
-                self.tasks.insert(id, value);
-                self.next_id = self.next_id.max(id + 1);
-            }
-            StorageWrite::Submission { value } => {
-                let id = value.id.0;
-                self.record_types.insert(id, Table::Submission);
-                let previous = self.submissions.get(&id);
-                match previous.map(|previous| previous.status) {
-                    None => {
-                        self.submission_ids.insert(id);
-                        insert_index(&mut self.submission_ids_by_status, value.status, id);
-                    }
-                    Some(status) if status != value.status => {
-                        self.submission_ids_by_status.entry(status).or_default().remove(&id);
-                        insert_index(&mut self.submission_ids_by_status, value.status, id);
-                    }
-                    Some(_) => {}
-                }
-                if let Some(previous) = previous
-                    && let Some(request_id) = &previous.request_id
-                {
-                    let key = (previous.conversation_id.0, request_id.clone());
-                    if self.submission_ids_by_request.get(&key) == Some(&id) {
-                        self.submission_ids_by_request.remove(&key);
-                    }
-                }
-                if let Some(request_id) = &value.request_id {
-                    self.submission_ids_by_request
-                        .insert((value.conversation_id.0, request_id.clone()), id);
-                }
-                self.submissions.insert(id, value);
-                self.next_id = self.next_id.max(id + 1);
-            }
+            StorageWrite::Conversation { value } => self.apply_conversation_write(value),
+            StorageWrite::Entry { value } => self.apply_entry_write(value, seq),
+            StorageWrite::Task { value } => self.apply_task_write(value),
+            StorageWrite::Submission { value } => self.apply_submission_write(value),
             StorageWrite::DocumentCreate { .. }
             | StorageWrite::DocumentCopy { .. }
             | StorageWrite::DocumentChange { .. }

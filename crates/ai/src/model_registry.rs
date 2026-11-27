@@ -739,6 +739,33 @@ fn apply_model_override(model: Value, ov: &Map<String, Value>) -> Value {
     Value::Object(model)
 }
 
+fn pick_model_field(
+    definition: &Map<String, Value>,
+    config: &Map<String, Value>,
+    defaults: Option<&Map<String, Value>>,
+    key: &str,
+) -> Option<Value> {
+    get(definition, key)
+        .or_else(|| get(config, key))
+        .or_else(|| defaults.and_then(|d| get(d, key)))
+        .cloned()
+}
+
+fn validate_model_limits(provider: &str, id: &str, definition: &Map<String, Value>) -> Result<(), String> {
+    for key in ["contextWindow", "maxTokens"] {
+        if get(definition, key).and_then(Value::as_f64).is_some_and(|n| n <= 0.0) {
+            return Err(format!("Provider {provider}, model {id}: invalid {key}"));
+        }
+    }
+    Ok(())
+}
+
+fn insert_if_some(model: &mut Map<String, Value>, key: &str, value: Option<Value>) {
+    if let Some(value) = value {
+        model.insert(key.to_string(), value);
+    }
+}
+
 /// `modelFromJson`: a models.json model definition, with `defaults` (a model of the same provider) filling `api`
 /// and `baseUrl` the definition and provider leave out.
 fn model_from_json(
@@ -748,65 +775,56 @@ fn model_from_json(
     defaults: Option<&Map<String, Value>>,
 ) -> Result<Value, String> {
     let id = definition.get("id").and_then(Value::as_str).unwrap_or_default();
-    let pick = |key: &str| {
-        get(definition, key)
-            .or_else(|| get(config, key))
-            .or_else(|| defaults.and_then(|d| get(d, key)))
-            .cloned()
-    };
-    let api = pick("api").ok_or_else(|| {
+    let api = pick_model_field(definition, config, defaults, "api").ok_or_else(|| {
         format!("Provider {provider}, model {id}: no \"api\" specified. Set at provider or model level.")
     })?;
-    let base_url = pick("baseUrl")
+    let base_url = pick_model_field(definition, config, defaults, "baseUrl")
         .ok_or_else(|| format!("Provider {provider}: \"baseUrl\" is required when defining custom models."))?;
-    for (key, name) in [("contextWindow", "contextWindow"), ("maxTokens", "maxTokens")] {
-        if get(definition, key).and_then(Value::as_f64).is_some_and(|n| n <= 0.0) {
-            return Err(format!("Provider {provider}, model {id}: invalid {name}"));
-        }
-    }
+    validate_model_limits(provider, id, definition)?;
     let mut model = Map::new();
-    let mut put = |key: &str, value: Option<Value>| {
-        if let Some(value) = value {
-            model.insert(key.to_string(), value);
-        }
-    };
-    put("id", Some(json!(id)));
-    put(
-        "name",
-        Some(get(definition, "name").cloned().unwrap_or_else(|| json!(id))),
+    model.insert("id".into(), json!(id));
+    model.insert(
+        "name".into(),
+        get(definition, "name").cloned().unwrap_or_else(|| json!(id)),
     );
-    put("api", Some(api));
-    put("provider", Some(json!(provider)));
-    put("baseUrl", Some(base_url));
-    put(
-        "reasoning",
-        Some(get(definition, "reasoning").cloned().unwrap_or(json!(false))),
+    model.insert("api".into(), api);
+    model.insert("provider".into(), json!(provider));
+    model.insert("baseUrl".into(), base_url);
+    model.insert(
+        "reasoning".into(),
+        get(definition, "reasoning").cloned().unwrap_or(json!(false)),
     );
-    put("thinkingLevelMap", get(definition, "thinkingLevelMap").cloned());
-    put(
-        "input",
-        Some(get(definition, "input").cloned().unwrap_or(json!(["text"]))),
+    insert_if_some(
+        &mut model,
+        "thinkingLevelMap",
+        get(definition, "thinkingLevelMap").cloned(),
     );
-    put("inputLimits", get(definition, "inputLimits").cloned());
-    put(
-        "cost",
-        Some(
-            get(definition, "cost")
-                .cloned()
-                .unwrap_or(json!({"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0})),
-        ),
+    model.insert(
+        "input".into(),
+        get(definition, "input").cloned().unwrap_or(json!(["text"])),
     );
-    put("promptCache", get(definition, "promptCache").cloned());
-    put(
-        "contextWindow",
-        Some(get(definition, "contextWindow").cloned().unwrap_or(json!(128000))),
+    insert_if_some(&mut model, "inputLimits", get(definition, "inputLimits").cloned());
+    model.insert(
+        "cost".into(),
+        get(definition, "cost")
+            .cloned()
+            .unwrap_or(json!({"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0})),
     );
-    put(
-        "maxTokens",
-        Some(get(definition, "maxTokens").cloned().unwrap_or(json!(16384))),
+    insert_if_some(&mut model, "promptCache", get(definition, "promptCache").cloned());
+    model.insert(
+        "contextWindow".into(),
+        get(definition, "contextWindow").cloned().unwrap_or(json!(128000)),
     );
-    put("samplingParams", get(definition, "samplingParams").cloned());
-    put("compat", merge_compat(get(config, "compat"), get(definition, "compat")));
+    model.insert(
+        "maxTokens".into(),
+        get(definition, "maxTokens").cloned().unwrap_or(json!(16384)),
+    );
+    insert_if_some(&mut model, "samplingParams", get(definition, "samplingParams").cloned());
+    insert_if_some(
+        &mut model,
+        "compat",
+        merge_compat(get(config, "compat"), get(definition, "compat")),
+    );
     Ok(Value::Object(model))
 }
 
@@ -820,37 +838,30 @@ fn find_defaults<'a>(models: &'a [Value], id: &str, api: Option<&str>) -> Option
         .and_then(Value::as_object)
 }
 
-/// `applyModelsJson`: base URL and compat applied to the provider's models, then models.json's models upserted.
-fn apply_models_json(provider: &str, base: Vec<Value>, config: &Map<String, Value>) -> Result<Vec<Value>, String> {
-    let oauth = get(config, "oauth");
-    let base_url = get(config, "baseUrl");
-    if oauth.is_some() && base_url.is_none() {
+fn validate_provider_config(provider: &str, config: &Map<String, Value>, definitions: &[Value]) -> Result<(), String> {
+    if get(config, "oauth").is_some() && get(config, "baseUrl").is_none() {
         return Err(format!(
             "Provider {provider}: \"baseUrl\" is required when \"oauth\" is set."
         ));
     }
-    let definitions: &[Value] = get(config, "models")
-        .and_then(Value::as_array)
-        .map_or(&[], Vec::as_slice);
     let has_overrides = get(config, "modelOverrides")
         .and_then(Value::as_object)
         .is_some_and(|o| !o.is_empty());
-    if definitions.is_empty()
-        && base_url.is_none()
-        && get(config, "headers").is_none()
-        && get(config, "compat").is_none()
-        && !has_overrides
-        && get(config, "apiKey").is_none()
-        && oauth.is_none()
-        && !config.contains_key("authHeader")
-    {
+    let has_setting = ["baseUrl", "headers", "compat", "apiKey", "oauth"]
+        .iter()
+        .any(|key| get(config, key).is_some());
+    if definitions.is_empty() && !has_overrides && !has_setting && !config.contains_key("authHeader") {
         return Err(format!(
             "Provider {provider}: must specify \"baseUrl\", \"headers\", \"compat\", \"modelOverrides\", or \"models\"."
         ));
     }
-    let radius = oauth.and_then(Value::as_str) == Some("radius");
-    let mut models: Vec<Value> = base
-        .into_iter()
+    Ok(())
+}
+
+fn apply_provider_defaults(base: Vec<Value>, config: &Map<String, Value>, radius: bool) -> Vec<Value> {
+    let base_url = get(config, "baseUrl");
+    let config_compat = get(config, "compat");
+    base.into_iter()
         .map(|model| {
             let Value::Object(mut model) = model else {
                 return model;
@@ -858,11 +869,19 @@ fn apply_models_json(provider: &str, base: Vec<Value>, config: &Map<String, Valu
             if !radius && let Some(url) = base_url {
                 model.insert("baseUrl".into(), url.clone());
             }
-            let compat = merge_compat(get(&model, "compat"), get(config, "compat"));
+            let compat = merge_compat(get(&model, "compat"), config_compat);
             set(&mut model, "compat", compat);
             Value::Object(model)
         })
-        .collect();
+        .collect()
+}
+
+fn upsert_custom_models(
+    provider: &str,
+    models: &mut Vec<Value>,
+    definitions: &[Value],
+    config: &Map<String, Value>,
+) -> Result<(), String> {
     for definition in definitions {
         let Some(definition) = definition.as_object() else {
             continue;
@@ -871,13 +890,25 @@ fn apply_models_json(provider: &str, base: Vec<Value>, config: &Map<String, Valu
         let api = get(definition, "api")
             .or_else(|| get(config, "api"))
             .and_then(Value::as_str);
-        let defaults = find_defaults(&models, id, api).cloned();
+        let defaults = find_defaults(models, id, api).cloned();
         let model = model_from_json(provider, definition, config, defaults.as_ref())?;
         match models.iter().position(|m| m["id"].as_str() == Some(id)) {
             Some(index) => models[index] = model,
             None => models.push(model),
         }
     }
+    Ok(())
+}
+
+/// `applyModelsJson`: base URL and compat applied to the provider's models, then models.json's models upserted.
+fn apply_models_json(provider: &str, base: Vec<Value>, config: &Map<String, Value>) -> Result<Vec<Value>, String> {
+    let definitions: &[Value] = get(config, "models")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice);
+    validate_provider_config(provider, config, definitions)?;
+    let radius = get(config, "oauth").and_then(Value::as_str) == Some("radius");
+    let mut models = apply_provider_defaults(base, config, radius);
+    upsert_custom_models(provider, &mut models, definitions, config)?;
     Ok(models)
 }
 

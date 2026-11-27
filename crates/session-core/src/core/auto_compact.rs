@@ -294,42 +294,16 @@ impl Core {
     /// context crossed the threshold, or when the worker died during an overflow compaction here. Returns whether
     /// it compacted; an error is the failed compaction the run ends with.
     pub(super) fn checkpoint_compaction(&mut self) -> Result<bool, String> {
-        let Some(run) = self.run.as_mut() else {
+        let Some(resumed) = self.take_checkpoint_resumed() else {
             return Ok(false);
         };
-        if run.cancelled || run.signal.aborted() || run.compaction_failed {
-            return Ok(false);
-        }
-        let resumed = run.resume_overflow.take();
         let settings = self.compaction_settings();
         if resumed.is_none() && !crate::auto_compaction::may_be_due(&settings, self.model.context_window) {
             return Ok(false);
         }
-        let pi = self.pi();
-        let Ok(prepared) = self.prepare_compaction_of(&pi, settings, resumed.is_some()) else {
+        let Some((prepared, reason)) = self.prepare_checkpoint_reason(settings, resumed.is_some()) else {
             return Ok(false);
         };
-        let reason = if resumed.is_some() {
-            Reason::Overflow
-        } else {
-            let path = pi.branch_entries(None);
-            let trigger = self
-                .run
-                .as_ref()
-                .and_then(|run| run.journal.run().map(|r| r.trigger().to_string()));
-            let due = auto_compaction::threshold_due(
-                &settings,
-                &path,
-                trigger.as_deref(),
-                prepared.preparation.tokens_before,
-                self.model.context_window,
-            );
-            if !due {
-                return Ok(false);
-            }
-            Reason::Threshold
-        };
-        drop(pi);
         if let Some(run) = self.run.as_mut() {
             run.journal.begin_compaction(
                 &mut lock_session(&self.session),
@@ -339,6 +313,43 @@ impl Core {
             );
         }
         self.compaction_event(reason, None);
+        if self.try_decline_compaction(reason, &prepared, &settings) {
+            return Ok(false);
+        }
+        self.complete_compaction(reason, &prepared)?;
+        Ok(true)
+    }
+
+    fn take_checkpoint_resumed(&mut self) -> Option<Option<Value>> {
+        let run = self.run.as_mut()?;
+        if run.cancelled || run.signal.aborted() || run.compaction_failed {
+            return None;
+        }
+        Some(run.resume_overflow.take())
+    }
+
+    fn prepare_checkpoint_reason(&self, settings: CompactionSettings, is_overflow: bool) -> Option<(Prepared, Reason)> {
+        let pi = self.pi();
+        let prepared = self.prepare_compaction_of(&pi, settings, is_overflow).ok()?;
+        if is_overflow {
+            return Some((prepared, Reason::Overflow));
+        }
+        let path = pi.branch_entries(None);
+        let trigger = self
+            .run
+            .as_ref()
+            .and_then(|run| run.journal.run().map(|r| r.trigger().to_string()));
+        let due = auto_compaction::threshold_due(
+            &settings,
+            &path,
+            trigger.as_deref(),
+            prepared.preparation.tokens_before,
+            self.model.context_window,
+        );
+        due.then_some((prepared, Reason::Threshold))
+    }
+
+    fn try_decline_compaction(&mut self, reason: Reason, prepared: &Prepared, settings: &CompactionSettings) -> bool {
         let waiting = context_lane::pending_count(&lock_session(&self.session));
         let window = i64::try_from(self.model.context_window).ok();
         let tokens = i64::try_from(prepared.preparation.tokens_before).unwrap_or(i64::MAX);
@@ -349,10 +360,9 @@ impl Core {
             .unwrap_or(false)
         {
             self.decline(reason, waiting);
-            return Ok(false);
+            return true;
         }
-        self.complete_compaction(reason, &prepared)?;
-        Ok(true)
+        false
     }
 
     /// A root response overflowed the context window (crate::turns): unless this generation already recovered from

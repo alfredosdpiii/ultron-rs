@@ -113,100 +113,128 @@ fn queue_mode(mode: Option<&Value>) -> Result<&str, String> {
         .ok_or_else(|| format!("Invalid queue mode: {}", jsrt::value::string(mode)))
 }
 
-/// One command: `Ok(None)` when the response comes later (or was already written).
-fn run_command(
-    session: &mut Remote,
-    command: &Value,
-    kind: &str,
-    out: &Output,
-) -> Result<Option<Option<Value>>, String> {
-    let str_field = |key: &str| command.get(key).and_then(Value::as_str);
-    let done = |data: Option<Value>| Ok(Some(data));
-    match kind {
-        "prompt" => {
-            let (message, images) = prompt_request(command, kind)?;
-            if let Some(rest) = message.trim().strip_prefix("/observer")
-                && (rest.is_empty() || rest.starts_with(char::is_whitespace))
-            {
-                return done(Some(json!({"text": session.observer(rest.trim())?})));
+type CommandResult = Result<Option<Option<Value>>, String>;
+type CommandHandler = fn(&mut Remote, &Value, &str, &Output) -> Option<CommandResult>;
+
+fn str_field<'a>(command: &'a Value, key: &str) -> Option<&'a str> {
+    command.get(key).and_then(Value::as_str)
+}
+
+fn done(data: Option<Value>) -> CommandResult {
+    Ok(Some(data))
+}
+
+fn make_reply(command: &Value, kind: &str, out: &Output) -> Reply {
+    Reply {
+        id: command.get("id").cloned(),
+        command: kind.into(),
+        out: out.clone(),
+    }
+}
+
+fn try_slash_prompt(session: &mut Remote, message: &str) -> Option<CommandResult> {
+    if let Some(rest) = message.trim().strip_prefix("/observer")
+        && (rest.is_empty() || rest.starts_with(char::is_whitespace))
+    {
+        return Some(
+            session
+                .observer(rest.trim())
+                .map(|text| Some(Some(json!({"text": text})))),
+        );
+    }
+    if let Some(args) = goal_arguments(message) {
+        return Some(session.goal(args).map(|text| Some(Some(json!({"text": text})))));
+    }
+    if let Some((command, args)) =
+        resources::keep_going::toggle_command(message).filter(|_| message.trim_start().starts_with('/'))
+    {
+        return Some(session.persona(command, &args).map(|value| Some(Some(value))));
+    }
+    None
+}
+
+fn handle_prompt(session: &mut Remote, command: &Value, kind: &str) -> CommandResult {
+    let (message, images) = prompt_request(command, kind)?;
+    if let Some(result) = try_slash_prompt(session, &message) {
+        return result;
+    }
+    if session.is_running() {
+        let queue = match str_field(command, "streamingBehavior") {
+            Some("steer") => QueueKind::Steer,
+            Some("followUp") => QueueKind::FollowUp,
+            _ => {
+                return Err(
+                    "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message."
+                        .into(),
+                );
             }
-            if let Some(args) = goal_arguments(&message) {
-                return done(Some(json!({"text": session.goal(args)?})));
-            }
-            if let Some((command, args)) =
-                resources::keep_going::toggle_command(&message).filter(|_| message.trim_start().starts_with('/'))
-            {
-                return done(Some(session.persona(command, &args)?));
-            }
-            if session.is_running() {
-                let queue = match str_field("streamingBehavior") {
-                    Some("steer") => QueueKind::Steer,
-                    Some("followUp") => QueueKind::FollowUp,
-                    _ => {
-                        return Err("Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.".into());
-                    }
-                };
-                session.enqueue(queue, message, images)?;
-                return done(None);
-            }
-            session.prompt(message, images)?;
-            done(None)
-        }
+        };
+        session.enqueue(queue, message, images)?;
+        return done(None);
+    }
+    session.prompt(message, images)?;
+    done(None)
+}
+
+fn run_prompt_command(session: &mut Remote, command: &Value, kind: &str, _out: &Output) -> Option<CommandResult> {
+    Some(match kind {
+        "prompt" => handle_prompt(session, command, kind),
         "steer" | "follow_up" => {
-            let (message, images) = prompt_request(command, kind)?;
             let queue = if kind == "steer" {
                 QueueKind::Steer
             } else {
                 QueueKind::FollowUp
             };
-            session.enqueue(queue, message, images)?;
-            done(None)
+            prompt_request(command, kind)
+                .and_then(|(message, images)| session.enqueue(queue, message, images))
+                .and_then(|()| done(None))
         }
         "abort" => {
             session.abort();
             done(None)
         }
         "clear_queue" => done(Some(session.clear_queue())),
-        "new_session" => {
-            session.new_session()?;
-            done(Some(json!({"cancelled": false})))
-        }
-        "get_state" => done(Some(session.state())),
+        _ => return None,
+    })
+}
+
+fn run_model_command(session: &mut Remote, command: &Value, kind: &str, _out: &Output) -> Option<CommandResult> {
+    Some(match kind {
         "set_model" => {
             let provider = jsrt::value::string(command.get("provider"));
             let model_id = jsrt::value::string(command.get("modelId"));
-            done(Some(session.set_model(&provider, &model_id)?))
+            session.set_model(&provider, &model_id).map(|v| Some(Some(v)))
         }
-        "cycle_model" => done(Some(session.cycle_model()?.unwrap_or(Value::Null))),
+        "cycle_model" => session.cycle_model().map(|v| Some(Some(v.unwrap_or(Value::Null)))),
         "get_available_models" => done(Some(json!({"models": session.available_models()}))),
         "set_thinking_level" => {
             let level = jsrt::value::string(command.get("level"));
-            session.set_thinking_level(&level)?;
-            done(None)
+            session.set_thinking_level(&level).and_then(|()| done(None))
         }
-        "cycle_thinking_level" => match session.cycle_thinking_level()? {
-            Some(level) => done(Some(json!({"level": level}))),
-            None => done(Some(Value::Null)),
-        },
+        "cycle_thinking_level" => session
+            .cycle_thinking_level()
+            .map(|level| Some(Some(level.map_or(Value::Null, |l| json!({"level": l}))))),
         "get_available_thinking_levels" => done(Some(json!({"levels": session.thinking_levels()}))),
+        _ => return None,
+    })
+}
+
+fn run_queue_and_retry_command(
+    session: &mut Remote,
+    command: &Value,
+    kind: &str,
+    _out: &Output,
+) -> Option<CommandResult> {
+    Some(match kind {
         "set_steering_mode" | "set_follow_up_mode" => {
-            let mode = queue_mode(command.get("mode"))?;
             let queue = if kind == "set_steering_mode" {
                 QueueKind::Steer
             } else {
                 QueueKind::FollowUp
             };
-            session.set_queue_mode(queue, mode)?;
-            done(None)
-        }
-        "compact" => {
-            let reply = Reply {
-                id: command.get("id").cloned(),
-                command: kind.into(),
-                out: out.clone(),
-            };
-            session.compact(str_field("customInstructions"), reply)?;
-            Ok(None)
+            queue_mode(command.get("mode"))
+                .and_then(|mode| session.set_queue_mode(queue, mode))
+                .and_then(|()| done(None))
         }
         "set_auto_compaction" => {
             session.set_auto_compaction(command.get("enabled") == Some(&Value::Bool(true)));
@@ -220,81 +248,132 @@ fn run_command(
             session.abort_retry();
             done(None)
         }
+        _ => return None,
+    })
+}
+
+fn run_exec_command(session: &mut Remote, command: &Value, kind: &str, out: &Output) -> Option<CommandResult> {
+    Some(match kind {
+        "compact" => {
+            let reply = make_reply(command, kind, out);
+            session
+                .compact(str_field(command, "customInstructions"), reply)
+                .map(|()| None)
+        }
         "bash" => {
-            let text = str_field("command").ok_or("bash requires a command")?;
-            let reply = Reply {
-                id: command.get("id").cloned(),
-                command: kind.into(),
-                out: out.clone(),
-            };
-            session.bash(
-                text.to_string(),
-                command.get("excludeFromContext") == Some(&Value::Bool(true)),
-                reply,
-            )?;
-            Ok(None)
+            let reply = make_reply(command, kind, out);
+            let exclude = command.get("excludeFromContext") == Some(&Value::Bool(true));
+            str_field(command, "command")
+                .ok_or_else(|| "bash requires a command".to_string())
+                .and_then(|text| session.bash(text.to_string(), exclude, reply))
+                .map(|()| None)
         }
         "abort_bash" => {
             session.abort_bash();
             done(None)
         }
+        _ => return None,
+    })
+}
+
+fn run_session_read_command(session: &mut Remote, command: &Value, kind: &str, _out: &Output) -> Option<CommandResult> {
+    Some(match kind {
+        "get_state" => done(Some(session.state())),
         "get_session_stats" => done(Some(session.session_stats())),
-        "switch_session" => {
-            let selector = str_field("sessionPath").ok_or("switch_session requires sessionPath")?;
-            session.switch_session(selector)?;
-            done(Some(json!({"cancelled": false})))
-        }
-        "fork" => {
-            let entry_id = str_field("entryId").ok_or("fork requires entryId")?;
-            let text = session.fork(entry_id)?;
-            done(Some(json!({"text": text, "cancelled": false})))
-        }
-        "clone" => {
-            session.clone_session()?;
-            done(Some(json!({"cancelled": false})))
-        }
         "get_fork_messages" => done(Some(json!({"messages": session.fork_messages()}))),
-        "get_entries" => {
-            let (entries, leaf) = session.entries(str_field("since"))?;
-            done(Some(json!({"entries": entries, "leafId": leaf})))
-        }
+        "get_entries" => session
+            .entries(str_field(command, "since"))
+            .map(|(entries, leaf)| Some(Some(json!({"entries": entries, "leafId": leaf})))),
         "get_tree" => {
             let (tree, leaf) = session.tree();
             done(Some(json!({"tree": tree, "leafId": leaf})))
         }
         "get_last_assistant_text" => done(Some(json!({"text": session.last_assistant_text()}))),
-        "set_session_name" => {
-            let name = str_field("name").map_or_default(jsrt::string::trim);
-            if name.is_empty() {
-                return Err("Session name cannot be empty".into());
-            }
-            session.set_session_name(name)?;
-            done(None)
-        }
         "get_messages" => done(Some(json!({"messages": session.messages()}))),
-        "get_commands" => done(Some(json!({"commands": session.commands()?}))),
-        "observer" => done(Some(
-            json!({"text": session.observer(str_field("args").unwrap_or_default())?}),
-        )),
-        "goal" => {
-            let args = str_field("args").unwrap_or_default();
-            done(Some(json!({"text": session.goal(args)?})))
+        "get_commands" => session
+            .commands()
+            .map(|commands| Some(Some(json!({"commands": commands})))),
+        _ => return None,
+    })
+}
+
+fn run_session_mutate_command(
+    session: &mut Remote,
+    command: &Value,
+    kind: &str,
+    _out: &Output,
+) -> Option<CommandResult> {
+    Some(match kind {
+        "new_session" => session.new_session().map(|()| Some(Some(json!({"cancelled": false})))),
+        "switch_session" => str_field(command, "sessionPath")
+            .ok_or_else(|| "switch_session requires sessionPath".to_string())
+            .and_then(|selector| session.switch_session(selector))
+            .map(|()| Some(Some(json!({"cancelled": false})))),
+        "fork" => str_field(command, "entryId")
+            .ok_or_else(|| "fork requires entryId".to_string())
+            .and_then(|entry_id| session.fork(entry_id))
+            .map(|text| Some(Some(json!({"text": text, "cancelled": false})))),
+        "clone" => session
+            .clone_session()
+            .map(|()| Some(Some(json!({"cancelled": false})))),
+        "set_session_name" => {
+            let name = str_field(command, "name").map_or_default(jsrt::string::trim);
+            if name.is_empty() {
+                Err("Session name cannot be empty".into())
+            } else {
+                session.set_session_name(name).and_then(|()| done(None))
+            }
         }
-        "persona" => done(Some(session.persona("persona", str_field("args").unwrap_or_default())?)),
-        "keep_going" => done(Some(
-            session.persona("keepgoing", str_field("args").unwrap_or_default())?,
-        )),
-        "inspect" => {
-            let request = str_field("request").ok_or("inspect requires a request type")?;
-            let payload = command.get("payload").cloned().unwrap_or_else(|| json!({}));
-            done(Some(session.inspect(request, payload)?))
+        _ => return None,
+    })
+}
+
+fn run_extension_command(session: &mut Remote, command: &Value, kind: &str, _out: &Output) -> Option<CommandResult> {
+    Some(match kind {
+        "observer" => session
+            .observer(str_field(command, "args").unwrap_or_default())
+            .map(|text| Some(Some(json!({"text": text})))),
+        "goal" => session
+            .goal(str_field(command, "args").unwrap_or_default())
+            .map(|text| Some(Some(json!({"text": text})))),
+        "persona" => session
+            .persona("persona", str_field(command, "args").unwrap_or_default())
+            .map(|v| Some(Some(v))),
+        "keep_going" => session
+            .persona("keepgoing", str_field(command, "args").unwrap_or_default())
+            .map(|v| Some(Some(v))),
+        "inspect" => str_field(command, "request")
+            .ok_or_else(|| "inspect requires a request type".to_string())
+            .and_then(|request| {
+                let payload = command.get("payload").cloned().unwrap_or_else(|| json!({}));
+                session.inspect(request, payload)
+            })
+            .map(|v| Some(Some(v))),
+        "export_html" => session
+            .export_html(str_field(command, "outputPath"))
+            .map(|path| Some(Some(json!({ "path": path })))),
+        _ => return None,
+    })
+}
+
+const COMMAND_HANDLERS: &[CommandHandler] = &[
+    run_prompt_command,
+    run_model_command,
+    run_queue_and_retry_command,
+    run_exec_command,
+    run_session_read_command,
+    run_session_mutate_command,
+    run_extension_command,
+];
+
+/// One command: `Ok(None)` when the response comes later (or was already written).
+fn run_command(session: &mut Remote, command: &Value, kind: &str, out: &Output) -> CommandResult {
+    for handler in COMMAND_HANDLERS {
+        if let Some(result) = handler(session, command, kind, out) {
+            return result;
         }
-        "export_html" => {
-            let path = session.export_html(str_field("outputPath"))?;
-            done(Some(json!({ "path": path })))
-        }
-        other => Err(format!("Unknown command: {other}")),
     }
+    Err(format!("Unknown command: {kind}"))
 }
 
 /// `handleLine`: parse one record and answer it. Extension UI responses go to the session's worker (unknown ids are

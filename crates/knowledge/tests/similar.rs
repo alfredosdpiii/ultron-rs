@@ -249,14 +249,14 @@ fn the_new_migration_is_indexed_with_its_trigger_shape() {
         "sql:trigger:before-update",
         "sql:trigger:for-each-statement",
     ] {
-        assert!(kinds.contains(&kind.to_string()), "{kind} missing from {kinds:?}");
+        assert!(kinds.iter().any(|i| i == kind), "{kind} missing from {kinds:?}");
     }
     assert!(
         !kinds.iter().any(|kind| kind == "sql:trigger:before-truncate"),
         "{kinds:?}"
     );
     let audit = construct_kinds(&db, &head, AUDIT);
-    assert!(audit.contains(&"sql:trigger:before-truncate".to_string()), "{audit:?}");
+    assert!(audit.iter().any(|i| i == "sql:trigger:before-truncate"), "{audit:?}");
 }
 
 #[test]
@@ -317,7 +317,7 @@ fn the_kernel_finds_the_audit_migration_as_the_one_like_the_new_one() {
     let ranked: Vec<(String, Vec<String>)> = serde_json::from_str(&out).unwrap();
     assert!(!ranked.is_empty(), "{out}");
     assert_eq!(ranked[0].0, AUDIT, "{out}");
-    assert!(ranked[0].1.contains(&"sql:trigger:before-update".to_string()), "{out}");
+    assert!(ranked[0].1.iter().any(|i| i == "sql:trigger:before-update"), "{out}");
     // The ordinary migrations share only constructs most migrations have; they rank after it, if at all.
     for (path, _) in &ranked[1..] {
         assert_ne!(path, NEW);

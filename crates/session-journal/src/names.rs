@@ -221,14 +221,72 @@ fn content_text(content: &Value) -> String {
     }
 }
 
+#[derive(Default)]
+struct DetailsAcc {
+    name: Option<String>,
+    automatic: Option<String>,
+    first: String,
+    all: Vec<String>,
+    count: usize,
+}
+
+impl DetailsAcc {
+    fn apply_message(&mut self, m: &Value) {
+        let role = &m["message"]["role"];
+        if role != "user" && role != "assistant" {
+            return;
+        }
+        self.count += 1;
+        if role == "user" && self.first.is_empty() {
+            self.first = content_text(&m["message"]["content"]);
+        }
+        if let Some(content) = m["message"].get("content") {
+            let text = search_text(content);
+            if !text.is_empty() {
+                self.all.push(text);
+            }
+        }
+    }
+
+    fn apply_value_mutation(&mut self, m: &Value) -> bool {
+        if m["namespace"] == SESSION_NAME {
+            self.name = (m["op"] == "set")
+                .then(|| m["value"].as_str().map(str::to_string))
+                .flatten();
+            return true;
+        }
+        if m["namespace"] == crate::ns::MODULE && m["key"] == AUTO_NAME_KEY {
+            self.automatic = (m["op"] == "set")
+                .then(|| m["value"]["automatic"].as_str().map(str::to_string))
+                .flatten();
+            return true;
+        }
+        false
+    }
+
+    fn apply_mutation(&mut self, m: &Value) {
+        let kind = m.get("kind").and_then(Value::as_str);
+        if kind == Some("value") && self.apply_value_mutation(m) {
+            return;
+        }
+        if m["type"] == "session_info" {
+            self.name = m["name"]
+                .as_str()
+                .map(jsrt::string::trim)
+                .filter(|n| !n.is_empty())
+                .map(str::to_string);
+            return;
+        }
+        if (kind == Some("entry") || kind.is_none()) && m["type"] == "message" {
+            self.apply_message(m);
+        }
+    }
+}
+
 /// `nativeSessionDetails` of a file's text (format 4 or v3), plus whether the name is automatic and
 /// `allMessagesText`.
 pub fn session_details(text: &str) -> SessionDetails {
-    let mut name: Option<String> = None;
-    let mut automatic: Option<String> = None;
-    let mut first = String::new();
-    let mut all = Vec::new();
-    let mut count = 0;
+    let mut acc = DetailsAcc::default();
     for line in text.split('\n').filter(|l| !l.trim().is_empty()) {
         let Ok(parsed) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -239,51 +297,15 @@ pub fn session_details(text: &str) -> SessionDetails {
         };
         mutations.iter_mut().for_each(crate::codec::rename_legacy);
         for m in mutations.iter().filter(|m| m.is_object()) {
-            let kind = m.get("kind").and_then(Value::as_str);
-            if kind == Some("value") && m["namespace"] == SESSION_NAME {
-                name = (m["op"] == "set")
-                    .then(|| m["value"].as_str().map(str::to_string))
-                    .flatten();
-                continue;
-            }
-            if kind == Some("value") && m["namespace"] == crate::ns::MODULE && m["key"] == AUTO_NAME_KEY {
-                automatic = (m["op"] == "set")
-                    .then(|| m["value"]["automatic"].as_str().map(str::to_string))
-                    .flatten();
-                continue;
-            }
-            if m["type"] == "session_info" {
-                name = m["name"]
-                    .as_str()
-                    .map(jsrt::string::trim)
-                    .filter(|n| !n.is_empty())
-                    .map(str::to_string);
-                continue;
-            }
-            if (kind == Some("entry") || kind.is_none()) && m["type"] == "message" {
-                let role = &m["message"]["role"];
-                if role != "user" && role != "assistant" {
-                    continue;
-                }
-                count += 1;
-                if role == "user" && first.is_empty() {
-                    first = content_text(&m["message"]["content"]);
-                }
-                if let Some(content) = m["message"].get("content") {
-                    let text = search_text(content);
-                    if !text.is_empty() {
-                        all.push(text);
-                    }
-                }
-            }
+            acc.apply_mutation(m);
         }
     }
     SessionDetails {
-        automatic_name: name.is_some() && name == automatic,
-        name,
-        first_message: first,
-        all_messages_text: all.join(" "),
-        message_count: count,
+        automatic_name: acc.name.is_some() && acc.name == acc.automatic,
+        name: acc.name,
+        first_message: acc.first,
+        all_messages_text: acc.all.join(" "),
+        message_count: acc.count,
     }
 }
 

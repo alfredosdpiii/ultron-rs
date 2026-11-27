@@ -213,6 +213,103 @@ fn listen_for_callback(
     }
 }
 
+fn reset_sign_in_state(
+    store: &ServerStore,
+    stored: &Option<Value>,
+    settings: &OAuthSettings,
+    registered: &[String],
+    redirect_url: &str,
+) -> Result<(), OAuthError> {
+    let Some(Value::Object(_)) = stored else {
+        return Ok(());
+    };
+    store.update(|current| {
+        let Some(Value::Object(mut next)) = current else {
+            return None;
+        };
+        next.shift_remove("oauthState");
+        if settings.client_id.is_none() && !registered.iter().any(|i| i == redirect_url) {
+            next.shift_remove("clientInformation");
+            next.shift_remove("tokens");
+            next.shift_remove("tokensExpireAt");
+        }
+        Some(Value::Object(next))
+    })
+}
+
+fn sign_in_scope(
+    stored: Option<&Value>,
+    settings: &OAuthSettings,
+    challenge: Option<&Challenge>,
+    step_up: bool,
+) -> Option<String> {
+    let granted = stored.and_then(|s| s["tokens"]["scope"].as_str());
+    let challenged = challenge.and_then(|c| c.scope.as_deref());
+    if step_up {
+        merge_scopes(&[settings.scope.as_deref(), step_up_scope(granted, challenged).as_deref()])
+    } else {
+        merge_scopes(&[settings.scope.as_deref(), challenged])
+    }
+}
+
+struct SignInRequest<'a> {
+    server_url: &'a str,
+    store: &'a ServerStore,
+    stored: Option<&'a Value>,
+    settings: &'a OAuthSettings,
+    challenge: Option<&'a Challenge>,
+    step_up: bool,
+    redirect_url: &'a str,
+}
+
+fn run_sign_in_flow(
+    req: &SignInRequest<'_>,
+    callback: &CallbackServer,
+    prompt: &dyn SignInPrompt,
+) -> Result<(), OAuthError> {
+    let authorization_url: Mutex<Option<String>> = Mutex::new(None);
+    let provider = provider(
+        req.server_url,
+        req.store,
+        req.settings,
+        req.redirect_url,
+        Box::new(|url: &str| {
+            *jsrt::sync::lock(&authorization_url) = Some(url.to_string());
+        }),
+    );
+    let flow = FlowOptions {
+        server_url: req.server_url.to_string(),
+        resource_metadata_url: req.challenge.and_then(|c| c.resource_metadata_url.clone()),
+        authorization_server_metadata_url: req.settings.auth_server_metadata_url.clone(),
+        scope: sign_in_scope(req.stored, req.settings, req.challenge, req.step_up),
+        skip_refresh: req.step_up,
+        fetch: Fetcher {
+            timeout: None,
+            proxy: req.settings.proxy.clone(),
+        },
+        ..FlowOptions::default()
+    };
+    if authorize(&provider, &flow)? == FlowResult::Authorized {
+        return Ok(());
+    }
+    let url = jsrt::sync::lock(&authorization_url)
+        .clone()
+        .ok_or_else(|| OAuthError::Other("OAuth flow did not produce an authorization URL".into()))?;
+    let state = provider.state()?;
+    prompt.show_authorization_url(&url);
+    let (code, iss) = wait_for_response(callback, &state, prompt)?;
+    authorize(
+        &provider,
+        &FlowOptions {
+            authorization_code: Some(code),
+            iss,
+            skip_refresh: false,
+            ..flow
+        },
+    )
+    .map(drop)
+}
+
 /// `signInMcpServer`: the stored refresh token when it still works, else the browser flow. Tokens go to `store`.
 pub fn sign_in(
     server_url: &str,
@@ -235,70 +332,17 @@ pub fn sign_in(
     let redirect_url = callback_options
         .fixed_redirect_url
         .unwrap_or_else(|| callback.redirect_url.clone());
-    let result = (|| {
-        if let Some(Value::Object(_)) = &stored {
-            store.update(|current| {
-                let Some(Value::Object(mut next)) = current else {
-                    return None;
-                };
-                next.shift_remove("oauthState");
-                if settings.client_id.is_none() && !registered.contains(&redirect_url) {
-                    next.shift_remove("clientInformation");
-                    next.shift_remove("tokens");
-                    next.shift_remove("tokensExpireAt");
-                }
-                Some(Value::Object(next))
-            })?;
-        }
-        let authorization_url: Mutex<Option<String>> = Mutex::new(None);
-        let provider = provider(
-            server_url,
-            store,
-            settings,
-            &redirect_url,
-            Box::new(|url: &str| {
-                *jsrt::sync::lock(&authorization_url) = Some(url.to_string());
-            }),
-        );
-        let granted = stored.as_ref().and_then(|s| s["tokens"]["scope"].as_str());
-        let challenged = challenge.and_then(|c| c.scope.as_deref());
-        let scope = if step_up {
-            merge_scopes(&[settings.scope.as_deref(), step_up_scope(granted, challenged).as_deref()])
-        } else {
-            merge_scopes(&[settings.scope.as_deref(), challenged])
-        };
-        let flow = FlowOptions {
-            server_url: server_url.to_string(),
-            resource_metadata_url: challenge.and_then(|c| c.resource_metadata_url.clone()),
-            authorization_server_metadata_url: settings.auth_server_metadata_url.clone(),
-            scope,
-            skip_refresh: step_up,
-            fetch: Fetcher {
-                timeout: None,
-                proxy: settings.proxy.clone(),
-            },
-            ..FlowOptions::default()
-        };
-        if authorize(&provider, &flow)? == FlowResult::Authorized {
-            return Ok(());
-        }
-        let url = jsrt::sync::lock(&authorization_url)
-            .clone()
-            .ok_or_else(|| OAuthError::Other("OAuth flow did not produce an authorization URL".into()))?;
-        let state = provider.state()?;
-        prompt.show_authorization_url(&url);
-        let (code, iss) = wait_for_response(&callback, &state, prompt)?;
-        authorize(
-            &provider,
-            &FlowOptions {
-                authorization_code: Some(code),
-                iss,
-                skip_refresh: false,
-                ..flow
-            },
-        )
-        .map(drop)
-    })();
+    let req = SignInRequest {
+        server_url,
+        store,
+        stored: stored.as_ref(),
+        settings,
+        challenge,
+        step_up,
+        redirect_url: &redirect_url,
+    };
+    let result = reset_sign_in_state(store, &stored, settings, &registered, &redirect_url)
+        .and_then(|()| run_sign_in_flow(&req, &callback, prompt));
     callback.close();
     result
 }

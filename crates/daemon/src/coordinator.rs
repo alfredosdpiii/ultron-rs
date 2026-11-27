@@ -86,6 +86,64 @@ pub fn run(args: &[String]) -> io::Result<()> {
     Ok(())
 }
 
+fn handle_control_message(
+    coordinator: &Shared,
+    writer: &LineWriter,
+    role: &mut Option<(bool, String)>,
+    message: &Value,
+) -> Result<(), String> {
+    match role {
+        None => match message["type"].as_str() {
+            Some("register_server") => register_server(coordinator, writer, message).map(|id| {
+                *role = Some((true, id));
+            }),
+            Some("register_peer") => register_peer(coordinator, writer, message).map(|id| {
+                *role = Some((false, id));
+            }),
+            _ => Err("Coordinator connection did not register a role".to_string()),
+        },
+        Some((true, id)) => {
+            let current = coordinator
+                .lock()
+                .servers
+                .iter()
+                .any(|s| &s.id == id && s.writer.same(writer));
+            if current {
+                route(coordinator, id, message)
+            } else {
+                Ok(())
+            }
+        }
+        Some((false, id)) => route(coordinator, id, message),
+    }
+}
+
+fn disconnect_control_role(state: &mut State, writer: &LineWriter, role: Option<(bool, String)>) {
+    match role {
+        Some((true, id)) => {
+            let before = state.servers.len();
+            state.servers.retain(|s| !(s.id == id && s.writer.same(writer)));
+            if state.servers.len() != before {
+                notify(
+                    &state.peers,
+                    &json!({"type": "server_disconnected", "serverConnectionId": id}),
+                );
+            }
+        }
+        Some((false, id)) => {
+            let before = state.peers.len();
+            state.peers.retain(|(p, w)| !(p == &id && w.same(writer)));
+            if state.peers.len() != before {
+                let message = json!({"type": "peer_disconnected", "peerId": id});
+                for server in &state.servers {
+                    let _ = server.writer.send(&message);
+                }
+            }
+        }
+        None => {}
+    }
+}
+
 fn accept_control(coordinator: &Shared, stream: UnixStream) {
     let Ok(read) = stream.try_clone() else { return };
     {
@@ -99,65 +157,15 @@ fn accept_control(coordinator: &Shared, stream: UnixStream) {
     let writer = LineWriter::new(stream);
     let mut reader = LineReader::new(read);
     let mut role: Option<(bool, String)> = None;
-    loop {
-        let message = match reader.read_value() {
-            Ok(Some(message)) if message["type"].is_string() => message,
-            _ => break,
-        };
-        let outcome = match &role {
-            None => match message["type"].as_str() {
-                Some("register_server") => register_server(coordinator, &writer, &message).map(|id| {
-                    role = Some((true, id));
-                }),
-                Some("register_peer") => register_peer(coordinator, &writer, &message).map(|id| {
-                    role = Some((false, id));
-                }),
-                _ => Err("Coordinator connection did not register a role".to_string()),
-            },
-            Some((true, id)) => {
-                let current = coordinator
-                    .lock()
-                    .servers
-                    .iter()
-                    .any(|s| &s.id == id && s.writer.same(&writer));
-                if current {
-                    route(coordinator, id, &message)
-                } else {
-                    Ok(())
-                }
-            }
-            Some((false, id)) => route(coordinator, id, &message),
-        };
-        if outcome.is_err() {
+    while let Ok(Some(message)) = reader.read_value() {
+        if !message["type"].is_string() || handle_control_message(coordinator, &writer, &mut role, &message).is_err() {
             break;
         }
     }
     writer.shutdown();
     let mut state = coordinator.lock();
     state.control_connections -= 1;
-    match role {
-        Some((true, id)) => {
-            let before = state.servers.len();
-            state.servers.retain(|s| !(s.id == id && s.writer.same(&writer)));
-            if state.servers.len() != before {
-                notify(
-                    &state.peers,
-                    &json!({"type": "server_disconnected", "serverConnectionId": id}),
-                );
-            }
-        }
-        Some((false, id)) => {
-            let before = state.peers.len();
-            state.peers.retain(|(p, w)| !(p == &id && w.same(&writer)));
-            if state.peers.len() != before {
-                let message = json!({"type": "peer_disconnected", "peerId": id});
-                for server in &state.servers {
-                    let _ = server.writer.send(&message);
-                }
-            }
-        }
-        None => {}
-    }
+    disconnect_control_role(&mut state, &writer, role);
     drop(state);
     check_empty(coordinator);
 }

@@ -199,22 +199,8 @@ impl Failure {
             Sdk::Anthropic => body,
             Sdk::OpenAi => body.as_ref().and_then(|b| b.get("error").cloned()),
         };
-        let message_field = error
-            .as_ref()
-            .and_then(|e| e.get("message"))
-            .filter(|m| jsrt::value::truthy(Some(m)));
-        let msg = match (message_field, &error) {
-            (Some(Value::String(s)), _) => Some(s.clone()),
-            (Some(other), _) => Some(jsrt::json::stringify(other)),
-            (None, Some(e)) if jsrt::value::truthy(Some(e)) => Some(jsrt::json::stringify(e)),
-            _ => text.filter(|t| !t.is_empty()),
-        };
-        let message = match (status, msg) {
-            (Some(status), Some(msg)) if !msg.is_empty() => format!("{status} {msg}"),
-            (Some(status), _) => format!("{status} status code (no body)"),
-            (None, Some(msg)) if !msg.is_empty() => msg,
-            _ => "(no status code or body)".to_string(),
-        };
+        let msg = extract_api_message(error.as_ref(), text);
+        let message = format_api_message(status, msg);
         let raw_metadata = error
             .as_ref()
             .and_then(|e| e.pointer("/metadata/raw"))
@@ -402,6 +388,45 @@ pub(crate) async fn send_with_retry(
     .await
 }
 
+fn extract_api_message(error: Option<&Value>, text: Option<String>) -> Option<String> {
+    let message_field = error
+        .and_then(|e| e.get("message"))
+        .filter(|m| jsrt::value::truthy(Some(m)));
+    match (message_field, error) {
+        (Some(Value::String(s)), _) => Some(s.clone()),
+        (Some(other), _) => Some(jsrt::json::stringify(other)),
+        (None, Some(e)) if jsrt::value::truthy(Some(e)) => Some(jsrt::json::stringify(e)),
+        _ => text.filter(|t| !t.is_empty()),
+    }
+}
+
+fn format_api_message(status: Option<u16>, msg: Option<String>) -> String {
+    match (status, msg) {
+        (Some(status), Some(msg)) if !msg.is_empty() => format!("{status} {msg}"),
+        (Some(status), _) => format!("{status} status code (no body)"),
+        (None, Some(msg)) if !msg.is_empty() => msg,
+        _ => "(no status code or body)".to_string(),
+    }
+}
+
+async fn await_timeout(timeout_ms: Option<u64>) {
+    match timeout_ms {
+        Some(ms) => tokio::time::sleep(Duration::from_millis(ms)).await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn read_error_failure(sdk: Sdk, mut response: HttpResponse) -> Failure {
+    let mut bytes = Vec::new();
+    while let Ok(Some(chunk)) = response.body.next_chunk().await {
+        bytes.extend_from_slice(&chunk);
+    }
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let body = parse_json(&text).ok().filter(|body| jsrt::value::truthy(Some(body)));
+    let text = if body.is_some() { None } else { Some(text) };
+    Failure::api(sdk, Some(response.status), Some(response.headers), body, text)
+}
+
 async fn send_once(
     transport: &dyn Transport,
     request: &HttpRequest,
@@ -415,18 +440,12 @@ async fn send_once(
             ..Failure::plain("Request was aborted.")
         });
     }
-    let timed_out = async {
-        match timeout_ms {
-            Some(ms) => tokio::time::sleep(Duration::from_millis(ms)).await,
-            None => std::future::pending().await,
-        }
-    };
     let sent = tokio::select! {
         sent = transport.send(request.clone()) => sent,
         () = cancelled(signal) => return Err(Failure { api: true, ..Failure::plain("Request was aborted.") }),
-        () = timed_out => return Err(Failure { api: true, ..Failure::plain("Request timed out.") }),
+        () = await_timeout(timeout_ms) => return Err(Failure { api: true, ..Failure::plain("Request timed out.") }),
     };
-    let mut response = sent.map_err(|error| {
+    let response = sent.map_err(|error| {
         if error == REQUEST_TIMED_OUT {
             Failure::timed_out()
         } else {
@@ -436,20 +455,7 @@ async fn send_once(
     if (200..300).contains(&response.status) {
         return Ok(response);
     }
-    let mut bytes = Vec::new();
-    while let Ok(Some(chunk)) = response.body.next_chunk().await {
-        bytes.extend_from_slice(&chunk);
-    }
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    let body = parse_json(&text).ok().filter(|body| jsrt::value::truthy(Some(body)));
-    let text = if body.is_some() { None } else { Some(text) };
-    Err(Failure::api(
-        sdk,
-        Some(response.status),
-        Some(response.headers),
-        body,
-        text,
-    ))
+    Err(read_error_failure(sdk, response).await)
 }
 
 /// What a [`TimeoutTransport`] fails a request with; [`send_with_retry`] reports it as the SDK's

@@ -58,39 +58,44 @@ pub fn settings(
     let defaults = CompactionSettings::default();
     let compaction = settings.get("compaction");
     let key = format!("{provider}/{model_id}");
-    let resolve = |field: &str, fallback: u64| -> Result<u64, String> {
-        let ordinary = token_setting(compaction.and_then(|c| c.get(field)), &format!("compaction.{field}"))?;
-        let entry = compaction
-            .and_then(|c| c.get("modelOverrides"))
-            .and_then(|o| o.get(&key));
-        if let Some(entry) = entry
-            && !entry.is_object()
-        {
-            return Err(format!(
-                "Invalid compaction.modelOverrides[\"{key}\"] setting: {}. Expected an object.",
-                jsrt::value::string(Some(entry))
-            ));
-        }
-        let overridden = token_setting(
-            entry.and_then(|e| e.get(field)),
-            &format!("compaction.modelOverrides[\"{key}\"].{field}"),
-        )?;
-        Ok(overridden.or(ordinary).unwrap_or(fallback))
-    };
-    let reserve_tokens = resolve("reserveTokens", defaults.reserve_tokens)?;
-    let keep_recent_tokens = resolve("keepRecentTokens", defaults.keep_recent_tokens)?;
-    let configured = match compaction.and_then(|c| c.get("enabled")) {
-        None | Some(Value::Null) => true,
-        Some(Value::Bool(on)) => *on,
-        Some(Value::Number(n)) => n.as_f64().is_some_and(|n| n != 0.0 && !n.is_nan()),
-        Some(Value::String(text)) => !text.is_empty(),
-        Some(_) => true,
-    };
+    let reserve_tokens = resolve_token_field(compaction, &key, "reserveTokens", defaults.reserve_tokens)?;
+    let keep_recent_tokens = resolve_token_field(compaction, &key, "keepRecentTokens", defaults.keep_recent_tokens)?;
+    let configured = compaction_enabled_setting(compaction);
     Ok(CompactionSettings {
         enabled: enabled.unwrap_or(configured),
         reserve_tokens,
         keep_recent_tokens,
     })
+}
+
+fn resolve_token_field(compaction: Option<&Value>, key: &str, field: &str, fallback: u64) -> Result<u64, String> {
+    let ordinary = token_setting(compaction.and_then(|c| c.get(field)), &format!("compaction.{field}"))?;
+    let entry = compaction
+        .and_then(|c| c.get("modelOverrides"))
+        .and_then(|o| o.get(key));
+    if let Some(entry) = entry
+        && !entry.is_object()
+    {
+        return Err(format!(
+            "Invalid compaction.modelOverrides[\"{key}\"] setting: {}. Expected an object.",
+            jsrt::value::string(Some(entry))
+        ));
+    }
+    let overridden = token_setting(
+        entry.and_then(|e| e.get(field)),
+        &format!("compaction.modelOverrides[\"{key}\"].{field}"),
+    )?;
+    Ok(overridden.or(ordinary).unwrap_or(fallback))
+}
+
+fn compaction_enabled_setting(compaction: Option<&Value>) -> bool {
+    match compaction.and_then(|c| c.get("enabled")) {
+        None | Some(Value::Null) => true,
+        Some(Value::Bool(on)) => *on,
+        Some(Value::Number(n)) => n.as_f64().is_some_and(|n| n != 0.0 && !n.is_nan()),
+        Some(Value::String(text)) => !text.is_empty(),
+        Some(_) => true,
+    }
 }
 
 /// pi-ai `isContextOverflow(message, contextWindow)`: an error a provider uses for an oversized request, a successful

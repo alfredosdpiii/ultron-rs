@@ -254,6 +254,63 @@ fn flag(request: &Request<'_>, key: &str, default: bool) -> Result<bool, String>
     }
 }
 
+struct MermaidArgs<'a> {
+    text: &'a str,
+    theme: &'a str,
+    show: bool,
+    to_model: bool,
+    path: Option<PathBuf>,
+}
+
+fn check_child_end(end: signals::child::End, timeout_secs: u64) -> Result<std::process::ExitStatus, String> {
+    match end {
+        signals::child::End::Exited(Some(status)) => Ok(status),
+        signals::child::End::Exited(None) => Err("diagram.mermaid: node's exit status could not be read".into()),
+        signals::child::End::TimedOut => Err(format!("diagram.mermaid: node did not finish within {timeout_secs} s")),
+        signals::child::End::Cancelled => Err("diagram.mermaid was cancelled".to_string()),
+    }
+}
+
+fn parse_node_output(status: std::process::ExitStatus, stdout: &[u8], stderr: &[u8]) -> Result<PeleOutput, String> {
+    let out = String::from_utf8_lossy(stdout);
+    match parse_runner_output(&out) {
+        Ok(output) => Ok(output),
+        Err(error) if status.success() || out.contains("\"ok\"") => Err(error),
+        Err(_) => {
+            let err = String::from_utf8_lossy(stderr);
+            let tail: Vec<&str> = err.lines().filter(|l| !l.trim().is_empty()).collect();
+            let tail = tail[tail.len().saturating_sub(3)..].join("\n");
+            Err(format!("diagram.mermaid: node failed ({status}): {tail}"))
+        }
+    }
+}
+
+fn parse_theme(payload: &serde_json::Map<String, Value>) -> Result<&str, String> {
+    match payload.get("theme") {
+        None | Some(Value::Null) => Ok("auto"),
+        Some(Value::String(theme)) => Ok(theme.as_str()),
+        Some(_) => Err("diagram.mermaid theme must be \"auto\", \"dark\" or \"light\"".into()),
+    }
+}
+
+fn parse_output_path(payload: &serde_json::Map<String, Value>, cwd: &Path) -> Result<Option<PathBuf>, String> {
+    match payload.get("path") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(path)) if !path.trim().is_empty() => Ok(Some(cwd.join(path))),
+        Some(_) => Err("diagram.mermaid path must be a non-empty string".into()),
+    }
+}
+
+fn write_diagram_files(svg_path: &Path, svg: &str, png_path: &Path, png: &[u8]) -> Result<(), String> {
+    for (file, bytes) in [(svg_path, svg.as_bytes()), (png_path, png)] {
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("diagram.mermaid: {}: {e}", parent.display()))?;
+        }
+        std::fs::write(file, bytes).map_err(|e| format!("diagram.mermaid: {}: {e}", file.display()))?;
+    }
+    Ok(())
+}
+
 impl DiagramModule {
     /// Pele's SVG for `text`, from node on the session's PATH.
     fn render(&self, text: &str, signal: &kernel::Signal) -> Result<PeleOutput, String> {
@@ -278,37 +335,14 @@ impl DiagramModule {
         let output = signal
             .run_child(&mut command, Some(text.as_bytes()), bound)
             .map_err(|e| format!("diagram.mermaid: cannot run {}: {e}", node.display()))?;
-        let status = match output.end {
-            signals::child::End::Exited(Some(status)) => status,
-            signals::child::End::Exited(None) => {
-                return Err("diagram.mermaid: node's exit status could not be read".into());
-            }
-            signals::child::End::TimedOut => {
-                return Err(format!(
-                    "diagram.mermaid: node did not finish within {} s",
-                    self.config.timeout.as_secs()
-                ));
-            }
-            signals::child::End::Cancelled => return Err("diagram.mermaid was cancelled".to_string()),
-        };
+        let status = check_child_end(output.end, self.config.timeout.as_secs())?;
         if output.cut {
             return Err(format!(
                 "diagram.mermaid: the renderer's output is over {} MiB",
                 OUTPUT_CAP / 1024 / 1024
             ));
         }
-        let (out, err) = (output.stdout, output.stderr);
-        let out = String::from_utf8_lossy(&out);
-        match parse_runner_output(&out) {
-            Ok(output) => Ok(output),
-            Err(error) if status.success() || out.contains("\"ok\"") => Err(error),
-            Err(_) => {
-                let err = String::from_utf8_lossy(&err);
-                let tail: Vec<&str> = err.lines().filter(|l| !l.trim().is_empty()).collect();
-                let tail = tail[tail.len().saturating_sub(3)..].join("\n");
-                Err(format!("diagram.mermaid: node failed ({status}): {tail}"))
-            }
-        }
+        parse_node_output(status, &output.stdout, &output.stderr)
     }
 
     fn palette(&self, requested: &str) -> Result<DiagramPalette, String> {
@@ -322,44 +356,43 @@ impl DiagramModule {
         )
     }
 
-    fn mermaid(&self, request: &Request<'_>) -> Result<Value, String> {
-        kernel::ops::fields(request.kind, request.payload)?;
+    fn parse_mermaid_args<'a>(&self, request: &'a Request<'_>) -> Result<MermaidArgs<'a>, String> {
         let text = match request.payload.get("text") {
             Some(Value::String(text)) if !text.trim().is_empty() => text.as_str(),
             _ => return Err("diagram.mermaid text must be a non-empty string".into()),
         };
-        let theme = match request.payload.get("theme") {
-            None | Some(Value::Null) => "auto",
-            Some(Value::String(theme)) => theme.as_str(),
-            Some(_) => return Err("diagram.mermaid theme must be \"auto\", \"dark\" or \"light\"".into()),
-        };
-        let (show, to_model) = (flag(request, "show", true)?, flag(request, "to_model", false)?);
-        let path = match request.payload.get("path") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(path)) if !path.trim().is_empty() => Some(self.config.cwd.join(path)),
-            Some(_) => return Err("diagram.mermaid path must be a non-empty string".into()),
-        };
-        let palette = self.palette(theme)?;
-        let output = self.render(text, request.signal)?;
+        Ok(MermaidArgs {
+            text,
+            theme: parse_theme(request.payload)?,
+            show: flag(request, "show", true)?,
+            to_model: flag(request, "to_model", false)?,
+            path: parse_output_path(request.payload, &self.config.cwd)?,
+        })
+    }
+
+    fn mermaid(&self, request: &Request<'_>) -> Result<Value, String> {
+        kernel::ops::fields(request.kind, request.payload)?;
+        let args = self.parse_mermaid_args(request)?;
+        let palette = self.palette(args.theme)?;
+        let output = self.render(args.text, request.signal)?;
         let svg = svg::flatten_svg(&output.svg, &palette);
         let svg = crate::contrast::ensure_contrast(&svg, &palette);
         let fonts = self.config.fonts.clone().unwrap_or_else(svg::system_fonts);
         let png = svg::rasterize(&svg, PNG_SCALE, palette.background(), fonts)?;
-        let (svg_path, png_path) = output_paths(path.as_deref(), &self.config.out_dir, &slug(text, &output.kind));
-        for (file, bytes) in [(&svg_path, svg.as_bytes()), (&png_path, png.data.as_slice())] {
-            if let Some(parent) = file.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| format!("diagram.mermaid: {}: {e}", parent.display()))?;
-            }
-            std::fs::write(file, bytes).map_err(|e| format!("diagram.mermaid: {}: {e}", file.display()))?;
-        }
-        if show || to_model {
+        let (svg_path, png_path) = output_paths(
+            args.path.as_deref(),
+            &self.config.out_dir,
+            &slug(args.text, &output.kind),
+        );
+        write_diagram_files(&svg_path, &svg, &png_path, &png.data)?;
+        if args.show || args.to_model {
             (self.config.show)(&ShownDiagram {
                 lane: request.lane,
                 png_path: &png_path,
                 png: &png.data,
                 width: png.width,
                 height: png.height,
-                to_model,
+                to_model: args.to_model,
                 line: format!("diagram: {} ({}x{})", png_path.display(), png.width, png.height),
             })?;
         }

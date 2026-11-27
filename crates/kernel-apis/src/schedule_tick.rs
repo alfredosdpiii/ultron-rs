@@ -157,6 +157,63 @@ impl Drop for ScheduleTicker {
     }
 }
 
+enum TickStep {
+    Continue,
+    Wait(Option<i64>),
+}
+
+fn step_tick(
+    module: &SchedulesModule,
+    host: &dyn TaskHost,
+    clock: &dyn TickClock,
+    observer: &Option<TickObserver>,
+) -> TickStep {
+    match module.next_fire() {
+        Ok(Some(next)) if next <= clock.now() => {
+            let report = module.tick(host);
+            let settled = report.as_ref().is_ok_and(|report| {
+                ["fired", "failed"]
+                    .iter()
+                    .any(|key| report[*key].as_array().is_some_and(|items| !items.is_empty()))
+            });
+            if let Some(observer) = observer {
+                observer(&report);
+            }
+            if settled {
+                TickStep::Continue
+            } else {
+                TickStep::Wait(Some(clock.now().saturating_add(RETRY_MS)))
+            }
+        }
+        Ok(next) => TickStep::Wait(next),
+        Err(_) => TickStep::Wait(Some(clock.now().saturating_add(RETRY_MS))),
+    }
+}
+
+fn wait_for_deadline(shared: &Shared, clock: &dyn TickClock, deadline: Option<i64>) {
+    let mut flags = jsrt::sync::lock(&shared.flags);
+    while !flags.woken && !flags.closed {
+        let limit = deadline.map(|deadline| clock.wait_limit(deadline));
+        match limit {
+            None | Some(None) => {
+                flags = shared
+                    .bell
+                    .wait(flags)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            Some(Some(limit)) if limit.is_zero() => break,
+            Some(Some(limit)) => {
+                flags = shared
+                    .bell
+                    .wait_timeout(flags, limit)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .0;
+            }
+        }
+    }
+    flags.woken = false;
+}
+
 fn run(
     shared: &Shared,
     module: &SchedulesModule,
@@ -168,45 +225,8 @@ fn run(
         if jsrt::sync::lock(&shared.flags).closed {
             return;
         }
-        let deadline = match module.next_fire() {
-            Ok(Some(next)) if next <= clock.now() => {
-                let report = module.tick(host);
-                let settled = report.as_ref().is_ok_and(|report| {
-                    ["fired", "failed"]
-                        .iter()
-                        .any(|key| report[*key].as_array().is_some_and(|items| !items.is_empty()))
-                });
-                if let Some(observer) = &observer {
-                    observer(&report);
-                }
-                if settled {
-                    continue;
-                }
-                Some(clock.now().saturating_add(RETRY_MS))
-            }
-            Ok(next) => next,
-            Err(_) => Some(clock.now().saturating_add(RETRY_MS)),
-        };
-        let mut flags = jsrt::sync::lock(&shared.flags);
-        while !flags.woken && !flags.closed {
-            let limit = deadline.map(|deadline| clock.wait_limit(deadline));
-            match limit {
-                None | Some(None) => {
-                    flags = shared
-                        .bell
-                        .wait(flags)
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                }
-                Some(Some(limit)) if limit.is_zero() => break,
-                Some(Some(limit)) => {
-                    flags = shared
-                        .bell
-                        .wait_timeout(flags, limit)
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .0;
-                }
-            }
+        if let TickStep::Wait(deadline) = step_tick(module, host, clock, &observer) {
+            wait_for_deadline(shared, clock, deadline);
         }
-        flags.woken = false;
     }
 }

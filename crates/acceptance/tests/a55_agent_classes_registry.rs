@@ -322,15 +322,11 @@ fn acceptance_a55_the_class_its_generation_and_instance_fields_survive_a_snapsho
     let saved = first.snapshot(Some(&s.snapshot_path())).unwrap();
     assert_eq!(saved.result.status, Status::Ok);
     let report = saved.snapshot.unwrap();
-    assert!(report.saved.contains(&"state".to_string()));
+    assert!(report.saved.iter().any(|i| i == "state"));
     // `Label` is an ordinary class: its definition is saved and runs again on restore.
-    assert!(report.saved.contains(&"Label".to_string()), "{:?}", report.saved);
+    assert!(report.saved.iter().any(|i| i == "Label"), "{:?}", report.saved);
     for name in ["Triage", "t"] {
-        assert!(
-            report.skipped.contains(&name.to_string()),
-            "{name}: {:?}",
-            report.skipped
-        );
+        assert!(report.skipped.iter().any(|i| i == name), "{name}: {:?}", report.skipped);
     }
     first.shutdown();
 

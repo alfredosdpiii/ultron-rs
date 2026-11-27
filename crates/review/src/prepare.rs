@@ -127,6 +127,11 @@ pub fn detect_ecosystems(repo: &Path) -> Ecosystems {
     }
 }
 
+fn is_nested_python_manifest(name: &str) -> bool {
+    (name.starts_with("requirements") && name.ends_with(".txt") && name.len() >= "requirements.txt".len())
+        || matches!(name, "pyproject.toml" | "setup.py" | "poetry.lock")
+}
+
 fn walk(repo: &Path, dir: &str, depth: usize, nested: &mut Vec<String>) {
     let Ok(entries) = fs::read_dir(repo.join(dir)) else {
         return;
@@ -138,17 +143,11 @@ fn walk(repo: &Path, dir: &str, depth: usize, nested: &mut Vec<String>) {
         } else {
             format!("{dir}/{name}")
         };
-        let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
-        if is_dir {
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
             if depth < NESTED_DEPTH && !name.starts_with('.') && !NOT_A_SERVICE_DIR.contains(&name.as_str()) {
                 walk(repo, &relative, depth + 1, nested);
             }
-        } else if !dir.is_empty()
-            && ((name.starts_with("requirements") && name.ends_with(".txt") && name.len() >= "requirements.txt".len())
-                || name == "pyproject.toml"
-                || name == "setup.py"
-                || name == "poetry.lock")
-        {
+        } else if !dir.is_empty() && is_nested_python_manifest(&name) {
             nested.push(relative);
         }
     }
@@ -170,36 +169,86 @@ fn regex(pattern: &str) -> Regex {
     Regex::new(&pattern.replace(r"\s", S)).unwrap_or_else(|error| panic!("pattern {pattern}: {error}"))
 }
 
+fn apply_mise_toml(repo: &Path, out: &mut ToolchainRequests) {
+    let toml = read(&repo.join("mise.toml")).or_else(|| read(&repo.join(".mise.toml")));
+    let Some(toml) = toml.filter(|text| !text.is_empty()) else {
+        return;
+    };
+    let tools = regex(r"(?s)\[tools\](.*?)(?:\n\[|\z)")
+        .captures(&toml)
+        .map_or_default(|found| found[1].to_string());
+    let value = |pattern: &str| regex(pattern).captures(&tools).map(|found| found[1].to_string());
+    out.python = value(r#"(?m)^\s*python\s*=\s*["']([^"']+)["']"#);
+    out.node = value(r#"(?m)^\s*node(?:js)?\s*=\s*["']([^"']+)["']"#);
+}
+
+fn apply_tool_versions(repo: &Path, out: &mut ToolchainRequests) {
+    let Some(versions) = read(&repo.join(".tool-versions")).filter(|text| !text.is_empty()) else {
+        return;
+    };
+    for line in versions.split('\n') {
+        let mut words = jsrt::string::trim(line)
+            .split(jsrt::string::is_space)
+            .filter(|word| !word.is_empty());
+        let (tool, Some(version)) = (words.next().unwrap_or(""), words.next()) else {
+            continue;
+        };
+        if tool == "python" && out.python.is_none() {
+            out.python = Some(version.to_string());
+        }
+        if (tool == "node" || tool == "nodejs") && out.node.is_none() {
+            out.node = Some(version.to_string());
+        }
+    }
+}
+
+fn pyproject_python_minor(text: &str) -> Option<(u32, u32)> {
+    let poetry = regex(r"(?ms)^\[tool\.poetry\.dependencies\]\s*\n([^\[]*)")
+        .captures(text)
+        .map(|section| section[1].to_string());
+    let requires = regex(r#"(?m)^\s*requires-python\s*=\s*["']([^"']+)["']"#)
+        .captures(text)
+        .map(|found| found[1].to_string())
+        .or_else(|| {
+            regex(r#"(?m)^\s*python\s*=\s*["']([^"']+)["']"#)
+                .captures(poetry.as_deref().unwrap_or_default())
+                .map(|found| found[1].to_string())
+        })?;
+    let version = regex(r"([0-9]+)\.([0-9]+)").captures(&requires)?;
+    Some((version[1].parse::<u32>().ok()?, version[2].parse::<u32>().ok()?))
+}
+
+fn fallback_python_from_pyproject(repo: &Path) -> Option<String> {
+    // ponytail: highest named minor, not a full constraint intersection; installers reject conflicts.
+    detect_ecosystems(repo)
+        .python
+        .iter()
+        .filter(|name| name.ends_with("pyproject.toml"))
+        .filter_map(|name| read(&repo.join(name)))
+        .filter_map(|text| pyproject_python_minor(&text))
+        .max()
+        .map(|(major, minor)| format!("{major}.{minor}"))
+}
+
+fn fallback_node_from_package_json(repo: &Path) -> Option<String> {
+    let package = read(&repo.join("package.json")).filter(|text| !text.is_empty())?;
+    let parsed = serde_json::from_str::<Value>(&package).ok()?;
+    let engines = parsed
+        .get("engines")
+        .and_then(|engines| engines.get("node"))
+        .filter(|node| jsrt::value::truthy(Some(node)))?;
+    let text = jsrt::value::string(Some(engines));
+    let major = regex("([0-9]+)").captures(&text)?;
+    Some(major[1].to_string())
+}
+
 /// The version requests, first source wins: `mise.toml` (or `.mise.toml`) `[tools]`, `.tool-versions`,
 /// `.python-version`, `.nvmrc` (or `.node-version`), `requires-python` (its lowest named minor), `engines.node`
 /// (its first number).
 pub fn toolchain_requests(repo: &Path) -> ToolchainRequests {
     let mut out = ToolchainRequests::default();
-    let toml = read(&repo.join("mise.toml")).or_else(|| read(&repo.join(".mise.toml")));
-    if let Some(toml) = toml.filter(|text| !text.is_empty()) {
-        let tools = regex(r"(?s)\[tools\](.*?)(?:\n\[|\z)")
-            .captures(&toml)
-            .map_or_default(|found| found[1].to_string());
-        let value = |pattern: &str| regex(pattern).captures(&tools).map(|found| found[1].to_string());
-        out.python = value(r#"(?m)^\s*python\s*=\s*["']([^"']+)["']"#);
-        out.node = value(r#"(?m)^\s*node(?:js)?\s*=\s*["']([^"']+)["']"#);
-    }
-    if let Some(versions) = read(&repo.join(".tool-versions")).filter(|text| !text.is_empty()) {
-        for line in versions.split('\n') {
-            let mut words = jsrt::string::trim(line)
-                .split(jsrt::string::is_space)
-                .filter(|word| !word.is_empty());
-            let (tool, version) = (words.next().unwrap_or(""), words.next());
-            if let Some(version) = version {
-                if tool == "python" && out.python.is_none() {
-                    out.python = Some(version.to_string());
-                }
-                if (tool == "node" || tool == "nodejs") && out.node.is_none() {
-                    out.node = Some(version.to_string());
-                }
-            }
-        }
-    }
+    apply_mise_toml(repo, &mut out);
+    apply_tool_versions(repo, &mut out);
     if out.python.is_none()
         && let Some(text) = read(&repo.join(".python-version"))
     {
@@ -208,48 +257,20 @@ pub fn toolchain_requests(repo: &Path) -> ToolchainRequests {
             out.python = Some(first.to_string());
         }
     }
-    if let Some(text) = read(&repo.join(".nvmrc")).or_else(|| read(&repo.join(".node-version"))) {
+    if out.node.is_none()
+        && let Some(text) = read(&repo.join(".nvmrc")).or_else(|| read(&repo.join(".node-version")))
+    {
         let version = jsrt::string::trim(&text);
         let version = version.strip_prefix('v').unwrap_or(version);
-        if !version.is_empty() && out.node.is_none() {
+        if !version.is_empty() {
             out.node = Some(version.to_string());
         }
     }
     if out.python.is_none() {
-        // ponytail: highest named minor, not a full constraint intersection; installers reject conflicts.
-        let minimum = detect_ecosystems(repo)
-            .python
-            .iter()
-            .filter(|name| name.ends_with("pyproject.toml"))
-            .filter_map(|name| read(&repo.join(name)))
-            .filter_map(|text| {
-                let poetry = regex(r"(?ms)^\[tool\.poetry\.dependencies\]\s*\n([^\[]*)")
-                    .captures(&text)
-                    .map(|section| section[1].to_string());
-                let requires = regex(r#"(?m)^\s*requires-python\s*=\s*["']([^"']+)["']"#)
-                    .captures(&text)
-                    .map(|found| found[1].to_string())
-                    .or_else(|| {
-                        regex(r#"(?m)^\s*python\s*=\s*["']([^"']+)["']"#)
-                            .captures(poetry.as_deref().unwrap_or_default())
-                            .map(|found| found[1].to_string())
-                    })?;
-                let version = regex(r"([0-9]+)\.([0-9]+)").captures(&requires)?;
-                Some((version[1].parse::<u32>().ok()?, version[2].parse::<u32>().ok()?))
-            })
-            .max();
-        out.python = minimum.map(|(major, minor)| format!("{major}.{minor}"));
+        out.python = fallback_python_from_pyproject(repo);
     }
-    if out.node.is_none()
-        && let Some(package) = read(&repo.join("package.json")).filter(|text| !text.is_empty())
-        && let Ok(parsed) = serde_json::from_str::<Value>(&package)
-        && let Some(engines) = parsed
-            .get("engines")
-            .and_then(|engines| engines.get("node"))
-            .filter(|node| jsrt::value::truthy(Some(node)))
-        && let Some(major) = regex("([0-9]+)").captures(&jsrt::value::string(Some(engines)))
-    {
-        out.node = Some(major[1].to_string());
+    if out.node.is_none() {
+        out.node = fallback_node_from_package_json(repo);
     }
     out
 }

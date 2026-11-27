@@ -431,72 +431,86 @@ struct Worker {
 impl Worker {
     fn run(&mut self, rx: &Receiver<Command>) {
         loop {
-            let next = self
-                .pending
-                .values()
-                .map(|(_, at)| *at)
-                .chain(self.retries.iter().map(|(at, _)| *at))
-                .min();
-            let received = match next {
-                Some(at) => rx.recv_timeout(at.saturating_duration_since(Instant::now())),
-                None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
-            };
-            match received {
-                Ok(Command::Publish(event)) => {
-                    let coalesce = self.options.coalesce;
-                    self.pending
-                        .entry(event.lane.clone())
-                        .or_insert_with(|| (Vec::new(), Instant::now() + coalesce))
-                        .0
-                        .push(event);
-                }
-                Ok(Command::RunEnded { lane, run_id, aborted }) => {
-                    if lane == session_journal::run::MAIN_LANE && aborted {
-                        let root = (self.options.root_of_run)(&run_id);
-                        if sync::lock(&self.counts).aborted.insert(root.clone()) {
-                            self.save_chains();
-                        }
-                        if let Some(callback) = &self.options.on_root_aborted {
-                            callback(&root);
-                        }
-                    }
-                    if self.steered.iter().any(|s| s.lane == lane) {
-                        self.reclaim(&lane, aborted);
-                    }
-                }
-                Ok(Command::Drain(ack)) => {
-                    let lanes: Vec<String> = self.pending.keys().cloned().collect();
-                    for lane in lanes {
-                        self.flush(&lane);
-                    }
-                    let _ = ack.send(());
-                }
-                Ok(Command::Close) | Err(RecvTimeoutError::Disconnected) => return,
-                Err(RecvTimeoutError::Timeout) => {}
+            let received = self.recv_next(rx);
+            if !self.handle_command(received) {
+                return;
             }
-            let now = Instant::now();
-            let due: Vec<String> = self
-                .pending
-                .iter()
-                .filter(|(_, (_, at))| *at <= now)
-                .map(|(lane, _)| lane.clone())
-                .collect();
-            for lane in due {
-                self.flush(&lane);
-            }
-            let (retry, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.retries)
-                .into_iter()
-                .partition(|(at, _)| *at <= now);
-            self.retries = waiting;
-            for (_, events) in retry {
-                for event in events {
-                    let coalesce = self.options.coalesce;
-                    self.pending
-                        .entry(event.lane.clone())
-                        .or_insert_with(|| (Vec::new(), Instant::now() + coalesce))
-                        .0
-                        .push(event);
+            self.flush_due_and_retries();
+        }
+    }
+
+    fn recv_next(&self, rx: &Receiver<Command>) -> Result<Command, RecvTimeoutError> {
+        let next = self
+            .pending
+            .values()
+            .map(|(_, at)| *at)
+            .chain(self.retries.iter().map(|(at, _)| *at))
+            .min();
+        match next {
+            Some(at) => rx.recv_timeout(at.saturating_duration_since(Instant::now())),
+            None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        }
+    }
+
+    fn enqueue_pending(&mut self, event: RuntimeEvent) {
+        let coalesce = self.options.coalesce;
+        self.pending
+            .entry(event.lane.clone())
+            .or_insert_with(|| (Vec::new(), Instant::now() + coalesce))
+            .0
+            .push(event);
+    }
+
+    fn handle_command(&mut self, received: Result<Command, RecvTimeoutError>) -> bool {
+        match received {
+            Ok(Command::Publish(event)) => self.enqueue_pending(event),
+            Ok(Command::RunEnded { lane, run_id, aborted }) => self.handle_run_ended(&lane, &run_id, aborted),
+            Ok(Command::Drain(ack)) => {
+                let lanes: Vec<String> = self.pending.keys().cloned().collect();
+                for lane in lanes {
+                    self.flush(&lane);
                 }
+                let _ = ack.send(());
+            }
+            Ok(Command::Close) | Err(RecvTimeoutError::Disconnected) => return false,
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+        true
+    }
+
+    fn handle_run_ended(&mut self, lane: &str, run_id: &str, aborted: bool) {
+        if lane == session_journal::run::MAIN_LANE && aborted {
+            let root = (self.options.root_of_run)(run_id);
+            if sync::lock(&self.counts).aborted.insert(root.clone()) {
+                self.save_chains();
+            }
+            if let Some(callback) = &self.options.on_root_aborted {
+                callback(&root);
+            }
+        }
+        if self.steered.iter().any(|s| s.lane == lane) {
+            self.reclaim(lane, aborted);
+        }
+    }
+
+    fn flush_due_and_retries(&mut self) {
+        let now = Instant::now();
+        let due: Vec<String> = self
+            .pending
+            .iter()
+            .filter(|(_, (_, at))| *at <= now)
+            .map(|(lane, _)| lane.clone())
+            .collect();
+        for lane in due {
+            self.flush(&lane);
+        }
+        let (retry, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.retries)
+            .into_iter()
+            .partition(|(at, _)| *at <= now);
+        self.retries = waiting;
+        for (_, events) in retry {
+            for event in events {
+                self.enqueue_pending(event);
             }
         }
     }

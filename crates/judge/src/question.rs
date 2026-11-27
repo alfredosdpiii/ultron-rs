@@ -76,6 +76,86 @@ fn number(value: Option<&Value>, what: &str) -> Result<f64, String> {
         .ok_or_else(|| format!("{what} must be a finite number"))
 }
 
+fn allowed_fields(kind: &str, at_type: &str) -> Result<&'static [&'static str], String> {
+    match kind {
+        "choice" => Ok(&["type", "instructions", "criteria", "multiple"]),
+        "yesno" | "noul" => Ok(&["type", "instructions"]),
+        "score" => Ok(&["type", "instructions", "levels"]),
+        "number" => Ok(&["type", "instructions", "range", "step"]),
+        other => Err(format!("{at_type} must be choice, yesno, score or number, not {other}")),
+    }
+}
+
+fn parse_choice_kind(spec: &Map<String, Value>, name: &str) -> Result<Kind, String> {
+    let at = |key: &str| format!("questions.{name}.{key}");
+    let criteria = spec
+        .get("criteria")
+        .and_then(Value::as_object)
+        .filter(|c| (2..=MAX_LABELS).contains(&c.len()))
+        .ok_or_else(|| format!("{} must map 2 to {MAX_LABELS} labels to descriptions", at("criteria")))?;
+    let criteria = criteria
+        .iter()
+        .map(|(label, description)| {
+            let description = text(Some(description), &at(&format!("criteria.{label}")))?;
+            Ok((label.clone(), description))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let multiple = match spec.get("multiple") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(flag)) => *flag,
+        Some(_) => return Err(format!("{} must be true or false", at("multiple"))),
+    };
+    Ok(Kind::Choice { criteria, multiple })
+}
+
+fn parse_score_kind(spec: &Map<String, Value>, name: &str) -> Result<Kind, String> {
+    let at = |key: &str| format!("questions.{name}.{key}");
+    let levels = spec
+        .get("levels")
+        .and_then(Value::as_array)
+        .filter(|l| (2..=MAX_LABELS).contains(&l.len()))
+        .ok_or_else(|| format!("{} must be a list of 2 to {MAX_LABELS} described levels", at("levels")))?;
+    let levels = levels
+        .iter()
+        .enumerate()
+        .map(|(i, level)| text(Some(level), &at(&format!("levels[{i}]"))))
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(Kind::Score { levels })
+}
+
+fn parse_number_kind(spec: &Map<String, Value>, name: &str) -> Result<Kind, String> {
+    let at = |key: &str| format!("questions.{name}.{key}");
+    let range = spec
+        .get("range")
+        .and_then(Value::as_array)
+        .filter(|r| r.len() == 2)
+        .ok_or_else(|| format!("{} must be [min, max]", at("range")))?;
+    let (min, max) = (
+        number(range.first(), &at("range"))?,
+        number(range.get(1), &at("range"))?,
+    );
+    if min >= max {
+        return Err(format!("{} must have min below max", at("range")));
+    }
+    let step = match spec.get("step") {
+        None | Some(Value::Null) => None,
+        step => Some(number(step, &at("step"))?)
+            .filter(|s| *s > 0.0)
+            .map(Some)
+            .ok_or_else(|| format!("{} must be a positive number", at("step")))?,
+    };
+    Ok(Kind::Number { min, max, step })
+}
+
+fn parse_question_kind(kind: &str, spec: &Map<String, Value>, name: &str) -> Result<Kind, String> {
+    match kind {
+        "choice" => parse_choice_kind(spec, name),
+        "score" => parse_score_kind(spec, name),
+        "number" => parse_number_kind(spec, name),
+        _ => Ok(Kind::YesNo),
+    }
+}
+
 /// One question from its spec: `{"type": "choice"|"yesno"|"score"|"number", "instructions", ...}` (`noul` is read as
 /// `yesno`, as System One names it).
 fn question(name: &str, spec: &Value) -> Result<Question, String> {
@@ -84,78 +164,10 @@ fn question(name: &str, spec: &Value) -> Result<Question, String> {
         .as_object()
         .ok_or_else(|| format!("questions.{name} must be an object"))?;
     let kind = text(spec.get("type"), &at("type"))?;
-    let allowed: &[&str] = match kind.as_str() {
-        "choice" => &["type", "instructions", "criteria", "multiple"],
-        "yesno" | "noul" => &["type", "instructions"],
-        "score" => &["type", "instructions", "levels"],
-        "number" => &["type", "instructions", "range", "step"],
-        other => {
-            return Err(format!(
-                "{} must be choice, yesno, score or number, not {other}",
-                at("type")
-            ));
-        }
-    };
+    let allowed = allowed_fields(kind.as_str(), &at("type"))?;
     jsrt::payload::fields(spec, allowed).map_err(|e| format!("questions.{name}: {e}"))?;
     let instructions = text(spec.get("instructions"), &at("instructions"))?;
-    let kind = match kind.as_str() {
-        "choice" => {
-            let criteria = spec
-                .get("criteria")
-                .and_then(Value::as_object)
-                .filter(|c| (2..=MAX_LABELS).contains(&c.len()))
-                .ok_or_else(|| format!("{} must map 2 to {MAX_LABELS} labels to descriptions", at("criteria")))?;
-            let criteria = criteria
-                .iter()
-                .map(|(label, description)| {
-                    let description = text(Some(description), &at(&format!("criteria.{label}")))?;
-                    Ok((label.clone(), description))
-                })
-                .collect::<Result<Vec<_>, String>>()?;
-            let multiple = match spec.get("multiple") {
-                None | Some(Value::Null) => false,
-                Some(Value::Bool(flag)) => *flag,
-                Some(_) => return Err(format!("{} must be true or false", at("multiple"))),
-            };
-            Kind::Choice { criteria, multiple }
-        }
-        "score" => {
-            let levels = spec
-                .get("levels")
-                .and_then(Value::as_array)
-                .filter(|l| (2..=MAX_LABELS).contains(&l.len()))
-                .ok_or_else(|| format!("{} must be a list of 2 to {MAX_LABELS} described levels", at("levels")))?;
-            let levels = levels
-                .iter()
-                .enumerate()
-                .map(|(i, level)| text(Some(level), &at(&format!("levels[{i}]"))))
-                .collect::<Result<Vec<_>, String>>()?;
-            Kind::Score { levels }
-        }
-        "number" => {
-            let range = spec
-                .get("range")
-                .and_then(Value::as_array)
-                .filter(|r| r.len() == 2)
-                .ok_or_else(|| format!("{} must be [min, max]", at("range")))?;
-            let (min, max) = (
-                number(range.first(), &at("range"))?,
-                number(range.get(1), &at("range"))?,
-            );
-            if min >= max {
-                return Err(format!("{} must have min below max", at("range")));
-            }
-            let step = match spec.get("step") {
-                None | Some(Value::Null) => None,
-                step => Some(number(step, &at("step"))?)
-                    .filter(|s| *s > 0.0)
-                    .map(Some)
-                    .ok_or_else(|| format!("{} must be a positive number", at("step")))?,
-            };
-            Kind::Number { min, max, step }
-        }
-        _ => Kind::YesNo,
-    };
+    let kind = parse_question_kind(kind.as_str(), spec, name)?;
     Ok(Question {
         name: name.to_string(),
         instructions,
@@ -217,86 +229,118 @@ fn in_range(n: f64, min: f64, max: f64, step: Option<f64>) -> bool {
     (min..=max).contains(&n) && on_step
 }
 
+fn wire_yesno(answer: &Map<String, Value>) -> Option<Answer> {
+    let p = unit(answer.get("noul"))?;
+    let mut map = Map::new();
+    map.insert("yes".into(), json!(p));
+    map.insert("no".into(), json!(1.0 - p));
+    Some(Answer {
+        value: json!(p >= 0.5),
+        probabilities: Some(map),
+        confidence: p.max(1.0 - p),
+    })
+}
+
+fn wire_single_choice(
+    criteria: &[(String, String)],
+    answer: &Map<String, Value>,
+    probabilities: Option<Map<String, Value>>,
+    reported: Option<f64>,
+) -> Option<Answer> {
+    let choice = answer.get("choice")?.as_str()?;
+    criteria.iter().any(|(l, _)| l == choice).then_some(())?;
+    let confidence = reported.or_else(|| unit(probabilities.as_ref()?.get(choice)))?;
+    Some(Answer {
+        value: json!(choice),
+        probabilities,
+        confidence,
+    })
+}
+
+fn wire_multi_choice(
+    criteria: &[(String, String)],
+    answer: &Map<String, Value>,
+    probabilities: Option<Map<String, Value>>,
+    reported: Option<f64>,
+) -> Option<Answer> {
+    let p_of = |label: &str| unit(probabilities.as_ref()?.get(label));
+    let picked: Vec<String> = match answer.get("choices").and_then(Value::as_array) {
+        Some(list) => list
+            .iter()
+            .map(|c| c.as_str().map(str::to_string))
+            .collect::<Option<_>>()?,
+        None => criteria
+            .iter()
+            .filter(|(l, _)| p_of(l).is_some_and(|p| p >= 0.5))
+            .map(|(l, _)| l.clone())
+            .collect(),
+    };
+    picked
+        .iter()
+        .all(|p| criteria.iter().any(|(l, _)| l == p))
+        .then_some(())?;
+    let confidence = reported.or_else(|| {
+        criteria
+            .iter()
+            .map(|(l, _)| p_of(l).map(|p| p.max(1.0 - p)))
+            .try_fold(1.0f64, |least, p| p.map(|p| least.min(p)))
+    })?;
+    Some(Answer {
+        value: json!(picked),
+        probabilities,
+        confidence,
+    })
+}
+
+fn wire_score(
+    levels: &[String],
+    answer: &Map<String, Value>,
+    probabilities: Option<Map<String, Value>>,
+    reported: Option<f64>,
+) -> Option<Answer> {
+    let score = answer.get("score")?.as_f64()?;
+    (score.fract() == 0.0 && score >= 1.0 && score <= levels.len() as f64).then_some(())?;
+    Some(Answer {
+        value: json!(score as u64),
+        probabilities,
+        confidence: reported?,
+    })
+}
+
+fn wire_number(
+    min: f64,
+    max: f64,
+    step: Option<f64>,
+    answer: &Map<String, Value>,
+    probabilities: Option<Map<String, Value>>,
+    reported: Option<f64>,
+) -> Option<Answer> {
+    let n = answer.get("number").or_else(|| answer.get("value"))?.as_f64()?;
+    in_range(n, min, max, step).then_some(())?;
+    Some(Answer {
+        value: json!(n),
+        probabilities,
+        confidence: reported?,
+    })
+}
+
 /// One System One answer read back for `q`; `None` when it does not answer the question asked.
 fn wire_answer(q: &Question, answer: &Value) -> Option<Answer> {
     let answer = answer.as_object()?;
     let probabilities = probabilities(answer);
     let reported = unit(answer.get("confidence"));
     match &q.kind {
-        Kind::YesNo => {
-            let p = unit(answer.get("noul"))?;
-            let mut map = Map::new();
-            map.insert("yes".into(), json!(p));
-            map.insert("no".into(), json!(1.0 - p));
-            Some(Answer {
-                value: json!(p >= 0.5),
-                probabilities: Some(map),
-                confidence: p.max(1.0 - p),
-            })
-        }
+        Kind::YesNo => wire_yesno(answer),
         Kind::Choice {
             criteria,
             multiple: false,
-        } => {
-            let choice = answer.get("choice")?.as_str()?;
-            criteria.iter().any(|(l, _)| l == choice).then_some(())?;
-            let confidence = reported.or_else(|| unit(probabilities.as_ref()?.get(choice)))?;
-            Some(Answer {
-                value: json!(choice),
-                probabilities,
-                confidence,
-            })
-        }
+        } => wire_single_choice(criteria, answer, probabilities, reported),
         Kind::Choice {
             criteria,
             multiple: true,
-        } => {
-            let p_of = |label: &str| unit(probabilities.as_ref()?.get(label));
-            let picked: Vec<String> = match answer.get("choices").and_then(Value::as_array) {
-                Some(list) => list
-                    .iter()
-                    .map(|c| c.as_str().map(str::to_string))
-                    .collect::<Option<_>>()?,
-                None => criteria
-                    .iter()
-                    .filter(|(l, _)| p_of(l).is_some_and(|p| p >= 0.5))
-                    .map(|(l, _)| l.clone())
-                    .collect(),
-            };
-            picked
-                .iter()
-                .all(|p| criteria.iter().any(|(l, _)| l == p))
-                .then_some(())?;
-            let confidence = reported.or_else(|| {
-                criteria
-                    .iter()
-                    .map(|(l, _)| p_of(l).map(|p| p.max(1.0 - p)))
-                    .try_fold(1.0f64, |least, p| p.map(|p| least.min(p)))
-            })?;
-            Some(Answer {
-                value: json!(picked),
-                probabilities,
-                confidence,
-            })
-        }
-        Kind::Score { levels } => {
-            let score = answer.get("score")?.as_f64()?;
-            (score.fract() == 0.0 && score >= 1.0 && score <= levels.len() as f64).then_some(())?;
-            Some(Answer {
-                value: json!(score as u64),
-                probabilities,
-                confidence: reported?,
-            })
-        }
-        Kind::Number { min, max, step } => {
-            let n = answer.get("number").or_else(|| answer.get("value"))?.as_f64()?;
-            in_range(n, *min, *max, *step).then_some(())?;
-            Some(Answer {
-                value: json!(n),
-                probabilities,
-                confidence: reported?,
-            })
-        }
+        } => wire_multi_choice(criteria, answer, probabilities, reported),
+        Kind::Score { levels } => wire_score(levels, answer, probabilities, reported),
+        Kind::Number { min, max, step } => wire_number(*min, *max, *step, answer, probabilities, reported),
     }
 }
 

@@ -78,75 +78,105 @@ fn copy_via_windows_clipboard(text: &str, io: &mut dyn CopyIo) -> bool {
     copied
 }
 
-/// `copyToClipboard`: `Ok` with the OSC 52 sequence to write when one is due, else why the copy failed.
-pub fn copy_to_clipboard(text: &str, env: &CopyEnv, io: &mut dyn CopyIo) -> Result<Option<String>, String> {
-    let p = env.platform;
-    let mut copied = false;
-    if p != "linux" && matches!(io.native_set_text(text), Some(Ok(()))) {
-        copied = true;
+fn linux_commands(env: &CopyEnv) -> Vec<(&'static str, &'static [&'static str])> {
+    let mut commands: Vec<(&'static str, &'static [&'static str])> = Vec::new();
+    if env.set("TERMUX_VERSION") {
+        commands.push(("termux-clipboard-set", &[]));
     }
-    if !copied {
-        let mut commands: Vec<(&str, Vec<&str>)> = Vec::new();
-        match p {
-            "darwin" => commands.push(("pbcopy", vec![])),
-            "win32" => commands.push(("clip", vec![])),
-            _ => {
-                if env.set("TERMUX_VERSION") {
-                    commands.push(("termux-clipboard-set", vec![]));
-                }
-                if env.set("WAYLAND_DISPLAY") {
-                    commands.push(("wl-copy", vec![]));
-                }
-                if env.set("DISPLAY") {
-                    commands.push(("xclip", vec!["-selection", "clipboard"]));
-                    commands.push(("xsel", vec!["--clipboard", "--input"]));
-                }
-            }
-        }
-        for (command, args) in commands {
-            let args: Vec<String> = args.into_iter().map(str::to_string).collect();
-            if io.run(command, &args, Some(text), 5000).is_some() {
-                copied = true;
-                break;
-            }
+    if env.set("WAYLAND_DISPLAY") {
+        commands.push(("wl-copy", &[]));
+    }
+    if env.set("DISPLAY") {
+        commands.push(("xclip", &["-selection", "clipboard"]));
+        commands.push(("xsel", &["--clipboard", "--input"]));
+    }
+    commands
+}
+
+fn platform_commands(env: &CopyEnv) -> Vec<(&'static str, &'static [&'static str])> {
+    match env.platform {
+        "darwin" => vec![("pbcopy", &[])],
+        "win32" => vec![("clip", &[])],
+        _ => linux_commands(env),
+    }
+}
+
+fn try_commands(text: &str, env: &CopyEnv, io: &mut dyn CopyIo) -> bool {
+    for (command, args) in platform_commands(env) {
+        let args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        if io.run(command, &args, Some(text), 5000).is_some() {
+            return true;
         }
     }
-    let mut emitted: Option<String> = None;
-    if !copied && p == "linux" && crate::clipboard_image::is_wsl(env.var, env.proc_version.as_deref()) {
-        if env.set("WT_SESSION") {
-            emitted = osc52(text);
+    false
+}
+
+fn try_direct_copy(text: &str, env: &CopyEnv, io: &mut dyn CopyIo) -> bool {
+    if env.platform != "linux" && matches!(io.native_set_text(text), Some(Ok(()))) {
+        return true;
+    }
+    try_commands(text, env, io)
+}
+
+fn try_wsl_copy(text: &str, env: &CopyEnv, io: &mut dyn CopyIo) -> (bool, Option<String>) {
+    if env.platform != "linux" || !crate::clipboard_image::is_wsl(env.var, env.proc_version.as_deref()) {
+        return (false, None);
+    }
+    let emitted = if env.set("WT_SESSION") { osc52(text) } else { None };
+    let copied = emitted.is_some() || copy_via_windows_clipboard(text, io);
+    (copied, emitted)
+}
+
+fn is_headless_linux(env: &CopyEnv) -> bool {
+    env.platform == "linux" && !env.set("DISPLAY") && !env.set("WAYLAND_DISPLAY") && !env.set("TERMUX_VERSION")
+}
+
+fn try_osc52_fallback(text: &str, env: &CopyEnv, copied: &mut bool, emitted: &mut Option<String>) -> bool {
+    let needs_osc52 = is_remote_session(env) || (!*copied && is_headless_linux(env));
+    if emitted.is_some() || !needs_osc52 {
+        return false;
+    }
+    match osc52(text) {
+        Some(sequence) => {
+            *emitted = Some(sequence);
+            *copied = true;
+            false
         }
-        copied = emitted.is_some() || copy_via_windows_clipboard(text, io);
+        None => true,
     }
-    let headless = p == "linux" && !env.set("DISPLAY") && !env.set("WAYLAND_DISPLAY") && !env.set("TERMUX_VERSION");
-    let mut oversized = false;
-    if emitted.is_none() && (is_remote_session(env) || (!copied && headless)) {
-        match osc52(text) {
-            Some(sequence) => {
-                emitted = Some(sequence);
-                copied = true;
-            }
-            None => oversized = true,
-        }
-    }
-    if copied {
-        return Ok(emitted);
-    }
+}
+
+fn unavailable_error(env: &CopyEnv, oversized: bool) -> String {
     if oversized {
-        return Err("Clipboard unavailable: text exceeds the OSC 52 size limit".into());
+        return "Clipboard unavailable: text exceeds the OSC 52 size limit".into();
     }
-    if p == "linux" {
+    if env.platform == "linux" {
         if env.set("TERMUX_VERSION") {
-            return Err("Clipboard unavailable: install the Termux:API app and `termux-api` package".into());
+            return "Clipboard unavailable: install the Termux:API app and `termux-api` package".into();
         }
         if env.set("WAYLAND_DISPLAY") {
-            return Err("Clipboard unavailable: install `wl-clipboard` (`wl-copy`) or check Wayland access".into());
+            return "Clipboard unavailable: install `wl-clipboard` (`wl-copy`) or check Wayland access".into();
         }
         if env.set("DISPLAY") {
-            return Err("Clipboard unavailable: install `xclip` or `xsel`, or check X11 access".into());
+            return "Clipboard unavailable: install `xclip` or `xsel`, or check X11 access".into();
         }
     }
-    Err("Clipboard unavailable".into())
+    "Clipboard unavailable".into()
+}
+
+/// `copyToClipboard`: `Ok` with the OSC 52 sequence to write when one is due, else why the copy failed.
+pub fn copy_to_clipboard(text: &str, env: &CopyEnv, io: &mut dyn CopyIo) -> Result<Option<String>, String> {
+    let mut copied = try_direct_copy(text, env, io);
+    let mut emitted = None;
+    if !copied {
+        (copied, emitted) = try_wsl_copy(text, env, io);
+    }
+    let oversized = try_osc52_fallback(text, env, &mut copied, &mut emitted);
+    if copied {
+        Ok(emitted)
+    } else {
+        Err(unavailable_error(env, oversized))
+    }
 }
 
 /// The real side effects: arboard as the native writer (only consulted off Linux), commands on `path`.

@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 use crate::extract::{Call, Construct, Extracted, Import, Symbol};
 use crate::relations::{Kind, Proposed, Relation};
@@ -213,6 +213,41 @@ impl Store {
         Ok(store)
     }
 
+    fn table_columns(&self, table: &str) -> Result<Vec<String>, Error> {
+        let mut statement = self
+            .conn
+            .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))?;
+        let names = statement.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?;
+        Ok(names)
+    }
+
+    fn add_missing_columns(&self, table: &str, wanted: &[(&str, &str)]) -> Result<(), Error> {
+        let have = self.table_columns(table)?;
+        for (column, definition) in wanted {
+            if !have.iter().any(|name| name == column) {
+                self.conn
+                    .execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn upgrade_schema(&self, old: i64) -> Result<(), Error> {
+        self.add_missing_columns("notes", &NOTE_COLUMNS_3)?;
+        self.add_missing_columns("symbols", &SYMBOL_COLUMNS_4)?;
+        if old <= 2 {
+            self.conn
+                .execute("UPDATE notes SET state = 'outdated' WHERE state = 'addressed'", [])?;
+            self.conn
+                .execute("DELETE FROM meta WHERE key LIKE 'notes_backfilled:%'", [])?;
+        }
+        self.conn.execute(
+            "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
+            params![SCHEMA_VERSION.to_string()],
+        )?;
+        Ok(())
+    }
+
     fn migrate(&self) -> Result<(), Error> {
         self.conn.execute_batch(SCHEMA)?;
         let found: Option<String> = self
@@ -229,36 +264,7 @@ impl Store {
                 )?;
             }
             Some(Ok(SCHEMA_VERSION)) => {}
-            Some(Ok(old @ 1..=4)) => {
-                let columns = |table: &str| -> Result<Vec<String>, Error> {
-                    let mut statement = self
-                        .conn
-                        .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))?;
-                    let names = statement.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?;
-                    Ok(names)
-                };
-                let add = |table: &str, have: &[String], wanted: &[(&str, &str)]| -> Result<(), Error> {
-                    for (column, definition) in wanted {
-                        if !have.iter().any(|name| name == column) {
-                            self.conn
-                                .execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"))?;
-                        }
-                    }
-                    Ok(())
-                };
-                add("notes", &columns("notes")?, &NOTE_COLUMNS_3)?;
-                add("symbols", &columns("symbols")?, &SYMBOL_COLUMNS_4)?;
-                if old <= 2 {
-                    self.conn
-                        .execute("UPDATE notes SET state = 'outdated' WHERE state = 'addressed'", [])?;
-                    self.conn
-                        .execute("DELETE FROM meta WHERE key LIKE 'notes_backfilled:%'", [])?;
-                }
-                self.conn.execute(
-                    "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
-                    params![SCHEMA_VERSION.to_string()],
-                )?;
-            }
+            Some(Ok(old @ 1..=4)) => self.upgrade_schema(old)?,
             Some(Ok(version)) if version > SCHEMA_VERSION => {
                 return Err(Error(format!(
                     "the knowledge store has schema {version}, newer than this build's {SCHEMA_VERSION}"
@@ -299,105 +305,11 @@ impl Store {
         indexed_at: i64,
     ) -> Result<i64, Error> {
         let tx = self.conn.transaction()?;
-        {
-            let mut blob_row = tx.prepare_cached(
-                "INSERT INTO blobs (oid, lang, extractor) VALUES (?1, ?2, ?3)
-                 ON CONFLICT (oid) DO UPDATE SET lang = excluded.lang, extractor = excluded.extractor",
-            )?;
-            let mut clear_constructs = tx.prepare_cached("DELETE FROM constructs WHERE blob = ?1")?;
-            let mut clear_symbols = tx.prepare_cached("DELETE FROM symbols WHERE blob = ?1")?;
-            let mut clear_calls = tx.prepare_cached("DELETE FROM calls WHERE blob = ?1")?;
-            let mut clear_imports = tx.prepare_cached("DELETE FROM imports WHERE blob = ?1")?;
-            let mut construct_row =
-                tx.prepare_cached("INSERT INTO constructs (blob, kind, line, count) VALUES (?1, ?2, ?3, ?4)")?;
-            let mut symbol_row = tx.prepare_cached(
-                "INSERT INTO symbols (blob, name, kind, line, end_line, parent) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            )?;
-            let mut call_row = tx.prepare_cached(
-                "INSERT INTO calls (blob, caller, callee, receiver, line) VALUES (?1, ?2, ?3, ?4, ?5)",
-            )?;
-            let mut import_row =
-                tx.prepare_cached("INSERT INTO imports (blob, module, name, line) VALUES (?1, ?2, ?3, ?4)")?;
-            for (oid, lang, extracted) in blobs {
-                blob_row.execute(params![oid, lang, version])?;
-                clear_constructs.execute(params![oid])?;
-                clear_symbols.execute(params![oid])?;
-                clear_calls.execute(params![oid])?;
-                clear_imports.execute(params![oid])?;
-                for Construct { kind, line, count } in &extracted.constructs {
-                    construct_row.execute(params![oid, kind, line, count])?;
-                }
-                for Symbol {
-                    name,
-                    kind,
-                    line,
-                    end_line,
-                    parent,
-                } in &extracted.symbols
-                {
-                    symbol_row.execute(params![oid, name, kind, line, end_line, parent])?;
-                }
-                for Call {
-                    caller,
-                    callee,
-                    receiver,
-                    line,
-                } in &extracted.calls
-                {
-                    call_row.execute(params![oid, caller, callee, receiver, line])?;
-                }
-                for Import { module, name, line } in &extracted.imports {
-                    import_row.execute(params![oid, module, name, line])?;
-                }
-            }
-        }
-        tx.execute(
-            "INSERT INTO repos (name) VALUES (?1) ON CONFLICT (name) DO NOTHING",
-            params![repo],
-        )?;
-        let repo_id: i64 = tx.query_row("SELECT id FROM repos WHERE name = ?1", params![repo], |row| row.get(0))?;
-        tx.execute(
-            "INSERT INTO trees (repo, rev, indexed_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT (repo, rev) DO UPDATE SET indexed_at = excluded.indexed_at",
-            params![repo_id, rev, indexed_at],
-        )?;
-        let tree: i64 = tx.query_row(
-            "SELECT id FROM trees WHERE repo = ?1 AND rev = ?2",
-            params![repo_id, rev],
-            |row| row.get(0),
-        )?;
-        tx.execute("DELETE FROM entries WHERE tree = ?1", params![tree])?;
-        {
-            let mut entry_row = tx.prepare_cached("INSERT INTO entries (tree, path, blob) VALUES (?1, ?2, ?3)")?;
-            for (path, oid) in entries {
-                entry_row.execute(params![tree, path, oid])?;
-            }
-        }
-        for table in ["entries", "relation_entries"] {
-            tx.execute(
-                &format!(
-                    "DELETE FROM {table} WHERE tree IN (
-                         SELECT id FROM trees WHERE repo = ?1 ORDER BY indexed_at DESC, id DESC LIMIT -1 OFFSET ?2)"
-                ),
-                params![repo_id, TREES_PER_REPO],
-            )?;
-        }
-        let dropped = tx.execute(
-            "DELETE FROM trees WHERE repo = ?1 AND id != ?2
-                 AND id NOT IN (SELECT tree FROM entries UNION SELECT tree FROM relation_entries)",
-            params![repo_id, tree],
-        )?;
-        if dropped > 0 {
-            tx.execute_batch(
-                "DELETE FROM constructs WHERE blob NOT IN (SELECT blob FROM entries);
-                 DELETE FROM symbols WHERE blob NOT IN (SELECT blob FROM entries);
-                 DELETE FROM calls WHERE blob NOT IN (SELECT blob FROM entries);
-                 DELETE FROM imports WHERE blob NOT IN (SELECT blob FROM entries);
-                 DELETE FROM blobs WHERE oid NOT IN (SELECT blob FROM entries);
-                 DELETE FROM relations WHERE blob NOT IN (SELECT blob FROM relation_entries);
-                 DELETE FROM relation_scans WHERE blob NOT IN (SELECT blob FROM relation_entries);",
-            )?;
-        }
+        write_blobs(&tx, blobs, version)?;
+        let repo_id = upsert_repo(&tx, repo)?;
+        let tree = upsert_tree(&tx, repo_id, rev, indexed_at)?;
+        replace_tree_entries(&tx, tree, entries)?;
+        prune_old_trees(&tx, repo_id, tree)?;
         tx.commit()?;
         Ok(tree)
     }
@@ -406,41 +318,8 @@ impl Store {
     /// current state, line and body. Returns how many were new.
     pub fn record_notes(&mut self, repo: &str, notes: &[Note]) -> Result<usize, Error> {
         let tx = self.conn.transaction()?;
-        tx.execute(
-            "INSERT INTO repos (name) VALUES (?1) ON CONFLICT (name) DO NOTHING",
-            params![repo],
-        )?;
-        let repo_id: i64 = tx.query_row("SELECT id FROM repos WHERE name = ?1", params![repo], |row| row.get(0))?;
-        let mut added = 0;
-        {
-            let mut known = tx.prepare_cached("SELECT 1 FROM notes WHERE repo = ?1 AND url = ?2")?;
-            let mut row = tx.prepare_cached(
-                "INSERT INTO notes (repo, pull, path, line, author, body, url, at, state, human, missed)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-                 ON CONFLICT (repo, url) DO UPDATE SET
-                     path = excluded.path, line = excluded.line, body = excluded.body, state = excluded.state,
-                     human = excluded.human, missed = MAX(missed, excluded.missed)",
-            )?;
-            for note in notes {
-                if !known.exists(params![repo_id, note.url])? {
-                    added += 1;
-                }
-                let body: String = note.body.chars().take(NOTE_CHARS).collect();
-                row.execute(params![
-                    repo_id,
-                    note.pull,
-                    note.path,
-                    note.line,
-                    note.author,
-                    body,
-                    note.url,
-                    note.at,
-                    note.state,
-                    note.human,
-                    note.missed
-                ])?;
-            }
-        }
+        let repo_id = upsert_repo(&tx, repo)?;
+        let added = upsert_note_rows(&tx, repo_id, notes)?;
         tx.commit()?;
         Ok(added)
     }
@@ -587,49 +466,8 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        {
-            let mut recorded = tx.prepare_cached("SELECT 1 FROM relation_scans WHERE blob = ?1 AND version = ?2")?;
-            let mut clear = tx.prepare_cached("DELETE FROM relations WHERE blob = ?1")?;
-            let mut clear_scans = tx.prepare_cached("DELETE FROM relation_scans WHERE blob = ?1")?;
-            let mut scan = tx.prepare_cached("INSERT INTO relation_scans (blob, version) VALUES (?1, ?2)")?;
-            let mut row = tx.prepare_cached(
-                "INSERT INTO relations (blob, kind, subject, object, line, quote, context, status, checked_by)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            )?;
-            for (oid, proposed) in scanned {
-                if recorded.exists(params![oid, version])? {
-                    continue;
-                }
-                clear.execute(params![oid])?;
-                clear_scans.execute(params![oid])?;
-                scan.execute(params![oid, version])?;
-                for relation in proposed {
-                    let (status, checked_by) = if relation.certain {
-                        ("accepted", Some("code"))
-                    } else {
-                        ("proposed", None)
-                    };
-                    row.execute(params![
-                        oid,
-                        relation.kind.name(),
-                        relation.subject,
-                        relation.object,
-                        relation.line,
-                        relation.quote,
-                        relation.context,
-                        status,
-                        checked_by
-                    ])?;
-                }
-            }
-            let mut entry = tx.prepare_cached(
-                "INSERT INTO relation_entries (tree, path, blob) VALUES (?1, ?2, ?3)
-                 ON CONFLICT (tree, path) DO UPDATE SET blob = excluded.blob",
-            )?;
-            for (path, oid) in entries {
-                entry.execute(params![tree, path, oid])?;
-            }
-        }
+        write_scanned_relations(&tx, scanned, version)?;
+        upsert_relation_entries(&tx, tree, entries)?;
         tx.commit()?;
         Ok(())
     }
@@ -657,66 +495,14 @@ impl Store {
         let wanted: Option<std::collections::HashSet<&str>> =
             paths.map(|paths| paths.iter().map(String::as_str).collect());
         let rows = statement.query_map(params![tree], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, i64>(6)?,
-                row.get::<_, String>(7)?,
-                row.get::<_, String>(8)?,
-                row.get::<_, String>(9)?,
-                row.get::<_, Option<String>>(10)?,
-                row.get::<_, Option<String>>(11)?,
-                row.get::<_, Option<String>>(12)?,
-                row.get::<_, Option<f64>>(13)?,
-            ))
+            Ok((read_relation_core(row)?, read_relation_meta(row)?))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (
-                id,
-                kind,
-                subject,
-                object,
-                path,
-                blob,
-                line,
-                quote,
-                context,
-                status,
-                checked_by,
-                rung,
-                model,
-                confidence,
-            ) = row?;
-            if wanted.as_ref().is_some_and(|wanted| !wanted.contains(path.as_str())) {
-                continue;
+            let (core, meta) = row?;
+            if let Some(relation) = build_relation(core, meta, wanted.as_ref()) {
+                out.push(relation);
             }
-            let Some(kind) = Kind::parse(&kind) else { continue };
-            let subject = if subject.is_empty() {
-                path.clone()
-            } else {
-                format!("{path}::{subject}")
-            };
-            out.push(Relation {
-                id,
-                kind,
-                subject,
-                object,
-                path,
-                blob,
-                line,
-                quote,
-                context,
-                status,
-                checked_by,
-                rung,
-                model,
-                confidence,
-            });
         }
         Ok(out)
     }
@@ -755,4 +541,322 @@ impl Store {
             |row| row.get(0),
         )?)
     }
+}
+
+fn clear_blob_rows(tx: &Transaction<'_>, oid: &str) -> Result<(), Error> {
+    tx.prepare_cached("DELETE FROM constructs WHERE blob = ?1")?
+        .execute(params![oid])?;
+    tx.prepare_cached("DELETE FROM symbols WHERE blob = ?1")?
+        .execute(params![oid])?;
+    tx.prepare_cached("DELETE FROM calls WHERE blob = ?1")?
+        .execute(params![oid])?;
+    tx.prepare_cached("DELETE FROM imports WHERE blob = ?1")?
+        .execute(params![oid])?;
+    Ok(())
+}
+
+fn insert_blob_constructs(tx: &Transaction<'_>, oid: &str, constructs: &[Construct]) -> Result<(), Error> {
+    let mut row = tx.prepare_cached("INSERT INTO constructs (blob, kind, line, count) VALUES (?1, ?2, ?3, ?4)")?;
+    for Construct { kind, line, count } in constructs {
+        row.execute(params![oid, kind, line, count])?;
+    }
+    Ok(())
+}
+
+fn insert_blob_symbols(tx: &Transaction<'_>, oid: &str, symbols: &[Symbol]) -> Result<(), Error> {
+    let mut row = tx.prepare_cached(
+        "INSERT INTO symbols (blob, name, kind, line, end_line, parent) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+    for Symbol {
+        name,
+        kind,
+        line,
+        end_line,
+        parent,
+    } in symbols
+    {
+        row.execute(params![oid, name, kind, line, end_line, parent])?;
+    }
+    Ok(())
+}
+
+fn insert_blob_calls(tx: &Transaction<'_>, oid: &str, calls: &[Call]) -> Result<(), Error> {
+    let mut row =
+        tx.prepare_cached("INSERT INTO calls (blob, caller, callee, receiver, line) VALUES (?1, ?2, ?3, ?4, ?5)")?;
+    for Call {
+        caller,
+        callee,
+        receiver,
+        line,
+    } in calls
+    {
+        row.execute(params![oid, caller, callee, receiver, line])?;
+    }
+    Ok(())
+}
+
+fn insert_blob_imports(tx: &Transaction<'_>, oid: &str, imports: &[Import]) -> Result<(), Error> {
+    let mut row = tx.prepare_cached("INSERT INTO imports (blob, module, name, line) VALUES (?1, ?2, ?3, ?4)")?;
+    for Import { module, name, line } in imports {
+        row.execute(params![oid, module, name, line])?;
+    }
+    Ok(())
+}
+
+fn write_single_blob(
+    tx: &Transaction<'_>,
+    oid: &str,
+    lang: &str,
+    extracted: &Extracted,
+    version: i64,
+) -> Result<(), Error> {
+    let mut blob_row = tx.prepare_cached(
+        "INSERT INTO blobs (oid, lang, extractor) VALUES (?1, ?2, ?3)
+         ON CONFLICT (oid) DO UPDATE SET lang = excluded.lang, extractor = excluded.extractor",
+    )?;
+    blob_row.execute(params![oid, lang, version])?;
+    clear_blob_rows(tx, oid)?;
+    insert_blob_constructs(tx, oid, &extracted.constructs)?;
+    insert_blob_symbols(tx, oid, &extracted.symbols)?;
+    insert_blob_calls(tx, oid, &extracted.calls)?;
+    insert_blob_imports(tx, oid, &extracted.imports)?;
+    Ok(())
+}
+
+fn write_blobs(tx: &Transaction<'_>, blobs: &[(String, String, Extracted)], version: i64) -> Result<(), Error> {
+    for (oid, lang, extracted) in blobs {
+        write_single_blob(tx, oid, lang, extracted, version)?;
+    }
+    Ok(())
+}
+
+fn upsert_repo(tx: &Transaction<'_>, repo: &str) -> Result<i64, Error> {
+    tx.execute(
+        "INSERT INTO repos (name) VALUES (?1) ON CONFLICT (name) DO NOTHING",
+        params![repo],
+    )?;
+    Ok(tx.query_row("SELECT id FROM repos WHERE name = ?1", params![repo], |row| row.get(0))?)
+}
+
+fn upsert_tree(tx: &Transaction<'_>, repo_id: i64, rev: &str, indexed_at: i64) -> Result<i64, Error> {
+    tx.execute(
+        "INSERT INTO trees (repo, rev, indexed_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT (repo, rev) DO UPDATE SET indexed_at = excluded.indexed_at",
+        params![repo_id, rev, indexed_at],
+    )?;
+    Ok(tx.query_row(
+        "SELECT id FROM trees WHERE repo = ?1 AND rev = ?2",
+        params![repo_id, rev],
+        |row| row.get(0),
+    )?)
+}
+
+fn replace_tree_entries(tx: &Transaction<'_>, tree: i64, entries: &[(String, String)]) -> Result<(), Error> {
+    tx.execute("DELETE FROM entries WHERE tree = ?1", params![tree])?;
+    let mut entry_row = tx.prepare_cached("INSERT INTO entries (tree, path, blob) VALUES (?1, ?2, ?3)")?;
+    for (path, oid) in entries {
+        entry_row.execute(params![tree, path, oid])?;
+    }
+    Ok(())
+}
+
+fn prune_old_trees(tx: &Transaction<'_>, repo_id: i64, keep_tree: i64) -> Result<(), Error> {
+    for table in ["entries", "relation_entries"] {
+        tx.execute(
+            &format!(
+                "DELETE FROM {table} WHERE tree IN (
+                     SELECT id FROM trees WHERE repo = ?1 ORDER BY indexed_at DESC, id DESC LIMIT -1 OFFSET ?2)"
+            ),
+            params![repo_id, TREES_PER_REPO],
+        )?;
+    }
+    let dropped = tx.execute(
+        "DELETE FROM trees WHERE repo = ?1 AND id != ?2
+             AND id NOT IN (SELECT tree FROM entries UNION SELECT tree FROM relation_entries)",
+        params![repo_id, keep_tree],
+    )?;
+    if dropped > 0 {
+        tx.execute_batch(
+            "DELETE FROM constructs WHERE blob NOT IN (SELECT blob FROM entries);
+             DELETE FROM symbols WHERE blob NOT IN (SELECT blob FROM entries);
+             DELETE FROM calls WHERE blob NOT IN (SELECT blob FROM entries);
+             DELETE FROM imports WHERE blob NOT IN (SELECT blob FROM entries);
+             DELETE FROM blobs WHERE oid NOT IN (SELECT blob FROM entries);
+             DELETE FROM relations WHERE blob NOT IN (SELECT blob FROM relation_entries);
+             DELETE FROM relation_scans WHERE blob NOT IN (SELECT blob FROM relation_entries);",
+        )?;
+    }
+    Ok(())
+}
+
+fn upsert_note_rows(tx: &Transaction<'_>, repo_id: i64, notes: &[Note]) -> Result<usize, Error> {
+    let mut added = 0;
+    let mut known = tx.prepare_cached("SELECT 1 FROM notes WHERE repo = ?1 AND url = ?2")?;
+    let mut row = tx.prepare_cached(
+        "INSERT INTO notes (repo, pull, path, line, author, body, url, at, state, human, missed)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT (repo, url) DO UPDATE SET
+             path = excluded.path, line = excluded.line, body = excluded.body, state = excluded.state,
+             human = excluded.human, missed = MAX(missed, excluded.missed)",
+    )?;
+    for note in notes {
+        if !known.exists(params![repo_id, note.url])? {
+            added += 1;
+        }
+        let body: String = note.body.chars().take(NOTE_CHARS).collect();
+        row.execute(params![
+            repo_id,
+            note.pull,
+            note.path,
+            note.line,
+            note.author,
+            body,
+            note.url,
+            note.at,
+            note.state,
+            note.human,
+            note.missed
+        ])?;
+    }
+    Ok(added)
+}
+
+fn insert_proposed_relations(tx: &Transaction<'_>, oid: &str, proposed: &[Proposed]) -> Result<(), Error> {
+    let mut row = tx.prepare_cached(
+        "INSERT INTO relations (blob, kind, subject, object, line, quote, context, status, checked_by)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )?;
+    for relation in proposed {
+        let (status, checked_by) = if relation.certain {
+            ("accepted", Some("code"))
+        } else {
+            ("proposed", None)
+        };
+        row.execute(params![
+            oid,
+            relation.kind.name(),
+            relation.subject,
+            relation.object,
+            relation.line,
+            relation.quote,
+            relation.context,
+            status,
+            checked_by
+        ])?;
+    }
+    Ok(())
+}
+
+fn record_blob_scan(tx: &Transaction<'_>, oid: &str, version: i64) -> Result<bool, Error> {
+    let mut recorded = tx.prepare_cached("SELECT 1 FROM relation_scans WHERE blob = ?1 AND version = ?2")?;
+    if recorded.exists(params![oid, version])? {
+        return Ok(false);
+    }
+    tx.prepare_cached("DELETE FROM relations WHERE blob = ?1")?
+        .execute(params![oid])?;
+    tx.prepare_cached("DELETE FROM relation_scans WHERE blob = ?1")?
+        .execute(params![oid])?;
+    tx.prepare_cached("INSERT INTO relation_scans (blob, version) VALUES (?1, ?2)")?
+        .execute(params![oid, version])?;
+    Ok(true)
+}
+
+fn write_scanned_relations(
+    tx: &Transaction<'_>,
+    scanned: &[(String, Vec<Proposed>)],
+    version: i64,
+) -> Result<(), Error> {
+    for (oid, proposed) in scanned {
+        if record_blob_scan(tx, oid, version)? {
+            insert_proposed_relations(tx, oid, proposed)?;
+        }
+    }
+    Ok(())
+}
+
+fn upsert_relation_entries(tx: &Transaction<'_>, tree: i64, entries: &[(String, String)]) -> Result<(), Error> {
+    let mut entry = tx.prepare_cached(
+        "INSERT INTO relation_entries (tree, path, blob) VALUES (?1, ?2, ?3)
+         ON CONFLICT (tree, path) DO UPDATE SET blob = excluded.blob",
+    )?;
+    for (path, oid) in entries {
+        entry.execute(params![tree, path, oid])?;
+    }
+    Ok(())
+}
+
+struct RelationCore {
+    id: i64,
+    kind: String,
+    subject: String,
+    object: String,
+    path: String,
+    blob: String,
+    line: i64,
+}
+
+struct RelationMeta {
+    quote: String,
+    context: String,
+    status: String,
+    checked_by: Option<String>,
+    rung: Option<String>,
+    model: Option<String>,
+    confidence: Option<f64>,
+}
+
+fn read_relation_core(row: &Row<'_>) -> rusqlite::Result<RelationCore> {
+    Ok(RelationCore {
+        id: row.get(0)?,
+        kind: row.get(1)?,
+        subject: row.get(2)?,
+        object: row.get(3)?,
+        path: row.get(4)?,
+        blob: row.get(5)?,
+        line: row.get(6)?,
+    })
+}
+
+fn read_relation_meta(row: &Row<'_>) -> rusqlite::Result<RelationMeta> {
+    Ok(RelationMeta {
+        quote: row.get(7)?,
+        context: row.get(8)?,
+        status: row.get(9)?,
+        checked_by: row.get(10)?,
+        rung: row.get(11)?,
+        model: row.get(12)?,
+        confidence: row.get(13)?,
+    })
+}
+
+fn build_relation(
+    core: RelationCore,
+    meta: RelationMeta,
+    wanted: Option<&std::collections::HashSet<&str>>,
+) -> Option<Relation> {
+    if wanted.is_some_and(|paths| !paths.contains(core.path.as_str())) {
+        return None;
+    }
+    let kind = Kind::parse(&core.kind)?;
+    let subject = if core.subject.is_empty() {
+        core.path.clone()
+    } else {
+        format!("{}::{}", core.path, core.subject)
+    };
+    Some(Relation {
+        id: core.id,
+        kind,
+        subject,
+        object: core.object,
+        path: core.path,
+        blob: core.blob,
+        line: core.line,
+        quote: meta.quote,
+        context: meta.context,
+        status: meta.status,
+        checked_by: meta.checked_by,
+        rung: meta.rung,
+        model: meta.model,
+        confidence: meta.confidence,
+    })
 }

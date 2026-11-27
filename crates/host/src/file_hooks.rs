@@ -561,79 +561,105 @@ impl Inner {
             return;
         }
         let (mut added, mut modified, mut deleted, complete) = diff_snapshots(&before, &after);
-        {
-            let mut claimed = sync::lock(&self.claimed);
-            if let Some(theirs) = claimed.remove(lane) {
-                let unchanged = |relative: &String| theirs.get(relative) == Some(&after.entries.get(relative).cloned());
-                added.retain(|relative| !unchanged(relative));
-                modified.retain(|relative| !unchanged(relative));
-                deleted.retain(|relative| !unchanged(relative));
-            }
-            let owned_by_other = |relative: &String| {
-                let path = resolve_lexical(&after.root, relative);
-                let checked = sync::lock(&self.checked);
-                let has_other_candidate = checked
-                    .iter()
-                    .any(|(other_lane, map)| other_lane != lane && map.contains_key(&path));
-                if !has_other_candidate {
-                    return false;
-                }
-                let Some(current_hash) = std::fs::read(&path).ok().map(|bytes| jsrt::hash::sha256_hex(&bytes)) else {
-                    return false;
-                };
-                checked
-                    .iter()
-                    .any(|(other_lane, map)| other_lane != lane && map.get(&path) == Some(&current_hash))
-            };
-            added.retain(|relative| !owned_by_other(relative));
-            modified.retain(|relative| !owned_by_other(relative));
-            for other in sync::lock(&self.baselines).keys() {
-                let theirs = claimed.entry(other.clone()).or_default();
-                for relative in added.iter().chain(&modified).chain(&deleted) {
-                    theirs.insert(relative.clone(), after.entries.get(relative).cloned());
-                }
-            }
-        }
-        if let Some(outside) = &outside {
-            let theirs = |relative: &String| {
-                outside.explains(&resolve_lexical(&after.root, relative), after.entries.get(relative))
-            };
-            added.retain(|relative| !theirs(relative));
-            modified.retain(|relative| !theirs(relative));
-            deleted.retain(|relative| !theirs(relative));
-        }
-        let elsewhere: Vec<PathBuf> = {
-            let mut checked = sync::lock(&self.checked);
-            match checked.get_mut(lane) {
-                None => Vec::new(),
-                Some(mine) => {
-                    let outside: Vec<PathBuf> = mine
-                        .keys()
-                        .filter(|p| inside(&after.root, p).is_none())
-                        .cloned()
-                        .collect();
-                    outside
-                        .into_iter()
-                        .filter(|path| {
-                            let approved = mine.remove(path);
-                            approved.is_some_and(|approved| {
-                                std::fs::read(path).is_ok_and(|now| jsrt::hash::sha256_hex(&now) == approved)
-                            })
-                        })
-                        .collect()
-                }
-            }
-        };
+        self.filter_claimed_and_owned(lane, &after, &mut added, &mut modified, &mut deleted);
+        filter_outside_changes(outside.as_ref(), &after, &mut added, &mut modified, &mut deleted);
+        let elsewhere = self.take_checked_elsewhere(lane, &after.root);
         if added.is_empty() && modified.is_empty() && deleted.is_empty() && elsewhere.is_empty() {
             return;
         }
+        let changes =
+            Arc::new(self.build_cell_changes(lane, &after.root, &added, &modified, &deleted, elsewhere, complete));
+        let paths: Vec<String> = changes
+            .files
+            .iter()
+            .chain(&changes.checked)
+            .map(|path| self.display(path))
+            .collect();
+        let mut found = self.run_after_cell_guards(lane, &changes, &paths);
+        self.collect_observer_notes(lane, &changes, &mut found);
+        if !found.is_empty() {
+            sync::lock(&self.pending)
+                .entry(lane.to_string())
+                .or_default()
+                .extend(found);
+        }
+    }
+
+    fn owned_by_other_lane(&self, lane: &str, path: &Path) -> bool {
+        let checked = sync::lock(&self.checked);
+        let has_other_candidate = checked
+            .iter()
+            .any(|(other_lane, map)| other_lane != lane && map.contains_key(path));
+        if !has_other_candidate {
+            return false;
+        }
+        let Some(current_hash) = std::fs::read(path).ok().map(|bytes| jsrt::hash::sha256_hex(&bytes)) else {
+            return false;
+        };
+        checked
+            .iter()
+            .any(|(other_lane, map)| other_lane != lane && map.get(path) == Some(&current_hash))
+    }
+
+    fn filter_claimed_and_owned(
+        &self,
+        lane: &str,
+        after: &Snapshot,
+        added: &mut Vec<String>,
+        modified: &mut Vec<String>,
+        deleted: &mut Vec<String>,
+    ) {
+        let mut claimed = sync::lock(&self.claimed);
+        if let Some(theirs) = claimed.remove(lane) {
+            let unchanged = |relative: &String| theirs.get(relative) == Some(&after.entries.get(relative).cloned());
+            added.retain(|relative| !unchanged(relative));
+            modified.retain(|relative| !unchanged(relative));
+            deleted.retain(|relative| !unchanged(relative));
+        }
+        added.retain(|relative| !self.owned_by_other_lane(lane, &resolve_lexical(&after.root, relative)));
+        modified.retain(|relative| !self.owned_by_other_lane(lane, &resolve_lexical(&after.root, relative)));
+        for other in sync::lock(&self.baselines).keys() {
+            let theirs = claimed.entry(other.clone()).or_default();
+            for relative in added.iter().chain(modified.iter()).chain(deleted.iter()) {
+                theirs.insert(relative.clone(), after.entries.get(relative).cloned());
+            }
+        }
+    }
+
+    fn take_checked_elsewhere(&self, lane: &str, root: &Path) -> Vec<PathBuf> {
+        let mut checked = sync::lock(&self.checked);
+        let Some(mine) = checked.get_mut(lane) else {
+            return Vec::new();
+        };
+        let outside: Vec<PathBuf> = mine.keys().filter(|p| inside(root, p).is_none()).cloned().collect();
+        outside
+            .into_iter()
+            .filter(|path| {
+                mine.remove(path).is_some_and(|approved| {
+                    std::fs::read(path).is_ok_and(|now| jsrt::hash::sha256_hex(&now) == approved)
+                })
+            })
+            .collect()
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "internal helper decomposed from after_cell")]
+    fn build_cell_changes(
+        &self,
+        lane: &str,
+        root: &Path,
+        added: &[String],
+        modified: &[String],
+        deleted: &[String],
+        elsewhere: Vec<PathBuf>,
+        complete: bool,
+    ) -> CellChanges {
         let mut changes = CellChanges {
             complete,
             checked: elsewhere,
             ..CellChanges::default()
         };
-        for relative in added.iter().chain(&modified) {
-            let path = resolve_lexical(&after.root, relative);
+        for relative in added.iter().chain(modified) {
+            let path = resolve_lexical(root, relative);
             let approved = sync::lock(&self.checked)
                 .get_mut(lane)
                 .and_then(|map| map.remove(&path));
@@ -645,25 +671,22 @@ impl Inner {
             }
             changes.files.push(path);
         }
-        for relative in &deleted {
-            let path = resolve_lexical(&after.root, relative);
+        for relative in deleted {
+            let path = resolve_lexical(root, relative);
             if let Some(map) = sync::lock(&self.checked).get_mut(lane) {
                 map.remove(&path);
             }
             changes.deleted.push(path);
         }
+        changes
+    }
+
+    fn run_after_cell_guards(&self, lane: &str, changes: &Arc<CellChanges>, paths: &[String]) -> Vec<String> {
         let guards: Vec<Registered> = sync::lock(&self.guards)
             .iter()
             .filter(|r| Inner::watching(&*r.guard))
             .cloned()
             .collect();
-        let paths: Vec<String> = changes
-            .files
-            .iter()
-            .chain(&changes.checked)
-            .map(|path| self.display(path))
-            .collect();
-        let changes = Arc::new(changes);
         let calls: Vec<_> = guards
             .into_iter()
             .map(|registered| {
@@ -689,40 +712,14 @@ impl Inner {
             let answer = receiver.recv().unwrap_or(Answer::TimedOut);
             let ms = self.now().saturating_sub(started);
             let name = registered.guard.name().to_string();
-            let (text, outcome) = match answer {
-                Answer::TimedOut => (
-                    Some(format!("{name} did not finish checking the files this cell changed.")),
-                    "unchecked",
-                ),
-                Answer::Error(error) => (
-                    Some(format!("{name} could not check the files this cell changed: {error}")),
-                    "unchecked",
-                ),
-                Answer::Value(None) => (None, "clean"),
-                Answer::Value(Some(report)) => (
-                    report.message.filter(|m| !m.is_empty()),
-                    match report.outcome {
-                        AfterOutcome::Clean => "clean",
-                        AfterOutcome::Advisory => "advisory",
-                        AfterOutcome::Findings => "findings",
-                    },
-                ),
-            };
-            {
-                let mut stats = sync::lock(&registered.stats);
-                stats.total_ms += ms;
-                stats.turn_ms += ms;
-                stats.after_checks += 1;
-                if matches!(outcome, "findings" | "unchecked") {
-                    stats.after_findings += 1;
-                }
-            }
+            let (text, outcome) = interpret_after_cell_answer(&name, answer);
+            record_after_cell_stats(&registered, ms, outcome);
             self.record(GuardRecord {
                 guard: name.clone(),
                 phase: "after_cell",
                 outcome,
                 ms,
-                paths: paths.clone(),
+                paths: paths.to_vec(),
                 lane: lane.to_string(),
                 detail: text.clone(),
             });
@@ -730,28 +727,72 @@ impl Inner {
                 found.push(format!("[{name}] {text}"));
             }
         }
+        found
+    }
+
+    fn collect_observer_notes(&self, lane: &str, changes: &CellChanges, found: &mut Vec<String>) {
         let observers: Vec<Arc<dyn CellObserver>> = sync::lock(&self.observers)
             .iter()
             .filter(|observer| observer.enabled())
             .cloned()
             .collect();
         for observer in observers {
-            found.extend(observer.cell_changed(&changes, &self.cwd, lane));
-        }
-        if !found.is_empty() {
-            sync::lock(&self.pending)
-                .entry(lane.to_string())
-                .or_default()
-                .extend(found);
+            found.extend(observer.cell_changed(changes, &self.cwd, lane));
         }
     }
 }
 
-impl Guard for FileHooks {
-    /// `beforeShell` of a command on `lane`: commands that may write no file, or with no shell guard, are allowed
-    /// at once. `Some(reasons)` blocks it. Notes (a guard that could not check, advise-only refusals) are not shown
-    /// for shell commands.
-    fn before_shell(&self, lane: &str, command: &str) -> Option<String> {
+fn filter_outside_changes(
+    outside: Option<&OutsideChanges>,
+    after: &Snapshot,
+    added: &mut Vec<String>,
+    modified: &mut Vec<String>,
+    deleted: &mut Vec<String>,
+) {
+    let Some(outside) = outside else {
+        return;
+    };
+    let theirs =
+        |relative: &String| outside.explains(&resolve_lexical(&after.root, relative), after.entries.get(relative));
+    added.retain(|relative| !theirs(relative));
+    modified.retain(|relative| !theirs(relative));
+    deleted.retain(|relative| !theirs(relative));
+}
+
+fn interpret_after_cell_answer(name: &str, answer: Answer<Option<AfterCellReport>>) -> (Option<String>, &'static str) {
+    match answer {
+        Answer::TimedOut => (
+            Some(format!("{name} did not finish checking the files this cell changed.")),
+            "unchecked",
+        ),
+        Answer::Error(error) => (
+            Some(format!("{name} could not check the files this cell changed: {error}")),
+            "unchecked",
+        ),
+        Answer::Value(None) => (None, "clean"),
+        Answer::Value(Some(report)) => (
+            report.message.filter(|m| !m.is_empty()),
+            match report.outcome {
+                AfterOutcome::Clean => "clean",
+                AfterOutcome::Advisory => "advisory",
+                AfterOutcome::Findings => "findings",
+            },
+        ),
+    }
+}
+
+fn record_after_cell_stats(registered: &Registered, ms: u64, outcome: &str) {
+    let mut stats = sync::lock(&registered.stats);
+    stats.total_ms += ms;
+    stats.turn_ms += ms;
+    stats.after_checks += 1;
+    if matches!(outcome, "findings" | "unchecked") {
+        stats.after_findings += 1;
+    }
+}
+
+impl FileHooks {
+    fn check_shell_preflight(&self, lane: &str, command: &str) -> Option<String> {
         let observers: Vec<Arc<dyn CellObserver>> = sync::lock(&self.inner.observers)
             .iter()
             .filter(|observer| observer.enabled())
@@ -763,11 +804,113 @@ impl Guard for FileHooks {
         {
             return Some(reason);
         }
-        if let Some(path) = may_mutate_protected(command)
+        may_mutate_protected(command)
             .then(|| self.protected_in_command(command))
             .flatten()
-        {
-            return Some(self.refuse_protected(lane, "before_shell", &path));
+            .map(|path| self.refuse_protected(lane, "before_shell", &path))
+    }
+
+    fn finish_before_shell_call(
+        &self,
+        lane: &str,
+        display: &str,
+        registered: Registered,
+        started: u64,
+        receiver: Pending,
+    ) -> Option<String> {
+        let answer = receiver.recv().unwrap_or(Answer::TimedOut);
+        let ms = self.inner.now().saturating_sub(started);
+        let name = registered.guard.name().to_string();
+        let mut stats = sync::lock(&registered.stats);
+        stats.total_ms += ms;
+        stats.turn_ms += ms;
+        stats.checks += 1;
+        let (outcome, reason) = match answer {
+            Answer::TimedOut | Answer::Error(_) => {
+                stats.unchecked += 1;
+                ("unchecked", None)
+            }
+            Answer::Value(Verdict::Block(reason)) => {
+                stats.blocked += 1;
+                ("blocked", Some(format!("[{name}] {reason}")))
+            }
+            Answer::Value(Verdict::Allow(_)) => ("allowed", None),
+        };
+        drop(stats);
+        self.inner.record(GuardRecord {
+            guard: name,
+            phase: "before_shell",
+            outcome,
+            ms,
+            paths: vec![display.to_string()],
+            lane: lane.to_string(),
+            detail: reason.clone(),
+        });
+        reason
+    }
+
+    fn finish_before_write_call(
+        &self,
+        lane: &str,
+        display: &str,
+        registered: Registered,
+        started: u64,
+        timeout: Option<Duration>,
+        receiver: Pending,
+    ) -> (Option<String>, Option<String>) {
+        let answer = receiver.recv().unwrap_or(Answer::TimedOut);
+        let ms = self.inner.now().saturating_sub(started);
+        let name = registered.guard.name().to_string();
+        let mut stats = sync::lock(&registered.stats);
+        stats.total_ms += ms;
+        stats.turn_ms += ms;
+        stats.checks += 1;
+        let (outcome, reason, note) = match answer {
+            Answer::TimedOut => {
+                stats.unchecked += 1;
+                let limit = js_seconds(timeout.unwrap_or_default());
+                let note = format!(
+                    "[{name}] {name} did not check this write to {display} (no answer within {limit} s); it was written unchecked."
+                );
+                ("unchecked", None, Some(note))
+            }
+            Answer::Error(error) => {
+                stats.unchecked += 1;
+                let note = format!(
+                    "[{name}] {name} did not check this write to {display} ({error}); it was written unchecked."
+                );
+                ("unchecked", None, Some(note))
+            }
+            Answer::Value(Verdict::Block(reason)) => {
+                stats.blocked += 1;
+                ("blocked", Some(format!("[{name}] {reason}")), None)
+            }
+            Answer::Value(Verdict::Allow(Some(message))) if !message.is_empty() => {
+                ("allowed", None, Some(format!("[{name}] {message}")))
+            }
+            Answer::Value(Verdict::Allow(_)) => ("allowed", None, None),
+        };
+        drop(stats);
+        self.inner.record(GuardRecord {
+            guard: name,
+            phase: "before_write",
+            outcome,
+            ms,
+            paths: vec![display.to_string()],
+            lane: lane.to_string(),
+            detail: reason.clone(),
+        });
+        (reason, note)
+    }
+}
+
+impl Guard for FileHooks {
+    /// `beforeShell` of a command on `lane`: commands that may write no file, or with no shell guard, are allowed
+    /// at once. `Some(reasons)` blocks it. Notes (a guard that could not check, advise-only refusals) are not shown
+    /// for shell commands.
+    fn before_shell(&self, lane: &str, command: &str) -> Option<String> {
+        if let Some(reason) = self.check_shell_preflight(lane, command) {
+            return Some(reason);
         }
         let guards: Vec<Registered> = self
             .guards()
@@ -797,35 +940,7 @@ impl Guard for FileHooks {
             .collect();
         let mut reasons = Vec::new();
         for (registered, started, receiver) in calls {
-            let answer = receiver.recv().unwrap_or(Answer::TimedOut);
-            let ms = self.inner.now().saturating_sub(started);
-            let name = registered.guard.name().to_string();
-            let mut stats = sync::lock(&registered.stats);
-            stats.total_ms += ms;
-            stats.turn_ms += ms;
-            stats.checks += 1;
-            let (outcome, reason) = match answer {
-                Answer::TimedOut | Answer::Error(_) => {
-                    stats.unchecked += 1;
-                    ("unchecked", None)
-                }
-                Answer::Value(Verdict::Block(reason)) => {
-                    stats.blocked += 1;
-                    ("blocked", Some(format!("[{name}] {reason}")))
-                }
-                Answer::Value(Verdict::Allow(_)) => ("allowed", None),
-            };
-            drop(stats);
-            self.inner.record(GuardRecord {
-                guard: name,
-                phase: "before_shell",
-                outcome,
-                ms,
-                paths: vec![display.clone()],
-                lane: lane.to_string(),
-                detail: reason.clone(),
-            });
-            reasons.extend(reason);
+            reasons.extend(self.finish_before_shell_call(lane, &display, registered, started, receiver));
         }
         (!reasons.is_empty()).then(|| reasons.join("\n"))
     }
@@ -862,48 +977,7 @@ impl Guard for FileHooks {
         let mut reasons = Vec::new();
         let mut notes = Vec::new();
         for (registered, started, timeout, receiver) in calls {
-            let answer = receiver.recv().unwrap_or(Answer::TimedOut);
-            let ms = self.inner.now().saturating_sub(started);
-            let name = registered.guard.name().to_string();
-            let mut stats = sync::lock(&registered.stats);
-            stats.total_ms += ms;
-            stats.turn_ms += ms;
-            stats.checks += 1;
-            let (outcome, reason, note) = match answer {
-                Answer::TimedOut => {
-                    stats.unchecked += 1;
-                    let limit = js_seconds(timeout.unwrap_or_default());
-                    let note = format!(
-                        "[{name}] {name} did not check this write to {display} (no answer within {limit} s); it was written unchecked."
-                    );
-                    ("unchecked", None, Some(note))
-                }
-                Answer::Error(error) => {
-                    stats.unchecked += 1;
-                    let note = format!(
-                        "[{name}] {name} did not check this write to {display} ({error}); it was written unchecked."
-                    );
-                    ("unchecked", None, Some(note))
-                }
-                Answer::Value(Verdict::Block(reason)) => {
-                    stats.blocked += 1;
-                    ("blocked", Some(format!("[{name}] {reason}")), None)
-                }
-                Answer::Value(Verdict::Allow(Some(message))) if !message.is_empty() => {
-                    ("allowed", None, Some(format!("[{name}] {message}")))
-                }
-                Answer::Value(Verdict::Allow(_)) => ("allowed", None, None),
-            };
-            drop(stats);
-            self.inner.record(GuardRecord {
-                guard: name,
-                phase: "before_write",
-                outcome,
-                ms,
-                paths: vec![display.clone()],
-                lane: lane.to_string(),
-                detail: reason.clone(),
-            });
+            let (reason, note) = self.finish_before_write_call(lane, &display, registered, started, timeout, receiver);
             reasons.extend(reason);
             notes.extend(note);
         }

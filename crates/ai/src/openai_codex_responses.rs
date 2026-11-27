@@ -17,18 +17,15 @@ use crate::http::{
     is_aborted,
 };
 use crate::jsutil::{Utf8Stream, latin1};
-use crate::models::clamp_thinking_level;
 use crate::openai_responses::{
-    ConvertOptions, OPENAI_TOOL_CALL_PROVIDERS, ResponsesRun, ResponsesStream, TierPricing, ToolOptions,
-    convert_responses_messages, convert_responses_tools,
+    ConvertOptions, OPENAI_TOOL_CALL_PROVIDERS, ResponsesRun, TierPricing, ToolOptions, convert_responses_messages,
+    convert_responses_tools, prepare_responses_run, reasoning_off_effort,
 };
-use crate::options::{SimpleStreamOptions, StreamOptions, build_base_options, pi_user_agent};
-use crate::provider::{ProviderError, REQUEST_WAS_ABORTED, next_chunk};
-use crate::transcript::{
-    declared_tools, initial_system_message, resolve_transcript, resolve_transcript_tools, system_message_text,
-};
+use crate::options::{SimpleStreamOptions, StreamOptions, pi_user_agent};
+use crate::provider::{ProviderError, REQUEST_WAS_ABORTED, compat_flag, next_chunk, prepare_simple_options};
+use crate::transcript::{declared_tools, initial_system_message, resolve_transcript_tools, system_message_text};
 use crate::types::{
-    AssistantMessage, AssistantMessageDiagnostic, CacheRetention, DiagnosticErrorInfo, EventSink, Mapped, Model,
+    AssistantMessage, AssistantMessageDiagnostic, CacheRetention, DiagnosticErrorInfo, EventSink, Mapped, Model, Tool,
     TranscriptContext,
 };
 use indexmap::IndexMap;
@@ -94,53 +91,35 @@ pub fn resolve_codex_url(base_url: &str) -> String {
     }
 }
 
-fn build_request_body(
-    model: &Model,
-    context: &TranscriptContext,
+fn resolve_codex_effort<'a>(model: &'a Model, effort: &'a str) -> Option<&'a str> {
+    if effort != "none" {
+        return Some(model.mapped_or(effort));
+    }
+    match model.thinking_level("off") {
+        Mapped::Missing => Some("none"),
+        Mapped::Unsupported => None,
+        Mapped::Value(value) => Some(value),
+    }
+}
+
+fn apply_codex_reasoning(body: &mut Map<String, Value>, model: &Model, options: &OpenAICodexResponsesOptions) {
+    let summary = options.reasoning_summary.as_deref().unwrap_or("auto");
+    if let Some(effort) = &options.reasoning_effort {
+        if let Some(effort) = resolve_codex_effort(model, effort) {
+            body.insert("reasoning".into(), json!({"effort": effort, "summary": summary}));
+        }
+    } else if model.reasoning && model.thinking_level("off") != Mapped::Unsupported {
+        body.insert("reasoning".into(), json!({"effort": reasoning_off_effort(model)}));
+    }
+}
+
+fn apply_codex_optional_fields(
+    body: &mut Map<String, Value>,
     options: &OpenAICodexResponsesOptions,
     cache_session_id: Option<&str>,
-    grammar: &IndexMap<String, String>,
-    now: i64,
-) -> Result<Map<String, Value>, String> {
-    let flag = |key: &str, default: bool| model.compat_bool(key).unwrap_or(default);
-    let supports_additional_tools = flag("supportsAdditionalTools", false);
-    let supports_tool_search = flag("supportsToolSearch", false);
-    let tool_options = ToolOptions {
-        null_strict: true,
-        supports_strict_mode: flag("supportsStrictMode", true),
-        supports_openai_grammar_tools: flag("supportsOpenAIGrammarTools", false),
-        tool_search_result: false,
-    };
-    let tools = resolve_transcript_tools(&context.messages, supports_additional_tools || supports_tool_search);
-    let input = convert_responses_messages(
-        model,
-        context,
-        &ConvertOptions {
-            tool_call_providers: OPENAI_TOOL_CALL_PROVIDERS,
-            include_system_prompt: false,
-            grammar,
-            supports_mid_convo_system_messages: flag("supportsMidConvoSystemMessages", false),
-            supports_additional_tools,
-            supports_tool_search,
-            tool_options,
-        },
-        now,
-    )?;
-    let instructions = initial_system_message(&context.messages)
-        .map(system_message_text)
-        .filter(|text| !text.is_empty())
-        .unwrap_or_else(|| "You are a helpful assistant.".into());
-    let mut body = Map::new();
-    body.insert("model".into(), json!(model.id));
-    body.insert("store".into(), json!(false));
-    body.insert("stream".into(), json!(true));
-    body.insert("instructions".into(), json!(instructions));
-    body.insert("input".into(), Value::Array(input));
-    body.insert(
-        "text".into(),
-        json!({"verbosity": options.text_verbosity.as_deref().filter(|v| !v.is_empty()).unwrap_or("low")}),
-    );
-    body.insert("include".into(), json!(["reasoning.encrypted_content"]));
+    request_tools: &[Tool],
+    tool_options: ToolOptions,
+) -> Result<(), String> {
     if let Some(session) = cache_session_id {
         body.insert("prompt_cache_key".into(), json!(session));
     }
@@ -155,33 +134,65 @@ fn build_request_body(
     if let Some(tier) = &options.service_tier {
         body.insert("service_tier".into(), json!(tier));
     }
-    if !tools.request_tools.is_empty() {
+    if !request_tools.is_empty() {
         body.insert(
             "tools".into(),
-            Value::Array(convert_responses_tools(&tools.request_tools, tool_options)?),
+            Value::Array(convert_responses_tools(request_tools, tool_options)?),
         );
     }
-    let summary = options.reasoning_summary.as_deref().unwrap_or("auto");
-    if let Some(effort) = &options.reasoning_effort {
-        let effort: Option<&str> = if effort == "none" {
-            match model.thinking_level("off") {
-                Mapped::Missing => Some("none"),
-                Mapped::Unsupported => None,
-                Mapped::Value(value) => Some(value),
-            }
-        } else {
-            Some(model.mapped_or(effort))
-        };
-        if let Some(effort) = effort {
-            body.insert("reasoning".into(), json!({"effort": effort, "summary": summary}));
-        }
-    } else if model.reasoning && model.thinking_level("off") != Mapped::Unsupported {
-        let off = match model.thinking_level("off") {
-            Mapped::Value(value) => value,
-            _ => "none",
-        };
-        body.insert("reasoning".into(), json!({"effort": off}));
-    }
+    Ok(())
+}
+
+fn build_request_body(
+    model: &Model,
+    context: &TranscriptContext,
+    options: &OpenAICodexResponsesOptions,
+    cache_session_id: Option<&str>,
+    grammar: &IndexMap<String, String>,
+    now: i64,
+) -> Result<Map<String, Value>, String> {
+    let supports_additional_tools = compat_flag(model, "supportsAdditionalTools", false);
+    let supports_tool_search = compat_flag(model, "supportsToolSearch", false);
+    let tool_options = ToolOptions {
+        null_strict: true,
+        supports_strict_mode: compat_flag(model, "supportsStrictMode", true),
+        supports_openai_grammar_tools: compat_flag(model, "supportsOpenAIGrammarTools", false),
+        tool_search_result: false,
+    };
+    let tools = resolve_transcript_tools(&context.messages, supports_additional_tools || supports_tool_search);
+    let input = convert_responses_messages(
+        model,
+        context,
+        &ConvertOptions {
+            tool_call_providers: OPENAI_TOOL_CALL_PROVIDERS,
+            include_system_prompt: false,
+            grammar,
+            supports_mid_convo_system_messages: compat_flag(model, "supportsMidConvoSystemMessages", false),
+            supports_additional_tools,
+            supports_tool_search,
+            tool_options,
+        },
+        now,
+    )?;
+    let instructions = initial_system_message(&context.messages)
+        .map(system_message_text)
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| "You are a helpful assistant.".into());
+    let verbosity = options
+        .text_verbosity
+        .as_deref()
+        .filter(|v| !v.is_empty())
+        .unwrap_or("low");
+    let mut body = Map::new();
+    body.insert("model".into(), json!(model.id));
+    body.insert("store".into(), json!(false));
+    body.insert("stream".into(), json!(true));
+    body.insert("instructions".into(), json!(instructions));
+    body.insert("input".into(), Value::Array(input));
+    body.insert("text".into(), json!({"verbosity": verbosity}));
+    body.insert("include".into(), json!(["reasoning.encrypted_content"]));
+    apply_codex_optional_fields(&mut body, options, cache_session_id, &tools.request_tools, tool_options)?;
+    apply_codex_reasoning(&mut body, model, options);
     Ok(body)
 }
 
@@ -388,14 +399,44 @@ fn status_text(status: u16) -> String {
         .to_string()
 }
 
+fn default_error_message(status: u16, raw: &str) -> String {
+    if !raw.is_empty() {
+        return raw.to_string();
+    }
+    let text = status_text(status);
+    if text.is_empty() { "Request failed".into() } else { text }
+}
+
+fn is_usage_limit_error(code: &str, status: u16) -> bool {
+    let lower = code.to_lowercase();
+    lower.contains("usage_limit_reached")
+        || lower.contains("usage_not_included")
+        || lower.contains("rate_limit_exceeded")
+        || status == 429
+}
+
+fn format_usage_limit_message(err: &Value, now: i64) -> String {
+    let plan = match err.get("plan_type").filter(|p| jsrt::value::truthy(Some(p))) {
+        Some(plan) => format!(" ({} plan)", jsrt::value::string(Some(plan)).to_lowercase()),
+        None => String::new(),
+    };
+    let when = match err
+        .get("resets_at")
+        .filter(|r| jsrt::value::truthy(Some(r)))
+        .and_then(Value::as_f64)
+    {
+        Some(resets_at) => {
+            let minutes = ((resets_at * 1000.0 - now as f64) / 60000.0 + 0.5).floor().max(0.0);
+            format!(" Try again in ~{} min.", jsrt::number::to_string(minutes))
+        }
+        None => String::new(),
+    };
+    jsrt::string::trim(&format!("You have hit your ChatGPT usage limit{plan}.{when}")).to_string()
+}
+
 /// `parseErrorResponse`: the error message, and a friendly one for ChatGPT usage limits.
 pub fn parse_error_response(status: u16, raw: &str, now: i64) -> (String, Option<String>) {
-    let mut message = if !raw.is_empty() {
-        raw.to_string()
-    } else {
-        let text = status_text(status);
-        if text.is_empty() { "Request failed".into() } else { text }
-    };
+    let mut message = default_error_message(status, raw);
     let mut friendly = None;
     if let Ok(parsed) = parse_json(raw)
         && let Some(err) = parsed.get("error").filter(|e| jsrt::value::truthy(Some(e)))
@@ -405,29 +446,8 @@ pub fn parse_error_response(status: u16, raw: &str, now: i64) -> (String, Option
             .find(|v| jsrt::value::truthy(*v))
             .flatten()
             .map_or_default(|v| jsrt::value::string(Some(v)));
-        let lower = code.to_lowercase();
-        if lower.contains("usage_limit_reached")
-            || lower.contains("usage_not_included")
-            || lower.contains("rate_limit_exceeded")
-            || status == 429
-        {
-            let plan = match err.get("plan_type").filter(|p| jsrt::value::truthy(Some(p))) {
-                Some(plan) => format!(" ({} plan)", jsrt::value::string(Some(plan)).to_lowercase()),
-                None => String::new(),
-            };
-            let when = match err
-                .get("resets_at")
-                .filter(|r| jsrt::value::truthy(Some(r)))
-                .and_then(Value::as_f64)
-            {
-                Some(resets_at) => {
-                    let minutes = ((resets_at * 1000.0 - now as f64) / 60000.0 + 0.5).floor().max(0.0);
-                    format!(" Try again in ~{} min.", jsrt::number::to_string(minutes))
-                }
-                None => String::new(),
-            };
-            friendly =
-                Some(jsrt::string::trim(&format!("You have hit your ChatGPT usage limit{plan}.{when}")).to_string());
+        if is_usage_limit_error(&code, status) {
+            friendly = Some(format_usage_limit_message(err, now));
         }
         if let Some(text) = err.get("message").filter(|m| jsrt::value::truthy(Some(m))) {
             message = jsrt::value::string(Some(text));
@@ -577,19 +597,215 @@ pub async fn stream(
     transport: &dyn Transport,
     sink: &mut EventSink<'_>,
 ) -> AssistantMessage {
-    let context = resolve_transcript(
-        context,
-        model.compat_bool("supportsMidConvoSystemMessages").unwrap_or(false),
-    );
-    let now = jsrt::date::now_ms();
-    let mut output = AssistantMessage::pending(model, now);
-    output.api = "openai-codex-responses".into();
-    let mut run = ResponsesRun::new(output, sink, ResponsesStream::default());
+    let (context, now, mut run) = prepare_responses_run(model, context, "openai-codex-responses", sink);
     let result = drive(&mut run, model, &context, options, transport, now).await;
     run.end(
         result.map_err(|error| error.message().to_string()),
         options.base.signal(),
     )
+}
+
+struct PreparedCodexRequest<'a> {
+    account_id: String,
+    grammar: IndexMap<String, String>,
+    cache_session_id: Option<&'a str>,
+    body: Value,
+    body_json: String,
+    sse_headers: crate::http::HeaderMap,
+    ws_headers: crate::http::HeaderMap,
+    http_timeout_ms: Option<u64>,
+    connect_timeout_ms: Option<u64>,
+}
+
+fn resolve_codex_sessions(base: &StreamOptions) -> (Option<&str>, Option<String>, String) {
+    let cache_session_id = if base.cache_retention == Some(CacheRetention::None) {
+        None
+    } else {
+        base.session_id.as_deref()
+    };
+    let codex_session_id = cache_session_id.map(crate::openai_responses::clamp_prompt_cache_key);
+    let websocket_request_id = codex_session_id
+        .clone()
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| jsrt::random::uuid_v7(jsrt::date::now_ms()));
+    (cache_session_id, codex_session_id, websocket_request_id)
+}
+
+fn prepare_codex_request<'a>(
+    model: &Model,
+    context: &TranscriptContext,
+    options: &'a OpenAICodexResponsesOptions,
+    now: i64,
+) -> Result<PreparedCodexRequest<'a>, CodexError> {
+    let base = &options.base;
+    let api_key = base
+        .api_key
+        .clone()
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| CodexError::Plain(format!("No API key for provider: {}", model.provider)))?;
+    let account_id = extract_account_id(&api_key).map_err(CodexError::Plain)?;
+    let grammar = grammar_tool_input_properties(
+        &declared_tools(&context.messages),
+        compat_flag(model, "supportsOpenAIGrammarTools", false),
+    )
+    .map_err(CodexError::Plain)?;
+    let (cache_session_id, codex_session_id, websocket_request_id) = resolve_codex_sessions(base);
+    let mut body = Value::Object(
+        build_request_body(model, context, options, codex_session_id.as_deref(), &grammar, now)
+            .map_err(CodexError::Plain)?,
+    );
+    if let Some(next) = base.on_payload.as_ref().and_then(|hook| hook(&body, model)) {
+        body = next;
+    }
+    let sse_headers = sse_headers(model, base, &account_id, &api_key, codex_session_id.as_deref()).build();
+    let ws_headers = websocket_headers(model, base, &account_id, &api_key, &websocket_request_id).build();
+    let body_json = serde_json::to_string(&body).unwrap_or_default();
+    let http_timeout_ms = normalize_timeout_ms(base.timeout_ms.map(|t| t as f64)).map_err(CodexError::Plain)?;
+    let connect_timeout_ms = normalize_timeout_ms(base.websocket_connect_timeout_ms).map_err(CodexError::Plain)?;
+    Ok(PreparedCodexRequest {
+        account_id,
+        grammar,
+        cache_session_id,
+        body,
+        body_json,
+        sse_headers,
+        ws_headers,
+        http_timeout_ms,
+        connect_timeout_ms,
+    })
+}
+
+fn should_retry_websocket(
+    error: &CodexError,
+    started: bool,
+    aborted: bool,
+    retried_missing: &mut bool,
+    retried_limit: &mut bool,
+) -> bool {
+    if aborted {
+        return false;
+    }
+    if error.api_code() == Some(websocket::PREVIOUS_RESPONSE_NOT_FOUND_CODE) && !*retried_missing {
+        *retried_missing = true;
+        return true;
+    }
+    if !started && error.api_code() == Some(websocket::WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE) && !*retried_limit {
+        *retried_limit = true;
+        return true;
+    }
+    false
+}
+
+fn record_transport_failure_diagnostic(
+    run: &mut ResponsesRun<'_, '_>,
+    configured: &str,
+    started: bool,
+    request_bytes: usize,
+    error: &CodexError,
+) {
+    let mut details = Map::new();
+    details.insert("configuredTransport".into(), json!(configured));
+    if !started {
+        details.insert("fallbackTransport".into(), json!("sse"));
+    }
+    details.insert("eventsEmitted".into(), json!(started));
+    details.insert(
+        "phase".into(),
+        json!(if started {
+            "after_message_stream_start"
+        } else {
+            "before_message_stream_start"
+        }),
+    );
+    details.insert("requestBytes".into(), json!(request_bytes));
+    run.output
+        .diagnostics
+        .get_or_insert_with(Vec::new)
+        .push(AssistantMessageDiagnostic {
+            kind: "provider_transport_failure".into(),
+            timestamp: jsrt::date::now_ms(),
+            error: Some(error.diagnostic()),
+            details: Some(details),
+        });
+}
+
+enum WebSocketOutcome {
+    Completed,
+    FallbackToSse,
+}
+
+async fn try_websocket_transport(
+    run: &mut ResponsesRun<'_, '_>,
+    transport: &dyn Transport,
+    request: &websocket::Request<'_>,
+    configured: &str,
+    request_bytes: usize,
+    start_emitted: &mut bool,
+) -> Result<WebSocketOutcome, CodexError> {
+    let mut retried_limit = false;
+    let mut retried_missing = false;
+    loop {
+        let mut started = false;
+        let attempt = websocket::process_websocket_stream(run, transport, request, &mut started, start_emitted).await;
+        let error = match attempt {
+            Ok(()) => {
+                run.stopped(request.signal, CODEX_NO_STOP_REASON)
+                    .map_err(CodexError::Plain)?;
+                return Ok(WebSocketOutcome::Completed);
+            }
+            Err(error) => error,
+        };
+        let aborted = is_aborted(request.signal);
+        if should_retry_websocket(&error, started, aborted, &mut retried_missing, &mut retried_limit) {
+            continue;
+        }
+        let connection_limit_before_start =
+            !started && error.api_code() == Some(websocket::WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE);
+        if aborted || (error.is_non_transport() && !connection_limit_before_start) {
+            return Err(error);
+        }
+        record_transport_failure_diagnostic(run, configured, started, request_bytes, &error);
+        websocket::record_websocket_failure(request.cache_session_id, error.message());
+        if started {
+            return Err(error);
+        }
+        websocket::record_websocket_sse_fallback(request.cache_session_id);
+        return Ok(WebSocketOutcome::FallbackToSse);
+    }
+}
+
+async fn send_and_process_sse(
+    run: &mut ResponsesRun<'_, '_>,
+    transport: &dyn Transport,
+    model: &Model,
+    options: &OpenAICodexResponsesOptions,
+    prepared: PreparedCodexRequest<'_>,
+    start_emitted: bool,
+) -> Result<(), CodexError> {
+    let base = &options.base;
+    let signal = base.signal();
+    let mut headers = prepared.sse_headers;
+    headers.insert("content-encoding".into(), "zstd".into());
+    let request = HttpRequest {
+        method: "POST".into(),
+        url: resolve_codex_url(&model.base_url),
+        headers,
+        body: prepared.body_json,
+    };
+    let mut response = send_with_codex_retry(transport, &request, base, prepared.http_timeout_ms, signal).await?;
+    if !start_emitted {
+        run.start();
+    }
+    process_stream(
+        run,
+        &mut response,
+        model,
+        &prepared.grammar,
+        options.service_tier.as_deref(),
+        signal,
+    )
+    .await?;
+    run.stopped(signal, CODEX_NO_STOP_REASON).map_err(CodexError::Plain)
 }
 
 async fn drive(
@@ -602,140 +818,46 @@ async fn drive(
 ) -> Result<(), CodexError> {
     let base = &options.base;
     let signal = base.signal();
-    let api_key = base
-        .api_key
-        .clone()
-        .filter(|k| !k.is_empty())
-        .ok_or_else(|| CodexError::Plain(format!("No API key for provider: {}", model.provider)))?;
-    let account_id = extract_account_id(&api_key).map_err(CodexError::Plain)?;
-    let grammar = grammar_tool_input_properties(
-        &declared_tools(&context.messages),
-        model.compat_bool("supportsOpenAIGrammarTools").unwrap_or(false),
-    )
-    .map_err(CodexError::Plain)?;
-    let cache_session_id = if base.cache_retention == Some(CacheRetention::None) {
-        None
-    } else {
-        base.session_id.as_deref()
-    };
-    let codex_session_id = cache_session_id.map(crate::openai_responses::clamp_prompt_cache_key);
-    let mut body = Value::Object(
-        build_request_body(model, context, options, codex_session_id.as_deref(), &grammar, now)
-            .map_err(CodexError::Plain)?,
-    );
-    if let Some(next) = base.on_payload.as_ref().and_then(|hook| hook(&body, model)) {
-        body = next;
-    }
-    let websocket_request_id = codex_session_id
-        .clone()
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| jsrt::random::uuid_v7(jsrt::date::now_ms()));
-    let headers = sse_headers(model, base, &account_id, &api_key, codex_session_id.as_deref()).build();
-    let ws_headers = websocket_headers(model, base, &account_id, &api_key, &websocket_request_id).build();
-    let body_json = serde_json::to_string(&body).unwrap_or_default();
-    let http_timeout_ms = normalize_timeout_ms(base.timeout_ms.map(|t| t as f64)).map_err(CodexError::Plain)?;
-    let connect_timeout_ms = normalize_timeout_ms(base.websocket_connect_timeout_ms).map_err(CodexError::Plain)?;
+    let prepared = prepare_codex_request(model, context, options, now)?;
     let configured = base.transport.as_deref().filter(|t| !t.is_empty()).unwrap_or("auto");
     let mut start_emitted = false;
-    let websocket_disabled = configured != "sse" && websocket::is_websocket_sse_fallback_active(cache_session_id);
+    let websocket_disabled =
+        configured != "sse" && websocket::is_websocket_sse_fallback_active(prepared.cache_session_id);
     if websocket_disabled {
-        websocket::record_websocket_sse_fallback(cache_session_id);
+        websocket::record_websocket_sse_fallback(prepared.cache_session_id);
     }
     if configured != "sse" && !websocket_disabled {
         let url = websocket::resolve_codex_websocket_url(&model.base_url);
         let request = websocket::Request {
             url: &url,
-            body: &body,
-            headers: &ws_headers,
+            body: &prepared.body,
+            headers: &prepared.ws_headers,
             model,
-            grammar: &grammar,
+            grammar: &prepared.grammar,
             service_tier: options.service_tier.as_deref(),
-            idle_timeout_ms: http_timeout_ms,
-            connect_timeout_ms,
-            cache_session_id,
-            account_id: &account_id,
+            idle_timeout_ms: prepared.http_timeout_ms,
+            connect_timeout_ms: prepared.connect_timeout_ms,
+            cache_session_id: prepared.cache_session_id,
+            account_id: &prepared.account_id,
             transport_kind: base.transport.as_deref().unwrap_or_default(),
             signal,
         };
-        let mut retried_connection_limit = false;
-        let mut retried_missing_continuation = false;
-        loop {
-            let mut started = false;
-            let attempt =
-                websocket::process_websocket_stream(run, transport, &request, &mut started, &mut start_emitted).await;
-            let error = match attempt {
-                Ok(()) => return run.stopped(signal, CODEX_NO_STOP_REASON).map_err(CodexError::Plain),
-                Err(error) => error,
-            };
-            let aborted = is_aborted(signal);
-            let connection_limit_before_start =
-                !started && error.api_code() == Some(websocket::WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE);
-            let previous_response_not_found = error.api_code() == Some(websocket::PREVIOUS_RESPONSE_NOT_FOUND_CODE);
-            if !aborted && previous_response_not_found && !retried_missing_continuation {
-                retried_missing_continuation = true;
-                continue;
-            }
-            if !aborted && connection_limit_before_start && !retried_connection_limit {
-                retried_connection_limit = true;
-                continue;
-            }
-            if aborted || (error.is_non_transport() && !connection_limit_before_start) {
-                return Err(error);
-            }
-            let mut details = Map::new();
-            details.insert("configuredTransport".into(), json!(configured));
-            if !started {
-                details.insert("fallbackTransport".into(), json!("sse"));
-            }
-            details.insert("eventsEmitted".into(), json!(started));
-            details.insert(
-                "phase".into(),
-                json!(if started {
-                    "after_message_stream_start"
-                } else {
-                    "before_message_stream_start"
-                }),
-            );
-            details.insert("requestBytes".into(), json!(body_json.len()));
-            run.output
-                .diagnostics
-                .get_or_insert_with(Vec::new)
-                .push(AssistantMessageDiagnostic {
-                    kind: "provider_transport_failure".into(),
-                    timestamp: jsrt::date::now_ms(),
-                    error: Some(error.diagnostic()),
-                    details: Some(details),
-                });
-            websocket::record_websocket_failure(cache_session_id, error.message());
-            if started {
-                return Err(error);
-            }
-            websocket::record_websocket_sse_fallback(cache_session_id);
-            break;
+        if matches!(
+            try_websocket_transport(
+                run,
+                transport,
+                &request,
+                configured,
+                prepared.body_json.len(),
+                &mut start_emitted,
+            )
+            .await?,
+            WebSocketOutcome::Completed
+        ) {
+            return Ok(());
         }
     }
-    let mut headers = headers;
-    headers.insert("content-encoding".into(), "zstd".into());
-    let request = HttpRequest {
-        method: "POST".into(),
-        url: resolve_codex_url(&model.base_url),
-        headers,
-        body: body_json,
-    };
-    let mut response = send_with_codex_retry(transport, &request, base, http_timeout_ms, signal).await?;
-    if !start_emitted {
-        run.start();
-    }
-    process_stream(
-        run,
-        &mut response,
-        model,
-        &grammar,
-        options.service_tier.as_deref(),
-        signal,
-    )
-    .await?;
-    run.stopped(signal, CODEX_NO_STOP_REASON).map_err(CodexError::Plain)
+    send_and_process_sse(run, transport, model, options, prepared, start_emitted).await
 }
 
 /// `assertSuccessfulOutput`'s message for a stream that set no stop reason.
@@ -774,6 +896,65 @@ async fn send_once(
     }
 }
 
+async fn send_codex_attempt(
+    transport: &dyn Transport,
+    request: &HttpRequest,
+    timeout_ms: Option<u64>,
+    signal: Option<&AbortSignal>,
+) -> Result<HttpResponse, CodexError> {
+    if is_aborted(signal) {
+        return Err(aborted_error());
+    }
+    let mut response = send_once(transport, request, timeout_ms, signal).await?;
+    if (200..300).contains(&response.status) {
+        return Ok(response);
+    }
+    let text = read_text(&mut response).await;
+    Err(CodexError::Status {
+        status: response.status,
+        headers: response.headers,
+        text,
+    })
+}
+
+fn retry_delay_for_status(
+    headers: &crate::http::HeaderMap,
+    attempt: u32,
+    max_retry_delay_ms: Option<f64>,
+) -> Result<f64, CodexError> {
+    match retry_after_delay_ms(headers) {
+        None => Ok(BASE_DELAY_MS * 2f64.powi(attempt as i32)),
+        Some(delay) => validate_retry_delay_ms(delay, max_retry_delay_ms),
+    }
+}
+
+fn classify_codex_retry(
+    error: CodexError,
+    attempt: u32,
+    max_retries: u32,
+    max_retry_delay_ms: Option<f64>,
+) -> Result<f64, CodexError> {
+    let error = match error {
+        CodexError::Status { status, headers, text } => {
+            if attempt < max_retries && is_retryable_error(status, &text) {
+                return retry_delay_for_status(&headers, attempt, max_retry_delay_ms);
+            }
+            let (message, friendly) = parse_error_response(status, &text, jsrt::date::now_ms());
+            CodexError::Plain(friendly.unwrap_or(message))
+        }
+        error => error,
+    };
+    if error.message() == REQUEST_WAS_ABORTED {
+        return Err(aborted_error());
+    }
+    let retryable = !matches!(error, CodexError::RetryDelay(_)) && !error.message().contains("usage limit");
+    if attempt < max_retries && retryable {
+        Ok(BASE_DELAY_MS * 2f64.powi(attempt as i32))
+    } else {
+        Err(error)
+    }
+}
+
 /// The SSE request with Codex's retry loop (`maxRetries` default 0, 1 s doubling, `retry-after` honored).
 async fn send_with_codex_retry(
     transport: &dyn Transport,
@@ -783,45 +964,12 @@ async fn send_with_codex_retry(
     signal: Option<&AbortSignal>,
 ) -> Result<HttpResponse, CodexError> {
     let max_retries = base.max_retries.unwrap_or(0);
-    let send = |_| async {
-        if is_aborted(signal) {
-            return Err(aborted_error());
-        }
-        let mut response = send_once(transport, request, timeout_ms, signal).await?;
-        if (200..300).contains(&response.status) {
-            return Ok(response);
-        }
-        let text = read_text(&mut response).await;
-        Err(CodexError::Status {
-            status: response.status,
-            headers: response.headers,
-            text,
-        })
-    };
-    crate::provider::retry(signal, aborted_error, send, |error, attempt| {
-        let error = match error {
-            CodexError::Status { status, headers, text } => {
-                if attempt < max_retries && is_retryable_error(status, &text) {
-                    return match retry_after_delay_ms(&headers) {
-                        None => Ok(BASE_DELAY_MS * 2f64.powi(attempt as i32)),
-                        Some(delay) => validate_retry_delay_ms(delay, base.max_retry_delay_ms),
-                    };
-                }
-                let (message, friendly) = parse_error_response(status, &text, jsrt::date::now_ms());
-                CodexError::Plain(friendly.unwrap_or(message))
-            }
-            error => error,
-        };
-        if error.message() == REQUEST_WAS_ABORTED {
-            return Err(aborted_error());
-        }
-        let retryable = !matches!(error, CodexError::RetryDelay(_)) && !error.message().contains("usage limit");
-        if attempt < max_retries && retryable {
-            Ok(BASE_DELAY_MS * 2f64.powi(attempt as i32))
-        } else {
-            Err(error)
-        }
-    })
+    crate::provider::retry(
+        signal,
+        aborted_error,
+        |_| send_codex_attempt(transport, request, timeout_ms, signal),
+        |error, attempt| classify_codex_retry(error, attempt, max_retries, base.max_retry_delay_ms),
+    )
     .await
 }
 
@@ -833,18 +981,10 @@ pub async fn stream_simple(
     transport: &dyn Transport,
     sink: &mut EventSink<'_>,
 ) -> Result<AssistantMessage, String> {
-    if options.base.api_key.as_deref().is_none_or(str::is_empty) {
-        return Err(format!("No API key for provider: {}", model.provider));
-    }
-    let base = build_base_options(model, context, options);
-    let effort = options
-        .reasoning
-        .as_deref()
-        .map(|r| clamp_thinking_level(model, r))
-        .filter(|e| *e != "off");
+    let (base, reasoning_effort) = prepare_simple_options(model, context, options)?;
     let codex = OpenAICodexResponsesOptions {
         base,
-        reasoning_effort: effort.map(str::to_string),
+        reasoning_effort,
         tool_choice: options.tool_choice.clone(),
         ..Default::default()
     };

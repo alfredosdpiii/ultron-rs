@@ -116,67 +116,76 @@ fn resolve(env: &Env, path: &str) -> PathBuf {
     config::paths::normalize(&env.cwd.join(path))
 }
 
+fn agent_dir_opt(options: &Options, env: &Env) -> PathBuf {
+    options.get("agent-dir").map_or_else(|| env.agent_dir(), PathBuf::from)
+}
+
+fn cmd_import_pi(rest: &[String], env: &Env) -> Result<Vec<String>, Failure> {
+    let o = parse_options(rest, &["sessions-root"])?;
+    expect_positional(&o.positional, 1, 1)?;
+    let sessions_root = config::paths::session_root(
+        o.get("sessions-root"),
+        &*env.var,
+        &config::paths::AgentPaths::new(env.agent_dir()).experimental_sessions_dir(),
+        &env.cwd,
+        &env.home,
+    );
+    let result = session_core::migration::import_pi_session(&resolve(env, &o.positional[0]), &sessions_root)
+        .map_err(|e| Failure::Error(e.to_string()))?;
+    Ok(import_lines(&result))
+}
+
+fn cmd_export_pi(rest: &[String], env: &Env) -> Result<Vec<String>, Failure> {
+    let o = parse_options(rest, &[])?;
+    expect_positional(&o.positional, 2, 2)?;
+    let result = session_core::migration::export_native_session_to_pi(
+        &resolve(env, &o.positional[0]),
+        &resolve(env, &o.positional[1]),
+    )
+    .map_err(Failure::Error)?;
+    Ok(vec![format!(
+        "Exported native session {} ({} entries) to {}",
+        result.session_id,
+        result.entries,
+        result.path.display()
+    )])
+}
+
+fn cmd_backup(rest: &[String], env: &Env) -> Result<Vec<String>, Failure> {
+    let o = parse_options(rest, &["agent-dir"])?;
+    expect_positional(&o.positional, 0, 1)?;
+    let agent = agent_dir_opt(&o, env);
+    let backup_dir = match o.positional.first() {
+        Some(dir) => PathBuf::from(dir),
+        None => agent.parent().unwrap_or(Path::new("/")).join("backups"),
+    };
+    let (path, count) = config::profile_backup::backup(
+        &resolve(env, &agent.to_string_lossy()),
+        &resolve(env, &backup_dir.to_string_lossy()),
+    )
+    .map_err(Failure::Error)?;
+    Ok(vec![format!("Backed up {count} profile entries to {}", path.display())])
+}
+
+fn cmd_restore(rest: &[String], env: &Env) -> Result<Vec<String>, Failure> {
+    let o = parse_options(rest, &["agent-dir"])?;
+    expect_positional(&o.positional, 1, 1)?;
+    let agent = agent_dir_opt(&o, env);
+    let restored =
+        config::profile_backup::restore(&resolve(env, &o.positional[0]), &resolve(env, &agent.to_string_lossy()))
+            .map_err(Failure::Error)?;
+    Ok(vec![format!(
+        "Restored {restored} profile entries to {}",
+        agent.display()
+    )])
+}
+
 fn command(sub: &str, rest: &[String], env: &Env) -> Result<Vec<String>, Failure> {
-    let agent_dir = |o: &Options| o.get("agent-dir").map_or_else(|| env.agent_dir(), PathBuf::from);
     match sub {
-        "import-pi" => {
-            let o = parse_options(rest, &["sessions-root"])?;
-            expect_positional(&o.positional, 1, 1)?;
-            let sessions_root = config::paths::session_root(
-                o.get("sessions-root"),
-                &*env.var,
-                &config::paths::AgentPaths::new(env.agent_dir()).experimental_sessions_dir(),
-                &env.cwd,
-                &env.home,
-            );
-            let result = session_core::migration::import_pi_session(&resolve(env, &o.positional[0]), &sessions_root)
-                .map_err(|e| Failure::Error(e.to_string()))?;
-            Ok(import_lines(&result))
-        }
-        "export-pi" => {
-            let o = parse_options(rest, &[])?;
-            expect_positional(&o.positional, 2, 2)?;
-            let result = session_core::migration::export_native_session_to_pi(
-                &resolve(env, &o.positional[0]),
-                &resolve(env, &o.positional[1]),
-            )
-            .map_err(Failure::Error)?;
-            Ok(vec![format!(
-                "Exported native session {} ({} entries) to {}",
-                result.session_id,
-                result.entries,
-                result.path.display()
-            )])
-        }
-        "backup" => {
-            let o = parse_options(rest, &["agent-dir"])?;
-            expect_positional(&o.positional, 0, 1)?;
-            let agent = agent_dir(&o);
-            let backup_dir = match o.positional.first() {
-                Some(dir) => PathBuf::from(dir),
-                None => agent.parent().unwrap_or(Path::new("/")).join("backups"),
-            };
-            let (path, count) = config::profile_backup::backup(
-                &resolve(env, &agent.to_string_lossy()),
-                &resolve(env, &backup_dir.to_string_lossy()),
-            )
-            .map_err(Failure::Error)?;
-            Ok(vec![format!("Backed up {count} profile entries to {}", path.display())])
-        }
-        "restore" => {
-            let o = parse_options(rest, &["agent-dir"])?;
-            expect_positional(&o.positional, 1, 1)?;
-            let agent = agent_dir(&o);
-            let restored = config::profile_backup::restore(
-                &resolve(env, &o.positional[0]),
-                &resolve(env, &agent.to_string_lossy()),
-            )
-            .map_err(Failure::Error)?;
-            Ok(vec![format!(
-                "Restored {restored} profile entries to {}",
-                agent.display()
-            )])
-        }
+        "import-pi" => cmd_import_pi(rest, env),
+        "export-pi" => cmd_export_pi(rest, env),
+        "backup" => cmd_backup(rest, env),
+        "restore" => cmd_restore(rest, env),
         other => Err(Failure::Usage(format!("Unknown migrate command: {other}"))),
     }
 }

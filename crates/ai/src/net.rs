@@ -270,6 +270,43 @@ fn node_should_proxy(hostname: &str, port: u32, env: Option<&crate::env::Provide
         })
 }
 
+fn default_port_for_scheme(scheme: &str) -> u32 {
+    match scheme {
+        "ftp" => 21,
+        "gopher" => 70,
+        "http" | "ws" => 80,
+        "https" | "wss" => 443,
+        _ => 0,
+    }
+}
+
+fn resolve_proxy_env_value(protocol: &str, env: Option<&crate::env::ProviderEnv>) -> Option<String> {
+    let mut proxy = node_proxy_env(&format!("{protocol}_proxy"), env);
+    if proxy.is_empty() {
+        proxy = node_proxy_env("all_proxy", env);
+    }
+    if proxy.is_empty() {
+        return None;
+    }
+    if !proxy.contains("://") {
+        proxy = format!("{protocol}://{proxy}");
+    }
+    Some(proxy)
+}
+
+fn validate_proxy_url(proxy: &str) -> Result<(), String> {
+    let parsed = Url::parse(proxy).map_err(|_| {
+        format!(
+            "Invalid proxy URL {}: Invalid URL",
+            serde_json::to_string(proxy).unwrap_or_default()
+        )
+    })?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err(format!("{UNSUPPORTED_PROXY_PROTOCOL_MESSAGE} Got {}:", parsed.scheme()));
+    }
+    Ok(())
+}
+
 /// `resolveHttpProxyUrlForTarget`: the HTTP(S) proxy URL `target` goes through under `env` (then the process
 /// environment), `{protocol}_proxy` before `all_proxy`; `None` for a direct connection; an error for a proxy URL
 /// that does not parse or is not HTTP(S).
@@ -281,36 +318,14 @@ pub fn node_proxy_for_target(target: &str, env: Option<&crate::env::ProviderEnv>
         return Ok(None);
     };
     let protocol = url.scheme().to_string();
-    let default = match protocol.as_str() {
-        "ftp" => 21,
-        "gopher" => 70,
-        "http" | "ws" => 80,
-        "https" | "wss" => 443,
-        _ => 0,
-    };
-    let port = url.port().map_or(default, u32::from);
+    let port = url.port().map_or(default_port_for_scheme(&protocol), u32::from);
     if !node_should_proxy(strip_brackets(host), port, env) {
         return Ok(None);
     }
-    let mut proxy = node_proxy_env(&format!("{protocol}_proxy"), env);
-    if proxy.is_empty() {
-        proxy = node_proxy_env("all_proxy", env);
-    }
-    if proxy.is_empty() {
+    let Some(proxy) = resolve_proxy_env_value(&protocol, env) else {
         return Ok(None);
-    }
-    if !proxy.contains("://") {
-        proxy = format!("{protocol}://{proxy}");
-    }
-    let parsed = Url::parse(&proxy).map_err(|_| {
-        format!(
-            "Invalid proxy URL {}: Invalid URL",
-            serde_json::to_string(&proxy).unwrap_or_default()
-        )
-    })?;
-    if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return Err(format!("{UNSUPPORTED_PROXY_PROTOCOL_MESSAGE} Got {}:", parsed.scheme()));
-    }
+    };
+    validate_proxy_url(&proxy)?;
     Ok(Some(proxy))
 }
 

@@ -267,24 +267,12 @@ impl DurableChildren {
     /// `<conversation>:<entry>`.
     pub fn fork_point(&self, lane: &str) -> Result<Option<String>, String> {
         if lane == session_journal::run::MAIN_LANE {
-            let entries = self.root_context()?;
-            let messages: Vec<(String, Vec<Value>)> = entries
-                .iter()
-                .map(|entry| {
-                    let id = entry["id"].as_str().unwrap_or_default().to_string();
-                    (id, session_journal::context::entry_context_messages(entry))
-                })
-                .collect();
-            let at = delegation::fork::fork_point(messages.iter().map(|(id, m)| (id.clone(), m.as_slice())));
-            return Ok(at.map(|entry| format!("{ROOT_ANCHOR}{entry}")));
+            return self.root_fork_point();
         }
         let chat = self.chat.get().cloned().ok_or("The durable runtime is not open")?;
-        let conversation = match lane.strip_prefix(CONVERSATION_LANE_PREFIX) {
-            Some(id) => id.parse().ok().map(ConversationId),
-            None => self.conversation_of_lane(lane),
-        };
-        let conversation =
-            conversation.ok_or_else(|| format!("rlm.spawn fork=True: lane {lane} has no conversation"))?;
+        let conversation = self
+            .resolve_lane_conversation(lane)
+            .ok_or_else(|| format!("rlm.spawn fork=True: lane {lane} has no conversation"))?;
         let handle = chat
             .conversation(conversation)
             .map_err(|e| e.to_string())?
@@ -300,6 +288,26 @@ impl DurableChildren {
                 .map(|entry| (entry.id.0.to_string(), entry.model.as_deref().unwrap_or_default())),
         );
         Ok(at.map(|entry| format!("{}:{entry}", conversation.0)))
+    }
+
+    fn root_fork_point(&self) -> Result<Option<String>, String> {
+        let entries = self.root_context()?;
+        let messages: Vec<(String, Vec<Value>)> = entries
+            .iter()
+            .map(|entry| {
+                let id = entry["id"].as_str().unwrap_or_default().to_string();
+                (id, session_journal::context::entry_context_messages(entry))
+            })
+            .collect();
+        let at = delegation::fork::fork_point(messages.iter().map(|(id, m)| (id.clone(), m.as_slice())));
+        Ok(at.map(|entry| format!("{ROOT_ANCHOR}{entry}")))
+    }
+
+    fn resolve_lane_conversation(&self, lane: &str) -> Option<ConversationId> {
+        match lane.strip_prefix(CONVERSATION_LANE_PREFIX) {
+            Some(id) => id.parse().ok().map(ConversationId),
+            None => self.conversation_of_lane(lane),
+        }
     }
 
     /// The root lane's context entries (from its newest compaction), as the next root request would build them.
@@ -471,37 +479,39 @@ impl DurableChildren {
             return Ok(Vec::new());
         };
         let children = child_tasks(&chat)?;
-        let reattached = stack.delegation.restore(unfinished, |id| {
-            let (task, input, _) = children.get(&lanes::lane_names::child_lane(id))?.clone();
-            if input.agent || input.keep {
-                return None;
-            }
-            let run = self.restore_lane(stack, id, &input);
-            let chat = chat.clone();
-            let (lanes, lane) = (stack.lanes.clone(), input.name);
-            let contract = self
-                .session()
-                .and_then(|session| lock(&session).value(CONTRACTS_NAMESPACE, id).cloned());
-            Some(Reattached {
-                waiter: Box::new(move |signal: Signal| {
-                    let reply = wait_child(&chat, task, &signal);
-                    let _ = lanes.close_lane(&lane);
-                    reply
-                }) as ChildWaiter,
-                contract,
-                run: Some(run),
-            })
-        })?;
-        for (name, (task, input, terminal)) in &children {
-            let ours = !terminal
-                && (input.agent
-                    || matches!(lanes::lane_names::parse_lane(name),
-                        Some(lanes::lane_names::LaneOwner::Child(id)) if !reattached.iter().any(|r| r == id)));
-            if ours && !input.keep {
-                let _ = chat.abort_task(*task, &Ctx::background());
-            }
-        }
+        let reattached = stack
+            .delegation
+            .restore(unfinished, |id| self.reattach_child(stack, &chat, &children, id))?;
+        abort_unattached_children(&chat, &children, &reattached);
         Ok(reattached)
+    }
+
+    fn reattach_child(
+        &self,
+        stack: &Stack,
+        chat: &ChatHarness,
+        children: &HashMap<String, (TaskId, ChildInput, bool)>,
+        id: &str,
+    ) -> Option<Reattached> {
+        let (task, input, _) = children.get(&lanes::lane_names::child_lane(id))?.clone();
+        if input.agent || input.keep {
+            return None;
+        }
+        let run = self.restore_lane(stack, id, &input);
+        let chat = chat.clone();
+        let (lanes, lane) = (stack.lanes.clone(), input.name);
+        let contract = self
+            .session()
+            .and_then(|session| lock(&session).value(CONTRACTS_NAMESPACE, id).cloned());
+        Some(Reattached {
+            waiter: Box::new(move |signal: Signal| {
+                let reply = wait_child(&chat, task, &signal);
+                let _ = lanes.close_lane(&lane);
+                reply
+            }) as ChildWaiter,
+            contract,
+            run: Some(run),
+        })
     }
 
     /// The lane setup a reattached child had in the worker that started it: its worktree (working directory and
@@ -544,6 +554,22 @@ fn parse_fork_anchor(anchor: &str) -> Option<harness::chat::children::ChildFork>
 
 /// The fork anchor prefix of the root lane's transcript entries.
 const ROOT_ANCHOR: &str = "root:";
+
+fn abort_unattached_children(
+    chat: &ChatHarness,
+    children: &HashMap<String, (TaskId, ChildInput, bool)>,
+    reattached: &[String],
+) {
+    for (name, (task, input, terminal)) in children {
+        let unattached = matches!(
+            lanes::lane_names::parse_lane(name),
+            Some(lanes::lane_names::LaneOwner::Child(id)) if !reattached.iter().any(|r| r == id)
+        );
+        if !terminal && !input.keep && (input.agent || unattached) {
+            let _ = chat.abort_task(*task, &Ctx::background());
+        }
+    }
+}
 
 /// The runtime's child tasks by name, with their input and whether they ended.
 fn child_tasks(chat: &ChatHarness) -> Result<HashMap<String, (TaskId, ChildInput, bool)>, String> {

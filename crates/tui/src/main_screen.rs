@@ -59,6 +59,24 @@ impl MainScreen {
     }
 }
 
+/// Parse a `\x1b[nA` or `\x1b[nB` CSI vertical cursor move starting at `i`, returning the index after digits.
+fn step_csi_move(row: &mut i64, out: &str, i: usize) -> usize {
+    let bytes = out.as_bytes();
+    let mut j = i + 2;
+    while j < bytes.len() && bytes[j].is_ascii_digit() {
+        j += 1;
+    }
+    if j > i + 2 && j < bytes.len() {
+        let n: i64 = out[i + 2..j].parse().unwrap_or(0);
+        match bytes[j] {
+            b'A' => *row -= n,
+            b'B' => *row += n,
+            _ => {}
+        }
+    }
+    j
+}
+
 /// Advance `row` over the cursor moves of renderer output (`\x1b[nA`, `\x1b[nB`, CRLF, a clear to home).
 fn track(row: &mut i64, out: &str) {
     let bytes = out.as_bytes();
@@ -75,19 +93,7 @@ fn track(row: &mut i64, out: &str) {
             continue;
         }
         if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'[') {
-            let mut j = i + 2;
-            while j < bytes.len() && bytes[j].is_ascii_digit() {
-                j += 1;
-            }
-            if j > i + 2 && j < bytes.len() {
-                let n: i64 = out[i + 2..j].parse().unwrap_or(0);
-                match bytes[j] {
-                    b'A' => *row -= n,
-                    b'B' => *row += n,
-                    _ => {}
-                }
-            }
-            i = j;
+            i = step_csi_move(row, out, i);
             continue;
         }
         i += 1;

@@ -939,7 +939,7 @@ fn harness_chat_compaction_keeps_the_edits_of_kept_entries() {
     assert!(head <= u3 && head < edit.id.0, "kept from {head}");
     let view = chat.root.context(None).unwrap();
     let texts: Vec<String> = view.messages.iter().map(|m| user_text(Some(m))).collect();
-    assert!(texts.contains(&"u3 EDITED".to_string()), "{texts:?}");
+    assert!(texts.iter().any(|t| t == "u3 EDITED"), "{texts:?}");
     assert!(
         !texts.iter().any(|t| t.starts_with("u3 x") || t.starts_with("u2 ")),
         "{texts:?}"

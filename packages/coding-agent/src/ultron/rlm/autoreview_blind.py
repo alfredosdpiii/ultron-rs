@@ -48,40 +48,83 @@ def state(finding: dict[str, Any], hunk: str, window: str) -> str:
             f"SOURCE THE VERIFIER QUOTED:\n{_text(finding.get('evidence') or '(none)', 500)}")
 
 
-async def check(rlm: Any, findings: list[dict[str, Any]], material: Callable[[dict[str, Any]], tuple[str, str] | None]
-                ) -> dict[str, Any]:
-    """Ask about each of `findings` (confirmed, in order of seriousness) not proven by the host; `material(finding)`
-    is its (diff hunk, source window) or None. Sets `finding["blind"]` to supported, refuted or review. Returns the
-    tally: {"asked", "supported", "refuted", "review", "calls", "costUsd", "unpricedCalls", "unavailable"}."""
-    out: dict[str, Any] = {"asked": 0, "supported": 0, "refuted": 0, "review": 0, "calls": 0, "costUsd": 0.0,
-                           "unpricedCalls": 0, "unavailable": None}
+def _record_receipts(out: dict[str, Any], verdict: dict[str, Any]) -> None:
+    receipts = verdict.get("receipts")
+    if not receipts:
+        return
+    for item in receipts:
+        if item.get("status") not in ("succeeded", "failed"):
+            continue
+        out["calls"] += 1
+        cost = item.get("cost_usd")
+        if cost is None:
+            out["unpricedCalls"] += 1
+        else:
+            out["costUsd"] += float(cost)
+
+
+def _classify_verdict(verdict: dict[str, Any]) -> str:
+    answers = verdict.get("answers")
+    shown_entry = answers.get("shown") if isinstance(answers, dict) else None
+    answer = shown_entry.get("value") if isinstance(shown_entry, dict) else None
+    if verdict.get("settled") and isinstance(answer, bool):
+        return "supported" if answer else "refuted"
+    return "review"
+
+
+async def _ask_one(
+    judge: Judge,
+    finding: dict[str, Any],
+    shown: tuple[str, str],
+    out: dict[str, Any],
+) -> bool:
+    try:
+        verdict = await judge.decide(state(finding, *shown), QUESTIONS, kind=KIND, expect={"shown": True})
+    except Exception as error:  # an engine without the judge, or a host failure: the review goes on
+        out["unavailable"] = _text(f"{type(error).__name__}: {error}", 160)
+        return False
+    _record_receipts(out, verdict)
+    if verdict.get("rung") == "abstained":
+        out["unavailable"] = verdict.get("reason") or "the judge abstained"
+        return False
+    out["asked"] += 1
+    classification = _classify_verdict(verdict)
+    finding["blind"] = classification
+    out[classification] += 1
+    return True
+
+
+async def check(
+    rlm: Any,
+    findings: list[dict[str, Any]],
+    material: Callable[[dict[str, Any]], tuple[str, str] | None],
+) -> dict[str, Any]:
+    """Ask about each confirmed finding not proven by the host.
+
+    `material(finding)` returns `(diff hunk, source window)` or `None`.
+    Sets `finding["blind"]` to `supported`, `refuted`, or `review`, and
+    returns the tally dict.
+    """
+    out: dict[str, Any] = {
+        "asked": 0,
+        "supported": 0,
+        "refuted": 0,
+        "review": 0,
+        "calls": 0,
+        "costUsd": 0.0,
+        "unpricedCalls": 0,
+        "unavailable": None,
+    }
     if getattr(rlm, "host_request", None) is None:
         out["unavailable"] = "the host serves no judge"
         return out
     judge = Judge(_Bridge(rlm))
-    for finding in [item for item in findings if not item.get("host_confirmed")][:MAX_ASKED]:
+    candidates = [item for item in findings if not item.get("host_confirmed")][:MAX_ASKED]
+    for finding in candidates:
         shown = material(finding)
         if shown is None:
             continue
-        try:
-            verdict = await judge.decide(state(finding, *shown), QUESTIONS, kind=KIND, expect={"shown": True})
-        except Exception as error:  # an engine without the judge, or a host failure: the review goes on
-            out["unavailable"] = _text(f"{type(error).__name__}: {error}", 160)
+        if not await _ask_one(judge, finding, shown, out):
             break
-        sent = [item for item in verdict.get("receipts") or [] if item.get("status") in ("succeeded", "failed")]
-        out["calls"] += len(sent)
-        out["unpricedCalls"] += sum(1 for item in sent if item.get("cost_usd") is None)
-        out["costUsd"] += sum(float(item.get("cost_usd") or 0) for item in sent)
-        rung = verdict.get("rung")
-        if rung == "abstained":
-            out["unavailable"] = verdict.get("reason") or "the judge abstained"
-            break
-        out["asked"] += 1
-        answer = ((verdict.get("answers") or {}).get("shown") or {}).get("value")
-        if verdict.get("settled") and isinstance(answer, bool):
-            finding["blind"] = "supported" if answer else "refuted"
-        else:
-            finding["blind"] = "review"
-        out[finding["blind"]] += 1
     out["costUsd"] = round(out["costUsd"], 6)
     return out

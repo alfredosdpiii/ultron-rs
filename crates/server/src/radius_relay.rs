@@ -535,42 +535,51 @@ impl Run {
     }
 
     async fn attempt(&self, retry_ms: &mut u64) -> Attempt {
+        let auth = match self.resolve_auth().await {
+            Ok(auth) => auth,
+            Err(attempt) => return attempt,
+        };
+        let socket = match self.connect_relay(&auth).await {
+            Ok(socket) => socket,
+            Err(attempt) => return attempt,
+        };
+        self.serve_connected(socket, retry_ms).await
+    }
+
+    async fn resolve_auth(&self) -> Result<RelayAuth, Attempt> {
         let auth = self.options.auth.clone();
         let resolving = tokio::task::spawn_blocking(move || auth.resolve(false));
         let resolved = tokio::select! {
-            resolved = resolving => match resolved {
-                Ok(resolved) => resolved,
-                Err(error) => Err(error.to_string()),
-            },
-            () = self.stop.notified() => return Attempt::Stop,
+            resolved = resolving => resolved.unwrap_or_else(|error| Err(error.to_string())),
+            () = self.stop.notified() => return Err(Attempt::Stop),
         };
-        let auth = match resolved {
-            Err(error) => return Attempt::Failed(error),
+        match resolved {
+            Err(error) => Err(Attempt::Failed(error)),
             Ok(None) => {
                 self.status(RelayHostStatus::NotAuthenticated);
-                return if self.delay(self.options.delays.missing_auth_ms).await {
-                    Attempt::Again
+                if self.delay(self.options.delays.missing_auth_ms).await {
+                    Err(Attempt::Again)
                 } else {
-                    Attempt::Stop
-                };
+                    Err(Attempt::Stop)
+                }
             }
-            Ok(Some(auth)) => auth,
-        };
+            Ok(Some(auth)) => Ok(auth),
+        }
+    }
+
+    async fn connect_relay(&self, auth: &RelayAuth) -> Result<WsConnection, Attempt> {
         self.status(RelayHostStatus::Connecting);
-        let url = match relay_web_socket_url(&auth.gateway, &self.options.server_id) {
-            Ok(url) => url,
-            Err(error) => return Attempt::Failed(error),
-        };
+        let url = relay_web_socket_url(&auth.gateway, &self.options.server_id).map_err(Attempt::Failed)?;
         let authorization = format!("Bearer {}", auth.token);
         let connecting = radius_ws::connect(&url, RADIUS_RELAY_HOST_SUBPROTOCOL, &authorization, MAX_PENDING_BYTES);
         let socket = tokio::select! {
             socket = connecting => socket,
-            () = self.stop.notified() => return Attempt::Stop,
+            () = self.stop.notified() => return Err(Attempt::Stop),
         };
-        let socket = match socket {
-            Ok(socket) => socket,
-            Err(error) => return Attempt::Failed(error),
-        };
+        socket.map_err(Attempt::Failed)
+    }
+
+    async fn serve_connected(&self, socket: WsConnection, retry_ms: &mut u64) -> Attempt {
         *sync::lock(&self.shared.writer) = Some(socket.writer.clone());
         if self.closed() {
             *sync::lock(&self.shared.writer) = None;
@@ -731,42 +740,50 @@ impl RelayConnectionHandler for Refused {
 /// `endpoint`, bytes copied both ways; a connection the server refuses is closed (the gateway hears code 1012).
 pub fn unix_accept(endpoint: PathBuf) -> RelayAccept {
     Arc::new(move |connection: RelayConnection| -> Box<dyn RelayConnectionHandler> {
-        let streams = std::os::unix::net::UnixStream::connect(&endpoint).and_then(|s| {
-            let reader = s.try_clone()?;
-            let writer = s.try_clone()?;
-            Ok((s, reader, writer))
-        });
-        let Ok((stream, mut reader, mut writer)) = streams else {
-            let _ = connection.close(None);
-            return Box::new(Refused);
-        };
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
-        std::thread::spawn(move || {
-            use std::io::Write;
-            for chunk in rx {
-                if writer.write_all(&chunk).is_err() {
-                    break;
-                }
-            }
-        });
-        let outbound = connection;
-        std::thread::spawn(move || {
-            use std::io::Read;
-            let mut buffer = vec![0u8; 64 * 1024];
-            loop {
-                match reader.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if outbound.send(&buffer[..n]).is_err() {
-                            break;
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(_) => break,
-                }
-            }
-            let _ = outbound.close(None);
-        });
-        Box::new(UnixBridge { stream, tx: Some(tx) })
+        connect_unix_bridge(&endpoint, connection)
     })
+}
+
+fn connect_unix_bridge(endpoint: &std::path::Path, connection: RelayConnection) -> Box<dyn RelayConnectionHandler> {
+    let streams = std::os::unix::net::UnixStream::connect(endpoint).and_then(|s| {
+        let reader = s.try_clone()?;
+        let writer = s.try_clone()?;
+        Ok((s, reader, writer))
+    });
+    let Ok((stream, reader, writer)) = streams else {
+        let _ = connection.close(None);
+        return Box::new(Refused);
+    };
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    spawn_unix_writer(writer, rx);
+    spawn_unix_reader(reader, connection);
+    Box::new(UnixBridge { stream, tx: Some(tx) })
+}
+
+fn spawn_unix_writer(mut writer: std::os::unix::net::UnixStream, rx: std::sync::mpsc::Receiver<Vec<u8>>) {
+    std::thread::spawn(move || {
+        use std::io::Write;
+        for chunk in rx {
+            if writer.write_all(&chunk).is_err() {
+                break;
+            }
+        }
+    });
+}
+
+fn spawn_unix_reader(mut reader: std::os::unix::net::UnixStream, outbound: RelayConnection) {
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buffer = vec![0u8; 64 * 1024];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) if outbound.send(&buffer[..n]).is_err() => break,
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        let _ = outbound.close(None);
+    });
 }

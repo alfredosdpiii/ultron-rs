@@ -85,45 +85,61 @@ fn env_base(options: &GoogleVertexOptions) -> Option<String> {
     (!value.is_empty()).then(|| value.strip_suffix('/').unwrap_or(value).to_string())
 }
 
+fn resolve_adc_project(options: &GoogleVertexOptions) -> Result<String, String> {
+    let env = options.base.env.as_ref();
+    options
+        .project
+        .clone()
+        .filter(|p| !p.is_empty())
+        .or_else(|| provider_env_value("GOOGLE_CLOUD_PROJECT", env))
+        .or_else(|| provider_env_value("GCLOUD_PROJECT", env))
+        .ok_or_else(|| {
+            "Vertex AI requires a project ID. Set GOOGLE_CLOUD_PROJECT/GCLOUD_PROJECT or pass project in options."
+                .to_string()
+        })
+}
+
+fn resolve_adc_location(options: &GoogleVertexOptions) -> Result<String, String> {
+    let env = options.base.env.as_ref();
+    options
+        .location
+        .clone()
+        .filter(|l| !l.is_empty())
+        .or_else(|| provider_env_value("GOOGLE_CLOUD_LOCATION", env))
+        .ok_or_else(|| {
+            "Vertex AI requires a location. Set GOOGLE_CLOUD_LOCATION or pass location in options.".to_string()
+        })
+}
+
+fn adc_endpoint(model: &Model, options: &GoogleVertexOptions) -> Result<Endpoint, String> {
+    let project = resolve_adc_project(options)?;
+    let location = resolve_adc_location(options)?;
+    let custom = custom_base(model);
+    let resource = custom
+        .is_none()
+        .then(|| format!("projects/{project}/locations/{location}"));
+    let base = custom.unwrap_or_else(|| {
+        let host = env_base(options).unwrap_or_else(|| location_base(&location));
+        format!("{host}/{API_VERSION}")
+    });
+    Ok(Endpoint {
+        resource,
+        base,
+        auth: EndpointAuth::Google(options.base.env.clone()),
+        vertex: true,
+    })
+}
+
 fn endpoint(model: &Model, options: &GoogleVertexOptions) -> Result<Endpoint, String> {
     let Some(api_key) = resolve_api_key(&options.base) else {
-        let env = options.base.env.as_ref();
-        let project = options
-            .project
-            .clone()
-            .filter(|p| !p.is_empty())
-            .or_else(|| provider_env_value("GOOGLE_CLOUD_PROJECT", env))
-            .or_else(|| provider_env_value("GCLOUD_PROJECT", env))
-            .ok_or_else(|| {
-                "Vertex AI requires a project ID. Set GOOGLE_CLOUD_PROJECT/GCLOUD_PROJECT or pass project in options."
-                    .to_string()
-            })?;
-        let location = options
-            .location
-            .clone()
-            .filter(|l| !l.is_empty())
-            .or_else(|| provider_env_value("GOOGLE_CLOUD_LOCATION", env))
-            .ok_or_else(|| {
-                "Vertex AI requires a location. Set GOOGLE_CLOUD_LOCATION or pass location in options.".to_string()
-            })?;
-        let custom = custom_base(model);
-        return Ok(Endpoint {
-            resource: custom
-                .is_none()
-                .then(|| format!("projects/{project}/locations/{location}")),
-            base: custom.unwrap_or_else(|| {
-                let host = env_base(options).unwrap_or_else(|| location_base(&location));
-                format!("{host}/{API_VERSION}")
-            }),
-            auth: EndpointAuth::Google(options.base.env.clone()),
-            vertex: true,
-        });
+        return adc_endpoint(model, options);
     };
+    let base = custom_base(model).unwrap_or_else(|| {
+        let host = env_base(options).unwrap_or_else(|| GLOBAL_BASE_URL.to_string());
+        format!("{host}/{API_VERSION}")
+    });
     Ok(Endpoint {
-        base: custom_base(model).unwrap_or_else(|| {
-            let host = env_base(options).unwrap_or_else(|| GLOBAL_BASE_URL.to_string());
-            format!("{host}/{API_VERSION}")
-        }),
+        base,
         auth: EndpointAuth::ApiKey(api_key),
         resource: None,
         vertex: true,

@@ -156,160 +156,199 @@ impl Converter {
         Ok(())
     }
 
+    fn convert_terminal(&mut self, event: &Value, failed: bool) -> Result<AssistantMessageEvent, String> {
+        self.finish(event, failed)?;
+        if failed {
+            self.partial.error_message = str_of(event, "errorMessage");
+            Ok(AssistantMessageEvent::Error {
+                reason: self.partial.stop_reason,
+                error: self.partial.clone(),
+            })
+        } else {
+            Ok(AssistantMessageEvent::Done {
+                reason: self.partial.stop_reason,
+                message: self.partial.clone(),
+            })
+        }
+    }
+
+    fn start_content_block(&mut self, index: usize, thinking: bool) -> AssistantMessageEvent {
+        if thinking {
+            self.set(
+                index,
+                AssistantContent::Thinking(ThinkingContent {
+                    thinking: String::new(),
+                    thinking_signature: None,
+                    redacted: None,
+                }),
+            );
+            AssistantMessageEvent::ThinkingStart {
+                content_index: index,
+                partial: self.partial.clone(),
+            }
+        } else {
+            self.set(
+                index,
+                AssistantContent::Text(TextContent {
+                    text: String::new(),
+                    text_signature: None,
+                }),
+            );
+            AssistantMessageEvent::TextStart {
+                content_index: index,
+                partial: self.partial.clone(),
+            }
+        }
+    }
+
+    fn delta_content_block(&mut self, index: usize, event: &Value, thinking: bool) -> AssistantMessageEvent {
+        let delta = str_of(event, "delta").unwrap_or_default();
+        if thinking {
+            if let Some(AssistantContent::Thinking(block)) = self.partial.content.get_mut(index) {
+                block.thinking.push_str(&delta);
+            }
+            AssistantMessageEvent::ThinkingDelta {
+                content_index: index,
+                delta,
+                partial: self.partial.clone(),
+            }
+        } else {
+            if let Some(AssistantContent::Text(block)) = self.partial.content.get_mut(index) {
+                block.text.push_str(&delta);
+            }
+            AssistantMessageEvent::TextDelta {
+                content_index: index,
+                delta,
+                partial: self.partial.clone(),
+            }
+        }
+    }
+
+    fn end_content_block(&mut self, index: usize, event: &Value, thinking: bool) -> AssistantMessageEvent {
+        let content = str_of(event, "content").unwrap_or_default();
+        if thinking {
+            if let Some(AssistantContent::Thinking(block)) = self.partial.content.get_mut(index) {
+                block.thinking = content.clone();
+                block.thinking_signature = str_of(event, "contentSignature");
+                block.redacted = event.get("redacted").and_then(Value::as_bool);
+            }
+            AssistantMessageEvent::ThinkingEnd {
+                content_index: index,
+                content,
+                partial: self.partial.clone(),
+            }
+        } else {
+            if let Some(AssistantContent::Text(block)) = self.partial.content.get_mut(index) {
+                block.text = content.clone();
+                block.text_signature = str_of(event, "contentSignature");
+            }
+            AssistantMessageEvent::TextEnd {
+                content_index: index,
+                content,
+                partial: self.partial.clone(),
+            }
+        }
+    }
+
+    fn convert_content_event(&mut self, kind: &str, index: usize, event: &Value) -> Option<AssistantMessageEvent> {
+        match kind {
+            "text_start" => Some(self.start_content_block(index, false)),
+            "text_delta" => Some(self.delta_content_block(index, event, false)),
+            "text_end" => Some(self.end_content_block(index, event, false)),
+            "thinking_start" => Some(self.start_content_block(index, true)),
+            "thinking_delta" => Some(self.delta_content_block(index, event, true)),
+            "thinking_end" => Some(self.end_content_block(index, event, true)),
+            _ => None,
+        }
+    }
+
+    fn convert_toolcall_start(&mut self, index: usize, event: &Value) -> AssistantMessageEvent {
+        self.set(
+            index,
+            AssistantContent::ToolCall(ToolCall {
+                id: str_of(event, "id").unwrap_or_default(),
+                name: str_of(event, "toolName").unwrap_or_default(),
+                arguments: json!({}),
+                thought_signature: None,
+                namespace: None,
+            }),
+        );
+        self.tool_json.insert(index, String::new());
+        AssistantMessageEvent::ToolCallStart {
+            content_index: index,
+            partial: self.partial.clone(),
+        }
+    }
+
+    fn convert_toolcall_delta(&mut self, index: usize, event: &Value) -> AssistantMessageEvent {
+        let delta = str_of(event, "delta").unwrap_or_default();
+        let buffer = self.tool_json.entry(index).or_default();
+        buffer.push_str(&delta);
+        let arguments = parse_streaming_json(buffer);
+        if let Some(AssistantContent::ToolCall(call)) = self.partial.content.get_mut(index) {
+            call.arguments = arguments;
+        }
+        AssistantMessageEvent::ToolCallDelta {
+            content_index: index,
+            delta,
+            partial: self.partial.clone(),
+        }
+    }
+
+    fn convert_toolcall_end(&mut self, index: usize, event: &Value) -> Result<Option<AssistantMessageEvent>, String> {
+        let wire = event
+            .get("toolCall")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let Some(AssistantContent::ToolCall(call)) = self.partial.content.get_mut(index) else {
+            return Ok(None);
+        };
+        let mut merged = serde_json::to_value(&*call).map_err(|e| e.to_string())?;
+        for (key, value) in wire {
+            if key != "type" {
+                merged[key] = value;
+            }
+        }
+        *call = serde_json::from_value(merged).map_err(|e| e.to_string())?;
+        let tool_call = call.clone();
+        self.tool_json.remove(&index);
+        Ok(Some(AssistantMessageEvent::ToolCallEnd {
+            content_index: index,
+            tool_call,
+            partial: self.partial.clone(),
+        }))
+    }
+
+    fn convert_toolcall_event(
+        &mut self,
+        kind: &str,
+        index: usize,
+        event: &Value,
+    ) -> Result<Option<AssistantMessageEvent>, String> {
+        match kind {
+            "toolcall_start" => Ok(Some(self.convert_toolcall_start(index, event))),
+            "toolcall_delta" => Ok(Some(self.convert_toolcall_delta(index, event))),
+            "toolcall_end" => self.convert_toolcall_end(index, event),
+            _ => Ok(None),
+        }
+    }
+
     /// One wire event as a stream event; `Ok(None)` for nothing to emit.
     fn convert(&mut self, event: &Value) -> Result<Option<AssistantMessageEvent>, String> {
         let index = index_of(event);
-        let partial = |c: &Converter| c.partial.clone();
-        Ok(Some(
-            match event.get("type").and_then(Value::as_str).unwrap_or_default() {
-                "done" => {
-                    self.finish(event, false)?;
-                    AssistantMessageEvent::Done {
-                        reason: self.partial.stop_reason,
-                        message: partial(self),
-                    }
-                }
-                "error" => {
-                    self.finish(event, true)?;
-                    self.partial.error_message = str_of(event, "errorMessage");
-                    AssistantMessageEvent::Error {
-                        reason: self.partial.stop_reason,
-                        error: partial(self),
-                    }
-                }
-                "start" => AssistantMessageEvent::Start { partial: partial(self) },
-                "text_start" => {
-                    self.set(
-                        index,
-                        AssistantContent::Text(TextContent {
-                            text: String::new(),
-                            text_signature: None,
-                        }),
-                    );
-                    AssistantMessageEvent::TextStart {
-                        content_index: index,
-                        partial: partial(self),
-                    }
-                }
-                "text_delta" => {
-                    let delta = str_of(event, "delta").unwrap_or_default();
-                    if let Some(AssistantContent::Text(block)) = self.partial.content.get_mut(index) {
-                        block.text.push_str(&delta);
-                    }
-                    AssistantMessageEvent::TextDelta {
-                        content_index: index,
-                        delta,
-                        partial: partial(self),
-                    }
-                }
-                "text_end" => {
-                    let content = str_of(event, "content").unwrap_or_default();
-                    if let Some(AssistantContent::Text(block)) = self.partial.content.get_mut(index) {
-                        block.text = content.clone();
-                        block.text_signature = str_of(event, "contentSignature");
-                    }
-                    AssistantMessageEvent::TextEnd {
-                        content_index: index,
-                        content,
-                        partial: partial(self),
-                    }
-                }
-                "thinking_start" => {
-                    self.set(
-                        index,
-                        AssistantContent::Thinking(ThinkingContent {
-                            thinking: String::new(),
-                            thinking_signature: None,
-                            redacted: None,
-                        }),
-                    );
-                    AssistantMessageEvent::ThinkingStart {
-                        content_index: index,
-                        partial: partial(self),
-                    }
-                }
-                "thinking_delta" => {
-                    let delta = str_of(event, "delta").unwrap_or_default();
-                    if let Some(AssistantContent::Thinking(block)) = self.partial.content.get_mut(index) {
-                        block.thinking.push_str(&delta);
-                    }
-                    AssistantMessageEvent::ThinkingDelta {
-                        content_index: index,
-                        delta,
-                        partial: partial(self),
-                    }
-                }
-                "thinking_end" => {
-                    let content = str_of(event, "content").unwrap_or_default();
-                    if let Some(AssistantContent::Thinking(block)) = self.partial.content.get_mut(index) {
-                        block.thinking = content.clone();
-                        block.thinking_signature = str_of(event, "contentSignature");
-                        block.redacted = event.get("redacted").and_then(Value::as_bool);
-                    }
-                    AssistantMessageEvent::ThinkingEnd {
-                        content_index: index,
-                        content,
-                        partial: partial(self),
-                    }
-                }
-                "toolcall_start" => {
-                    self.set(
-                        index,
-                        AssistantContent::ToolCall(ToolCall {
-                            id: str_of(event, "id").unwrap_or_default(),
-                            name: str_of(event, "toolName").unwrap_or_default(),
-                            arguments: json!({}),
-                            thought_signature: None,
-                            namespace: None,
-                        }),
-                    );
-                    self.tool_json.insert(index, String::new());
-                    AssistantMessageEvent::ToolCallStart {
-                        content_index: index,
-                        partial: partial(self),
-                    }
-                }
-                "toolcall_delta" => {
-                    let delta = str_of(event, "delta").unwrap_or_default();
-                    let buffer = self.tool_json.entry(index).or_default();
-                    buffer.push_str(&delta);
-                    let arguments = parse_streaming_json(buffer);
-                    if let Some(AssistantContent::ToolCall(call)) = self.partial.content.get_mut(index) {
-                        call.arguments = arguments;
-                    }
-                    AssistantMessageEvent::ToolCallDelta {
-                        content_index: index,
-                        delta,
-                        partial: partial(self),
-                    }
-                }
-                "toolcall_end" => {
-                    let wire = event
-                        .get("toolCall")
-                        .and_then(Value::as_object)
-                        .cloned()
-                        .unwrap_or_default();
-                    let Some(AssistantContent::ToolCall(call)) = self.partial.content.get_mut(index) else {
-                        return Ok(None);
-                    };
-                    let mut merged = serde_json::to_value(&*call).map_err(|e| e.to_string())?;
-                    for (key, value) in wire {
-                        if key != "type" {
-                            merged[key] = value;
-                        }
-                    }
-                    *call = serde_json::from_value(merged).map_err(|e| e.to_string())?;
-                    let tool_call = call.clone();
-                    self.tool_json.remove(&index);
-                    AssistantMessageEvent::ToolCallEnd {
-                        content_index: index,
-                        tool_call,
-                        partial: partial(self),
-                    }
-                }
-                _ => return Ok(None),
+        let kind = event.get("type").and_then(Value::as_str).unwrap_or_default();
+        match kind {
+            "done" => self.convert_terminal(event, false).map(Some),
+            "error" => self.convert_terminal(event, true).map(Some),
+            "start" => Ok(Some(AssistantMessageEvent::Start {
+                partial: self.partial.clone(),
+            })),
+            _ => match self.convert_content_event(kind, index, event) {
+                Some(ev) => Ok(Some(ev)),
+                None => self.convert_toolcall_event(kind, index, event),
             },
-        ))
+        }
     }
 }
 
@@ -328,6 +367,22 @@ fn parse_frame(raw: &str) -> Result<Option<Value>, String> {
     parse_json(data).map(Some).map_err(|e| e.to_string())
 }
 
+fn drain_pi_frames(
+    buffer: &mut String,
+    on_event: &mut impl FnMut(Value) -> Result<bool, String>,
+) -> Result<bool, Failure> {
+    while let Some(split) = buffer.find("\n\n") {
+        let frame: String = buffer[..split].to_string();
+        buffer.drain(..split + 2);
+        if let Some(event) = parse_frame(&frame).map_err(Failure::plain)?
+            && on_event(event).map_err(Failure::plain)?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 async fn read_events(
     response: &mut HttpResponse,
     signal: Option<&AbortSignal>,
@@ -342,14 +397,8 @@ async fn read_events(
         };
         buffer.push_str(&text);
         buffer = buffer.replace("\r\n", "\n");
-        while let Some(split) = buffer.find("\n\n") {
-            let frame: String = buffer[..split].to_string();
-            buffer.drain(..split + 2);
-            if let Some(event) = parse_frame(&frame).map_err(Failure::plain)?
-                && on_event(event).map_err(Failure::plain)?
-            {
-                return Ok(true);
-            }
+        if drain_pi_frames(&mut buffer, &mut on_event)? {
+            return Ok(true);
         }
         if done {
             break;
@@ -412,16 +461,12 @@ fn payload(model: &Model, context: &TranscriptContext, options: &PiMessagesOptio
     json!({"model": model.id, "context": context, "options": request_options})
 }
 
-async fn drive(
+fn build_request(
     model: &Model,
     context: &TranscriptContext,
     options: &PiMessagesOptions,
-    transport: &dyn Transport,
-    converter: &mut Converter,
-    sink: &mut EventSink<'_>,
-) -> Result<(), Failure> {
+) -> Result<(String, HttpRequest), Failure> {
     let base = &options.base;
-    let signal = base.signal();
     let api_key = base
         .api_key
         .clone()
@@ -447,6 +492,29 @@ async fn drive(
         headers,
         body: serde_json::to_string(&body).unwrap_or_default(),
     };
+    Ok((url, request))
+}
+
+async fn read_error_body(response: &mut HttpResponse) -> String {
+    let mut decoder = Utf8Stream::default();
+    let mut text = String::new();
+    while let Ok(Some(chunk)) = response.body.next_chunk().await {
+        text.push_str(&decoder.push(&chunk));
+    }
+    text.push_str(&decoder.finish());
+    text
+}
+
+async fn drive(
+    model: &Model,
+    context: &TranscriptContext,
+    options: &PiMessagesOptions,
+    transport: &dyn Transport,
+    converter: &mut Converter,
+    sink: &mut EventSink<'_>,
+) -> Result<(), Failure> {
+    let signal = options.base.signal();
+    let (url, request) = build_request(model, context, options)?;
     if is_aborted(signal) {
         return Err(Failure::aborted());
     }
@@ -456,12 +524,7 @@ async fn drive(
     };
     let mut response = sent.map_err(Failure::plain)?;
     if !(200..300).contains(&response.status) {
-        let mut decoder = Utf8Stream::default();
-        let mut text = String::new();
-        while let Ok(Some(chunk)) = response.body.next_chunk().await {
-            text.push_str(&decoder.push(&chunk));
-        }
-        text.push_str(&decoder.finish());
+        let text = read_error_body(&mut response).await;
         return Err(response_failure(model, &url, response.status, &text));
     }
     let terminal = read_events(&mut response, signal, |wire| {

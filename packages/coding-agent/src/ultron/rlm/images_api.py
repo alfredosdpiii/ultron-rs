@@ -11,6 +11,15 @@ from typing import Any
 MAX_IMAGES = 4
 
 
+def _require_nonempty_str(
+    value: Any, message: str, *, optional: bool = False
+) -> None:
+    if value is None and optional:
+        return
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(message)
+
+
 class Images:
     """Image generation: `r = await rlm.images.generate("a lighthouse at dusk, watercolor")` saves the image to a
     file and returns `{"paths": [...], "model": "openrouter/<id>"}`; `await view_image(r["paths"][0])` shows it to
@@ -23,18 +32,33 @@ class Images:
     def __init__(self, bridge: Any) -> None:
         self._bridge = bridge
 
-    async def generate(self, prompt: str, model: str | None = None, size: str | None = None, n: int = 1,
-                       out: Any = None) -> dict[str, Any]:
+    async def generate(
+        self,
+        prompt: str,
+        model: str | None = None,
+        size: str | None = None,
+        n: int = 1,
+        out: Any = None,
+    ) -> dict[str, Any]:
         """Generate `n` images for `prompt` and save them: `{"paths": [absolute file paths], "model": "provider/id"}`.
         Raises ValueError for invalid arguments and RuntimeError when the host or the provider fails."""
-        if not isinstance(prompt, str) or not prompt.strip():
-            raise ValueError("rlm.images.generate prompt must be a non-empty string")
-        if model is not None and (not isinstance(model, str) or not model.strip()):
-            raise ValueError("rlm.images.generate model must be a non-empty string")
-        if size is not None and (not isinstance(size, str) or not size.strip()):
-            raise ValueError("rlm.images.generate size must be a string such as '16:9' or '2K'")
+        _require_nonempty_str(
+            prompt, "rlm.images.generate prompt must be a non-empty string"
+        )
+        _require_nonempty_str(
+            model,
+            "rlm.images.generate model must be a non-empty string",
+            optional=True,
+        )
+        _require_nonempty_str(
+            size,
+            "rlm.images.generate size must be a string such as '16:9' or '2K'",
+            optional=True,
+        )
         if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= MAX_IMAGES:
-            raise ValueError(f"rlm.images.generate n must be an integer from 1 to {MAX_IMAGES}")
+            raise ValueError(
+                f"rlm.images.generate n must be an integer from 1 to {MAX_IMAGES}"
+            )
         payload: dict[str, Any] = {"prompt": prompt, "n": n}
         if model is not None:
             payload["model"] = model

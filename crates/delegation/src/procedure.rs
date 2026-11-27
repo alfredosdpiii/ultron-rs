@@ -127,46 +127,56 @@ fn placeholders(text: &str) -> Vec<&str> {
     out
 }
 
+fn fill_placeholders(text: &str, input: &Map<String, Value>) -> Result<String, String> {
+    let mut out = text.to_string();
+    for name in placeholders(text) {
+        let value = match input.get(name) {
+            Some(Value::String(text)) => text.clone(),
+            Some(value @ (Value::Number(_) | Value::Bool(_))) => value.to_string(),
+            Some(_) => return Err(format!("input {name} must be a string here (it fills {text:?})")),
+            None => return Err(format!("missing input {name}")),
+        };
+        out = out.replace(&format!("{{{{{name}}}}}"), &value);
+    }
+    Ok(out)
+}
+
+fn whole_array_placeholder<'a>(item: &Value, input: &'a Map<String, Value>) -> Option<&'a Vec<Value>> {
+    let text = item.as_str()?.trim();
+    if !(text.starts_with("{{") && text.ends_with("}}")) {
+        return None;
+    }
+    let names = placeholders(text);
+    if names.len() != 1 {
+        return None;
+    }
+    input.get(names[0]).and_then(Value::as_array)
+}
+
+fn bind_array(items: &[Value], input: &Map<String, Value>) -> Result<Value, String> {
+    let mut out = Vec::new();
+    for item in items {
+        match whole_array_placeholder(item, input) {
+            Some(values) => out.extend(values.iter().cloned()),
+            None => out.push(bind(item, input)?),
+        }
+    }
+    Ok(Value::Array(out))
+}
+
 /// `raw` with every `{{name}}` replaced by `input[name]`: a list item that is only a placeholder of a list input
 /// becomes its items; elsewhere strings, numbers and booleans are inserted as text.
 fn bind(raw: &Value, input: &Map<String, Value>) -> Result<Value, String> {
-    let fill = |text: &str| -> Result<String, String> {
-        let mut out = text.to_string();
-        for name in placeholders(text) {
-            let value = match input.get(name) {
-                Some(Value::String(text)) => text.clone(),
-                Some(value @ (Value::Number(_) | Value::Bool(_))) => value.to_string(),
-                Some(_) => return Err(format!("input {name} must be a string here (it fills {text:?})")),
-                None => return Err(format!("missing input {name}")),
-            };
-            out = out.replace(&format!("{{{{{name}}}}}"), &value);
-        }
-        Ok(out)
-    };
-    Ok(match raw {
-        Value::String(text) => Value::String(fill(text)?),
-        Value::Array(items) => {
-            let mut out = Vec::new();
-            for item in items {
-                let whole = item
-                    .as_str()
-                    .map(str::trim)
-                    .filter(|t| t.starts_with("{{") && t.ends_with("}}") && placeholders(t).len() == 1)
-                    .and_then(|t| input.get(placeholders(t)[0]));
-                match whole {
-                    Some(Value::Array(values)) => out.extend(values.iter().cloned()),
-                    _ => out.push(bind(item, input)?),
-                }
-            }
-            Value::Array(out)
-        }
-        Value::Object(map) => Value::Object(
+    match raw {
+        Value::String(text) => Ok(Value::String(fill_placeholders(text, input)?)),
+        Value::Array(items) => bind_array(items, input),
+        Value::Object(map) => Ok(Value::Object(
             map.iter()
                 .map(|(key, value)| Ok((key.clone(), bind(value, input)?)))
                 .collect::<Result<_, String>>()?,
-        ),
-        other => other.clone(),
-    })
+        )),
+        other => Ok(other.clone()),
+    }
 }
 
 fn parse_check(value: &Value, at: &str) -> Result<HostCheck, String> {
@@ -178,7 +188,128 @@ fn parse_check(value: &Value, at: &str) -> Result<HostCheck, String> {
     HostCheck::parse(&written, 0).map_err(|error| format!("{at}.check: {error}"))
 }
 
-fn parse_segment(value: &Value, index: usize) -> Result<Segment, String> {
+fn parse_segment_requires(value: Option<&Value>, at: &str) -> Result<(Vec<String>, Option<f64>), String> {
+    let Some(requires) = value else {
+        return Ok((Vec::new(), None));
+    };
+    let requires = requires
+        .as_object()
+        .ok_or_else(|| format!("{at}.requires must be {{files, budget_usd}}"))?;
+    only(requires, &["files", "budget_usd"], &format!("{at}.requires"))?;
+    let files = match requires.get("files") {
+        Some(raw) => list(Some(raw), &format!("{at}.requires.files"))?,
+        None => Vec::new(),
+    };
+    let budget = match requires.get("budget_usd") {
+        Some(raw) => Some(
+            raw.as_f64()
+                .filter(|usd| usd.is_finite() && *usd >= 0.0)
+                .ok_or_else(|| format!("{at}.requires.budget_usd must be a number of dollars"))?,
+        ),
+        None => None,
+    };
+    Ok((files, budget))
+}
+
+fn parse_segment_writes(value: Option<&Value>, at: &str) -> Result<Option<Vec<String>>, String> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        value => {
+            let globs = list(value, &format!("{at}.writes"))?;
+            if let Some(bad) = globs.iter().find(|glob| Glob::new(glob).is_err()) {
+                return Err(format!("{at}.writes has an invalid glob: {bad}"));
+            }
+            Ok(Some(globs))
+        }
+    }
+}
+
+fn nonempty_object(map: &Map<String, Value>, key: &str, err: &str) -> Result<Map<String, Value>, String> {
+    map.get(key)
+        .and_then(Value::as_object)
+        .filter(|obj| !obj.is_empty())
+        .cloned()
+        .ok_or_else(|| err.to_string())
+}
+
+fn parse_judge_step(value: &Value, at: &str) -> Result<Step, String> {
+    let judge = value
+        .as_object()
+        .ok_or_else(|| format!("{at}.judge must be {{kind, questions, pass}}"))?;
+    only(judge, &["kind", "questions", "pass"], &format!("{at}.judge"))?;
+    let kind = match judge.get("kind") {
+        None => "skill".to_string(),
+        value => text(value, &format!("{at}.judge.kind"), 64)?,
+    };
+    let questions = nonempty_object(
+        judge,
+        "questions",
+        &format!("{at}.judge.questions must be a nonempty object of questions"),
+    )?;
+    let pass = nonempty_object(
+        judge,
+        "pass",
+        &format!("{at}.judge.pass must name the answers that pass ({{question: answer}})"),
+    )?;
+    if let Some(unknown) = pass.keys().find(|key| !questions.contains_key(*key)) {
+        return Err(format!("{at}.judge.pass names {unknown}, which is not a question"));
+    }
+    Ok(Step::Judge { kind, questions, pass })
+}
+
+fn parse_agent_step(value: &Value, at: &str) -> Result<Step, String> {
+    let agent = value
+        .as_object()
+        .ok_or_else(|| format!("{at}.agent must be {{brief, model, checks}}"))?;
+    only(agent, &["brief", "model", "checks"], &format!("{at}.agent"))?;
+    let checks = match agent.get("checks") {
+        None => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .enumerate()
+            .map(|(i, check)| HostCheck::parse(check, i).map_err(|e| format!("{at}.agent: {e}")))
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err(format!("{at}.agent.checks must be a list of contract checks")),
+    };
+    Ok(Step::Agent {
+        brief: text(agent.get("brief"), &format!("{at}.agent.brief"), MAX_GOAL)?,
+        model: text(agent.get("model"), &format!("{at}.agent.model (its model tier)"), 200)?,
+        checks,
+    })
+}
+
+fn parse_segment_step(map: &Map<String, Value>, at: &str) -> Result<Step, String> {
+    let steps: Vec<&str> = ["check", "judge", "agent"]
+        .into_iter()
+        .filter(|key| map.contains_key(*key))
+        .collect();
+    match steps.as_slice() {
+        ["check"] => Ok(Step::Check(parse_check(&map["check"], at)?)),
+        ["judge"] => parse_judge_step(&map["judge"], at),
+        ["agent"] => parse_agent_step(&map["agent"], at),
+        _ => Err(format!("{at} needs exactly one of check, judge or agent")),
+    }
+}
+
+fn parse_max_iters(value: Option<&Value>, at: &str) -> Result<u32, String> {
+    match value {
+        None => Ok(DEFAULT_MAX_ITERS),
+        Some(value) => value
+            .as_u64()
+            .filter(|n| (1..=u64::from(MAX_ITERS)).contains(n))
+            .map(|n| n as u32)
+            .ok_or_else(|| format!("{at}.max_iters must be an integer from 1 to {MAX_ITERS}")),
+    }
+}
+
+struct SegmentHeader<'a> {
+    map: &'a Map<String, Value>,
+    name: String,
+    goal: String,
+    setup: Option<String>,
+}
+
+fn parse_segment_header(value: &Value, index: usize) -> Result<SegmentHeader<'_>, String> {
     let at = format!("procedure.segments[{index}]");
     let map = value.as_object().ok_or_else(|| format!("{at} must be an object"))?;
     only(
@@ -206,100 +337,20 @@ fn parse_segment(value: &Value, index: usize) -> Result<Segment, String> {
         None | Some(Value::Null) => None,
         value => Some(text(value, &format!("{at}.setup"), MAX_SETUP)?),
     };
-    let (mut requires_files, mut budget_usd) = (Vec::new(), None);
-    if let Some(requires) = map.get("requires") {
-        let requires = requires
-            .as_object()
-            .ok_or_else(|| format!("{at}.requires must be {{files, budget_usd}}"))?;
-        only(requires, &["files", "budget_usd"], &format!("{at}.requires"))?;
-        if requires.contains_key("files") {
-            requires_files = list(requires.get("files"), &format!("{at}.requires.files"))?;
-        }
-        if let Some(budget) = requires.get("budget_usd") {
-            budget_usd = Some(
-                budget
-                    .as_f64()
-                    .filter(|usd| usd.is_finite() && *usd >= 0.0)
-                    .ok_or_else(|| format!("{at}.requires.budget_usd must be a number of dollars"))?,
-            );
-        }
-    }
-    let writes = match map.get("writes") {
-        None | Some(Value::Null) => None,
-        value => {
-            let globs = list(value, &format!("{at}.writes"))?;
-            if let Some(bad) = globs.iter().find(|glob| Glob::new(glob).is_err()) {
-                return Err(format!("{at}.writes has an invalid glob: {bad}"));
-            }
-            Some(globs)
-        }
-    };
-    let steps: Vec<&str> = ["check", "judge", "agent"]
-        .into_iter()
-        .filter(|key| map.contains_key(*key))
-        .collect();
-    let step = match steps.as_slice() {
-        ["check"] => Step::Check(parse_check(&map["check"], &at)?),
-        ["judge"] => {
-            let judge = map["judge"]
-                .as_object()
-                .ok_or_else(|| format!("{at}.judge must be {{kind, questions, pass}}"))?;
-            only(judge, &["kind", "questions", "pass"], &format!("{at}.judge"))?;
-            let kind = match judge.get("kind") {
-                None => "skill".to_string(),
-                value => text(value, &format!("{at}.judge.kind"), 64)?,
-            };
-            let questions = judge
-                .get("questions")
-                .and_then(Value::as_object)
-                .filter(|questions| !questions.is_empty())
-                .cloned()
-                .ok_or_else(|| format!("{at}.judge.questions must be a nonempty object of questions"))?;
-            let pass = judge
-                .get("pass")
-                .and_then(Value::as_object)
-                .filter(|pass| !pass.is_empty())
-                .cloned()
-                .ok_or_else(|| format!("{at}.judge.pass must name the answers that pass ({{question: answer}})"))?;
-            if let Some(unknown) = pass.keys().find(|key| !questions.contains_key(*key)) {
-                return Err(format!("{at}.judge.pass names {unknown}, which is not a question"));
-            }
-            Step::Judge { kind, questions, pass }
-        }
-        ["agent"] => {
-            let agent = map["agent"]
-                .as_object()
-                .ok_or_else(|| format!("{at}.agent must be {{brief, model, checks}}"))?;
-            only(agent, &["brief", "model", "checks"], &format!("{at}.agent"))?;
-            let checks = match agent.get("checks") {
-                None => Vec::new(),
-                Some(Value::Array(items)) => items
-                    .iter()
-                    .enumerate()
-                    .map(|(i, check)| HostCheck::parse(check, i).map_err(|e| format!("{at}.agent: {e}")))
-                    .collect::<Result<_, _>>()?,
-                Some(_) => return Err(format!("{at}.agent.checks must be a list of contract checks")),
-            };
-            Step::Agent {
-                brief: text(agent.get("brief"), &format!("{at}.agent.brief"), MAX_GOAL)?,
-                model: text(agent.get("model"), &format!("{at}.agent.model (its model tier)"), 200)?,
-                checks,
-            }
-        }
-        _ => return Err(format!("{at} needs exactly one of check, judge or agent")),
-    };
-    let max_iters = match map.get("max_iters") {
-        None => DEFAULT_MAX_ITERS,
-        Some(value) => value
-            .as_u64()
-            .filter(|n| (1..=u64::from(MAX_ITERS)).contains(n))
-            .ok_or_else(|| format!("{at}.max_iters must be an integer from 1 to {MAX_ITERS}"))?
-            as u32,
-    };
+    Ok(SegmentHeader { map, name, goal, setup })
+}
+
+fn parse_segment(value: &Value, index: usize) -> Result<Segment, String> {
+    let header = parse_segment_header(value, index)?;
+    let at = format!("procedure segment {}", header.name);
+    let (requires_files, budget_usd) = parse_segment_requires(header.map.get("requires"), &at)?;
+    let writes = parse_segment_writes(header.map.get("writes"), &at)?;
+    let step = parse_segment_step(header.map, &at)?;
+    let max_iters = parse_max_iters(header.map.get("max_iters"), &at)?;
     Ok(Segment {
-        name,
-        goal,
-        setup,
+        name: header.name,
+        goal: header.goal,
+        setup: header.setup,
         requires_files,
         budget_usd,
         writes,
@@ -308,10 +359,7 @@ fn parse_segment(value: &Value, index: usize) -> Result<Segment, String> {
     })
 }
 
-/// The `procedure` frontmatter value (as JSON), its placeholders filled from `input`.
-pub fn parse(raw: &Value, input: &Value) -> Result<Procedure, String> {
-    let map = raw.as_object().ok_or("procedure must be {inputs, segments}")?;
-    only(map, &["inputs", "segments"], "procedure")?;
+fn parse_declared_inputs(map: &Map<String, Value>) -> Result<BTreeMap<String, String>, String> {
     let mut inputs = BTreeMap::new();
     if let Some(declared) = map.get("inputs") {
         for (name, description) in declared
@@ -321,6 +369,10 @@ pub fn parse(raw: &Value, input: &Value) -> Result<Procedure, String> {
             inputs.insert(name.clone(), description.as_str().unwrap_or_default().to_string());
         }
     }
+    Ok(inputs)
+}
+
+fn validate_given_inputs(inputs: &BTreeMap<String, String>, input: &Value) -> Result<Map<String, Value>, String> {
     let given = match input {
         Value::Null => Map::new(),
         Value::Object(map) => map.clone(),
@@ -329,7 +381,7 @@ pub fn parse(raw: &Value, input: &Value) -> Result<Procedure, String> {
     if let Some(unknown) = given.keys().find(|key| !inputs.contains_key(*key)) {
         return Err(format!(
             "unknown input {unknown} (the procedure takes: {})",
-            names(&inputs)
+            names(inputs)
         ));
     }
     let missing: Vec<&String> = inputs.keys().filter(|name| !given.contains_key(*name)).collect();
@@ -340,12 +392,20 @@ pub fn parse(raw: &Value, input: &Value) -> Result<Procedure, String> {
             .collect();
         return Err(format!("missing input: {}", wanted.join(", ")));
     }
-    let segments = map
+    Ok(given)
+}
+
+fn parse_bound_segments(
+    map: &Map<String, Value>,
+    inputs: &BTreeMap<String, String>,
+    given: &Map<String, Value>,
+) -> Result<Vec<Segment>, String> {
+    let raw_segments = map
         .get("segments")
         .and_then(Value::as_array)
         .filter(|items| !items.is_empty() && items.len() <= MAX_SEGMENTS)
         .ok_or_else(|| format!("procedure.segments must be a list of 1 to {MAX_SEGMENTS} segments"))?;
-    let undeclared = placeholders_in(&Value::Array(segments.clone()))
+    let undeclared = placeholders_in(&Value::Array(raw_segments.clone()))
         .into_iter()
         .find(|name| !inputs.contains_key(name));
     if let Some(name) = undeclared {
@@ -353,7 +413,7 @@ pub fn parse(raw: &Value, input: &Value) -> Result<Procedure, String> {
             "procedure uses {{{{{name}}}}}, which procedure.inputs does not declare"
         ));
     }
-    let bound = bind(&Value::Array(segments.clone()), &given)?;
+    let bound = bind(&Value::Array(raw_segments.clone()), given)?;
     let segments: Vec<Segment> = bound
         .as_array()
         .into_iter()
@@ -365,6 +425,16 @@ pub fn parse(raw: &Value, input: &Value) -> Result<Procedure, String> {
     if let Some(twice) = segments.iter().find(|segment| !seen.insert(segment.name.as_str())) {
         return Err(format!("procedure has two segments named {}", twice.name));
     }
+    Ok(segments)
+}
+
+/// The `procedure` frontmatter value (as JSON), its placeholders filled from `input`.
+pub fn parse(raw: &Value, input: &Value) -> Result<Procedure, String> {
+    let map = raw.as_object().ok_or("procedure must be {inputs, segments}")?;
+    only(map, &["inputs", "segments"], "procedure")?;
+    let inputs = parse_declared_inputs(map)?;
+    let given = validate_given_inputs(&inputs, input)?;
+    let segments = parse_bound_segments(map, &inputs, &given)?;
     Ok(Procedure { inputs, segments })
 }
 

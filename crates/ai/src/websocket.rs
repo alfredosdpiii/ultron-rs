@@ -208,14 +208,7 @@ impl WebSocketConnection for Socket {
     }
 }
 
-/// Open `url` (`ws:` or `wss:`) through `client` (an HTTP/1.1 client) with `headers`; any handshake failure is
-/// [`WEBSOCKET_ERROR`].
-pub async fn connect(
-    client: &reqwest::Client,
-    url: &str,
-    headers: &HeaderMap,
-) -> Result<Box<dyn WebSocketConnection>, String> {
-    let fail = || WEBSOCKET_ERROR.to_string();
+fn parse_websocket_http_url(url: &str) -> Result<reqwest::Url, String> {
     let mut http = reqwest::Url::parse(url).map_err(|e| format!("Failed to construct 'WebSocket': {e}"))?;
     let scheme = match http.scheme() {
         "ws" | "http" => "http",
@@ -226,8 +219,16 @@ pub async fn connect(
             ));
         }
     };
-    http.set_scheme(scheme).map_err(|_| fail())?;
-    let handshake = ClientHandshake::new(None);
+    http.set_scheme(scheme).map_err(|_| WEBSOCKET_ERROR.to_string())?;
+    Ok(http)
+}
+
+fn build_handshake_request(
+    client: &reqwest::Client,
+    http: reqwest::Url,
+    headers: &HeaderMap,
+    handshake: &ClientHandshake,
+) -> reqwest::RequestBuilder {
     let mut request = client.get(http);
     for (name, value) in headers {
         request = request.header(name, value);
@@ -235,7 +236,23 @@ pub async fn connect(
     for (name, value) in handshake.request_headers() {
         request = request.header(name, value);
     }
-    let response = request.send().await.map_err(|_| fail())?;
+    request
+}
+
+/// Open `url` (`ws:` or `wss:`) through `client` (an HTTP/1.1 client) with `headers`; any handshake failure is
+/// [`WEBSOCKET_ERROR`].
+pub async fn connect(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &HeaderMap,
+) -> Result<Box<dyn WebSocketConnection>, String> {
+    let fail = || WEBSOCKET_ERROR.to_string();
+    let http = parse_websocket_http_url(url)?;
+    let handshake = ClientHandshake::new(None);
+    let response = build_handshake_request(client, http, headers, &handshake)
+        .send()
+        .await
+        .map_err(|_| fail())?;
     let header = |name: &str| {
         response
             .headers()

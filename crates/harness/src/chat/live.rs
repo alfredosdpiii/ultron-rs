@@ -148,6 +148,28 @@ pub(crate) fn remove_compaction_status(live: &Draft, task_id: TaskId) -> Result<
     Ok(())
 }
 
+fn settlement_for_outcome(outcome: &SchedulerOutcome) -> SubmissionSettlement {
+    match outcome {
+        SchedulerOutcome::Faulted { message } => SubmissionSettlement::Unanswered {
+            reason: "faulted".into(),
+            detail: Some(json!(message)),
+        },
+        SchedulerOutcome::Orphaned { reason } => SubmissionSettlement::Unanswered {
+            reason: reason.clone(),
+            detail: None,
+        },
+    }
+}
+
+fn settle_generation_outcome(tx: &mut Tx<'_>, record: &TaskRecord, outcome: &SchedulerOutcome) -> Result<()> {
+    let live = live(tx, record.conversation_id)?;
+    if run_task(&live)? != Some(record.id) {
+        return Ok(());
+    }
+    convert_partial(tx, &live, record.conversation_id)?;
+    end_run(tx, &live, record.id, settlement_for_outcome(outcome))
+}
+
 /// Harness cleanup for a terminal outcome the scheduler writes itself (`faulted` or `orphaned`). A run task ends its
 /// run, converting a committed partial; a cell task's slot is marked done without an entry, and context derivation
 /// synthesizes the missing result; a compaction task's status is removed. Other kinds are ignored.
@@ -164,24 +186,7 @@ pub(crate) fn settle_scheduler_outcome(tx: &mut Tx<'_>, record: &TaskRecord, out
             let live = live(tx, record.conversation_id)?;
             remove_compaction_status(&live, record.id)
         }
-        GENERATION_KIND => {
-            let live = live(tx, record.conversation_id)?;
-            if run_task(&live)? != Some(record.id) {
-                return Ok(());
-            }
-            convert_partial(tx, &live, record.conversation_id)?;
-            let settlement = match outcome {
-                SchedulerOutcome::Faulted { message } => SubmissionSettlement::Unanswered {
-                    reason: "faulted".into(),
-                    detail: Some(json!(message)),
-                },
-                SchedulerOutcome::Orphaned { reason } => SubmissionSettlement::Unanswered {
-                    reason: reason.clone(),
-                    detail: None,
-                },
-            };
-            end_run(tx, &live, record.id, settlement)
-        }
+        GENERATION_KIND => settle_generation_outcome(tx, record, outcome),
         _ => Ok(()),
     }
 }

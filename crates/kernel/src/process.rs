@@ -120,23 +120,47 @@ pub(crate) struct KillExtras<'a> {
     pub cgroup_dir: Option<&'a std::path::Path>,
 }
 
+fn kill_descendants_until_gone(root: i32) {
+    signal(root, Signal::STOP);
+    for sweep in 0..20 {
+        let pids = descendant_pids(root);
+        if pids.is_empty() {
+            break;
+        }
+        for pid in pids {
+            signal(pid, Signal::KILL);
+        }
+        std::thread::sleep(Duration::from_millis(if sweep < 5 { 2 } else { 10 }));
+    }
+}
+
+fn kill_known_descendants(known: Option<&HashMap<i32, u64>>) {
+    for (&pid, &start_time) in known.into_iter().flatten() {
+        if process_stat(pid).is_some_and(|stat| stat.start_time == start_time && stat.state != "Z") {
+            signal(pid, Signal::KILL);
+        }
+    }
+}
+
+fn kill_cgroup_members(cgroup_dir: Option<&std::path::Path>) {
+    let Some(dir) = cgroup_dir.filter(|dir| crate::tree_memory::is_foreign_scope(dir)) else {
+        return;
+    };
+    let own = std::process::id() as i32;
+    for pid in crate::tree_memory::cgroup_pids(dir) {
+        if pid != own {
+            signal(pid, Signal::KILL);
+        }
+    }
+}
+
 /// SIGKILLs `root` and every process in its tree. The root is stopped first so it can neither start new processes
 /// nor exit while its descendants are killed; as a child subreaper it adopts their orphans, which later sweeps kill.
 /// `root_alive`: the root is still the host's unreaped child, so its pid cannot belong to another process. Processes
 /// seen in earlier watchdog scans and the members of the kernel's scope are killed too.
 pub(crate) fn kill_process_tree(root: i32, owns_process_group: bool, root_alive: bool, extras: KillExtras<'_>) {
     if root_alive {
-        signal(root, Signal::STOP);
-        for sweep in 0..20 {
-            let pids = descendant_pids(root);
-            if pids.is_empty() {
-                break;
-            }
-            for pid in pids {
-                signal(pid, Signal::KILL);
-            }
-            std::thread::sleep(Duration::from_millis(if sweep < 5 { 2 } else { 10 }));
-        }
+        kill_descendants_until_gone(root);
     }
     if owns_process_group {
         kill_command_group(root);
@@ -144,22 +168,8 @@ pub(crate) fn kill_process_tree(root: i32, owns_process_group: bool, root_alive:
     if root_alive {
         signal(root, Signal::KILL);
     }
-    for (&pid, &start_time) in extras.known.into_iter().flatten() {
-        if process_stat(pid).is_some_and(|stat| stat.start_time == start_time && stat.state != "Z") {
-            signal(pid, Signal::KILL);
-        }
-    }
-    if let Some(dir) = extras
-        .cgroup_dir
-        .filter(|dir| crate::tree_memory::is_foreign_scope(dir))
-    {
-        let own = std::process::id() as i32;
-        for pid in crate::tree_memory::cgroup_pids(dir) {
-            if pid != own {
-                signal(pid, Signal::KILL);
-            }
-        }
-    }
+    kill_known_descendants(extras.known);
+    kill_cgroup_members(extras.cgroup_dir);
 }
 
 #[cfg(test)]

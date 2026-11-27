@@ -433,52 +433,69 @@ pub(crate) struct CopilotCatalog {
     pub policy: Vec<String>,
 }
 
+struct CopilotModelEntry<'a> {
+    id: &'a str,
+    picker: bool,
+    policy_state: Option<&'a str>,
+}
+
+impl CopilotModelEntry<'_> {
+    fn needs_policy_enable(&self, use_policy_fallback: bool) -> bool {
+        self.policy_state == Some("unconfigured")
+            && (self.picker || use_policy_fallback)
+            && crate::models::builtin_model("github-copilot", self.id).is_some()
+    }
+}
+
+fn parse_copilot_model(item: &Value) -> Option<CopilotModelEntry<'_>> {
+    let id = item.as_object()?.get("id")?.as_str()?;
+    let tool_calls = item
+        .get("capabilities")
+        .and_then(|c| c.get("supports"))
+        .and_then(|s| s.get("tool_calls"));
+    if tool_calls == Some(&Value::Bool(false)) {
+        return None;
+    }
+    let picker = item.get("model_picker_enabled") == Some(&Value::Bool(true));
+    let policy_state = item.get("policy").and_then(|p| p.get("state")).and_then(Value::as_str);
+    Some(CopilotModelEntry {
+        id,
+        picker,
+        policy_state,
+    })
+}
+
 impl CopilotCatalog {
     pub fn parse(raw: &Value, allow_policy_fallback: bool) -> Result<Self, String> {
         let data = raw
             .get("data")
             .and_then(Value::as_array)
             .ok_or("Invalid Copilot models response")?;
-        let models: Vec<(&str, bool, Option<&Value>)> = data
-            .iter()
-            .filter_map(|item| {
-                let id = item.as_object()?.get("id")?.as_str()?;
-                let tool_calls = item
-                    .get("capabilities")
-                    .and_then(|c| c.get("supports"))
-                    .and_then(|s| s.get("tool_calls"));
-                if tool_calls == Some(&Value::Bool(false)) {
-                    return None;
-                }
-                let picker = item.get("model_picker_enabled") == Some(&Value::Bool(true));
-                Some((id, picker, item.get("policy").and_then(|p| p.get("state"))))
-            })
-            .collect();
-        let state_is = |state: Option<&Value>, want: &str| state.and_then(Value::as_str) == Some(want);
+        let models: Vec<CopilotModelEntry<'_>> = data.iter().filter_map(parse_copilot_model).collect();
+
         let picker: Vec<String> = models
             .iter()
-            .filter(|(_, picker, state)| *picker && !state_is(*state, "disabled"))
-            .map(|(id, ..)| (*id).to_owned())
+            .filter(|m| m.picker && m.policy_state != Some("disabled"))
+            .map(|m| m.id.to_owned())
             .collect();
         let use_policy_fallback = allow_policy_fallback && picker.is_empty();
+
         let policy = models
             .iter()
-            .filter(|(id, picker, state)| {
-                state_is(*state, "unconfigured")
-                    && crate::models::builtin_model("github-copilot", id).is_some()
-                    && (*picker || use_policy_fallback)
-            })
-            .map(|(id, ..)| (*id).to_owned())
+            .filter(|m| m.needs_policy_enable(use_policy_fallback))
+            .map(|m| m.id.to_owned())
             .collect();
+
         let available = if !use_policy_fallback {
             picker
         } else {
             models
                 .iter()
-                .filter(|(.., state)| state_is(*state, "enabled"))
-                .map(|(id, ..)| (*id).to_owned())
+                .filter(|m| m.policy_state == Some("enabled"))
+                .map(|m| m.id.to_owned())
                 .collect()
         };
+
         Ok(CopilotCatalog { available, policy })
     }
 }

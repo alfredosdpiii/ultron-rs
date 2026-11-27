@@ -35,31 +35,60 @@ pub fn placeholder_spans(text: &str) -> Vec<(usize, usize)> {
         .collect()
 }
 
+fn decode_control_matches(text: &str, re: &Regex) -> String {
+    let mut out = String::new();
+    let mut last = 0;
+    for caps in re.captures_iter(text).filter_map(Result::ok) {
+        let (Some(m), Some(code)) = (caps.get(0), caps.get(1)) else {
+            continue;
+        };
+        out.push_str(&text[last..m.start()]);
+        let cp: u32 = code.as_str().parse().unwrap_or(0);
+        match cp {
+            97..=122 => out.push(char::from_u32(cp - 96).unwrap_or('?')),
+            65..=90 => out.push(char::from_u32(cp - 64).unwrap_or('?')),
+            _ => out.push_str(m.as_str()),
+        }
+        last = m.end();
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
 /// Decode tmux's re-encoded Ctrl+letter bytes inside a paste (`ESC[106;5u` and `ESC[27;5;106~` -> `\n`).
 pub fn decode_reencoded_paste_controls(text: &str) -> String {
     static CSI_U: OnceLock<Regex> = OnceLock::new();
     static XTERM: OnceLock<Regex> = OnceLock::new();
-    let decode = |text: &str, re: &Regex| -> String {
-        let mut out = String::new();
-        let mut last = 0;
-        for caps in re.captures_iter(text).filter_map(Result::ok) {
-            let (Some(m), Some(code)) = (caps.get(0), caps.get(1)) else {
-                continue;
-            };
-            out.push_str(&text[last..m.start()]);
-            let cp: u32 = code.as_str().parse().unwrap_or(0);
-            match cp {
-                97..=122 => out.push(char::from_u32(cp - 96).unwrap_or('?')),
-                65..=90 => out.push(char::from_u32(cp - 64).unwrap_or('?')),
-                _ => out.push_str(m.as_str()),
-            }
-            last = m.end();
-        }
-        out.push_str(&text[last..]);
-        out
+    let once = decode_control_matches(text, regex(&CSI_U, r"\x1b\[(\d+);5u"));
+    decode_control_matches(&once, regex(&XTERM, r"\x1b\[27;5;(\d+)~"))
+}
+
+pub(crate) enum BracketedChunk {
+    NotInPaste,
+    Buffering,
+    Complete { content: String, remaining: String },
+}
+
+pub(crate) fn buffer_bracketed_paste(in_paste: &mut bool, paste_buffer: &mut String, data: &str) -> BracketedChunk {
+    let chunk = if data.contains(PASTE_START) {
+        *in_paste = true;
+        paste_buffer.clear();
+        data.replacen(PASTE_START, "", 1)
+    } else {
+        data.to_string()
     };
-    let once = decode(text, regex(&CSI_U, r"\x1b\[(\d+);5u"));
-    decode(&once, regex(&XTERM, r"\x1b\[27;5;(\d+)~"))
+    if !*in_paste {
+        return BracketedChunk::NotInPaste;
+    }
+    paste_buffer.push_str(&chunk);
+    let Some(end) = paste_buffer.find(PASTE_END) else {
+        return BracketedChunk::Buffering;
+    };
+    let content = paste_buffer[..end].to_string();
+    let remaining = paste_buffer[end + PASTE_END.len()..].to_string();
+    *in_paste = false;
+    paste_buffer.clear();
+    BracketedChunk::Complete { content, remaining }
 }
 
 /// Result of feeding one chunk to [`BracketedPaste`].
@@ -170,45 +199,58 @@ fn has_uri_scheme(p: &str) -> bool {
     false
 }
 
-/// Unquote, decode `file://` URLs and shell-unescape a pasted path.
-pub fn normalize_pasted_path(path: &str) -> String {
-    let trimmed = path.trim();
-    let first = trimmed.chars().next();
-    let unquoted = if trimmed.chars().count() > 1
-        && matches!(first, Some('"' | '\''))
-        && trimmed.ends_with(first.unwrap_or(' '))
-    {
-        &trimmed[1..trimmed.len() - 1]
-    } else {
-        trimmed
+fn strip_outer_quotes(s: &str) -> &str {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return s;
     };
-    if unquoted.to_ascii_lowercase().starts_with("file://") {
-        let rest = &unquoted[7..];
-        let host_end = rest.find('/').unwrap_or(rest.len());
-        let host = &rest[..host_end];
-        if (host.is_empty() || host == "localhost")
-            && let Some(decoded) = jsrt::uri::decode_component(&rest[host_end..])
-        {
-            return decoded;
-        }
+    if chars.next().is_some() && matches!(first, '"' | '\'') && s.ends_with(first) {
+        &s[1..s.len() - 1]
+    } else {
+        s
     }
-    let unquoted = unquoted
-        .strip_prefix("\\~/")
-        .map_or(unquoted.to_string(), |r| format!("~/{r}"));
+}
+
+fn decode_file_url(s: &str) -> Option<String> {
+    if !s.to_ascii_lowercase().starts_with("file://") {
+        return None;
+    }
+    let rest = &s[7..];
+    let host_end = rest.find('/').unwrap_or(rest.len());
+    let host = &rest[..host_end];
+    if !host.is_empty() && host != "localhost" {
+        return None;
+    }
+    jsrt::uri::decode_component(&rest[host_end..])
+}
+
+fn is_shell_escapable(c: char) -> bool {
+    c.is_whitespace() || "\\'\"()[]{}&;<>|?*!$`".contains(c)
+}
+
+fn unescape_shell_path(s: &str) -> String {
+    let normalized = s.strip_prefix("\\~/").map_or(s.to_string(), |r| format!("~/{r}"));
     let mut out = String::new();
-    let mut chars = unquoted.chars().peekable();
+    let mut chars = normalized.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '\\'
-            && let Some(&n) = chars.peek()
-            && (n.is_whitespace() || "\\'\"()[]{}&;<>|?*!$`".contains(n))
-        {
-            out.push(n);
-            chars.next();
+        if c == '\\' && chars.peek().is_some_and(|&n| is_shell_escapable(n)) {
+            if let Some(n) = chars.next() {
+                out.push(n);
+            }
             continue;
         }
         out.push(c);
     }
     out
+}
+
+/// Unquote, decode `file://` URLs and shell-unescape a pasted path.
+pub fn normalize_pasted_path(path: &str) -> String {
+    let unquoted = strip_outer_quotes(path.trim());
+    if let Some(decoded) = decode_file_url(unquoted) {
+        return decoded;
+    }
+    unescape_shell_path(unquoted)
 }
 
 fn is_explicit_pasted_path(p: &str) -> bool {
@@ -254,49 +296,66 @@ pub fn image_mime_for_path(p: &str) -> Option<&'static str> {
     })
 }
 
-fn split_path_segments(payload: &str) -> Option<Vec<String>> {
-    let mut segments = Vec::new();
-    let mut seg = String::new();
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-    for c in payload.chars() {
-        if escaped {
-            seg.push(c);
-            escaped = false;
-            continue;
+#[derive(Default)]
+struct SegmentSplitter {
+    segments: Vec<String>,
+    current: String,
+    quote: Option<char>,
+    escaped: bool,
+}
+
+impl SegmentSplitter {
+    fn step_unquoted(&mut self, c: char) {
+        if c == '"' || c == '\'' {
+            self.current.push(c);
+            self.quote = Some(c);
+        } else if matches!(c, ' ' | '\t' | '\r' | '\n') {
+            if !self.current.is_empty() {
+                self.segments.push(std::mem::take(&mut self.current));
+            }
+        } else {
+            self.current.push(c);
+        }
+    }
+
+    fn push_char(&mut self, c: char) {
+        if self.escaped {
+            self.current.push(c);
+            self.escaped = false;
+            return;
         }
         if c == '\\' {
-            seg.push(c);
-            escaped = true;
-            continue;
+            self.current.push(c);
+            self.escaped = true;
+            return;
         }
-        if let Some(q) = quote {
-            seg.push(c);
+        if let Some(q) = self.quote {
+            self.current.push(c);
             if c == q {
-                quote = None;
+                self.quote = None;
             }
-            continue;
+            return;
         }
-        if c == '"' || c == '\'' {
-            seg.push(c);
-            quote = Some(c);
-            continue;
+        self.step_unquoted(c);
+    }
+
+    fn finish(mut self) -> Option<Vec<String>> {
+        if self.escaped || self.quote.is_some() {
+            return None;
         }
-        if matches!(c, ' ' | '\t' | '\r' | '\n') {
-            if !seg.is_empty() {
-                segments.push(std::mem::take(&mut seg));
-            }
-            continue;
+        if !self.current.is_empty() {
+            self.segments.push(self.current);
         }
-        seg.push(c);
+        (!self.segments.is_empty()).then_some(self.segments)
     }
-    if escaped || quote.is_some() {
-        return None;
+}
+
+fn split_path_segments(payload: &str) -> Option<Vec<String>> {
+    let mut splitter = SegmentSplitter::default();
+    for c in payload.chars() {
+        splitter.push_char(c);
     }
-    if !seg.is_empty() {
-        segments.push(seg);
-    }
-    (!segments.is_empty()).then_some(segments)
+    splitter.finish()
 }
 
 /// Whitespace/quote-separated paths when every segment is an explicit local path; otherwise `None`.

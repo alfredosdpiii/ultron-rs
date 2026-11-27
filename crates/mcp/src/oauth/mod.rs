@@ -198,33 +198,18 @@ pub fn parse_authorization_server_metadata(value: &Value) -> Result<Value, Strin
     let response_types = optional_strings(input.get("response_types_supported"), "response_types_supported")?
         .ok_or("Invalid response_types_supported")?;
     let mut out = input.clone();
-    set(
-        &mut out,
-        "issuer",
-        Some(Value::String(safe_url(
-            input.get("issuer"),
-            "authorization server issuer",
-        )?)),
-    );
-    set(
-        &mut out,
-        "authorization_endpoint",
-        Some(Value::String(safe_url(
-            input.get("authorization_endpoint"),
-            "authorization endpoint",
-        )?)),
-    );
-    set(
-        &mut out,
-        "token_endpoint",
-        Some(Value::String(safe_url(input.get("token_endpoint"), "token endpoint")?)),
-    );
+    for (key, label) in [
+        ("issuer", "authorization server issuer"),
+        ("authorization_endpoint", "authorization endpoint"),
+        ("token_endpoint", "token endpoint"),
+    ] {
+        set(&mut out, key, Some(Value::String(safe_url(input.get(key), label)?)));
+    }
     let registration = optional_url(input.get("registration_endpoint"), "registration endpoint")?;
     set(&mut out, "registration_endpoint", registration);
-    let scopes = optional_strings(input.get("scopes_supported"), "scopes_supported")?;
-    set(&mut out, "scopes_supported", strings(scopes));
     set(&mut out, "response_types_supported", strings(Some(response_types)));
     for key in [
+        "scopes_supported",
         "grant_types_supported",
         "token_endpoint_auth_methods_supported",
         "code_challenge_methods_supported",

@@ -3,7 +3,7 @@
 use crate::auth::{AuthEvent, AuthInteraction, ModelAuth, OAuthAuth, OAuthCredential};
 use crate::http::{AbortSignal, BoxFuture, Transport, is_aborted};
 use crate::oauth_flow::{
-    Clock, ClockLoginEnv, Poll, fetch_text, form_request, poll_device_code_flow, trusted_http_url,
+    Clock, ClockLoginEnv, Poll, api_key_model_auth, fetch_text, form_request, poll_device_code_flow, trusted_http_url,
 };
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
@@ -97,6 +97,41 @@ fn request_failure(action: &str, response: &Response) -> String {
     )
 }
 
+struct XaiDeviceAuth {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    interval: Option<f64>,
+    expires_in: f64,
+}
+
+fn parse_verification_uri(body: &Map<String, Value>) -> Result<String, String> {
+    let complete = match body.get("verification_uri_complete").and_then(Value::as_str) {
+        Some(uri) if !uri.is_empty() => Some(verification_uri(uri)?),
+        _ => None,
+    };
+    let uri = verification_uri(&required_string(body, "verification_uri")?)?;
+    Ok(complete.unwrap_or(uri))
+}
+
+fn parse_device_auth(response: &Response) -> Result<XaiDeviceAuth, String> {
+    if !response.ok {
+        return Err(request_failure("device authorization", response));
+    }
+    let body = &response.body;
+    let interval = body
+        .get("interval")
+        .and_then(Value::as_f64)
+        .filter(|n| n.is_finite() && *n > 0.0);
+    Ok(XaiDeviceAuth {
+        device_code: required_string(body, "device_code")?,
+        user_code: required_string(body, "user_code")?,
+        verification_uri: parse_verification_uri(body)?,
+        interval,
+        expires_in: positive_number(body, "expires_in")?,
+    })
+}
+
 impl XaiOAuth {
     fn credentials(
         &self,
@@ -120,6 +155,84 @@ impl XaiOAuth {
             extra: Map::new(),
         })
     }
+
+    fn parse_device_poll(&self, response: &Response) -> Result<Poll<OAuthCredential>, String> {
+        if response.ok {
+            return Ok(Poll::Complete(self.credentials(&response.body, None)?));
+        }
+        Ok(match response.body.get("error").and_then(Value::as_str) {
+            Some("authorization_pending") => Poll::Pending,
+            Some("slow_down") => Poll::SlowDown(response.body.get("interval").and_then(Value::as_f64)),
+            Some("access_denied" | "authorization_denied") => {
+                Poll::Failed("xAI device authorization was denied".into())
+            }
+            Some("expired_token") => Poll::Failed("xAI device code expired".into()),
+            _ => Poll::Failed(request_failure("device token polling", response)),
+        })
+    }
+
+    async fn login_flow(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, String> {
+        let signal = interaction.signal();
+        let signal = signal.as_ref();
+        let transport = self.transport.as_ref();
+        let response = post_form(
+            transport,
+            DEVICE_CODE_URL,
+            &[("client_id", CLIENT_ID), ("scope", SCOPE), ("referrer", "pi")],
+            signal,
+        )
+        .await?;
+        let auth = parse_device_auth(&response)?;
+        interaction.notify(AuthEvent::DeviceCode {
+            user_code: auth.user_code,
+            verification_uri: auth.verification_uri,
+            interval_seconds: auth.interval,
+            expires_in_seconds: Some(auth.expires_in),
+        });
+        poll_device_code_flow(
+            &ClockLoginEnv(self.clock),
+            signal,
+            auth.interval,
+            Some(auth.expires_in),
+            true,
+            || async {
+                let response = post_form(
+                    transport,
+                    TOKEN_URL,
+                    &[
+                        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                        ("client_id", CLIENT_ID),
+                        ("device_code", &auth.device_code),
+                    ],
+                    signal,
+                )
+                .await?;
+                self.parse_device_poll(&response)
+            },
+        )
+        .await
+    }
+    async fn refresh_flow(
+        &self,
+        credential: &OAuthCredential,
+        signal: Option<AbortSignal>,
+    ) -> Result<OAuthCredential, String> {
+        let response = post_form(
+            self.transport.as_ref(),
+            TOKEN_URL,
+            &[
+                ("grant_type", "refresh_token"),
+                ("client_id", CLIENT_ID),
+                ("refresh_token", &credential.refresh),
+            ],
+            signal.as_ref(),
+        )
+        .await?;
+        if !response.ok {
+            return Err(request_failure("token refresh", &response));
+        }
+        self.credentials(&response.body, Some(&credential.refresh))
+    }
 }
 
 impl OAuthAuth for XaiOAuth {
@@ -135,74 +248,12 @@ impl OAuthAuth for XaiOAuth {
         Some("Sign in with SuperGrok or X Premium")
     }
 
+    fn to_auth(&self, credential: &OAuthCredential) -> Result<ModelAuth, String> {
+        api_key_model_auth(credential)
+    }
+
     fn login<'a>(&'a self, interaction: &'a dyn AuthInteraction) -> BoxFuture<'a, Result<OAuthCredential, String>> {
-        Box::pin(async move {
-            let signal = interaction.signal();
-            let signal = signal.as_ref();
-            let transport = self.transport.as_ref();
-            let response = post_form(
-                transport,
-                DEVICE_CODE_URL,
-                &[("client_id", CLIENT_ID), ("scope", SCOPE), ("referrer", "pi")],
-                signal,
-            )
-            .await?;
-            if !response.ok {
-                return Err(request_failure("device authorization", &response));
-            }
-            let body = &response.body;
-            let interval = body
-                .get("interval")
-                .and_then(Value::as_f64)
-                .filter(|n| n.is_finite() && *n > 0.0);
-            let complete = match body.get("verification_uri_complete").and_then(Value::as_str) {
-                Some(uri) if !uri.is_empty() => Some(verification_uri(uri)?),
-                _ => None,
-            };
-            let device_code = required_string(body, "device_code")?;
-            let user_code = required_string(body, "user_code")?;
-            let uri = verification_uri(&required_string(body, "verification_uri")?)?;
-            let expires_in = positive_number(body, "expires_in")?;
-            interaction.notify(AuthEvent::DeviceCode {
-                user_code,
-                verification_uri: complete.unwrap_or(uri),
-                interval_seconds: interval,
-                expires_in_seconds: Some(expires_in),
-            });
-            poll_device_code_flow(
-                &ClockLoginEnv(self.clock),
-                signal,
-                interval,
-                Some(expires_in),
-                true,
-                || async {
-                    let response = post_form(
-                        transport,
-                        TOKEN_URL,
-                        &[
-                            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-                            ("client_id", CLIENT_ID),
-                            ("device_code", &device_code),
-                        ],
-                        signal,
-                    )
-                    .await?;
-                    if response.ok {
-                        return Ok(Poll::Complete(self.credentials(&response.body, None)?));
-                    }
-                    Ok(match response.body.get("error").and_then(Value::as_str) {
-                        Some("authorization_pending") => Poll::Pending,
-                        Some("slow_down") => Poll::SlowDown(response.body.get("interval").and_then(Value::as_f64)),
-                        Some("access_denied" | "authorization_denied") => {
-                            Poll::Failed("xAI device authorization was denied".into())
-                        }
-                        Some("expired_token") => Poll::Failed("xAI device code expired".into()),
-                        _ => Poll::Failed(request_failure("device token polling", &response)),
-                    })
-                },
-            )
-            .await
-        })
+        Box::pin(self.login_flow(interaction))
     }
 
     fn refresh<'a>(
@@ -210,29 +261,6 @@ impl OAuthAuth for XaiOAuth {
         credential: &'a OAuthCredential,
         signal: Option<AbortSignal>,
     ) -> BoxFuture<'a, Result<OAuthCredential, String>> {
-        Box::pin(async move {
-            let response = post_form(
-                self.transport.as_ref(),
-                TOKEN_URL,
-                &[
-                    ("grant_type", "refresh_token"),
-                    ("client_id", CLIENT_ID),
-                    ("refresh_token", &credential.refresh),
-                ],
-                signal.as_ref(),
-            )
-            .await?;
-            if !response.ok {
-                return Err(request_failure("token refresh", &response));
-            }
-            self.credentials(&response.body, Some(&credential.refresh))
-        })
-    }
-
-    fn to_auth(&self, credential: &OAuthCredential) -> Result<ModelAuth, String> {
-        Ok(ModelAuth {
-            api_key: Some(credential.access.clone()),
-            ..Default::default()
-        })
+        Box::pin(self.refresh_flow(credential, signal))
     }
 }

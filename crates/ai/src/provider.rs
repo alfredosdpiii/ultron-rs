@@ -5,8 +5,13 @@
 use std::future::Future;
 use std::time::Duration;
 
-use crate::http::{AbortSignal, Body, Read, cancelled, is_aborted, read_chunk};
-use crate::types::{AssistantMessage, AssistantMessageEvent, EventSink, StopReason};
+use crate::anthropic::copilot_headers;
+use crate::http::{AbortSignal, Body, HeaderBuilder, HttpRequest, Read, cancelled, is_aborted, read_chunk};
+use crate::options::{
+    SimpleStreamOptions, StreamOptions, build_base_options, pi_user_agent, require_api_key, simple_reasoning_effort,
+};
+use crate::types::{AssistantMessage, AssistantMessageEvent, EventSink, Model, StopReason, TranscriptContext};
+use serde_json::{Map, Value};
 
 /// The fetch `AbortError` a body read rejects with once the request is aborted.
 pub(crate) const OPERATION_ABORTED: &str = "This operation was aborted";
@@ -140,4 +145,103 @@ where
 /// A delay in milliseconds as a sleep: negative and NaN are none, one too long to represent is a day.
 fn delay(ms: f64) -> Duration {
     Duration::try_from_secs_f64(ms.max(0.0) / 1000.0).unwrap_or(Duration::from_hours(24))
+}
+
+/// Read a boolean compat flag on `model`, falling back to `default`.
+pub(crate) fn compat_flag(model: &Model, key: &str, default: bool) -> bool {
+    model.compat_bool(key).unwrap_or(default)
+}
+
+/// Whether `model` targets OpenRouter by provider name or base URL.
+pub(crate) fn is_openrouter(model: &Model) -> bool {
+    model.provider == "openrouter" || model.base_url.contains("openrouter.ai")
+}
+
+/// Require an API key and build the base options and clamped reasoning effort for `stream_simple`.
+pub(crate) fn prepare_simple_options(
+    model: &Model,
+    context: &TranscriptContext,
+    options: &SimpleStreamOptions,
+) -> Result<(StreamOptions, Option<String>), String> {
+    require_api_key(model, &options.base)?;
+    Ok((
+        build_base_options(model, context, options),
+        simple_reasoning_effort(model, options),
+    ))
+}
+
+fn apply_session_affinity_headers(
+    headers: &mut HeaderBuilder,
+    session_id: Option<&str>,
+    session_affinity_format: Option<&str>,
+    include_session_affinity_header: bool,
+) {
+    let (Some(session_id), Some(format)) = (session_id, session_affinity_format) else {
+        return;
+    };
+    if format == "openrouter" {
+        headers.set("x-session-id", session_id);
+        return;
+    }
+    if format == "openai" {
+        headers.set("session_id", session_id);
+    }
+    headers.set("x-client-request-id", session_id);
+    if include_session_affinity_header {
+        headers.set("x-session-affinity", session_id);
+    }
+}
+
+/// Shared OpenAI-compatible HTTP headers: bearer auth, SDK identity, Copilot, session affinity, and caller overrides.
+pub(crate) fn openai_client_headers(
+    model: &Model,
+    context: &TranscriptContext,
+    options: &StreamOptions,
+    api_key: &str,
+    session_id: Option<&str>,
+    session_affinity_format: Option<&str>,
+    include_session_affinity_header: bool,
+) -> HeaderBuilder {
+    let mut headers = HeaderBuilder::default();
+    headers
+        .set("Accept", "application/json")
+        .set("Authorization", format!("Bearer {api_key}"));
+    headers
+        .set("User-Agent", pi_user_agent())
+        .openai_sdk_identity()
+        .extend_set(model.headers.iter().flatten());
+    if model.provider == "github-copilot" {
+        for (name, value) in copilot_headers(&context.messages) {
+            headers.set(&name, value);
+        }
+    }
+    apply_session_affinity_headers(
+        &mut headers,
+        session_id,
+        session_affinity_format,
+        include_session_affinity_header,
+    );
+    headers.extend(options.headers.iter().flatten());
+    headers.set("Content-Type", "application/json");
+    headers
+}
+
+/// Run the optional `on_payload` hook and serialize a JSON POST request.
+pub(crate) fn build_json_post_request(
+    url: String,
+    headers: HeaderBuilder,
+    params: Map<String, Value>,
+    model: &Model,
+    base: &StreamOptions,
+) -> HttpRequest {
+    let mut payload = Value::Object(params);
+    if let Some(next) = base.on_payload.as_ref().and_then(|hook| hook(&payload, model)) {
+        payload = next;
+    }
+    HttpRequest {
+        method: "POST".into(),
+        url,
+        headers: headers.build(),
+        body: serde_json::to_string(&payload).unwrap_or_default(),
+    }
 }

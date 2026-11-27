@@ -112,6 +112,76 @@ pub fn root(session: &Session, id: &str) -> Option<Value> {
     }
 }
 
+fn append_folded_writes(
+    session: &Session,
+    folded: &BTreeSet<String>,
+    old_head: Option<&Map<String, Value>>,
+    mint: &mut impl FnMut() -> Value,
+    writes: &mut Vec<Write>,
+) {
+    let state = session.state();
+    for id in folded {
+        let key = format!("{ROOT_PREFIX}{id}");
+        let calls_key = format!("{CALLS_PREFIX}{id}");
+        let (index, root) = match (state.value(USAGE, &key), old_head.and_then(|roots| roots.get(id))) {
+            (Some(stored), _) => {
+                writes.push(Write::delete(USAGE, &key));
+                let root = with_calls(&stored.value["root"], stored_calls(session, id));
+                (stored.value["index"].clone(), root)
+            }
+            (None, Some(root)) => (mint(), root.clone()),
+            (None, None) => continue,
+        };
+        if !state.list(USAGE, &calls_key).is_empty() {
+            writes.push(Write::delete_list(USAGE, &calls_key));
+        }
+        writes.push(Write::set(
+            USAGE,
+            &format!("{FOLDED_PREFIX}{id}"),
+            json!({"index": index, "root": root}),
+        ));
+    }
+}
+
+fn append_root_calls_writes(session: &Session, id: &str, root: &Value, writes: &mut Vec<Write>) {
+    let Some(calls) = root["calls"].as_array() else {
+        return;
+    };
+    let calls_key = format!("{CALLS_PREFIX}{id}");
+    let stored = session.state().list(USAGE, &calls_key);
+    let kept = stored.len() <= calls.len() && stored.iter().zip(calls).all(|(old, new)| old.value == *new);
+    if !kept {
+        writes.push(Write::delete_list(USAGE, &calls_key));
+    }
+    let from = if kept { stored.len() } else { 0 };
+    writes.extend(
+        calls[from..]
+            .iter()
+            .map(|call| Write::append(USAGE, &calls_key, call.clone())),
+    );
+}
+
+fn append_root_write(
+    session: &Session,
+    id: &str,
+    root: &Value,
+    mint: &mut impl FnMut() -> Value,
+    writes: &mut Vec<Write>,
+) {
+    let key = format!("{ROOT_PREFIX}{id}");
+    let body = without_calls(root);
+    match session.state().value(USAGE, &key) {
+        Some(stored) if stored.value["root"] == body => {}
+        Some(stored) => writes.push(Write::set(
+            USAGE,
+            &key,
+            json!({"index": stored.value["index"], "root": body}),
+        )),
+        None => writes.push(Write::set(USAGE, &key, json!({"index": mint(), "root": body}))),
+    }
+    append_root_calls_writes(session, id, root, writes);
+}
+
 /// The writes that store `document`: its head when that changed, each root that differs from the stored one, and
 /// the call records a root gained. A stored root the document lacks stays, unless `folded` names it: that one moves
 /// to the folded roots.
@@ -142,58 +212,13 @@ pub fn writes(session: &Session, document: &Value, folded: &BTreeSet<String>) ->
     };
     let roots = fields.get("roots").and_then(Value::as_object);
     let old_head = stored_head.and_then(|head| head["roots"].as_object());
-    for id in folded {
-        let key = format!("{ROOT_PREFIX}{id}");
-        let calls_key = format!("{CALLS_PREFIX}{id}");
-        let (index, root) = match (state.value(USAGE, &key), old_head.and_then(|roots| roots.get(id))) {
-            (Some(stored), _) => {
-                writes.push(Write::delete(USAGE, &key));
-                let root = with_calls(&stored.value["root"], stored_calls(session, id));
-                (stored.value["index"].clone(), root)
-            }
-            (None, Some(root)) => (mint(), root.clone()),
-            (None, None) => continue,
-        };
-        if !state.list(USAGE, &calls_key).is_empty() {
-            writes.push(Write::delete_list(USAGE, &calls_key));
-        }
-        writes.push(Write::set(
-            USAGE,
-            &format!("{FOLDED_PREFIX}{id}"),
-            json!({"index": index, "root": root}),
-        ));
-    }
+    append_folded_writes(session, folded, old_head, &mut mint, &mut writes);
     let inside_head = old_head
         .into_iter()
         .flatten()
         .filter(|(id, _)| !folded.contains(*id) && !roots.is_some_and(|roots| roots.contains_key(*id)));
     for (id, root) in inside_head.chain(roots.into_iter().flatten()) {
-        let key = format!("{ROOT_PREFIX}{id}");
-        let body = without_calls(root);
-        match state.value(USAGE, &key) {
-            Some(stored) if stored.value["root"] == body => {}
-            Some(stored) => writes.push(Write::set(
-                USAGE,
-                &key,
-                json!({"index": stored.value["index"], "root": body}),
-            )),
-            None => writes.push(Write::set(USAGE, &key, json!({"index": mint(), "root": body}))),
-        }
-        let Some(calls) = root["calls"].as_array() else {
-            continue;
-        };
-        let calls_key = format!("{CALLS_PREFIX}{id}");
-        let stored = state.list(USAGE, &calls_key);
-        let kept = stored.len() <= calls.len() && stored.iter().zip(calls).all(|(old, new)| old.value == *new);
-        if !kept {
-            writes.push(Write::delete_list(USAGE, &calls_key));
-        }
-        let from = if kept { stored.len() } else { 0 };
-        writes.extend(
-            calls[from..]
-                .iter()
-                .map(|call| Write::append(USAGE, &calls_key, call.clone())),
-        );
+        append_root_write(session, id, root, &mut mint, &mut writes);
     }
     writes
 }

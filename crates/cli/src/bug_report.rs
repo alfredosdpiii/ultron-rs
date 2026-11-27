@@ -139,11 +139,48 @@ fn env_value(env: &Env, name: &str) -> Option<String> {
     (env.var)(name).filter(|value| !value.is_empty())
 }
 
+fn has_env(env: &Env, name: &str) -> bool {
+    env_value(env, name).is_some()
+}
+
+fn bedrock_source(env: &Env) -> Option<String> {
+    for name in ["AWS_BEARER_TOKEN_BEDROCK", "AWS_PROFILE"] {
+        if has_env(env, name) {
+            return Some(name.to_string());
+        }
+    }
+    if has_env(env, "AWS_ACCESS_KEY_ID") && has_env(env, "AWS_SECRET_ACCESS_KEY") {
+        return Some("AWS access keys".into());
+    }
+    if has_env(env, "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI") || has_env(env, "AWS_CONTAINER_CREDENTIALS_FULL_URI") {
+        return Some("ECS task role".into());
+    }
+    has_env(env, "AWS_WEB_IDENTITY_TOKEN_FILE").then(|| "web identity token".into())
+}
+
+fn vertex_source(env: &Env) -> Option<String> {
+    if has_env(env, "GOOGLE_CLOUD_API_KEY") {
+        return Some("GOOGLE_CLOUD_API_KEY".into());
+    }
+    let adc = env_value(env, "GOOGLE_APPLICATION_CREDENTIALS").map_or_else(
+        || env.home.join(".config/gcloud/application_default_credentials.json"),
+        PathBuf::from,
+    );
+    let project = has_env(env, "GOOGLE_CLOUD_PROJECT") || has_env(env, "GCLOUD_PROJECT");
+    (adc.exists() && project && has_env(env, "GOOGLE_CLOUD_LOCATION"))
+        .then(|| "gcloud application default credentials".into())
+}
+
+fn cloudflare_source(env: &Env, provider: &str) -> Option<String> {
+    let gateway = provider == "cloudflare-workers-ai" || has_env(env, "CLOUDFLARE_GATEWAY_ID");
+    (has_env(env, "CLOUDFLARE_API_KEY") && has_env(env, "CLOUDFLARE_ACCOUNT_ID") && gateway)
+        .then(|| "CLOUDFLARE_API_KEY".into())
+}
+
 /// The `source` of the provider's ambient credential (`provider.auth.apiKey.check`/`resolve` without a stored
 /// credential): the first variable that supplies a key, or the provider's own ambient sources (AWS, gcloud
 /// application default credentials, Cloudflare's account, the Claude Code CLI).
 fn environment_source(env: &Env, provider: &str) -> Option<String> {
-    let has = |name: &str| env_value(env, name).is_some();
     let lookup = |name: &str| env_value(env, name);
     let source = ai::env::EnvSource {
         lookup: &lookup,
@@ -151,35 +188,9 @@ fn environment_source(env: &Env, provider: &str) -> Option<String> {
         home: Some(env.home.clone()),
     };
     match provider {
-        "amazon-bedrock" => [
-            ("AWS_BEARER_TOKEN_BEDROCK", "AWS_BEARER_TOKEN_BEDROCK"),
-            ("AWS_PROFILE", "AWS_PROFILE"),
-        ]
-        .iter()
-        .find(|(name, _)| has(name))
-        .map(|(_, label)| label.to_string())
-        .or_else(|| (has("AWS_ACCESS_KEY_ID") && has("AWS_SECRET_ACCESS_KEY")).then(|| "AWS access keys".into()))
-        .or_else(|| {
-            (has("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI") || has("AWS_CONTAINER_CREDENTIALS_FULL_URI"))
-                .then(|| "ECS task role".into())
-        })
-        .or_else(|| has("AWS_WEB_IDENTITY_TOKEN_FILE").then(|| "web identity token".into())),
-        "google-vertex" => {
-            if has("GOOGLE_CLOUD_API_KEY") {
-                return Some("GOOGLE_CLOUD_API_KEY".into());
-            }
-            let adc = env_value(env, "GOOGLE_APPLICATION_CREDENTIALS").map_or_else(
-                || env.home.join(".config/gcloud/application_default_credentials.json"),
-                PathBuf::from,
-            );
-            let project = has("GOOGLE_CLOUD_PROJECT") || has("GCLOUD_PROJECT");
-            (adc.exists() && project && has("GOOGLE_CLOUD_LOCATION"))
-                .then(|| "gcloud application default credentials".into())
-        }
-        "cloudflare-workers-ai" | "cloudflare-ai-gateway" => {
-            let gateway = provider == "cloudflare-workers-ai" || has("CLOUDFLARE_GATEWAY_ID");
-            (has("CLOUDFLARE_API_KEY") && has("CLOUDFLARE_ACCOUNT_ID") && gateway).then(|| "CLOUDFLARE_API_KEY".into())
-        }
+        "amazon-bedrock" => bedrock_source(env),
+        "google-vertex" => vertex_source(env),
+        "cloudflare-workers-ai" | "cloudflare-ai-gateway" => cloudflare_source(env, provider),
         ai::claude_code::PROVIDER => {
             ai::claude_code::configured(&source).then(|| ai::claude_code::AUTH_SOURCE.to_string())
         }
@@ -205,20 +216,11 @@ fn configured_key_status(env: &Env, key: &str) -> Value {
     }
 }
 
-/// The model's provider as `describeProvider` reads it from the session's `ModelRuntime`: the provider definition
-/// (a built-in's name, `baseUrl` and sign-in methods, overlaid by models.json; a models.json provider signs in with
-/// a key), `getProviderAuthStatus` (the command line's `--api-key`, a stored credential, the models.json key, the
-/// environment) and whether the stored credential is an OAuth login.
-/// Header names stay empty: the composed provider carries no headers of its own (recorded from TypeScript).
-pub fn provider_info(env: &Env, provider: &str, runtime_key: bool) -> telemetry::bug_report::ProviderInfo {
-    let registry = session_core::lane::registry(env);
-    let config = registry.config().provider(provider);
-    let logins = interactive::selectors::provider_logins();
-    let login = logins.iter().find(|p| p.id == provider).or_else(|| {
-        registry
-            .radius_gateway(provider)
-            .and_then(|_| logins.iter().find(|p| p.id == "radius"))
-    });
+fn provider_definition(
+    provider: &str,
+    config: Option<&Value>,
+    login: Option<&interactive::selectors::ProviderLogin>,
+) -> Value {
     let text = |key: &str| config.and_then(|c| c.get(key)).and_then(Value::as_str);
     let name = text("name")
         .map(str::to_string)
@@ -238,24 +240,54 @@ pub fn provider_info(env: &Env, provider: &str, runtime_key: bool) -> telemetry:
     if let Some(url) = base_url {
         definition["baseUrl"] = json!(url);
     }
+    definition
+}
+
+fn provider_auth_status(
+    env: &Env,
+    provider: &str,
+    runtime_key: bool,
+    has_stored: bool,
+    configured_key: Option<&str>,
+) -> Value {
+    if runtime_key {
+        return json!({"configured": true, "source": "runtime"});
+    }
+    if has_stored {
+        return json!({"configured": true, "source": "stored"});
+    }
+    if let Some(key) = configured_key {
+        return configured_key_status(env, key);
+    }
+    environment_source(env, provider).map_or_else(
+        || json!({"configured": false}),
+        |label| json!({"configured": true, "source": "environment", "label": label}),
+    )
+}
+
+/// The model's provider as `describeProvider` reads it from the session's `ModelRuntime`: the provider definition
+/// (a built-in's name, `baseUrl` and sign-in methods, overlaid by models.json; a models.json provider signs in with
+/// a key), `getProviderAuthStatus` (the command line's `--api-key`, a stored credential, the models.json key, the
+/// environment) and whether the stored credential is an OAuth login.
+/// Header names stay empty: the composed provider carries no headers of its own (recorded from TypeScript).
+pub fn provider_info(env: &Env, provider: &str, runtime_key: bool) -> telemetry::bug_report::ProviderInfo {
+    let registry = session_core::lane::registry(env);
+    let config = registry.config().provider(provider);
+    let logins = interactive::selectors::provider_logins();
+    let login = logins.iter().find(|p| p.id == provider).or_else(|| {
+        registry
+            .radius_gateway(provider)
+            .and_then(|_| logins.iter().find(|p| p.id == "radius"))
+    });
+    let definition = provider_definition(provider, config, login);
     let stored = config::auth::AuthStorage::create(config::paths::AgentPaths::new(env.agent_dir()).auth())
         .list()
         .unwrap_or_default()
         .into_iter()
         .find(|(id, _)| id == provider)
         .map(|(_, kind)| kind);
-    let auth_status = if runtime_key {
-        json!({"configured": true, "source": "runtime"})
-    } else if stored.is_some() {
-        json!({"configured": true, "source": "stored"})
-    } else if let Some(key) = text("apiKey") {
-        configured_key_status(env, key)
-    } else {
-        environment_source(env, provider).map_or_else(
-            || json!({"configured": false}),
-            |label| json!({"configured": true, "source": "environment", "label": label}),
-        )
-    };
+    let configured_key = config.and_then(|c| c.get("apiKey")).and_then(Value::as_str);
+    let auth_status = provider_auth_status(env, provider, runtime_key, stored.is_some(), configured_key);
     telemetry::bug_report::ProviderInfo {
         provider: definition,
         auth_status,

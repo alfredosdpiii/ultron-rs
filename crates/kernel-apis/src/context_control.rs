@@ -11,6 +11,9 @@
 //! The branch itself lives in the session/harness: [`ContextBranches`] is what this module reads and appends.
 //! Entries are the TS `Entry` JSON (`{id, parentId, seq, timestamp, type, ...}`).
 
+mod compaction;
+pub use compaction::CONTEXT_KEPT_MESSAGE_TYPE;
+
 use crate::util::{Clock, system_clock};
 use crate::{ApiModule, Request};
 use serde_json::{Map, Value, json};
@@ -61,6 +64,32 @@ pub trait ContextBranches: Send + Sync {
     fn tip_id(&self, lane: &str) -> Result<Option<String>, String>;
 }
 
+fn tool_call_part_text(part: &Value) -> String {
+    let name = match &part["name"] {
+        Value::String(name) => name.clone(),
+        Value::Null if part.get("name").is_none() => "undefined".into(),
+        other => jsrt::json::stringify(other),
+    };
+    let arguments = match part.get("arguments") {
+        Some(value) if !value.is_null() => jsrt::json::stringify(value),
+        _ => "{}".into(),
+    };
+    format!("{name}({})", jsrt::utf16::head(&arguments, 2000))
+}
+
+fn content_part_text(part: &Value) -> String {
+    if !part.is_object() {
+        return String::new();
+    }
+    match part["type"].as_str() {
+        Some("text") => part["text"].as_str().unwrap_or_default().to_string(),
+        Some("thinking") => part["thinking"].as_str().unwrap_or_default().to_string(),
+        Some("toolCall") => tool_call_part_text(part),
+        Some("image") => "[image]".into(),
+        _ => String::new(),
+    }
+}
+
 /// Readable text of a message, for previews and kept items (`messageText`).
 pub fn message_text(message: &Value) -> String {
     match message.get("content") {
@@ -68,29 +97,7 @@ pub fn message_text(message: &Value) -> String {
         Some(Value::Array(parts)) => {
             let texts: Vec<String> = parts
                 .iter()
-                .map(|part| {
-                    if !part.is_object() {
-                        return String::new();
-                    }
-                    match part["type"].as_str() {
-                        Some("text") => part["text"].as_str().unwrap_or_default().to_string(),
-                        Some("thinking") => part["thinking"].as_str().unwrap_or_default().to_string(),
-                        Some("toolCall") => {
-                            let name = match &part["name"] {
-                                Value::String(name) => name.clone(),
-                                Value::Null if part.get("name").is_none() => "undefined".into(),
-                                other => jsrt::json::stringify(other),
-                            };
-                            let arguments = match part.get("arguments") {
-                                Some(value) if !value.is_null() => jsrt::json::stringify(value),
-                                _ => "{}".into(),
-                            };
-                            format!("{name}({})", jsrt::utf16::head(&arguments, 2000))
-                        }
-                        Some("image") => "[image]".into(),
-                        _ => String::new(),
-                    }
-                })
+                .map(content_part_text)
                 .filter(|text| !text.is_empty())
                 .collect();
             return texts.join("\n");
@@ -359,7 +366,144 @@ impl ContextControl {
         }
         Ok(id)
     }
+}
 
+fn collect_window_edits(window: &[Value]) -> Vec<(String, EditInfo)> {
+    let mut edits: Vec<(String, EditInfo)> = Vec::new();
+    for entry in window {
+        let data = if entry["type"] == "custom" && entry["data"].is_object() {
+            &entry["data"]
+        } else {
+            &Value::Null
+        };
+        for edit in context_edits_of(entry) {
+            let info = EditInfo {
+                replacement: edit.replacement,
+                source: data["source"].as_str().unwrap_or("unknown").to_string(),
+                reason: data["reason"].as_str().map(str::to_string),
+            };
+            match edits.iter_mut().find(|(target, _)| *target == edit.target_id) {
+                Some(slot) => slot.1 = info,
+                None => edits.push((edit.target_id, info)),
+            }
+        }
+    }
+    edits
+}
+
+fn collect_pins(path: &[Value]) -> Vec<String> {
+    let mut pins: Vec<String> = Vec::new();
+    for entry in path {
+        if entry["type"] != "custom" || entry["customType"] != CONTEXT_PIN_CUSTOM_TYPE || !entry["data"].is_object() {
+            continue;
+        }
+        let Some(target) = entry["data"]["targetId"].as_str() else {
+            continue;
+        };
+        pins.retain(|pin| pin != target);
+        if entry["data"]["pinned"] != false {
+            pins.push(target.to_string());
+        }
+    }
+    pins
+}
+
+fn collect_protected(window: &[Value]) -> HashSet<String> {
+    let mut protected = HashSet::new();
+    if let Some(user) = window
+        .iter()
+        .rev()
+        .find(|entry| entry["type"] == "message" && entry["message"]["role"] == "user")
+    {
+        protected.insert(user["id"].as_str().unwrap_or_default().to_string());
+    }
+    let results: HashSet<&str> = window
+        .iter()
+        .filter(|entry| entry["type"] == "message" && entry["message"]["role"] == "toolResult")
+        .filter_map(|entry| entry["message"]["toolCallId"].as_str())
+        .collect();
+    for entry in window {
+        if entry["type"] == "message"
+            && tool_call_ids(&entry["message"])
+                .iter()
+                .any(|id| !results.contains(id.as_str()))
+        {
+            protected.insert(entry["id"].as_str().unwrap_or_default().to_string());
+        }
+    }
+    protected
+}
+
+fn edited_state(own: Option<&EditInfo>, omitted: bool) -> &'static str {
+    if let Some(own) = own {
+        return match own.source.as_str() {
+            "collapse" => "collapsed",
+            "ctx.summarize" => "summarized",
+            _ if omitted || own.replacement.is_none() => "forgotten",
+            _ => "replaced",
+        };
+    }
+    if omitted { "forgotten" } else { "replaced" }
+}
+
+fn item_state(own: Option<&EditInfo>, omitted: bool, visible: Option<&Applied>) -> &'static str {
+    if own.is_none() && !omitted && visible.is_some_and(|applied| !applied.changed) {
+        "visible"
+    } else {
+        edited_state(own, omitted)
+    }
+}
+
+struct ToolCallIndex {
+    call_owner: Vec<(String, String)>,
+    results_of: Vec<(String, Vec<String>)>,
+}
+
+fn index_tool_calls(window: &[Value]) -> ToolCallIndex {
+    let mut call_owner: Vec<(String, String)> = Vec::new();
+    let mut results_of: Vec<(String, Vec<String>)> = Vec::new();
+    for entry in window {
+        if entry["type"] != "message" {
+            continue;
+        }
+        let id = entry["id"].as_str().unwrap_or_default().to_string();
+        for call in tool_call_ids(&entry["message"]) {
+            match call_owner.iter_mut().find(|(known, _)| *known == call) {
+                Some(slot) => slot.1 = id.clone(),
+                None => call_owner.push((call, id.clone())),
+            }
+        }
+        if entry["message"]["role"] == "toolResult" {
+            let call = entry["message"]["toolCallId"].as_str().unwrap_or_default();
+            if let Some((_, owner)) = call_owner.iter().find(|(known, _)| known == call) {
+                match results_of.iter_mut().find(|(known, _)| known == owner) {
+                    Some(slot) => slot.1.push(id),
+                    None => results_of.push((owner.clone(), vec![id])),
+                }
+            }
+        }
+    }
+    ToolCallIndex { call_owner, results_of }
+}
+
+fn parse_history_filter(payload: &Map<String, Value>) -> Result<(i64, Option<HashSet<&str>>), String> {
+    let limit = match payload.get("limit") {
+        None => HISTORY_DEFAULT,
+        Some(value) => jsrt::number::safe_integer(value)
+            .filter(|limit| (1..=HISTORY_MAX).contains(limit))
+            .ok_or_else(|| format!("limit must be an integer between 1 and {HISTORY_MAX}"))?,
+    };
+    let kinds: Option<HashSet<&str>> = match payload.get("kinds") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(items)) if items.iter().all(|k| k.as_str().is_some_and(|k| KINDS.contains(&k))) => {
+            Some(items.iter().filter_map(Value::as_str).collect())
+        }
+        Some(_) => return Err(format!("kinds must be a list of: {}", KINDS.join(", "))),
+    };
+    Ok((limit, kinds))
+}
+
+impl ContextControl {
     fn view(&self, lane: &str) -> Result<BranchView, String> {
         let committed = self.branches.entries(lane)?;
         let committed_ids: HashSet<&str> = committed.iter().filter_map(|entry| entry["id"].as_str()).collect();
@@ -377,61 +521,9 @@ impl ContextControl {
         let window_start = compaction_index.map_or(0, |index| index + 1);
         let window = &path[window_start..];
         let applied = apply_context_edits_marked(window);
-        let mut edits: Vec<(String, EditInfo)> = Vec::new();
-        for entry in window {
-            let data = if entry["type"] == "custom" && entry["data"].is_object() {
-                &entry["data"]
-            } else {
-                &Value::Null
-            };
-            for edit in context_edits_of(entry) {
-                let info = EditInfo {
-                    replacement: edit.replacement,
-                    source: data["source"].as_str().unwrap_or("unknown").to_string(),
-                    reason: data["reason"].as_str().map(str::to_string),
-                };
-                match edits.iter_mut().find(|(target, _)| *target == edit.target_id) {
-                    Some(slot) => slot.1 = info,
-                    None => edits.push((edit.target_id, info)),
-                }
-            }
-        }
-        let mut pins: Vec<String> = Vec::new();
-        for entry in &path {
-            if entry["type"] != "custom" || entry["customType"] != CONTEXT_PIN_CUSTOM_TYPE || !entry["data"].is_object()
-            {
-                continue;
-            }
-            let Some(target) = entry["data"]["targetId"].as_str() else {
-                continue;
-            };
-            pins.retain(|pin| pin != target);
-            if entry["data"]["pinned"] != false {
-                pins.push(target.to_string());
-            }
-        }
-        let mut protected = HashSet::new();
-        if let Some(user) = window
-            .iter()
-            .rev()
-            .find(|entry| entry["type"] == "message" && entry["message"]["role"] == "user")
-        {
-            protected.insert(user["id"].as_str().unwrap_or_default().to_string());
-        }
-        let results: HashSet<&str> = window
-            .iter()
-            .filter(|entry| entry["type"] == "message" && entry["message"]["role"] == "toolResult")
-            .filter_map(|entry| entry["message"]["toolCallId"].as_str())
-            .collect();
-        for entry in window {
-            if entry["type"] == "message"
-                && tool_call_ids(&entry["message"])
-                    .iter()
-                    .any(|id| !results.contains(id.as_str()))
-            {
-                protected.insert(entry["id"].as_str().unwrap_or_default().to_string());
-            }
-        }
+        let edits = collect_window_edits(window);
+        let pins = collect_pins(&path);
+        let protected = collect_protected(window);
         Ok(BranchView {
             path,
             compaction_index,
@@ -448,16 +540,7 @@ impl ContextControl {
         let id = entry["id"].as_str().unwrap_or_default();
         let visible = view.applied(id);
         let omitted = visible.is_some_and(|applied| is_omitted(&applied.entry));
-        let own = view.edit(id);
-        let mut state = "visible";
-        if own.is_some() || omitted || visible.is_none_or(|applied| applied.changed) {
-            state = match own {
-                Some(own) if own.source == "collapse" => "collapsed",
-                Some(own) if own.source == "ctx.summarize" => "summarized",
-                _ if omitted || own.is_some_and(|own| own.replacement.is_none()) => "forgotten",
-                _ => "replaced",
-            };
-        }
+        let state = item_state(view.edit(id), omitted, visible);
         let mut item = Map::new();
         item.insert("id".into(), entry["id"].clone());
         item.insert("kind".into(), kind.into());
@@ -525,29 +608,7 @@ impl ContextControl {
                 out.push(id.to_string());
             }
         };
-        let mut call_owner: Vec<(String, String)> = Vec::new();
-        let mut results_of: Vec<(String, Vec<String>)> = Vec::new();
-        for entry in view.window() {
-            if entry["type"] != "message" {
-                continue;
-            }
-            let id = entry["id"].as_str().unwrap_or_default().to_string();
-            for call in tool_call_ids(&entry["message"]) {
-                match call_owner.iter_mut().find(|(known, _)| *known == call) {
-                    Some(slot) => slot.1 = id.clone(),
-                    None => call_owner.push((call, id.clone())),
-                }
-            }
-            if entry["message"]["role"] == "toolResult" {
-                let call = entry["message"]["toolCallId"].as_str().unwrap_or_default();
-                if let Some((_, owner)) = call_owner.iter().find(|(known, _)| known == call) {
-                    match results_of.iter_mut().find(|(known, _)| known == owner) {
-                        Some(slot) => slot.1.push(id),
-                        None => results_of.push((owner.clone(), vec![id])),
-                    }
-                }
-            }
-        }
+        let ToolCallIndex { call_owner, results_of } = index_tool_calls(view.window());
         for id in ids {
             let Some(entry) = view.by_id(id) else { continue };
             if entry["type"] == "message" && entry["message"]["role"] == "toolResult" {
@@ -625,6 +686,132 @@ impl ContextControl {
         }))
     }
 
+    fn handle_history(view: &BranchView, payload: &Map<String, Value>) -> Result<Value, String> {
+        kernel::ops::fields("ctx.history", payload)?;
+        let (limit, kinds) = parse_history_filter(payload)?;
+        let items: Vec<Value> = view
+            .window()
+            .iter()
+            .filter_map(|entry| Self::item(view, entry))
+            .filter(|item| {
+                kinds
+                    .as_ref()
+                    .is_none_or(|kinds| kinds.contains(item["kind"].as_str().unwrap_or("")))
+            })
+            .collect();
+        let visible: u64 = items.iter().filter_map(|item| item["bytes"].as_u64()).sum();
+        let shown: Vec<Value> = items[items.len().saturating_sub(limit as usize)..].to_vec();
+        Ok(json!({"items": shown, "total": items.len(), "visible_bytes": visible,
+            "compacted": view.compaction_index.is_some()}))
+    }
+
+    fn handle_get(view: &BranchView, payload: &Map<String, Value>) -> Result<Value, String> {
+        kernel::ops::fields("ctx.get", payload)?;
+        let id = jsrt::payload::nonempty_string(payload.get("id"), "id")?;
+        let entry = view.by_id(&id);
+        let item = entry.and_then(|entry| Self::item(view, entry));
+        let (Some(entry), Some(mut item)) = (entry, item) else {
+            return Err(format!("Unknown context item: {id}"));
+        };
+        item["text"] = entry_text(entry).into();
+        if entry["type"] == "message" {
+            item["message"] = entry["message"].clone();
+        }
+        item["visible_text"] = match view.applied(&id) {
+            Some(applied) if item["state"] != "forgotten" => entry_text(&applied.entry).into(),
+            _ => Value::Null,
+        };
+        Ok(item)
+    }
+
+    fn handle_forget(&self, view: &BranchView, payload: &Map<String, Value>, lane: &str) -> Result<Value, String> {
+        kernel::ops::fields("ctx.forget", payload)?;
+        let ids = id_list(payload.get("ids"))?;
+        let reason = jsrt::utf16::head(
+            &jsrt::payload::nonempty_string(payload.get("reason"), "reason")?,
+            REASON_MAX_CHARS,
+        )
+        .to_string();
+        Self::guard(view, &ids)?;
+        let fresh: Vec<String> = ids
+            .iter()
+            .filter(|id| view.edit(id).is_none_or(|info| info.replacement.is_some()))
+            .cloned()
+            .collect();
+        let before = Self::visible_bytes(view);
+        if fresh.is_empty() {
+            return Ok(json!({"forgotten": [], "already": ids, "edit_id": null, "freed_bytes": 0}));
+        }
+        let edits: Vec<Value> = fresh
+            .iter()
+            .map(|id| json!({"targetId": id, "replacement": null}))
+            .collect();
+        let edit_id = self.append(
+            lane,
+            CONTEXT_EDIT_CUSTOM_TYPE,
+            json!({"edits": edits, "source": "ctx.forget", "reason": reason}),
+        )?;
+        let after = Self::visible_bytes(&self.view(lane)?);
+        let already: Vec<&String> = ids.iter().filter(|id| !fresh.contains(id)).collect();
+        Ok(json!({"forgotten": fresh, "already": already, "edit_id": edit_id,
+            "freed_bytes": before.saturating_sub(after)}))
+    }
+
+    fn handle_summarize(&self, view: &BranchView, payload: &Map<String, Value>, lane: &str) -> Result<Value, String> {
+        kernel::ops::fields("ctx.summarize", payload)?;
+        let text = jsrt::payload::nonempty_string(payload.get("text"), "text")?;
+        if jsrt::utf16::len(&text) > SUMMARY_MAX_CHARS {
+            return Err(format!("text exceeds {SUMMARY_MAX_CHARS} characters"));
+        }
+        let mut ids = Self::closure(view, &id_list(payload.get("ids"))?);
+        Self::guard(view, &ids)?;
+        let order = |id: &String| view.window().iter().position(|entry| entry["id"] == id.as_str());
+        ids.sort_by_key(order);
+        let first = ids[0].clone();
+        let plural = if ids.len() == 1 { "" } else { "s" };
+        let mut edits = vec![json!({"targetId": first, "replacement": {
+            "content": format!("[Summary of {} earlier item{plural} (ctx.summarize)]\n{text}", ids.len())}})];
+        edits.extend(ids[1..].iter().map(|id| json!({"targetId": id, "replacement": null})));
+        let before = Self::visible_bytes(view);
+        let edit_id = self.append(
+            lane,
+            CONTEXT_EDIT_CUSTOM_TYPE,
+            json!({"edits": edits, "source": "ctx.summarize"}),
+        )?;
+        let after = Self::visible_bytes(&self.view(lane)?);
+        Ok(json!({"summarized": ids, "summary_id": first, "edit_id": edit_id,
+            "freed_bytes": before.saturating_sub(after)}))
+    }
+
+    fn handle_pin(
+        &self,
+        view: &BranchView,
+        kind: &str,
+        payload: &Map<String, Value>,
+        lane: &str,
+    ) -> Result<Value, String> {
+        kernel::ops::fields(kind, payload)?;
+        let id = jsrt::payload::nonempty_string(payload.get("id"), "id")?;
+        if view.by_id(&id).is_none_or(|entry| kind_of(entry).is_none()) {
+            return Err(format!("Unknown context item: {id}"));
+        }
+        let pin = kind == "ctx.pin";
+        if view.pinned(&id) == pin {
+            return Ok(json!({"id": id, "pinned": pin, "changed": false}));
+        }
+        self.append(lane, CONTEXT_PIN_CUSTOM_TYPE, json!({"targetId": id, "pinned": pin}))?;
+        Ok(json!({"id": id, "pinned": pin, "changed": true}))
+    }
+
+    fn handle_note(&self, payload: &Map<String, Value>, lane: &str) -> Result<Value, String> {
+        kernel::ops::fields("ctx.note", payload)?;
+        let text = jsrt::payload::nonempty_string(payload.get("text"), "text")?;
+        if jsrt::utf16::len(&text) > NOTE_MAX_CHARS {
+            return Err(format!("note exceeds {NOTE_MAX_CHARS} characters"));
+        }
+        Ok(json!({"id": self.append(lane, CONTEXT_NOTE_CUSTOM_TYPE, json!({"text": text}))?}))
+    }
+
     pub fn handle_request(&self, kind: &str, payload: &Map<String, Value>, lane: &str) -> Result<Value, String> {
         if kind == "ctx.state" {
             jsrt::payload::fields(payload, &[])?;
@@ -633,134 +820,12 @@ impl ContextControl {
         self.known(lane);
         let view = self.view(lane)?;
         match kind {
-            "ctx.history" => {
-                kernel::ops::fields("ctx.history", payload)?;
-                let limit = match payload.get("limit") {
-                    None => HISTORY_DEFAULT,
-                    Some(value) => jsrt::number::safe_integer(value)
-                        .filter(|limit| (1..=HISTORY_MAX).contains(limit))
-                        .ok_or_else(|| format!("limit must be an integer between 1 and {HISTORY_MAX}"))?,
-                };
-                let kinds: Option<HashSet<&str>> = match payload.get("kinds") {
-                    None | Some(Value::Null) => None,
-                    Some(Value::Array(items))
-                        if items.iter().all(|k| k.as_str().is_some_and(|k| KINDS.contains(&k))) =>
-                    {
-                        Some(items.iter().filter_map(Value::as_str).collect())
-                    }
-                    Some(_) => return Err(format!("kinds must be a list of: {}", KINDS.join(", "))),
-                };
-                let items: Vec<Value> = view
-                    .window()
-                    .iter()
-                    .filter_map(|entry| Self::item(&view, entry))
-                    .filter(|item| {
-                        kinds
-                            .as_ref()
-                            .is_none_or(|kinds| kinds.contains(item["kind"].as_str().unwrap_or("")))
-                    })
-                    .collect();
-                let visible: u64 = items.iter().filter_map(|item| item["bytes"].as_u64()).sum();
-                let shown: Vec<Value> = items[items.len().saturating_sub(limit as usize)..].to_vec();
-                Ok(json!({"items": shown, "total": items.len(), "visible_bytes": visible,
-                    "compacted": view.compaction_index.is_some()}))
-            }
-            "ctx.get" => {
-                kernel::ops::fields("ctx.get", payload)?;
-                let id = jsrt::payload::nonempty_string(payload.get("id"), "id")?;
-                let entry = view.by_id(&id);
-                let item = entry.and_then(|entry| Self::item(&view, entry));
-                let (Some(entry), Some(mut item)) = (entry, item) else {
-                    return Err(format!("Unknown context item: {id}"));
-                };
-                item["text"] = entry_text(entry).into();
-                if entry["type"] == "message" {
-                    item["message"] = entry["message"].clone();
-                }
-                item["visible_text"] = match view.applied(&id) {
-                    Some(applied) if item["state"] != "forgotten" => entry_text(&applied.entry).into(),
-                    _ => Value::Null,
-                };
-                Ok(item)
-            }
-            "ctx.forget" => {
-                kernel::ops::fields("ctx.forget", payload)?;
-                let ids = id_list(payload.get("ids"))?;
-                let reason = jsrt::utf16::head(
-                    &jsrt::payload::nonempty_string(payload.get("reason"), "reason")?,
-                    REASON_MAX_CHARS,
-                )
-                .to_string();
-                Self::guard(&view, &ids)?;
-                let fresh: Vec<String> = ids
-                    .iter()
-                    .filter(|id| view.edit(id).is_none_or(|info| info.replacement.is_some()))
-                    .cloned()
-                    .collect();
-                let before = Self::visible_bytes(&view);
-                if fresh.is_empty() {
-                    return Ok(json!({"forgotten": [], "already": ids, "edit_id": null, "freed_bytes": 0}));
-                }
-                let edits: Vec<Value> = fresh
-                    .iter()
-                    .map(|id| json!({"targetId": id, "replacement": null}))
-                    .collect();
-                let edit_id = self.append(
-                    lane,
-                    CONTEXT_EDIT_CUSTOM_TYPE,
-                    json!({"edits": edits, "source": "ctx.forget", "reason": reason}),
-                )?;
-                let after = Self::visible_bytes(&self.view(lane)?);
-                let already: Vec<&String> = ids.iter().filter(|id| !fresh.contains(id)).collect();
-                Ok(json!({"forgotten": fresh, "already": already, "edit_id": edit_id,
-                    "freed_bytes": before.saturating_sub(after)}))
-            }
-            "ctx.summarize" => {
-                kernel::ops::fields("ctx.summarize", payload)?;
-                let text = jsrt::payload::nonempty_string(payload.get("text"), "text")?;
-                if jsrt::utf16::len(&text) > SUMMARY_MAX_CHARS {
-                    return Err(format!("text exceeds {SUMMARY_MAX_CHARS} characters"));
-                }
-                let mut ids = Self::closure(&view, &id_list(payload.get("ids"))?);
-                Self::guard(&view, &ids)?;
-                let order = |id: &String| view.window().iter().position(|entry| entry["id"] == id.as_str());
-                ids.sort_by_key(order);
-                let first = ids[0].clone();
-                let plural = if ids.len() == 1 { "" } else { "s" };
-                let mut edits = vec![json!({"targetId": first, "replacement": {
-                    "content": format!("[Summary of {} earlier item{plural} (ctx.summarize)]\n{text}", ids.len())}})];
-                edits.extend(ids[1..].iter().map(|id| json!({"targetId": id, "replacement": null})));
-                let before = Self::visible_bytes(&view);
-                let edit_id = self.append(
-                    lane,
-                    CONTEXT_EDIT_CUSTOM_TYPE,
-                    json!({"edits": edits, "source": "ctx.summarize"}),
-                )?;
-                let after = Self::visible_bytes(&self.view(lane)?);
-                Ok(json!({"summarized": ids, "summary_id": first, "edit_id": edit_id,
-                    "freed_bytes": before.saturating_sub(after)}))
-            }
-            "ctx.pin" | "ctx.unpin" => {
-                kernel::ops::fields(kind, payload)?;
-                let id = jsrt::payload::nonempty_string(payload.get("id"), "id")?;
-                if view.by_id(&id).is_none_or(|entry| kind_of(entry).is_none()) {
-                    return Err(format!("Unknown context item: {id}"));
-                }
-                let pin = kind == "ctx.pin";
-                if view.pinned(&id) == pin {
-                    return Ok(json!({"id": id, "pinned": pin, "changed": false}));
-                }
-                self.append(lane, CONTEXT_PIN_CUSTOM_TYPE, json!({"targetId": id, "pinned": pin}))?;
-                Ok(json!({"id": id, "pinned": pin, "changed": true}))
-            }
-            "ctx.note" => {
-                kernel::ops::fields("ctx.note", payload)?;
-                let text = jsrt::payload::nonempty_string(payload.get("text"), "text")?;
-                if jsrt::utf16::len(&text) > NOTE_MAX_CHARS {
-                    return Err(format!("note exceeds {NOTE_MAX_CHARS} characters"));
-                }
-                Ok(json!({"id": self.append(lane, CONTEXT_NOTE_CUSTOM_TYPE, json!({"text": text}))?}))
-            }
+            "ctx.history" => Self::handle_history(&view, payload),
+            "ctx.get" => Self::handle_get(&view, payload),
+            "ctx.forget" => self.handle_forget(&view, payload, lane),
+            "ctx.summarize" => self.handle_summarize(&view, payload, lane),
+            "ctx.pin" | "ctx.unpin" => self.handle_pin(&view, kind, payload, lane),
+            "ctx.note" => self.handle_note(payload, lane),
             _ => Err(kernel::ops::not_wired(kind)),
         }
     }
@@ -773,369 +838,5 @@ impl ApiModule for ContextControl {
 
     fn handle(&self, request: &Request<'_>) -> Result<Value, String> {
         self.handle_request(request.kind, request.payload, request.lane)
-    }
-}
-
-const COLLAPSE_MIN_BYTES: usize = 600;
-const MAX_PENDING_CELLS: usize = 64;
-const TRIM_MIN_CHARS: usize = 8192;
-const TRIM_TARGET: f64 = 0.9;
-const KEPT_ITEM_CHARS: usize = 4000;
-const KEPT_TOTAL_CHARS: i64 = 16000;
-pub const CONTEXT_KEPT_MESSAGE_TYPE: &str = "ultron-context-kept";
-
-impl ContextControl {
-    /// Harness `tool_start`: a root `rlm` cell starts; finished tasks not yet attributed belong to it.
-    pub fn tool_start(&self, lane: &str, tool_name: &str, tool_call_id: &str) {
-        if lane != kernel::ROOT_LANE || tool_name != "rlm" {
-            return;
-        }
-        let mut tracking = jsrt::sync::lock(&self.tracking);
-        tracking.current_cell = Some(tool_call_id.to_string());
-        if !tracking.unattributed.is_empty() {
-            let lines = std::mem::take(&mut tracking.unattributed);
-            set_cell(&mut tracking.cells, tool_call_id, lines);
-        }
-    }
-
-    pub fn tool_end(&self, lane: &str, tool_call_id: &str) {
-        let mut tracking = jsrt::sync::lock(&self.tracking);
-        if lane == kernel::ROOT_LANE && tracking.current_cell.as_deref() == Some(tool_call_id) {
-            tracking.current_cell = None;
-        }
-    }
-
-    /// Harness `message_end`: once the root model answered after a cell's output, collapse it.
-    pub fn message_end(&self, lane: &str, role: &str) -> Result<(), String> {
-        if lane == kernel::ROOT_LANE && role == "assistant" && !jsrt::sync::lock(&self.tracking).cells.is_empty() {
-            self.collapse()?;
-        }
-        Ok(())
-    }
-
-    pub fn run_end(&self, lane: &str) -> Result<(), String> {
-        if lane == kernel::ROOT_LANE && !jsrt::sync::lock(&self.tracking).cells.is_empty() {
-            self.collapse()?;
-        }
-        Ok(())
-    }
-
-    /// A task's terminal result is durable (`NativeTask` JSON). Root-level tasks are attributed to the root cell
-    /// that returns them.
-    pub fn task_ended(&self, task: &Value, cost: Option<f64>) {
-        if task.get("parentId").is_some() {
-            return;
-        }
-        let text = |key: &str| task[key].as_str().unwrap_or_default().to_string();
-        let status = task["result"]["status"]
-            .as_str()
-            .map_or_else(|| text("state"), str::to_string);
-        let line = TaskLine {
-            id: text("id"),
-            definition: text("definition"),
-            key: text("key"),
-            status,
-            cost,
-        };
-        let mut tracking = jsrt::sync::lock(&self.tracking);
-        match tracking.current_cell.clone() {
-            Some(cell) => {
-                let mut lines = tracking
-                    .cells
-                    .iter()
-                    .find(|(id, _)| *id == cell)
-                    .map_or_default(|(_, lines)| lines.clone());
-                lines.push(line);
-                set_cell(&mut tracking.cells, &cell, lines);
-            }
-            None => {
-                tracking.unattributed.push(line);
-                if tracking.unattributed.len() > MAX_PENDING_CELLS {
-                    tracking.unattributed.remove(0);
-                }
-            }
-        }
-        while tracking.cells.len() > MAX_PENDING_CELLS {
-            tracking.cells.remove(0);
-        }
-    }
-
-    /// Harness `entry_added`: drops a pending copy of the entry; for a context edit, the event observers receive.
-    pub fn entry_added(&self, lane: &str, entry: &Value) -> Option<Value> {
-        if entry["type"] != "custom" {
-            return None;
-        }
-        jsrt::sync::lock(&self.pending).retain(|(_, pending)| pending["id"] != entry["id"]);
-        if entry["customType"] != CONTEXT_EDIT_CUSTOM_TYPE {
-            return None;
-        }
-        let data = if entry["data"].is_object() {
-            &entry["data"]
-        } else {
-            &Value::Null
-        };
-        let mut event = Map::new();
-        event.insert("lane".into(), lane.into());
-        event.insert("editId".into(), entry["id"].clone());
-        event.insert("source".into(), data["source"].as_str().unwrap_or("unknown").into());
-        if let Some(reason) = data["reason"].as_str() {
-            event.insert("reason".into(), reason.into());
-        }
-        let edits: Vec<Value> = context_edits_of(entry)
-            .into_iter()
-            .map(|edit| {
-                let action = if edit.replacement.is_none() { "omit" } else { "replace" };
-                json!({"targetId": edit.target_id, "action": action})
-            })
-            .collect();
-        event.insert("edits".into(), edits.into());
-        if let Some(tasks) = data["tasks"].as_array() {
-            let tasks: Vec<Value> = tasks
-                .iter()
-                .map(|task| match task {
-                    Value::String(text) => Value::String(text.clone()),
-                    other => Value::String(jsrt::json::stringify(other)),
-                })
-                .collect();
-            event.insert("tasks".into(), tasks.into());
-        }
-        Some(Value::Object(event))
-    }
-
-    /// Collapse cell outputs the model has already answered after.
-    fn collapse(&self) -> Result<(), String> {
-        if jsrt::sync::lock(&self.tracking).cells.is_empty() {
-            return Ok(());
-        }
-        let view = self.view(kernel::ROOT_LANE)?;
-        let mut edits = Vec::new();
-        let mut tasks = Vec::new();
-        let mut answered_after = false;
-        for entry in view.window().iter().rev() {
-            if entry["type"] != "message" {
-                continue;
-            }
-            let message = &entry["message"];
-            if message["role"] == "assistant" {
-                answered_after = true;
-                continue;
-            }
-            if message["role"] != "toolResult" || !answered_after {
-                continue;
-            }
-            let call = message["toolCallId"].as_str().unwrap_or_default();
-            let lines = {
-                let mut tracking = jsrt::sync::lock(&self.tracking);
-                let Some(index) = tracking.cells.iter().position(|(id, _)| id == call) else {
-                    continue;
-                };
-                tracking.cells.remove(index).1
-            };
-            let id = entry["id"].as_str().unwrap_or_default();
-            if view.pinned(id) || view.edit(id).is_some() {
-                continue;
-            }
-            let original = message_text(message);
-            if original.len() <= COLLAPSE_MIN_BYTES {
-                continue;
-            }
-            let content = collapsed_cell_text(id, &original, &lines);
-            if jsrt::utf16::len(&content) >= jsrt::utf16::len(&original) {
-                continue;
-            }
-            edits.push(json!({"targetId": id, "replacement": {"content": content}}));
-            tasks.extend(lines.into_iter().map(|line| line.id));
-        }
-        if edits.is_empty() {
-            return Ok(());
-        }
-        edits.reverse();
-        self.append(
-            kernel::ROOT_LANE,
-            CONTEXT_EDIT_CUSTOM_TYPE,
-            json!({"edits": edits, "source": "collapse", "reason": "task results returned", "tasks": tasks}),
-        )?;
-        Ok(())
-    }
-
-    /// Harness `before_compaction`: for a threshold compaction, trims tool results the model answered after when
-    /// that brings the estimate under 90% of the threshold; true declines the compaction.
-    pub fn before_compaction(
-        &self,
-        lane: &str,
-        reason: &str,
-        tokens_before: i64,
-        context_window: Option<i64>,
-        reserve_tokens: i64,
-    ) -> Result<bool, String> {
-        if !self.trim || reason != "threshold" {
-            return Ok(false);
-        }
-        self.known(lane);
-        let Some(window) = context_window else {
-            return Ok(false);
-        };
-        self.trim_instead(lane, tokens_before, window - reserve_tokens)
-    }
-
-    fn trim_instead(&self, lane: &str, tokens: i64, threshold: i64) -> Result<bool, String> {
-        let view = self.view(lane)?;
-        let target = threshold as f64 * TRIM_TARGET;
-        let last_assistant = view
-            .window()
-            .iter()
-            .rev()
-            .find(|entry| entry["type"] == "message" && entry["message"]["role"] == "assistant")
-            .and_then(|entry| entry["id"].as_str().map(str::to_string));
-        let credit = jsrt::sync::lock(&self.tracking)
-            .trimmed
-            .iter()
-            .find(|(name, assistant, _)| name == lane && Some(assistant) == last_assistant.as_ref())
-            .map_or(0, |(_, _, saved)| *saved);
-        if (tokens - credit) as f64 <= target {
-            return Ok(true);
-        }
-        let mut edits = Vec::new();
-        let mut saved = 0i64;
-        let mut answered_after = false;
-        for entry in view.window().iter().rev() {
-            if entry["type"] != "message" {
-                continue;
-            }
-            let message = &entry["message"];
-            if message["role"] == "assistant" {
-                answered_after = true;
-                continue;
-            }
-            if message["role"] != "toolResult" || !answered_after {
-                continue;
-            }
-            let id = entry["id"].as_str().unwrap_or_default();
-            if view.pinned(id) || view.edit(id).is_some() || view.protected.contains(id) {
-                continue;
-            }
-            if !message["content"]
-                .as_array()
-                .is_some_and(|parts| parts.iter().all(|part| part["type"] == "text"))
-            {
-                continue;
-            }
-            let original = message_text(message);
-            if jsrt::utf16::len(&original) <= TRIM_MIN_CHARS {
-                continue;
-            }
-            let content = trimmed_result_text(id, &original);
-            saved += (jsrt::utf16::len(&original) as i64 - jsrt::utf16::len(&content) as i64).div_euclid(4);
-            edits.push(json!({"targetId": id, "replacement": {"content": content}}));
-        }
-        let Some(last_assistant) = last_assistant else {
-            return Ok(false);
-        };
-        if edits.is_empty() || (tokens - credit - saved) as f64 > target {
-            return Ok(false);
-        }
-        edits.reverse();
-        self.append(
-            lane,
-            CONTEXT_EDIT_CUSTOM_TYPE,
-            json!({"edits": edits, "source": "trim", "reason": "trimmed old tool results instead of compacting"}),
-        )?;
-        let mut tracking = jsrt::sync::lock(&self.tracking);
-        tracking.trimmed.retain(|(name, _, _)| name != lane);
-        tracking
-            .trimmed
-            .push((lane.to_string(), last_assistant, credit + saved));
-        Ok(true)
-    }
-
-    /// Notes and pinned items that the newest compaction cut off, as one bounded text block.
-    pub fn kept_across_compaction(&self, lane: &str) -> Result<Option<String>, String> {
-        let view = self.view(lane)?;
-        let Some(index) = view.compaction_index else {
-            return Ok(None);
-        };
-        let retained: HashSet<String> = view.path[index]["retainedTail"]
-            .as_array()
-            .map_or_default(|tail| tail.iter().map(jsrt::json::stringify).collect());
-        let before = &view.path[..index];
-        let omitted: HashSet<String> = before
-            .iter()
-            .flat_map(context_edits_of)
-            .filter(|edit| edit.replacement.is_none())
-            .map(|edit| edit.target_id)
-            .collect();
-        let mut lines: Vec<String> = Vec::new();
-        let mut budget = KEPT_TOTAL_CHARS;
-        let mut add = |line: String| {
-            if budget <= 0 {
-                return;
-            }
-            let bounded = if jsrt::utf16::len(&line) as i64 > budget {
-                format!("{}…", jsrt::utf16::head(&line, budget as usize - 1))
-            } else {
-                line
-            };
-            budget -= jsrt::utf16::len(&bounded) as i64;
-            lines.push(bounded);
-        };
-        for entry in before {
-            let id = entry["id"].as_str().unwrap_or_default();
-            if entry["type"] == "custom" && entry["customType"] == CONTEXT_NOTE_CUSTOM_TYPE && !omitted.contains(id) {
-                add(format!("- note {id}: {}", note_text(entry)));
-            } else if view.pinned(id)
-                && entry["type"] == "message"
-                && !retained.contains(&jsrt::json::stringify(&entry["message"]))
-            {
-                let text = message_text(&entry["message"]);
-                let text = if jsrt::utf16::len(&text) > KEPT_ITEM_CHARS {
-                    format!("{}…", jsrt::utf16::head(&text, KEPT_ITEM_CHARS - 1))
-                } else {
-                    text
-                };
-                add(format!(
-                    "- pinned {id} ({}): {text}",
-                    entry["message"]["role"].as_str().unwrap_or("undefined")
-                ));
-            }
-        }
-        if lines.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(format!(
-            "Notes and pinned items kept across compaction (ctx.note / ctx.pin):\n{}",
-            lines.join("\n")
-        )))
-    }
-
-    /// Harness `transform_context`: after a compaction summary, shows again the notes and pinned items it cut off
-    /// (only for lanes that used ctx, and the root). `None` leaves the messages unchanged.
-    pub fn transform_context(&self, lane: &str, messages: &[Value]) -> Result<Option<Vec<Value>>, String> {
-        let Some(index) = messages
-            .iter()
-            .position(|message| message["role"] == "compactionSummary")
-        else {
-            return Ok(None);
-        };
-        if !jsrt::sync::lock(&self.tracking).lanes.contains(lane) {
-            return Ok(None);
-        }
-        let Some(kept) = self.kept_across_compaction(lane)? else {
-            return Ok(None);
-        };
-        let mut out = messages.to_vec();
-        out.insert(
-            index + 1,
-            json!({"role": "custom", "customType": CONTEXT_KEPT_MESSAGE_TYPE, "content": kept, "display": false,
-                "timestamp": (self.clock)()}),
-        );
-        Ok(Some(out))
-    }
-}
-
-/// Sets a cell's task lines, keeping its place in the insertion order (a JS Map).
-fn set_cell(cells: &mut Vec<(String, Vec<TaskLine>)>, id: &str, lines: Vec<TaskLine>) {
-    match cells.iter_mut().find(|(known, _)| known == id) {
-        Some(slot) => slot.1 = lines,
-        None => cells.push((id.to_string(), lines)),
     }
 }

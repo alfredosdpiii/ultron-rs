@@ -143,21 +143,27 @@ pub fn no_model_hint(env: &Env) -> Option<String> {
     }
 }
 
-/// `interactiveStartWithoutModel`: whether this command starts the TUI, and whether it names a model.
-fn interactive_start(parsed: &Args) -> (bool, bool) {
-    let interactive = parsed.mode.is_none()
+fn is_interactive_mode(parsed: &Args) -> bool {
+    parsed.mode.is_none()
         && !parsed.print
         && parsed.messages.is_empty()
         && parsed.file_args.is_empty()
         && !parsed.help
         && !parsed.version
         && parsed.list_models.is_none()
-        && parsed.export.is_none();
-    let explicit = parsed.model.is_some()
+        && parsed.export.is_none()
+}
+
+fn has_explicit_model(parsed: &Args) -> bool {
+    parsed.model.is_some()
         || parsed.provider.is_some()
         || parsed.api_key.is_some()
-        || parsed.models.as_ref().is_some_and(|m| !m.is_empty());
-    (interactive, explicit)
+        || parsed.models.as_ref().is_some_and(|m| !m.is_empty())
+}
+
+/// `interactiveStartWithoutModel`: whether this command starts the TUI, and whether it names a model.
+fn interactive_start(parsed: &Args) -> (bool, bool) {
+    (is_interactive_mode(parsed), has_explicit_model(parsed))
 }
 
 /// `offerSetupOnFirstRun`: on an interactive start with no usable model, offer `ultron setup` ("Don't ask again" is

@@ -60,14 +60,44 @@ pub enum AssistantContent {
     ToolCall(ToolCall),
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Cost {
-    pub input: f64,
-    pub output: f64,
-    pub cache_read: f64,
-    pub cache_write: f64,
-    pub total: f64,
+macro_rules! define_cost_struct {
+    (
+        pub struct $name:ident {
+            $(
+                $(#[$before_meta:meta])*
+                pub $before:ident : $before_ty:ty,
+            )*
+            @rates,
+            $(
+                $(#[$after_meta:meta])*
+                pub $after:ident : $after_ty:ty,
+            )*
+        }
+    ) => {
+        #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        pub struct $name {
+            $(
+                $(#[$before_meta])*
+                pub $before: $before_ty,
+            )*
+            pub input: f64,
+            pub output: f64,
+            pub cache_read: f64,
+            pub cache_write: f64,
+            $(
+                $(#[$after_meta])*
+                pub $after: $after_ty,
+            )*
+        }
+    };
+}
+
+define_cost_struct! {
+    pub struct Cost {
+        @rates,
+        pub total: f64,
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -309,6 +339,23 @@ pub struct ToolResultMessage {
     pub timestamp: i64,
 }
 
+impl ToolResultMessage {
+    pub(crate) fn joined_text(&self) -> String {
+        self.content
+            .iter()
+            .filter_map(|c| match c {
+                UserContent::Text(t) => Some(t.text.as_str()),
+                UserContent::Image(_) => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    pub(crate) fn has_images(&self) -> bool {
+        self.content.iter().any(|c| matches!(c, UserContent::Image(_)))
+    }
+}
+
 /// A transcript message; each variant's struct carries its own `role` tag.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
@@ -478,6 +525,92 @@ mod tagged_tool_call {
 /// Receives each stream event as it happens.
 pub type EventSink<'a> = dyn FnMut(&AssistantMessageEvent) + Send + 'a;
 
+pub(crate) fn close_content_block<S>(run: &mut crate::provider::Run<'_, '_, S>, index: Option<usize>) {
+    let Some(index) = index else { return };
+    match run.output.content[index].clone() {
+        AssistantContent::Text(t) => run.emit(|partial| AssistantMessageEvent::TextEnd {
+            content_index: index,
+            content: t.text,
+            partial,
+        }),
+        AssistantContent::Thinking(t) => run.emit(|partial| AssistantMessageEvent::ThinkingEnd {
+            content_index: index,
+            content: t.thinking,
+            partial,
+        }),
+        AssistantContent::ToolCall(_) => {}
+    }
+}
+
+fn open_content_block<S>(run: &mut crate::provider::Run<'_, '_, S>, thinking: bool) -> usize {
+    let index = run.output.content.len();
+    if thinking {
+        run.output.content.push(AssistantContent::Thinking(ThinkingContent {
+            thinking: String::new(),
+            thinking_signature: None,
+            redacted: None,
+        }));
+        run.emit(|partial| AssistantMessageEvent::ThinkingStart {
+            content_index: index,
+            partial,
+        });
+    } else {
+        run.output.content.push(AssistantContent::Text(TextContent {
+            text: String::new(),
+            text_signature: None,
+        }));
+        run.emit(|partial| AssistantMessageEvent::TextStart {
+            content_index: index,
+            partial,
+        });
+    }
+    index
+}
+
+pub(crate) fn push_content_delta<S>(
+    run: &mut crate::provider::Run<'_, '_, S>,
+    current: fn(&mut S) -> &mut Option<usize>,
+    text: &str,
+    thinking: bool,
+    signature: Option<&str>,
+) {
+    let open = (*current(&mut run.state)).map(|i| matches!(run.output.content[i], AssistantContent::Thinking(_)));
+    if open != Some(thinking) {
+        let prev = current(&mut run.state).take();
+        close_content_block(run, prev);
+        let index = open_content_block(run, thinking);
+        *current(&mut run.state) = Some(index);
+    }
+    let index = run.output.content.len() - 1;
+    let delta = text.to_string();
+    let incoming_sig = signature.filter(|s| !s.is_empty()).map(str::to_string);
+    match &mut run.output.content[index] {
+        AssistantContent::Thinking(t) => {
+            t.thinking.push_str(text);
+            if let Some(sig) = incoming_sig {
+                t.thinking_signature = Some(sig);
+            }
+            run.emit(|partial| AssistantMessageEvent::ThinkingDelta {
+                content_index: index,
+                delta,
+                partial,
+            });
+        }
+        AssistantContent::Text(t) => {
+            t.text.push_str(text);
+            if let Some(sig) = incoming_sig {
+                t.text_signature = Some(sig);
+            }
+            run.emit(|partial| AssistantMessageEvent::TextDelta {
+                content_index: index,
+                delta,
+                partial,
+            });
+        }
+        AssistantContent::ToolCall(_) => {}
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum CacheRetention {
@@ -486,25 +619,19 @@ pub enum CacheRetention {
     Long,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelCostTier {
-    pub input_tokens_above: f64,
-    pub input: f64,
-    pub output: f64,
-    pub cache_read: f64,
-    pub cache_write: f64,
+define_cost_struct! {
+    pub struct ModelCostTier {
+        pub input_tokens_above: f64,
+        @rates,
+    }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelCost {
-    pub input: f64,
-    pub output: f64,
-    pub cache_read: f64,
-    pub cache_write: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tiers: Option<Vec<ModelCostTier>>,
+define_cost_struct! {
+    pub struct ModelCost {
+        @rates,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub tiers: Option<Vec<ModelCostTier>>,
+    }
 }
 
 /// A model. `compat` stays a JSON object: each API reads its own keys with upstream's defaults.

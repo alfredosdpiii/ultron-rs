@@ -183,7 +183,7 @@ fn session_core_mcp_servers_are_kernel_apis_and_the_model_keeps_one_tool() {
     // The servers close with the session.
     session.lane.shutdown();
     wait_until("the server saw its stdin close", || {
-        session.served().contains(&"eof".to_string())
+        session.served().iter().any(|i| i == "eof")
     });
 }
 
@@ -252,7 +252,7 @@ fn session_core_cancelling_a_detached_mcp_call_cancels_the_request_on_the_server
         .expect(&started)
         .to_string();
     wait_until("the server received the call", || {
-        session.served().contains(&"tools/call hang".to_string())
+        session.served().iter().any(|i| i == "tools/call hang")
     });
     // `call.cancel()` from another cell, as `tools.cancel` does; the server's 3600 s timeout cannot end it.
     let calls = session.lane.stack.tool_calls().clone();

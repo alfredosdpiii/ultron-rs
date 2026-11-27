@@ -120,30 +120,15 @@ impl Schedule {
 
     /// A session value read back; `None` when it is not a schedule.
     pub fn from_json(value: &Value) -> Option<Schedule> {
-        let text = |key: &str| value[key].as_str().map(str::to_string);
-        let daily_at = match value.get("dailyAt").and_then(Value::as_str) {
-            None => None,
-            Some(at) => {
-                let (h, m) = at.split_once(':')?;
-                let (h, m) = (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?);
-                (h < 24 && m < 60).then_some((h, m))?.into()
-            }
-        };
+        let (id, name, session_id, prompt) = parse_json_strings(value)?;
         Some(Schedule {
-            operation: match value.get("operation") {
-                None | Some(Value::Null) => None,
-                Some(operation) => Some(serde_json::from_value(operation.clone()).ok()?),
-            },
-            daily_at,
-            id: text("id")?,
-            name: text("name")?,
-            session_id: text("sessionId")?,
-            prompt: text("prompt")?,
-            kind: match value["kind"].as_str()? {
-                "every" => Kind::Every,
-                "at" => Kind::At,
-                _ => return None,
-            },
+            operation: parse_json_operation(value)?,
+            daily_at: parse_json_daily_at(value)?,
+            id,
+            name,
+            session_id,
+            prompt,
+            kind: parse_json_kind(value)?,
             interval_ms: value["intervalMs"].as_i64(),
             until: value["until"].as_i64(),
             max_runs: value["maxRuns"].as_u64(),
@@ -151,12 +136,7 @@ impl Schedule {
             next_due: value["nextDue"].as_i64(),
             runs: value["runs"].as_u64()?,
             last_fired: value["lastFired"].as_i64(),
-            state: match value["state"].as_str()? {
-                "active" => State::Active,
-                "done" => State::Done,
-                "cancelled" => State::Cancelled,
-                _ => return None,
-            },
+            state: parse_json_state(value)?,
         })
     }
 
@@ -229,49 +209,95 @@ impl Schedule {
     }
 }
 
+fn parse_json_strings(value: &Value) -> Option<(String, String, String, String)> {
+    let text = |key: &str| value[key].as_str().map(str::to_string);
+    Some((text("id")?, text("name")?, text("sessionId")?, text("prompt")?))
+}
+
+fn parse_json_daily_at(value: &Value) -> Option<Option<(u32, u32)>> {
+    let Some(at) = value.get("dailyAt").and_then(Value::as_str) else {
+        return Some(None);
+    };
+    let (h, m) = at.split_once(':')?;
+    let (h, m) = (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?);
+    (h < 24 && m < 60).then_some(Some((h, m)))
+}
+
+fn parse_json_operation(value: &Value) -> Option<Option<Operation>> {
+    match value.get("operation") {
+        None | Some(Value::Null) => Some(None),
+        Some(operation) => Some(Some(serde_json::from_value(operation.clone()).ok()?)),
+    }
+}
+
+fn parse_json_kind(value: &Value) -> Option<Kind> {
+    match value["kind"].as_str()? {
+        "every" => Some(Kind::Every),
+        "at" => Some(Kind::At),
+        _ => None,
+    }
+}
+
+fn parse_json_state(value: &Value) -> Option<State> {
+    match value["state"].as_str()? {
+        "active" => Some(State::Active),
+        "done" => Some(State::Done),
+        "cancelled" => Some(State::Cancelled),
+        _ => None,
+    }
+}
+
+fn parse_interval_number(n: &serde_json::Number, invalid: &dyn Fn() -> String) -> Result<i64, String> {
+    let seconds = n.as_f64().ok_or_else(invalid)?;
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return Err(invalid());
+    }
+    Ok((seconds * 1000.0).round() as i64)
+}
+
+fn interval_unit_ms(c: char) -> Option<i64> {
+    match c {
+        's' => Some(SECOND_MS),
+        'm' => Some(MINUTE_MS),
+        'h' => Some(HOUR_MS),
+        'd' => Some(DAY_MS),
+        _ => None,
+    }
+}
+
+fn parse_interval_str(text: &str, invalid: &dyn Fn() -> String) -> Result<i64, String> {
+    let text = text.trim();
+    if let Ok(seconds) = text.parse::<f64>() {
+        return parse_interval(&json!(seconds)).map_err(|_| invalid());
+    }
+    let mut total: i64 = 0;
+    let mut digits = String::new();
+    let mut groups = 0;
+    for c in text.chars() {
+        if c.is_ascii_digit() {
+            digits.push(c);
+            continue;
+        }
+        let unit = interval_unit_ms(c).ok_or_else(invalid)?;
+        let n: i64 = digits.parse().map_err(|_| invalid())?;
+        digits.clear();
+        groups += 1;
+        total = total.saturating_add(n.saturating_mul(unit));
+    }
+    if groups == 0 || !digits.is_empty() {
+        return Err(invalid());
+    }
+    Ok(total)
+}
+
 /// `"90s"`, `"15m"`, `"1h30m"`, `"1d"` or a number of seconds (a JSON number or a numeric string), in ms; at least
 /// [`MIN_INTERVAL_MS`], at most a year.
 pub fn parse_interval(value: &Value) -> Result<i64, String> {
     let invalid =
         || format!("schedule interval must be like \"90s\", \"15m\", \"1h\" or \"1d\", or seconds (got {value})");
     let ms = match value {
-        Value::Number(n) => {
-            let seconds = n.as_f64().ok_or_else(invalid)?;
-            if !seconds.is_finite() || seconds <= 0.0 {
-                return Err(invalid());
-            }
-            (seconds * 1000.0).round() as i64
-        }
-        Value::String(text) => {
-            let text = text.trim();
-            if let Ok(seconds) = text.parse::<f64>() {
-                return parse_interval(&json!(seconds)).map_err(|_| invalid());
-            }
-            let mut total: i64 = 0;
-            let mut digits = String::new();
-            let mut groups = 0;
-            for c in text.chars() {
-                if c.is_ascii_digit() {
-                    digits.push(c);
-                    continue;
-                }
-                let unit = match c {
-                    's' => SECOND_MS,
-                    'm' => MINUTE_MS,
-                    'h' => HOUR_MS,
-                    'd' => DAY_MS,
-                    _ => return Err(invalid()),
-                };
-                let n: i64 = digits.parse().map_err(|_| invalid())?;
-                digits.clear();
-                groups += 1;
-                total = total.saturating_add(n.saturating_mul(unit));
-            }
-            if groups == 0 || !digits.is_empty() {
-                return Err(invalid());
-            }
-            total
-        }
+        Value::Number(n) => parse_interval_number(n, &invalid)?,
+        Value::String(text) => parse_interval_str(text, &invalid)?,
         _ => return Err(invalid()),
     };
     if ms < MIN_INTERVAL_MS {
@@ -367,6 +393,13 @@ pub struct Fired {
     pub message: Value,
 }
 
+struct ScheduleTiming {
+    interval_ms: Option<i64>,
+    next_due: i64,
+    until: Option<i64>,
+    max_runs: Option<u64>,
+}
+
 /// `schedule.*` over the session's values.
 pub struct ScheduleModule {
     store: Box<dyn KeyedDocuments>,
@@ -459,133 +492,96 @@ impl ScheduleModule {
         }
     }
 
+    fn parse_every_timing(payload: &Map<String, Value>, now: i64) -> Result<ScheduleTiming, String> {
+        let interval = parse_interval(payload.get("interval").unwrap_or(&Value::Null))?;
+        let until = Self::time(payload, "until", now)?;
+        let max_runs = match field(payload, "max_runs") {
+            None => None,
+            Some(value) => Some(
+                value
+                    .as_u64()
+                    .filter(|n| (1..=MAX_RUNS).contains(n))
+                    .ok_or_else(|| format!("schedule max_runs must be an integer from 1 to {MAX_RUNS}"))?,
+            ),
+        };
+        let first = now + interval;
+        if until.is_some_and(|until| until < first) {
+            return Err(format!(
+                "schedule until is before the first run ({})",
+                jsrt::date::iso_string(first)
+            ));
+        }
+        Ok(ScheduleTiming {
+            interval_ms: Some(interval),
+            next_due: first,
+            until,
+            max_runs,
+        })
+    }
+
+    fn parse_at_timing(payload: &Map<String, Value>, now: i64) -> Result<ScheduleTiming, String> {
+        let due = Self::time(payload, "when", now)?.ok_or("schedule.at needs a time")?;
+        if due <= now {
+            return Err(format!(
+                "schedule.at time must be in the future (got {})",
+                jsrt::date::iso_string(due)
+            ));
+        }
+        Ok(ScheduleTiming {
+            interval_ms: None,
+            next_due: due,
+            until: None,
+            max_runs: None,
+        })
+    }
+
+    fn parse_timing(payload: &Map<String, Value>, kind: Kind, now: i64) -> Result<ScheduleTiming, String> {
+        match kind {
+            Kind::Every => Self::parse_every_timing(payload, now),
+            Kind::At => Self::parse_at_timing(payload, now),
+        }
+    }
+
+    fn initial_due(operation: Option<&Operation>, now: i64, next_due: i64) -> i64 {
+        if matches!(operation, Some(Operation::Pr(_))) {
+            now
+        } else {
+            next_due
+        }
+    }
+
     fn create(
         &self,
         payload: &Map<String, Value>,
         kind: Kind,
         operation: Option<Operation>,
     ) -> Result<Schedule, String> {
-        let op = match &operation {
-            Some(Operation::Pr(_)) => "schedule.watch_pr",
-            Some(Operation::Loop) => "schedule.loop",
-            None => match kind {
-                Kind::Every => "schedule.every",
-                Kind::At => "schedule.at",
-            },
-        };
-        kernel::ops::fields(op, payload)?;
-        let prompt = payload
-            .get("prompt")
-            .and_then(Value::as_str)
-            .filter(|p| !p.trim().is_empty())
-            .ok_or("schedule prompt must be a non-empty string")?;
-        if prompt.len() > MAX_PROMPT_BYTES {
-            return Err(format!("schedule prompt must be at most {MAX_PROMPT_BYTES} bytes"));
-        }
+        kernel::ops::fields(create_op_name(kind, operation.as_ref()), payload)?;
+        let prompt = parse_schedule_prompt(payload)?;
         let _writing = jsrt::sync::lock(&self.writing);
         let now = self.now();
-        let (interval_ms, next_due, until, max_runs) = match kind {
-            Kind::Every => {
-                let interval = parse_interval(payload.get("interval").unwrap_or(&Value::Null))?;
-                let until = Self::time(payload, "until", now)?;
-                let max_runs = match field(payload, "max_runs") {
-                    None => None,
-                    Some(value) => Some(
-                        value
-                            .as_u64()
-                            .filter(|n| (1..=MAX_RUNS).contains(n))
-                            .ok_or_else(|| format!("schedule max_runs must be an integer from 1 to {MAX_RUNS}"))?,
-                    ),
-                };
-                let first = now + interval;
-                if until.is_some_and(|until| until < first) {
-                    return Err(format!(
-                        "schedule until is before the first run ({})",
-                        jsrt::date::iso_string(first)
-                    ));
-                }
-                (Some(interval), first, until, max_runs)
-            }
-            Kind::At => {
-                let due = Self::time(payload, "when", now)?.ok_or("schedule.at needs a time")?;
-                if due <= now {
-                    return Err(format!(
-                        "schedule.at time must be in the future (got {})",
-                        jsrt::date::iso_string(due)
-                    ));
-                }
-                (None, due, None, None)
-            }
-        };
-        let (until, max_runs) = if operation.is_some() {
-            let ceiling = now.saturating_add(DAY_MS);
-            let until = until.unwrap_or(ceiling);
-            let max_runs = max_runs.unwrap_or(100);
-            if until > ceiling || max_runs > 100 || until < next_due {
-                return Err(
-                    "watch/loop requires a lifetime from one interval to 24h and at most 100 model wakes".into(),
-                );
-            }
-            (Some(until), Some(max_runs))
-        } else {
-            (until, max_runs)
-        };
+        let timing = Self::parse_timing(payload, kind, now)?;
+        let (until, max_runs) =
+            apply_operation_bounds(operation.as_ref(), now, timing.next_due, timing.until, timing.max_runs)?;
         let existing = self.all()?;
         let active: Vec<&Schedule> = existing.iter().filter(|s| s.active()).collect();
-        if let Some(operation) = &operation {
-            for prior in &active {
-                let duplicate = match (operation, &prior.operation) {
-                    (Operation::Pr(w), Some(Operation::Pr(p))) => w.repo == p.repo && w.pr == p.pr,
-                    (Operation::Loop, Some(Operation::Loop)) => {
-                        prior.prompt.trim() == prompt.trim() && prior.interval_ms == interval_ms
-                    }
-                    _ => false,
-                };
-                if duplicate {
-                    if matches!((operation, &prior.operation), (Operation::Pr(w), Some(Operation::Pr(p))) if w.mode != p.mode)
-                    {
-                        return Err(format!(
-                            "PR already monitored by {}; cancel it before changing mode",
-                            prior.id
-                        ));
-                    }
-                    return Ok((*prior).clone());
-                }
-            }
-        }
-        if active.len() >= MAX_ACTIVE {
-            return Err(format!("a session can have at most {MAX_ACTIVE} active schedules"));
+        if let Some(duplicate) = check_active_limits(&active, operation.as_ref(), prompt, timing.interval_ms)? {
+            return Ok(duplicate);
         }
         let id = format!("sch-{}", &jsrt::random::uuid_v4().replace('-', "")[..8]);
-        let name = match payload.get("name").filter(|n| !n.is_null()) {
-            None => id.clone(),
-            Some(name) => {
-                let name = name
-                    .as_str()
-                    .map(str::trim)
-                    .filter(|n| !n.is_empty() && n.len() <= MAX_NAME_BYTES && !n.contains(char::is_whitespace))
-                    .ok_or_else(|| format!("schedule name must be one word of 1 to {MAX_NAME_BYTES} bytes"))?;
-                if active.iter().any(|s| s.name == name) {
-                    return Err(format!("a schedule named {name} is already active"));
-                }
-                name.to_string()
-            }
-        };
+        let name = parse_schedule_name(payload, &active, &id)?;
+        let first_due = Self::initial_due(operation.as_ref(), now, timing.next_due);
         let schedule = Schedule {
             id,
             name,
             session_id: self.session_id.clone(),
             prompt: prompt.to_string(),
             kind,
-            interval_ms,
+            interval_ms: timing.interval_ms,
             until,
             max_runs,
             created_at: now,
-            next_due: Some(if matches!(&operation, Some(Operation::Pr(_))) {
-                now
-            } else {
-                next_due
-            }),
+            next_due: Some(first_due),
             runs: 0,
             last_fired: None,
             state: State::Active,
@@ -619,6 +615,35 @@ impl ScheduleModule {
         self.fire_with(id, due, &mut |_| Ok(()))
     }
 
+    fn poll_before_fire(&self, before: Option<&Schedule>, due: i64) -> Option<Result<Value, String>> {
+        let s = before?;
+        let now = self.now();
+        if !s.active() || s.next_due != Some(due) || due > now || s.until.is_some_and(|until| now > until) {
+            return None;
+        }
+        match &s.operation {
+            Some(Operation::Pr(w)) => Some(self.github.poll(w)),
+            _ => None,
+        }
+    }
+
+    fn deliver_fired(
+        &self,
+        mut schedule: Schedule,
+        before: Option<&Schedule>,
+        due: i64,
+        now: i64,
+        terminal: bool,
+        deliver: &mut dyn FnMut(&Value) -> Result<(), String>,
+    ) -> Result<Fired, String> {
+        advance_fired_schedule(&mut schedule, due, now, terminal);
+        let mut message = fire_message(&schedule, schedule.runs, now);
+        attach_previous_observation(&mut message, before)?;
+        deliver(&message)?;
+        self.put(&schedule)?;
+        Ok(Fired { schedule, message })
+    }
+
     /// [`ScheduleModule::fire`] that counts the run only once `deliver` took its prompt message (started or queued
     /// a run): a delivery that fails writes nothing (the slot stays due, an `at` schedule stays active) and its
     /// error is returned.
@@ -629,73 +654,184 @@ impl ScheduleModule {
         deliver: &mut dyn FnMut(&Value) -> Result<(), String>,
     ) -> Result<Option<Fired>, String> {
         let before = self.all()?.into_iter().find(|s| s.id == id);
-        let observation = match before.as_ref() {
-            Some(s)
-                if s.active()
-                    && s.next_due == Some(due)
-                    && due <= self.now()
-                    && s.until.is_none_or(|until| self.now() <= until) =>
-            {
-                match &s.operation {
-                    Some(Operation::Pr(w)) => Some(self.github.poll(w)),
-                    _ => None,
-                }
-            }
-            _ => None,
-        };
+        let observation = self.poll_before_fire(before.as_ref(), due);
         let _writing = jsrt::sync::lock(&self.writing);
         let now = self.now();
         let Some(mut schedule) = self.all()?.into_iter().find(|s| s.id == id) else {
             return Ok(None);
         };
-        if !schedule.active() || schedule.next_due != Some(due) || due > now || before.as_ref() != Some(&schedule) {
+        if !is_due_to_fire(&schedule, before.as_ref(), due, now) {
             return Ok(None);
         }
-        if schedule
-            .until
-            .is_some_and(|until| due > until || (schedule.operation.is_some() && now > until))
-        {
+        if is_past_until(&schedule, due, now) {
             schedule.state = State::Done;
             schedule.next_due = None;
             self.put(&schedule)?;
             return Ok(None);
         }
-        let mut terminal = false;
-        if let Some(Operation::Pr(watch)) = &mut schedule.operation {
-            let (wake, done) = watch.observe(observation.ok_or("missing PR observation")?, now);
-            terminal = done;
-            if !wake {
-                schedule.next_due = schedule.next_after_in(due, now, &Self::zone());
-                if done || schedule.next_due.is_none() {
-                    schedule.state = State::Done;
-                    schedule.next_due = None;
-                }
-                self.put(&schedule)?;
-                return Ok(None);
-            }
+        let (wake, terminal) = apply_pr_observation(&mut schedule, observation, due, now)?;
+        if !wake {
+            self.put(&schedule)?;
+            return Ok(None);
         }
-        schedule.runs += 1;
-        schedule.last_fired = Some(now);
-        schedule.next_due = schedule.next_after_in(due, now, &Self::zone());
-        if terminal || schedule.next_due.is_none() {
+        self.deliver_fired(schedule, before.as_ref(), due, now, terminal, deliver)
+            .map(Some)
+    }
+}
+
+fn check_active_limits(
+    active: &[&Schedule],
+    operation: Option<&Operation>,
+    prompt: &str,
+    interval_ms: Option<i64>,
+) -> Result<Option<Schedule>, String> {
+    if let Some(operation) = operation
+        && let Some(duplicate) = find_duplicate_operation(active, operation, prompt, interval_ms)?
+    {
+        return Ok(Some(duplicate));
+    }
+    if active.len() >= MAX_ACTIVE {
+        return Err(format!("a session can have at most {MAX_ACTIVE} active schedules"));
+    }
+    Ok(None)
+}
+
+fn is_due_to_fire(schedule: &Schedule, before: Option<&Schedule>, due: i64, now: i64) -> bool {
+    schedule.active() && schedule.next_due == Some(due) && due <= now && before == Some(schedule)
+}
+
+fn create_op_name(kind: Kind, operation: Option<&Operation>) -> &'static str {
+    match operation {
+        Some(Operation::Pr(_)) => "schedule.watch_pr",
+        Some(Operation::Loop) => "schedule.loop",
+        None => match kind {
+            Kind::Every => "schedule.every",
+            Kind::At => "schedule.at",
+        },
+    }
+}
+
+fn parse_schedule_prompt(payload: &Map<String, Value>) -> Result<&str, String> {
+    let prompt = payload
+        .get("prompt")
+        .and_then(Value::as_str)
+        .filter(|p| !p.trim().is_empty())
+        .ok_or("schedule prompt must be a non-empty string")?;
+    if prompt.len() > MAX_PROMPT_BYTES {
+        return Err(format!("schedule prompt must be at most {MAX_PROMPT_BYTES} bytes"));
+    }
+    Ok(prompt)
+}
+
+fn apply_operation_bounds(
+    operation: Option<&Operation>,
+    now: i64,
+    next_due: i64,
+    until: Option<i64>,
+    max_runs: Option<u64>,
+) -> Result<(Option<i64>, Option<u64>), String> {
+    if operation.is_none() {
+        return Ok((until, max_runs));
+    }
+    let ceiling = now.saturating_add(DAY_MS);
+    let until = until.unwrap_or(ceiling);
+    let max_runs = max_runs.unwrap_or(100);
+    if until > ceiling || max_runs > 100 || until < next_due {
+        return Err("watch/loop requires a lifetime from one interval to 24h and at most 100 model wakes".into());
+    }
+    Ok((Some(until), Some(max_runs)))
+}
+
+fn find_duplicate_operation(
+    active: &[&Schedule],
+    operation: &Operation,
+    prompt: &str,
+    interval_ms: Option<i64>,
+) -> Result<Option<Schedule>, String> {
+    for prior in active {
+        let duplicate = match (operation, &prior.operation) {
+            (Operation::Pr(w), Some(Operation::Pr(p))) => w.repo == p.repo && w.pr == p.pr,
+            (Operation::Loop, Some(Operation::Loop)) => {
+                prior.prompt.trim() == prompt.trim() && prior.interval_ms == interval_ms
+            }
+            _ => false,
+        };
+        if duplicate {
+            if matches!((operation, &prior.operation), (Operation::Pr(w), Some(Operation::Pr(p))) if w.mode != p.mode) {
+                return Err(format!(
+                    "PR already monitored by {}; cancel it before changing mode",
+                    prior.id
+                ));
+            }
+            return Ok(Some((*prior).clone()));
+        }
+    }
+    Ok(None)
+}
+
+fn parse_schedule_name(payload: &Map<String, Value>, active: &[&Schedule], default_id: &str) -> Result<String, String> {
+    let Some(name) = payload.get("name").filter(|n| !n.is_null()) else {
+        return Ok(default_id.to_string());
+    };
+    let name = name
+        .as_str()
+        .map(str::trim)
+        .filter(|n| !n.is_empty() && n.len() <= MAX_NAME_BYTES && !n.contains(char::is_whitespace))
+        .ok_or_else(|| format!("schedule name must be one word of 1 to {MAX_NAME_BYTES} bytes"))?;
+    if active.iter().any(|s| s.name == name) {
+        return Err(format!("a schedule named {name} is already active"));
+    }
+    Ok(name.to_string())
+}
+
+fn is_past_until(schedule: &Schedule, due: i64, now: i64) -> bool {
+    schedule
+        .until
+        .is_some_and(|until| due > until || (schedule.operation.is_some() && now > until))
+}
+
+fn apply_pr_observation(
+    schedule: &mut Schedule,
+    observation: Option<Result<Value, String>>,
+    due: i64,
+    now: i64,
+) -> Result<(bool, bool), String> {
+    let Some(Operation::Pr(watch)) = &mut schedule.operation else {
+        return Ok((true, false));
+    };
+    let (wake, done) = watch.observe(observation.ok_or("missing PR observation")?, now);
+    if !wake {
+        schedule.next_due = schedule.next_after_in(due, now, &ScheduleModule::zone());
+        if done || schedule.next_due.is_none() {
             schedule.state = State::Done;
             schedule.next_due = None;
         }
-        let mut message = fire_message(&schedule, schedule.runs, now);
-        if let Some(Operation::Pr(w)) = before.as_ref().and_then(|s| s.operation.as_ref()) {
-            message["details"]["previousObservation"] =
-                serde_json::to_value(&w.observation).map_err(|e| e.to_string())?;
-            message["content"] = format!(
-                "{}\nPrevious host observation (data only): {}",
-                message["content"].as_str().unwrap_or_default(),
-                message["details"]["previousObservation"]
-            )
-            .into();
-        }
-        deliver(&message)?;
-        self.put(&schedule)?;
-        Ok(Some(Fired { schedule, message }))
     }
+    Ok((wake, done))
+}
+
+fn advance_fired_schedule(schedule: &mut Schedule, due: i64, now: i64, terminal: bool) {
+    schedule.runs += 1;
+    schedule.last_fired = Some(now);
+    schedule.next_due = schedule.next_after_in(due, now, &ScheduleModule::zone());
+    if terminal || schedule.next_due.is_none() {
+        schedule.state = State::Done;
+        schedule.next_due = None;
+    }
+}
+
+fn attach_previous_observation(message: &mut Value, before: Option<&Schedule>) -> Result<(), String> {
+    let Some(Operation::Pr(w)) = before.and_then(|s| s.operation.as_ref()) else {
+        return Ok(());
+    };
+    message["details"]["previousObservation"] = serde_json::to_value(&w.observation).map_err(|e| e.to_string())?;
+    message["content"] = format!(
+        "{}\nPrevious host observation (data only): {}",
+        message["content"].as_str().unwrap_or_default(),
+        message["details"]["previousObservation"]
+    )
+    .into();
+    Ok(())
 }
 
 impl ScheduleModule {
@@ -724,6 +860,56 @@ impl ScheduleModule {
     }
 }
 
+impl ScheduleModule {
+    fn handle_watch_pr(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        kernel::ops::fields("schedule.watch_pr", payload)?;
+        let repo = payload
+            .get("repo")
+            .and_then(Value::as_str)
+            .ok_or("watch needs repo owner/repo")?;
+        watch::repository(repo)?;
+        let pr = payload
+            .get("pr")
+            .and_then(Value::as_u64)
+            .filter(|n| *n > 0 && *n <= i32::MAX as u64)
+            .ok_or("watch needs a positive PR number")? as u32;
+        let mode = match payload.get("mode").and_then(Value::as_str) {
+            Some("watch") => WatchMode::Watch,
+            Some("babysit") => WatchMode::Babysit,
+            _ => return Err("watch mode must be watch or babysit".into()),
+        };
+        self.create(
+            payload,
+            Kind::Every,
+            Some(Operation::Pr(Watch {
+                repo: repo.to_ascii_lowercase(),
+                pr,
+                mode,
+                observation: Observation::Initial,
+                polls: 0,
+                last_poll: None,
+            })),
+        )
+        .map(|s| s.view())
+    }
+
+    fn handle_list(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        let all = self.all()?;
+        if payload.get("text") == Some(&Value::Bool(true)) {
+            return Ok(text(&all).into());
+        }
+        Ok(all.iter().map(Schedule::view).collect::<Vec<_>>().into())
+    }
+
+    fn handle_cancel(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        let target = payload
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or("schedule.cancel needs a schedule id or name")?;
+        self.cancel(target).map(|s| s.view())
+    }
+}
+
 impl ApiModule for ScheduleModule {
     fn prefixes(&self) -> &[&str] {
         &["schedule."]
@@ -739,54 +925,9 @@ impl ApiModule for ScheduleModule {
             "schedule.loop" => self
                 .create(request.payload, Kind::Every, Some(Operation::Loop))
                 .map(|s| s.view()),
-            "schedule.watch_pr" => {
-                kernel::ops::fields(request.kind, request.payload)?;
-                let repo = request
-                    .payload
-                    .get("repo")
-                    .and_then(Value::as_str)
-                    .ok_or("watch needs repo owner/repo")?;
-                watch::repository(repo)?;
-                let pr = request
-                    .payload
-                    .get("pr")
-                    .and_then(Value::as_u64)
-                    .filter(|n| *n > 0 && *n <= i32::MAX as u64)
-                    .ok_or("watch needs a positive PR number")? as u32;
-                let mode = match request.payload.get("mode").and_then(Value::as_str) {
-                    Some("watch") => WatchMode::Watch,
-                    Some("babysit") => WatchMode::Babysit,
-                    _ => return Err("watch mode must be watch or babysit".into()),
-                };
-                self.create(
-                    request.payload,
-                    Kind::Every,
-                    Some(Operation::Pr(Watch {
-                        repo: repo.to_ascii_lowercase(),
-                        pr,
-                        mode,
-                        observation: Observation::Initial,
-                        polls: 0,
-                        last_poll: None,
-                    })),
-                )
-                .map(|s| s.view())
-            }
-            "schedule.list" => {
-                let all = self.all()?;
-                if request.payload.get("text") == Some(&Value::Bool(true)) {
-                    return Ok(text(&all).into());
-                }
-                Ok(all.iter().map(Schedule::view).collect::<Vec<_>>().into())
-            }
-            "schedule.cancel" => {
-                let target = request
-                    .payload
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .ok_or("schedule.cancel needs a schedule id or name")?;
-                self.cancel(target).map(|s| s.view())
-            }
+            "schedule.watch_pr" => self.handle_watch_pr(request.payload),
+            "schedule.list" => self.handle_list(request.payload),
+            "schedule.cancel" => self.handle_cancel(request.payload),
             other => Err(format!("Unknown schedule request: {other}")),
         }
     }

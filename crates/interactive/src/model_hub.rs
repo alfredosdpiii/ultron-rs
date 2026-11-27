@@ -44,50 +44,78 @@ impl ModelItem {
     }
 }
 
-/// `extractVersionNumber`: `gemini-2.5-pro` -> 2.5, `claude-sonnet-4-6` -> 4.6, `gpt-4o` -> 4.
-pub fn extract_version_number(id: &str) -> f64 {
+fn at_version_sep(b: &[u8], i: usize) -> bool {
+    i == 0 || b[i - 1] == b'-' || b[i - 1] == b'_'
+}
+
+fn ascii_digit_run(b: &[u8], from: usize) -> usize {
+    (from..b.len()).take_while(|&j| b[j].is_ascii_digit()).count()
+}
+
+fn version_dotted(id: &str) -> Option<f64> {
     let b = id.as_bytes();
-    let at_sep = |i: usize| i == 0 || b[i - 1] == b'-' || b[i - 1] == b'_';
-    let digits = |from: usize| (from..b.len()).take_while(|&j| b[j].is_ascii_digit()).count();
     for i in 0..b.len() {
-        if at_sep(i) {
-            let int = digits(i);
-            if int > 0 && b.get(i + int) == Some(&b'.') {
-                let frac = digits(i + int + 1);
-                if frac > 0 {
-                    return id[i..i + int + 1 + frac].parse().unwrap_or(0.0);
-                }
-            }
-        }
-    }
-    for i in 0..b.len() {
-        if !at_sep(i) {
+        if !at_version_sep(b, i) {
             continue;
         }
-        for major in (1..=digits(i).min(2)).rev() {
-            if b.get(i + major) != Some(&b'-') {
-                continue;
+        let int = ascii_digit_run(b, i);
+        if int > 0 && b.get(i + int) == Some(&b'.') {
+            let frac = ascii_digit_run(b, i + int + 1);
+            if frac > 0 {
+                return Some(id[i..i + int + 1 + frac].parse().unwrap_or(0.0));
             }
-            let start = i + major + 1;
-            for minor in (1..=digits(start).min(2)).rev() {
-                let end = start + minor;
-                if end == b.len() || b[end] == b'-' {
-                    return format!("{}.{}", &id[i..i + major], &id[start..end])
+        }
+    }
+    None
+}
+
+fn match_hyphen_version(id: &str, i: usize) -> Option<f64> {
+    let b = id.as_bytes();
+    for major in (1..=ascii_digit_run(b, i).min(2)).rev() {
+        if b.get(i + major) != Some(&b'-') {
+            continue;
+        }
+        let start = i + major + 1;
+        for minor in (1..=ascii_digit_run(b, start).min(2)).rev() {
+            let end = start + minor;
+            if end == b.len() || b[end] == b'-' {
+                return Some(
+                    format!("{}.{}", &id[i..i + major], &id[start..end])
                         .parse()
-                        .unwrap_or(0.0);
-                }
+                        .unwrap_or(0.0),
+                );
             }
         }
     }
+    None
+}
+
+fn version_hyphenated(id: &str) -> Option<f64> {
+    let b = id.as_bytes();
+    (0..b.len())
+        .filter(|&i| at_version_sep(b, i))
+        .find_map(|i| match_hyphen_version(id, i))
+}
+
+fn version_integer(id: &str) -> Option<f64> {
+    let b = id.as_bytes();
     for i in 0..b.len() {
-        if at_sep(i) {
-            let n = digits(i);
+        if at_version_sep(b, i) {
+            let n = ascii_digit_run(b, i);
             if n > 0 {
-                return id[i..i + n].parse().unwrap_or(0.0);
+                return Some(id[i..i + n].parse().unwrap_or(0.0));
             }
         }
     }
-    0.0
+    None
+}
+
+/// `extractVersionNumber`: `gemini-2.5-pro` -> 2.5, `claude-sonnet-4-6` -> 4.6, `gpt-4o` -> 4.
+pub fn extract_version_number(id: &str) -> f64 {
+    version_dotted(id)
+        .or_else(|| version_hyphenated(id))
+        .or_else(|| version_integer(id))
+        .unwrap_or(0.0)
 }
 
 fn date_suffix(id: &str) -> &str {
@@ -97,6 +125,26 @@ fn date_suffix(id: &str) -> &str {
     } else {
         ""
     }
+}
+
+fn recency_rank(id: &str, date: &str) -> u8 {
+    if id.ends_with("-latest") {
+        0
+    } else if !date.is_empty() {
+        1
+    } else {
+        2
+    }
+}
+
+fn compare_model_recency(a_id: &str, b_id: &str) -> Ordering {
+    let (ad, bd) = (date_suffix(a_id), date_suffix(b_id));
+    recency_rank(a_id, ad)
+        .cmp(&recency_rank(b_id, bd))
+        .then_with(|| match (!ad.is_empty(), !bd.is_empty()) {
+            (true, true) => bd.cmp(ad),
+            _ => locale_compare(a_id, b_id),
+        })
 }
 
 /// `modelItemComparator` with no role assignments: MRU, provider, version (descending), recency, id.
@@ -109,24 +157,7 @@ pub fn compare_model_items(a: &ModelItem, b: &ModelItem, mru: &[String]) -> Orde
             let (va, vb) = (extract_version_number(&a.model.id), extract_version_number(&b.model.id));
             vb.partial_cmp(&va).unwrap_or(Ordering::Equal)
         })
-        .then_with(|| {
-            let (al, bl) = (a.model.id.ends_with("-latest"), b.model.id.ends_with("-latest"));
-            let (ad, bd) = (date_suffix(&a.model.id), date_suffix(&b.model.id));
-            let (ar, br) = (al || !ad.is_empty(), bl || !bd.is_empty());
-            if ar != br {
-                return if ar { Ordering::Less } else { Ordering::Greater };
-            }
-            if !ar {
-                return locale_compare(&a.model.id, &b.model.id);
-            }
-            if al != bl {
-                return if al { Ordering::Less } else { Ordering::Greater };
-            }
-            if !ad.is_empty() && !bd.is_empty() {
-                return bd.cmp(ad);
-            }
-            locale_compare(&a.model.id, &b.model.id)
-        })
+        .then_with(|| compare_model_recency(&a.model.id, &b.model.id))
 }
 
 /// `compactModelSearchText`: lowercase letters, marks and numbers only.
@@ -507,31 +538,93 @@ impl ModelHub {
         self.keys.matches(data, id)
     }
 
+    fn handle_strip_input(&mut self, data: &str) -> ModelHubEvent {
+        let Some(strip) = &mut self.strip else {
+            return ModelHubEvent::Ignored;
+        };
+        if self.keys.matches(data, "tui.select.cancel") {
+            self.strip = None;
+            return ModelHubEvent::Render;
+        }
+        if self.keys.matches(data, "app.modelHub.scopes") {
+            strip.index = strip.index.saturating_sub(1);
+            return ModelHubEvent::Render;
+        }
+        if self.keys.matches(data, "app.modelHub.models") {
+            strip.index = (strip.index + 1).min(THINKING_LEVELS.len() - 1);
+            return ModelHubEvent::Render;
+        }
+        if self.keys.matches(data, "tui.select.confirm")
+            && let Some(strip) = self.strip.take()
+        {
+            return ModelHubEvent::Use {
+                selector: strip.item.selector,
+                thinking: Some(THINKING_LEVELS[strip.index].to_string()),
+            };
+        }
+        ModelHubEvent::Ignored
+    }
+
+    fn handle_focus_input(&mut self, data: &str) -> Option<ModelHubEvent> {
+        if self.k(data, "app.modelHub.focus") {
+            self.focus = match self.focus {
+                Focus::Scopes => Focus::Models,
+                Focus::Models => Focus::Scopes,
+            };
+            return Some(ModelHubEvent::Render);
+        }
+        if !self.query.value().is_empty() {
+            return None;
+        }
+        if self.k(data, "app.modelHub.scopes") {
+            self.focus = Focus::Scopes;
+            return Some(ModelHubEvent::Render);
+        }
+        if self.k(data, "app.modelHub.models") {
+            self.focus = Focus::Models;
+            return Some(ModelHubEvent::Render);
+        }
+        None
+    }
+
+    fn handle_nav_input(&mut self, data: &str) -> Option<ModelHubEvent> {
+        if self.k(data, "tui.select.up") {
+            return Some(match self.focus {
+                Focus::Scopes => self.hop(-1),
+                Focus::Models => self.move_cursor(-1),
+            });
+        }
+        if self.k(data, "tui.select.down") {
+            return Some(match self.focus {
+                Focus::Scopes => self.hop(1),
+                Focus::Models => self.move_cursor(1),
+            });
+        }
+        let page = self.layout.2.max(1) as i64;
+        if self.k(data, "tui.select.pageUp") {
+            self.focus = Focus::Models;
+            return Some(self.move_cursor(-page));
+        }
+        if self.k(data, "tui.select.pageDown") {
+            self.focus = Focus::Models;
+            return Some(self.move_cursor(page));
+        }
+        if self.k(data, "tui.select.confirm") {
+            if self.focus == Focus::Scopes {
+                self.focus = Focus::Models;
+                return Some(ModelHubEvent::Render);
+            }
+            return Some(self.activate());
+        }
+        None
+    }
+
     pub fn handle_input(&mut self, data: &str) -> ModelHubEvent {
         if let Some(mouse) = parse_sgr_mouse(data) {
             return self.mouse(mouse);
         }
-        if let Some(strip) = &mut self.strip {
-            if self.keys.matches(data, "tui.select.cancel") {
-                self.strip = None;
-                return ModelHubEvent::Render;
-            }
-            if self.keys.matches(data, "app.modelHub.scopes") {
-                strip.index = strip.index.saturating_sub(1);
-                return ModelHubEvent::Render;
-            }
-            if self.keys.matches(data, "app.modelHub.models") {
-                strip.index = (strip.index + 1).min(THINKING_LEVELS.len() - 1);
-                return ModelHubEvent::Render;
-            }
-            if self.keys.matches(data, "tui.select.confirm") {
-                let strip = self.strip.take().expect("strip");
-                return ModelHubEvent::Use {
-                    selector: strip.item.selector,
-                    thinking: Some(THINKING_LEVELS[strip.index].to_string()),
-                };
-            }
-            return ModelHubEvent::Ignored;
+        if self.strip.is_some() {
+            return self.handle_strip_input(data);
         }
         if self.k(data, "tui.select.cancel") {
             if !self.query.value().is_empty() {
@@ -541,48 +634,8 @@ impl ModelHub {
             }
             return ModelHubEvent::Cancel;
         }
-        if self.k(data, "app.modelHub.focus") {
-            self.focus = match self.focus {
-                Focus::Scopes => Focus::Models,
-                Focus::Models => Focus::Scopes,
-            };
-            return ModelHubEvent::Render;
-        }
-        if self.k(data, "app.modelHub.scopes") && self.query.value().is_empty() {
-            self.focus = Focus::Scopes;
-            return ModelHubEvent::Render;
-        }
-        if self.k(data, "app.modelHub.models") && self.query.value().is_empty() {
-            self.focus = Focus::Models;
-            return ModelHubEvent::Render;
-        }
-        if self.k(data, "tui.select.up") {
-            return match self.focus {
-                Focus::Scopes => self.hop(-1),
-                Focus::Models => self.move_cursor(-1),
-            };
-        }
-        if self.k(data, "tui.select.down") {
-            return match self.focus {
-                Focus::Scopes => self.hop(1),
-                Focus::Models => self.move_cursor(1),
-            };
-        }
-        let page = self.layout.2.max(1) as i64;
-        if self.k(data, "tui.select.pageUp") {
-            self.focus = Focus::Models;
-            return self.move_cursor(-page);
-        }
-        if self.k(data, "tui.select.pageDown") {
-            self.focus = Focus::Models;
-            return self.move_cursor(page);
-        }
-        if self.k(data, "tui.select.confirm") {
-            if self.focus == Focus::Scopes {
-                self.focus = Focus::Models;
-                return ModelHubEvent::Render;
-            }
-            return self.activate();
+        if let Some(event) = self.handle_focus_input(data).or_else(|| self.handle_nav_input(data)) {
+            return event;
         }
         let before = self.query.value().to_string();
         self.query.handle_input(data);
@@ -639,16 +692,9 @@ impl ModelHub {
         self.keys.get_keys(id).first().map_or_default(|k| key_glyph(k))
     }
 
-    /// The hub at `width` x `height`.
-    pub fn render(&mut self, width: usize, height: usize) -> Vec<String> {
-        let t = Rc::clone(&self.theme);
-        let width = width.max(20);
-        let height = height.max(8);
-        let inner = width - 2;
-        let sidebar = (inner / 4).clamp(14, 26);
-        let pane = inner.saturating_sub(sidebar + 3).max(1);
-        let body_rows = height - 4;
-        let mut side: Vec<String> = Vec::new();
+    fn render_sidebar(&self, sidebar: usize) -> Vec<String> {
+        let t = &self.theme;
+        let mut side = Vec::with_capacity(self.scopes.len());
         for scope in &self.scopes {
             if scope.kind == ScopeKind::Separator {
                 side.push(t.fg(Fg::Dim, &"─".repeat(sidebar)));
@@ -666,7 +712,7 @@ impl ModelHub {
             );
             let gap = sidebar.saturating_sub(visible_width(marker) + visible_width(&label) + count.len());
             let text = format!("{marker}{label}{}{count}", " ".repeat(gap));
-            side.push(if active && self.focus == Focus::Scopes {
+            let styled = if active && self.focus == Focus::Scopes {
                 bold(&t.fg(Fg::Accent, &text))
             } else if active {
                 t.fg(Fg::Accent, &text)
@@ -674,8 +720,43 @@ impl ModelHub {
                 t.fg(Fg::Dim, &text)
             } else {
                 text
-            });
+            };
+            side.push(styled);
         }
+        side
+    }
+
+    fn render_model_row(&self, index: usize, item: &ModelItem, pane: usize, show_provider: bool) -> String {
+        let t = &self.theme;
+        let selected = index == self.cursor;
+        let current = self.current.as_deref() == Some(item.selector.as_str());
+        let raw_name = if show_provider { &item.selector } else { &item.model.id };
+        let ctx = format_context(item.model.context_window);
+        let glyphs = format!(
+            "{}{}",
+            if item.model.reasoning { "◒" } else { " " },
+            if current { "●" } else { " " }
+        );
+        let room = pane.saturating_sub(4 + ctx.len() + 3);
+        let name = truncate_to_width(raw_name, room, "…", false);
+        let gap = room.saturating_sub(visible_width(&name));
+        let row = format!("{name}{} {ctx} {glyphs}", " ".repeat(gap));
+        if selected {
+            let style = if self.focus == Focus::Models {
+                Fg::Accent
+            } else {
+                Fg::Muted
+            };
+            format!("{} {}", t.fg(Fg::Accent, "❯"), bold(&t.fg(style, &row)))
+        } else if current {
+            format!("  {}", t.fg(Fg::Success, &row))
+        } else {
+            format!("  {row}")
+        }
+    }
+
+    fn render_pane(&mut self, pane: usize, body_rows: usize) -> (Vec<String>, usize) {
+        let t = Rc::clone(&self.theme);
         let mut right: Vec<String> = Vec::new();
         let search = self
             .query
@@ -697,35 +778,7 @@ impl ModelHub {
             right.push(t.fg(Fg::Muted, "  No models match"));
         }
         for (i, item) in self.shown.iter().enumerate().skip(self.list_top).take(list_rows) {
-            let selected = i == self.cursor;
-            let current = self.current.as_deref() == Some(item.selector.as_str());
-            let name = if show_provider {
-                item.selector.clone()
-            } else {
-                item.model.id.clone()
-            };
-            let ctx = format_context(item.model.context_window);
-            let glyphs = format!(
-                "{}{}",
-                if item.model.reasoning { "◒" } else { " " },
-                if current { "●" } else { " " }
-            );
-            let room = pane.saturating_sub(4 + ctx.len() + 3);
-            let name = truncate_to_width(&name, room, "…", false);
-            let gap = room.saturating_sub(visible_width(&name));
-            let row = format!("{name}{} {ctx} {glyphs}", " ".repeat(gap));
-            right.push(if selected {
-                let style = if self.focus == Focus::Models {
-                    Fg::Accent
-                } else {
-                    Fg::Muted
-                };
-                format!("{} {}", t.fg(Fg::Accent, "❯"), bold(&t.fg(style, &row)))
-            } else if current {
-                format!("  {}", t.fg(Fg::Success, &row))
-            } else {
-                format!("  {row}")
-            });
+            right.push(self.render_model_row(i, item, pane, show_provider));
         }
         while right.len() < 2 + list_rows {
             right.push(String::new());
@@ -736,25 +789,12 @@ impl ModelHub {
             format!("{}{reasoning}", i.model.name)
         });
         right.push(t.fg(Fg::Dim, &detail));
-        self.layout = (sidebar, 3, list_rows, 1);
-        let mut out = vec![top_border(&t, width, "Models")];
-        for r in 0..body_rows {
-            let l = side.get(r).cloned().unwrap_or_default();
-            let lw = visible_width(&l);
-            let rr = right.get(r).cloned().unwrap_or_default();
-            let rr = truncate_to_width(&rr, pane, "…", false);
-            let rw = visible_width(&rr);
-            out.push(format!(
-                "{} {l}{} {} {rr}{}{}",
-                t.fg(Fg::Border, "│"),
-                " ".repeat(sidebar.saturating_sub(lw)),
-                t.fg(Fg::Border, "│"),
-                " ".repeat(pane.saturating_sub(rw)),
-                t.fg(Fg::Border, "│")
-            ));
-        }
-        out.push(divider(&t, width));
-        let footer = match &self.strip {
+        (right, list_rows)
+    }
+
+    fn render_footer(&self) -> String {
+        let t = &self.theme;
+        match &self.strip {
             Some(strip) => {
                 let chips: Vec<String> = THINKING_LEVELS
                     .iter()
@@ -783,8 +823,39 @@ impl ModelHub {
                     self.first_key("tui.select.cancel"),
                 ),
             ),
-        };
-        out.push(boxed_row(&t, &footer, width));
+        }
+    }
+
+    /// The hub at `width` x `height`.
+    pub fn render(&mut self, width: usize, height: usize) -> Vec<String> {
+        let t = Rc::clone(&self.theme);
+        let width = width.max(20);
+        let height = height.max(8);
+        let inner = width - 2;
+        let sidebar = (inner / 4).clamp(14, 26);
+        let pane = inner.saturating_sub(sidebar + 3).max(1);
+        let body_rows = height - 4;
+        let side = self.render_sidebar(sidebar);
+        let (right, list_rows) = self.render_pane(pane, body_rows);
+        self.layout = (sidebar, 3, list_rows, 1);
+        let mut out = vec![top_border(&t, width, "Models")];
+        for r in 0..body_rows {
+            let l = side.get(r).cloned().unwrap_or_default();
+            let lw = visible_width(&l);
+            let rr = right.get(r).cloned().unwrap_or_default();
+            let rr = truncate_to_width(&rr, pane, "…", false);
+            let rw = visible_width(&rr);
+            out.push(format!(
+                "{} {l}{} {} {rr}{}{}",
+                t.fg(Fg::Border, "│"),
+                " ".repeat(sidebar.saturating_sub(lw)),
+                t.fg(Fg::Border, "│"),
+                " ".repeat(pane.saturating_sub(rw)),
+                t.fg(Fg::Border, "│")
+            ));
+        }
+        out.push(divider(&t, width));
+        out.push(boxed_row(&t, &self.render_footer(), width));
         out.push(bottom_border(&t, width));
         out
     }

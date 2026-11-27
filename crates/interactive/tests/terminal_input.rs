@@ -235,7 +235,7 @@ fn interactive_mouse_click_on_a_selection_row_confirms_it() {
     click(&mut app, (x, y));
     let s = screen(&mut app).join("\n");
     assert!(s.contains("Thinking level: high."), "{s}");
-    assert!(calls.calls().contains(&"thinking high".to_string()));
+    assert!(calls.calls().iter().any(|i: &String| i == "thinking high"));
 }
 
 fn open_settings(app: &mut App) {

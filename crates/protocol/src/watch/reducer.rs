@@ -64,28 +64,47 @@ fn increment(value: &mut Value) {
     };
 }
 
-/// Apply one harness event to a lane snapshot (`reduceLaneSnapshot`).
-pub fn reduce_lane_snapshot(snapshot: &mut Value, event: &Value) -> Option<Reduction> {
-    let kind = event.get("type").and_then(Value::as_str).unwrap_or("");
-    if let Some(lane) = event.get("lane")
-        && Some(lane) != snapshot.get("lane")
-        && kind != "usage"
-    {
-        return None;
+fn should_ignore_event(snapshot: &Value, event: &Value, kind: &str) -> bool {
+    event
+        .get("lane")
+        .is_some_and(|lane| Some(lane) != snapshot.get("lane") && kind != "usage")
+}
+
+fn reduce_operation_start(snapshot: &mut Value, event: &Value, kind: &str) {
+    if kind == "compaction_start" && !snapshot["operation"].is_null() {
+        return;
     }
-    let run_id = event.get("runId");
+    let op_kind = match kind {
+        "run_start" => "run",
+        "navigation_start" => "navigation",
+        _ => "compaction",
+    };
+    let tip = snapshot["tipId"].clone();
+    snapshot["operation"] = open_operation(op_kind, event, &tip);
+}
+
+fn reduce_run_suspend(snapshot: &mut Value, event: &Value, run_id: Option<&Value>) {
+    if let Some(operation) = matching(snapshot, run_id) {
+        operation.shift_remove("streamingMessage");
+        let deferred = object(&[("handle", event.get("deferred")), ("poll", event.get("poll"))]);
+        operation.insert("deferred".into(), deferred);
+    }
+}
+
+fn reduce_retry_scheduled(snapshot: &mut Value, event: &Value, run_id: Option<&Value>) {
+    if let Some(operation) = matching(snapshot, run_id) {
+        let retry = object(&[
+            ("attempt", event.get("attempt")),
+            ("maxAttempts", event.get("maxAttempts")),
+            ("nextAttemptAt", event.get("notBefore")),
+        ]);
+        operation.insert("retry".into(), retry);
+    }
+}
+
+fn try_reduce_operation(snapshot: &mut Value, event: &Value, kind: &str, run_id: Option<&Value>) -> bool {
     match kind {
-        "run_start" | "navigation_start" => {
-            let tip = snapshot["tipId"].clone();
-            let kind = if kind == "run_start" { "run" } else { "navigation" };
-            snapshot["operation"] = open_operation(kind, event, &tip);
-        }
-        "compaction_start" => {
-            if snapshot["operation"].is_null() {
-                let tip = snapshot["tipId"].clone();
-                snapshot["operation"] = open_operation("compaction", event, &tip);
-            }
-        }
+        "run_start" | "navigation_start" | "compaction_start" => reduce_operation_start(snapshot, event, kind),
         "operation_abort" => {
             if let Some(operation) = matching(snapshot, event.get("operationId")) {
                 operation.insert("status".into(), "aborting".into());
@@ -96,163 +115,213 @@ pub fn reduce_lane_snapshot(snapshot: &mut Value, event: &Value) -> Option<Reduc
                 operation.shift_remove("deferred");
             }
         }
-        "run_suspend" => {
-            if let Some(operation) = matching(snapshot, run_id) {
-                operation.shift_remove("streamingMessage");
-                let deferred = object(&[("handle", event.get("deferred")), ("poll", event.get("poll"))]);
-                operation.insert("deferred".into(), deferred);
-            }
-        }
-        "retry_scheduled" => {
-            if let Some(operation) = matching(snapshot, run_id) {
-                let retry = object(&[
-                    ("attempt", event.get("attempt")),
-                    ("maxAttempts", event.get("maxAttempts")),
-                    ("nextAttemptAt", event.get("notBefore")),
-                ]);
-                operation.insert("retry".into(), retry);
-            }
-        }
+        "run_suspend" => reduce_run_suspend(snapshot, event, run_id),
+        "retry_scheduled" => reduce_retry_scheduled(snapshot, event, run_id),
         "retry_start" | "retry_end" => {
             if let Some(operation) = matching(snapshot, run_id) {
                 operation.shift_remove("retry");
             }
         }
-        "message_start" => {
-            let message = &event["message"];
-            if message["role"] != "assistant" || run_id.is_none() || message["stopReason"] != "pending" {
-                return None;
-            }
-            if let Some(operation) = matching(snapshot, run_id) {
-                operation.insert("streamingMessage".into(), message.clone());
-            }
+        _ => return false,
+    }
+    true
+}
+
+fn reduce_message_start(snapshot: &mut Value, event: &Value, run_id: Option<&Value>) {
+    let message = &event["message"];
+    if message["role"] != "assistant" || run_id.is_none() || message["stopReason"] != "pending" {
+        return;
+    }
+    if let Some(operation) = matching(snapshot, run_id) {
+        operation.insert("streamingMessage".into(), message.clone());
+    }
+}
+
+fn reduce_message_update(snapshot: &mut Value, event: &Value, run_id: Option<&Value>) {
+    if let Some(message) = super::stream_fold::message_of(event) {
+        if message["role"] != "assistant" {
+            return;
         }
-        "message_update" => {
-            if let Some(message) = super::stream_fold::message_of(event) {
-                if message["role"] != "assistant" {
-                    return None;
-                }
-                if let Some(operation) = matching(snapshot, run_id) {
-                    operation.insert("streamingMessage".into(), message.clone());
-                }
-            } else if let Some(streaming) =
-                matching(snapshot, run_id).and_then(|operation| operation.get_mut("streamingMessage"))
-            {
-                super::stream_fold::fold_update(streaming, event);
-            }
+        if let Some(operation) = matching(snapshot, run_id) {
+            operation.insert("streamingMessage".into(), message.clone());
         }
+    } else if let Some(streaming) =
+        matching(snapshot, run_id).and_then(|operation| operation.get_mut("streamingMessage"))
+    {
+        super::stream_fold::fold_update(streaming, event);
+    }
+}
+
+fn reduce_tool_start(snapshot: &mut Value, event: &Value, run_id: Option<&Value>) {
+    let Some(tools) = matching(snapshot, run_id).and_then(tools) else {
+        return;
+    };
+    let tool = object(&[
+        ("status", Some(&"running".into())),
+        ("toolCallId", event.get("toolCallId")),
+        ("toolName", event.get("toolName")),
+        ("args", event.get("args")),
+    ]);
+    match position(tools, event.get("toolCallId")) {
+        Some(index) => tools[index] = tool,
+        None => tools.push(tool),
+    }
+}
+
+fn reduce_tool_update(snapshot: &mut Value, event: &Value, run_id: Option<&Value>) {
+    let Some(tools) = matching(snapshot, run_id).and_then(tools) else {
+        return;
+    };
+    if let Some(index) = position(tools, event.get("toolCallId"))
+        && tools[index]["status"] == "running"
+        && let Some(partial) = event.get("partialResult")
+    {
+        tools[index]["result"] = partial.clone();
+    }
+}
+
+fn reduce_tool_end(snapshot: &mut Value, event: &Value, run_id: Option<&Value>) {
+    let Some(tools) = matching(snapshot, run_id).and_then(tools) else {
+        return;
+    };
+    let Some(index) = position(tools, event.get("toolCallId")) else {
+        return;
+    };
+    let args = tools[index].get("args").cloned();
+    tools[index] = object(&[
+        ("status", Some(&"settled".into())),
+        ("toolCallId", event.get("toolCallId")),
+        ("toolName", event.get("toolName")),
+        ("args", args.as_ref()),
+        ("result", event.get("result")),
+        ("isError", event.get("isError")),
+    ]);
+}
+
+fn try_reduce_message_or_tool(snapshot: &mut Value, event: &Value, kind: &str, run_id: Option<&Value>) -> bool {
+    match kind {
+        "message_start" => reduce_message_start(snapshot, event, run_id),
+        "message_update" => reduce_message_update(snapshot, event, run_id),
         "message_end" => {
             if let Some(operation) = matching(snapshot, run_id) {
                 operation.shift_remove("streamingMessage");
             }
         }
-        "tool_start" => {
-            let tools = matching(snapshot, run_id).and_then(tools)?;
-            let tool = object(&[
-                ("status", Some(&"running".into())),
-                ("toolCallId", event.get("toolCallId")),
-                ("toolName", event.get("toolName")),
-                ("args", event.get("args")),
-            ]);
-            match position(tools, event.get("toolCallId")) {
-                Some(index) => tools[index] = tool,
-                None => tools.push(tool),
-            }
+        "tool_start" => reduce_tool_start(snapshot, event, run_id),
+        "tool_update" => reduce_tool_update(snapshot, event, run_id),
+        "tool_end" => reduce_tool_end(snapshot, event, run_id),
+        _ => return false,
+    }
+    true
+}
+
+fn remove_completed_tool(snapshot: &mut Value, entry: &Value) {
+    if entry["type"] != "message" || entry["message"]["role"] != "toolResult" {
+        return;
+    }
+    if let Some(tools) = snapshot
+        .get_mut("operation")
+        .and_then(Value::as_object_mut)
+        .and_then(tools)
+        && let Some(index) = position(tools, entry["message"].get("toolCallId"))
+    {
+        tools.remove(index);
+    }
+}
+
+fn reduce_entry_added(snapshot: &mut Value, event: &Value) {
+    let entry = &event["entry"];
+    let is_message = entry["type"] == "message";
+    remove_completed_tool(snapshot, entry);
+    if let Some(transcript) = snapshot.get_mut("transcript").and_then(Value::as_array_mut) {
+        if entry["type"] == "compaction" {
+            transcript.clear();
         }
-        "tool_update" => {
-            let tools = matching(snapshot, run_id).and_then(tools)?;
-            if let Some(index) = position(tools, event.get("toolCallId"))
-                && tools[index]["status"] == "running"
-                && let Some(partial) = event.get("partialResult")
-            {
-                tools[index]["result"] = partial.clone();
-            }
-        }
-        "tool_end" => {
-            let tools = matching(snapshot, run_id).and_then(tools)?;
-            let index = position(tools, event.get("toolCallId"))?;
-            let args = tools[index].get("args").cloned();
-            tools[index] = object(&[
-                ("status", Some(&"settled".into())),
-                ("toolCallId", event.get("toolCallId")),
-                ("toolName", event.get("toolName")),
-                ("args", args.as_ref()),
-                ("result", event.get("result")),
-                ("isError", event.get("isError")),
-            ]);
-        }
-        "entry_added" => {
-            let entry = &event["entry"];
-            let is_message = entry["type"] == "message";
-            if is_message
-                && entry["message"]["role"] == "toolResult"
-                && let Some(tools) = snapshot
-                    .get_mut("operation")
-                    .and_then(Value::as_object_mut)
-                    .and_then(tools)
-                && let Some(index) = position(tools, entry["message"].get("toolCallId"))
-            {
-                tools.remove(index);
-            }
-            if let Some(transcript) = snapshot.get_mut("transcript").and_then(Value::as_array_mut) {
-                if entry["type"] == "compaction" {
-                    transcript.clear();
-                }
-                transcript.push(entry.clone());
-            }
-            snapshot["tipId"] = entry["id"].clone();
-            if is_message {
-                increment(&mut snapshot["stats"]["messageCount"]);
-            }
-        }
+        transcript.push(entry.clone());
+    }
+    snapshot["tipId"] = entry["id"].clone();
+    if is_message {
+        increment(&mut snapshot["stats"]["messageCount"]);
+    }
+}
+
+fn reduce_config_update(snapshot: &mut Value, event: &Value) {
+    if event.get("lane").is_none() {
+        return;
+    }
+    let field = match event["property"].as_str() {
+        Some("model") => "model",
+        Some("thinkingLevel") => "thinkingLevel",
+        Some("activeTools") => "activeToolNames",
+        _ => return,
+    };
+    snapshot["configuration"][field] = event["value"].clone();
+}
+
+fn reduce_run_end(snapshot: &mut Value, event: &Value, run_id: Option<&Value>) {
+    let tip = event.get("tipId");
+    let Some(operation) = matching(snapshot, run_id).filter(|op| op.get("kind") == Some(&"run".into())) else {
+        return;
+    };
+    let record = object(&[
+        ("operationId", run_id),
+        ("kind", Some(&"run".into())),
+        ("status", event.get("status")),
+        ("error", failure(event)),
+        ("fromTipId", event.get("fromTipId")),
+        ("tipId", tip),
+        ("startedAt", operation.get("startedAt")),
+        ("endedAt", event.get("endedAt")),
+    ]);
+    snapshot["lastResult"] = record;
+    snapshot["operation"] = Value::Null;
+    snapshot["tipId"] = tip.cloned().unwrap_or(Value::Null);
+}
+
+fn reduce_compaction_end(snapshot: &mut Value, event: &Value, run_id: Option<&Value>) {
+    let tip = snapshot["tipId"].clone();
+    let Some(operation) = matching(snapshot, run_id).filter(|op| op.get("kind") == Some(&"compaction".into())) else {
+        return;
+    };
+    let record = object(&[
+        ("operationId", run_id),
+        ("kind", Some(&"compaction".into())),
+        ("status", event.get("status")),
+        ("error", failure(event)),
+        ("fromTipId", operation.get("fromTipId")),
+        ("tipId", Some(&tip)),
+        ("startedAt", operation.get("startedAt")),
+        ("endedAt", event.get("endedAt")),
+    ]);
+    snapshot["lastResult"] = record;
+    snapshot["operation"] = Value::Null;
+}
+
+fn reduce_state_or_end(snapshot: &mut Value, event: &Value, kind: &str, run_id: Option<&Value>) -> Option<Reduction> {
+    match kind {
+        "entry_added" => reduce_entry_added(snapshot, event),
         "queue_update" => snapshot["queues"] = event["queues"].clone(),
         "usage" => snapshot["stats"]["usage"] = event["totals"].clone(),
-        "config_update" => {
-            event.get("lane")?;
-            let field = match event["property"].as_str() {
-                Some("model") => "model",
-                Some("thinkingLevel") => "thinkingLevel",
-                Some("activeTools") => "activeToolNames",
-                _ => return None,
-            };
-            snapshot["configuration"][field] = event["value"].clone();
-        }
-        "run_end" => {
-            let tip = event.get("tipId");
-            let operation = matching(snapshot, run_id).filter(|op| op.get("kind") == Some(&"run".into()))?;
-            let record = object(&[
-                ("operationId", run_id),
-                ("kind", Some(&"run".into())),
-                ("status", event.get("status")),
-                ("error", failure(event)),
-                ("fromTipId", event.get("fromTipId")),
-                ("tipId", tip),
-                ("startedAt", operation.get("startedAt")),
-                ("endedAt", event.get("endedAt")),
-            ]);
-            snapshot["lastResult"] = record;
-            snapshot["operation"] = Value::Null;
-            snapshot["tipId"] = tip.cloned().unwrap_or(Value::Null);
-        }
-        "compaction_end" => {
-            let tip = snapshot["tipId"].clone();
-            let operation = matching(snapshot, run_id).filter(|op| op.get("kind") == Some(&"compaction".into()))?;
-            let record = object(&[
-                ("operationId", run_id),
-                ("kind", Some(&"compaction".into())),
-                ("status", event.get("status")),
-                ("error", failure(event)),
-                ("fromTipId", operation.get("fromTipId")),
-                ("tipId", Some(&tip)),
-                ("startedAt", operation.get("startedAt")),
-                ("endedAt", event.get("endedAt")),
-            ]);
-            snapshot["lastResult"] = record;
-            snapshot["operation"] = Value::Null;
-        }
+        "config_update" => reduce_config_update(snapshot, event),
+        "run_end" => reduce_run_end(snapshot, event, run_id),
+        "compaction_end" => reduce_compaction_end(snapshot, event, run_id),
         "navigation_end" => return Some(Reduction::Rebase),
         "fault" => snapshot["faulted"] = true.into(),
         _ => {}
     }
     None
+}
+
+/// Apply one harness event to a lane snapshot (`reduceLaneSnapshot`).
+pub fn reduce_lane_snapshot(snapshot: &mut Value, event: &Value) -> Option<Reduction> {
+    let kind = event.get("type").and_then(Value::as_str).unwrap_or("");
+    if should_ignore_event(snapshot, event, kind) {
+        return None;
+    }
+    let run_id = event.get("runId");
+    if try_reduce_operation(snapshot, event, kind, run_id) || try_reduce_message_or_tool(snapshot, event, kind, run_id)
+    {
+        return None;
+    }
+    reduce_state_or_end(snapshot, event, kind, run_id)
 }

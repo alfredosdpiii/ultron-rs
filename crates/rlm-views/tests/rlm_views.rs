@@ -468,7 +468,7 @@ fn interactive_rlm_graph_attaches_work_to_cells_parents_and_lanes() {
         child_keys(&graph.children[2].children[0]),
         ["task:ultron-task-cccc3333", "job:job-2"]
     );
-    assert!(!all_keys(&graph).contains(&"task:ultron-task-f0".to_string()));
+    assert!(!all_keys(&graph).iter().any(|i| i == "task:ultron-task-f0"));
 }
 
 #[test]
@@ -811,7 +811,8 @@ fn interactive_rlm_docked_panel_pins_the_turn_and_windows_live_rows() {
     });
     assert!(
         render_rlm_dock(&with_context, 100, &RlmViewOptions::default(), 12)
-            .contains(&"context: 1 forgotten · 0 collapsed · 0 pinned · 1 notes".to_string())
+            .iter()
+            .any(|i| i == "context: 1 forgotten · 0 collapsed · 0 pinned · 1 notes")
     );
 }
 

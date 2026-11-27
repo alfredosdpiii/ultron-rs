@@ -57,86 +57,67 @@ impl Shared {
         let Some(Value::String(event)) = frame.get("event") else {
             return Err("protocol frame is missing event".into());
         };
-        let Some(current) = state.current(generation) else {
+        if state.current(generation).is_none() {
             return Ok(());
-        };
+        }
         match event.as_str() {
-            "ready" => {
-                if current.ready_received {
-                    return Err("duplicate ready event".into());
-                }
-                if frame.contains_key("id") {
-                    return Err("ready event cannot have an id".into());
-                }
-                current.ready_received = true;
-                current.initialized = !current.host_completes_startup;
-                if current.tree_backend == TreeMemoryBackend::Cgroup {
-                    self.tree_memory_exceeded(current);
-                }
-                Ok(())
-            }
+            "ready" => self.handle_ready_event(state, generation, &frame),
             "host_request" => {
-                let id = match frame.get("id") {
-                    Some(Value::String(id)) if !id.is_empty() => id.clone(),
-                    _ => return Err("host_request requires an id".into()),
-                };
-                let kind = match frame.get("type") {
-                    Some(Value::String(kind)) if !kind.is_empty() => kind.clone(),
-                    _ => return Err("host_request requires a type".into()),
-                };
-                let payload = match frame.get("payload") {
-                    None => Map::new(),
-                    Some(Value::Object(payload)) => payload.clone(),
-                    Some(_) => return Err("host_request payload must be an object".into()),
-                };
-                let cell = match frame.get("cell") {
-                    None => None,
-                    Some(Value::String(cell)) if !cell.is_empty() => Some(cell.clone()),
-                    Some(_) => return Err("host_request cell must be a request id".into()),
-                };
-                self.handle_host_request(
-                    state,
-                    generation,
-                    HostRequest {
-                        id,
-                        kind,
-                        payload,
-                        cell,
-                    },
-                );
+                let request = parse_host_request(&frame)?;
+                self.handle_host_request(state, generation, request);
                 Ok(())
             }
-            "host_cancel" => {
-                let Some(Value::String(id)) = frame.get("id") else {
-                    return Err("host_cancel requires an id".into());
-                };
-                if let Some(request) = current.host_requests.get(id) {
-                    request.abort("RLM host request cancelled");
-                }
-                Ok(())
-            }
+            "host_cancel" => handle_host_cancel_event(state, generation, &frame),
             "stdout" | "stderr" | "result" | "error" | "done" => {
-                let id = match frame.get("id") {
-                    Some(Value::String(id)) if !id.is_empty() => id.clone(),
-                    _ => return Err(format!("{event} event requires an id")),
-                };
-                let status = frame.get("status").map(Value::as_str);
-                if event == "done" && status.is_some_and(|status| status != Some("ok") && status != Some("error")) {
-                    return Err("done event has invalid status".into());
-                }
-                if event == "done"
-                    && current.tree_backend == TreeMemoryBackend::Cgroup
-                    && current.pending.contains_key(&id)
-                    && self.tree_memory_exceeded(current)
-                {
-                    let message = tree_memory::tree_memory_limit_message(self.tree_memory_mb, current.tree_backend);
-                    self.fail(state, generation, KernelError::new(message));
-                    return Ok(());
-                }
-                route_execution_frame(state, generation, &id, event, &frame)
+                self.handle_execution_event(state, generation, event, &frame)
             }
             other => Err(format!("unknown protocol event: {other}")),
         }
+    }
+
+    fn handle_ready_event(&self, state: &mut State, generation: u64, frame: &Map<String, Value>) -> Result<(), String> {
+        let Some(current) = state.current(generation) else {
+            return Ok(());
+        };
+        if current.ready_received {
+            return Err("duplicate ready event".into());
+        }
+        if frame.contains_key("id") {
+            return Err("ready event cannot have an id".into());
+        }
+        current.ready_received = true;
+        current.initialized = !current.host_completes_startup;
+        if current.tree_backend == TreeMemoryBackend::Cgroup {
+            self.tree_memory_exceeded(current);
+        }
+        Ok(())
+    }
+
+    fn handle_execution_event(
+        self: &Arc<Self>,
+        state: &mut State,
+        generation: u64,
+        event: &str,
+        frame: &Map<String, Value>,
+    ) -> Result<(), String> {
+        let id = required_non_empty_string(frame, "id", &format!("{event} event requires an id"))?;
+        let status = frame.get("status").map(Value::as_str);
+        if event == "done" && status.is_some_and(|status| status != Some("ok") && status != Some("error")) {
+            return Err("done event has invalid status".into());
+        }
+        let Some(current) = state.current(generation) else {
+            return Ok(());
+        };
+        if event == "done"
+            && current.tree_backend == TreeMemoryBackend::Cgroup
+            && current.pending.contains_key(&id)
+            && self.tree_memory_exceeded(current)
+        {
+            let message = tree_memory::tree_memory_limit_message(self.tree_memory_mb, current.tree_backend);
+            self.fail(state, generation, KernelError::new(message));
+            return Ok(());
+        }
+        route_execution_frame(state, generation, &id, event, frame)
     }
 
     pub(super) fn handle_host_request(self: &Arc<Self>, state: &mut State, generation: u64, request: HostRequest) {
@@ -154,17 +135,12 @@ impl Shared {
             self.fail(state, generation, error);
             return;
         }
-        let waiter = match &cell {
-            Some(cell) if current.active_cell.as_ref() != Some(cell) => {
-                self.send_host_error(state, generation, &id, "RLM host request from a cell that has finished");
+        let waiter = match resolve_host_request_waiter(current, cell.as_ref()) {
+            Ok(waiter) => waiter,
+            Err(message) => {
+                self.send_host_error(state, generation, &id, message);
                 return;
             }
-            Some(cell) => current.pending.get(cell),
-            None => current.active_cell.as_ref().and_then(|cell| current.pending.get(cell)),
-        };
-        let Some(waiter) = waiter else {
-            self.send_host_error(state, generation, &id, "RLM host request has no active cell");
-            return;
         };
         if current.host_requests.len() >= MAX_HOST_REQUESTS {
             let message = format!("RLM host request concurrency exceeds {MAX_HOST_REQUESTS}");
@@ -172,13 +148,20 @@ impl Shared {
             return;
         }
         let handler = waiter.handler.clone().unwrap_or_else(|| self.handler.clone());
-        let cell_signal = waiter.controller.clone();
-        let signal = Signal::new();
-        let request = signal.clone();
-        if cell_signal.on_abort(move |reason| request.abort(reason)).is_none() {
-            signal.abort(cell_signal.reason().unwrap_or_default());
-        }
+        let signal = linked_request_signal(&waiter.controller);
         current.host_requests.insert(id.clone(), signal.clone());
+        self.spawn_host_request_worker(generation, id, kind, payload, handler, signal);
+    }
+
+    fn spawn_host_request_worker(
+        self: &Arc<Self>,
+        generation: u64,
+        id: String,
+        kind: String,
+        payload: Map<String, Value>,
+        handler: Arc<dyn HostHandler>,
+        signal: Signal,
+    ) {
         let shared = self.clone();
         std::thread::spawn(move || {
             let result =
@@ -248,6 +231,129 @@ pub(super) fn read_chunks(mut stream: impl Read, mut handle: impl FnMut(&[u8])) 
     }
 }
 
+fn required_non_empty_string(frame: &Map<String, Value>, key: &str, err: &str) -> Result<String, String> {
+    match frame.get(key) {
+        Some(Value::String(value)) if !value.is_empty() => Ok(value.clone()),
+        _ => Err(err.into()),
+    }
+}
+
+fn parse_host_request(frame: &Map<String, Value>) -> Result<HostRequest, String> {
+    let id = required_non_empty_string(frame, "id", "host_request requires an id")?;
+    let kind = required_non_empty_string(frame, "type", "host_request requires a type")?;
+    let payload = match frame.get("payload") {
+        None => Map::new(),
+        Some(Value::Object(payload)) => payload.clone(),
+        Some(_) => return Err("host_request payload must be an object".into()),
+    };
+    let cell = match frame.get("cell") {
+        None => None,
+        Some(Value::String(cell)) if !cell.is_empty() => Some(cell.clone()),
+        Some(_) => return Err("host_request cell must be a request id".into()),
+    };
+    Ok(HostRequest {
+        id,
+        kind,
+        payload,
+        cell,
+    })
+}
+
+fn handle_host_cancel_event(state: &mut State, generation: u64, frame: &Map<String, Value>) -> Result<(), String> {
+    let Some(Value::String(id)) = frame.get("id") else {
+        return Err("host_cancel requires an id".into());
+    };
+    if let Some(request) = state
+        .current(generation)
+        .and_then(|current| current.host_requests.get(id))
+    {
+        request.abort("RLM host request cancelled");
+    }
+    Ok(())
+}
+
+fn resolve_host_request_waiter<'a>(current: &'a Generation, cell: Option<&String>) -> Result<&'a Waiter, &'static str> {
+    let waiter = match cell {
+        Some(cell) if current.active_cell.as_ref() != Some(cell) => {
+            return Err("RLM host request from a cell that has finished");
+        }
+        Some(cell) => current.pending.get(cell),
+        None => current.active_cell.as_ref().and_then(|cell| current.pending.get(cell)),
+    };
+    waiter.ok_or("RLM host request has no active cell")
+}
+
+fn linked_request_signal(cell_signal: &Signal) -> Signal {
+    let signal = Signal::new();
+    let request = signal.clone();
+    if cell_signal.on_abort(move |reason| request.abort(reason)).is_none() {
+        signal.abort(cell_signal.reason().unwrap_or_default());
+    }
+    signal
+}
+
+fn apply_error_frame(result: &mut ExecutionResult, frame: &Map<String, Value>) {
+    result.status = Status::Error;
+    let traceback = match frame.get("traceback") {
+        Some(Value::Array(lines)) => lines
+            .iter()
+            .filter_map(|line| line.as_str().map(String::from))
+            .collect(),
+        _ => Vec::new(),
+    };
+    result.error = Some(CellError {
+        ename: frame_string(frame.get("ename")),
+        evalue: frame_string(frame.get("evalue")),
+        traceback,
+    });
+}
+
+fn apply_done_status(result: &mut ExecutionResult, frame: &Map<String, Value>) {
+    if frame.get("status") == Some(&Value::from("error")) {
+        result.status = Status::Error;
+    }
+    if result.status == Status::Error
+        && result.error.is_none()
+        && let Some(error) = frame.get("error").filter(|error| !error.is_null())
+    {
+        result.error = Some(CellError {
+            ename: "RuntimeError".into(),
+            evalue: frame_string(Some(error)),
+            traceback: Vec::new(),
+        });
+    }
+}
+
+fn handle_done_frame(state: &mut State, generation: u64, request_id: &str, frame: &Map<String, Value>) {
+    let Some(current) = state.current(generation) else {
+        return;
+    };
+    let Some(mut waiter) = current.pending.remove(request_id) else {
+        return;
+    };
+    apply_done_status(&mut waiter.state.result, frame);
+    if let Some(report) = snapshot::snapshot_report(frame.get("snapshot")) {
+        waiter.state.snapshot = Some(report);
+    }
+    if let Some(report) = snapshot::restore_report(frame.get("restore")) {
+        waiter.state.restore = Some(report);
+    }
+    if current.active_cell.as_deref() == Some(request_id) {
+        current.active_cell = None;
+    }
+    waiter.controller.abort("RLM cell completed");
+    let Some(output) = current.output.as_mut().filter(|output| output.request_id == request_id) else {
+        state.resolve(waiter);
+        return;
+    };
+    let flush = frame.get("flush").and_then(Value::as_object);
+    let flushed = |name: &str| flush.and_then(|flush| flush.get(name)) == Some(&Value::Bool(true));
+    output.awaiting = Some([flushed("stdout"), flushed("stderr")]);
+    output.deadline = Some(Instant::now() + RAW_FLUSH_TIMEOUT);
+    output.finished = Some(waiter);
+    finish_cell_if_flushed(state, generation);
+}
+
 pub(super) fn route_execution_frame(
     state: &mut State,
     generation: u64,
@@ -266,59 +372,8 @@ pub(super) fn route_execution_frame(
         "stdout" => append_bounded(&mut result.stdout, &frame_string(frame.get("text"))),
         "stderr" => append_bounded(&mut result.stderr, &frame_string(frame.get("text"))),
         "result" => result.result = Some(frame_string(frame.get("result"))),
-        "error" => {
-            result.status = Status::Error;
-            let traceback = match frame.get("traceback") {
-                Some(Value::Array(lines)) => lines
-                    .iter()
-                    .filter_map(|line| line.as_str().map(String::from))
-                    .collect(),
-                _ => Vec::new(),
-            };
-            result.error = Some(CellError {
-                ename: frame_string(frame.get("ename")),
-                evalue: frame_string(frame.get("evalue")),
-                traceback,
-            });
-        }
-        _ => {
-            if frame.get("status") == Some(&Value::from("error")) {
-                result.status = Status::Error;
-            }
-            if result.status == Status::Error
-                && result.error.is_none()
-                && let Some(error) = frame.get("error").filter(|error| !error.is_null())
-            {
-                result.error = Some(CellError {
-                    ename: "RuntimeError".into(),
-                    evalue: frame_string(Some(error)),
-                    traceback: Vec::new(),
-                });
-            }
-            let Some(mut waiter) = current.pending.remove(request_id) else {
-                return Ok(());
-            };
-            if let Some(report) = snapshot::snapshot_report(frame.get("snapshot")) {
-                waiter.state.snapshot = Some(report);
-            }
-            if let Some(report) = snapshot::restore_report(frame.get("restore")) {
-                waiter.state.restore = Some(report);
-            }
-            if current.active_cell.as_deref() == Some(request_id) {
-                current.active_cell = None;
-            }
-            waiter.controller.abort("RLM cell completed");
-            let Some(output) = current.output.as_mut().filter(|output| output.request_id == request_id) else {
-                state.resolve(waiter);
-                return Ok(());
-            };
-            let flush = frame.get("flush").and_then(Value::as_object);
-            let flushed = |name: &str| flush.and_then(|flush| flush.get(name)) == Some(&Value::Bool(true));
-            output.awaiting = Some([flushed("stdout"), flushed("stderr")]);
-            output.deadline = Some(Instant::now() + RAW_FLUSH_TIMEOUT);
-            output.finished = Some(waiter);
-            finish_cell_if_flushed(state, generation);
-        }
+        "error" => apply_error_frame(result, frame),
+        _ => handle_done_frame(state, generation, request_id, frame),
     }
     Ok(())
 }

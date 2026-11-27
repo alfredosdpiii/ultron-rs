@@ -5,16 +5,16 @@
 //! Evidence: `fixtures/generate-oauth-openrouter.mjs` records the TypeScript flow; `tests/oauth_openrouter.rs` replays
 //! it.
 
-use crate::auth::{AuthEvent, AuthInteraction, AuthPrompt, ModelAuth, OAuthAuth, OAuthCredential};
+use crate::auth::{AuthEvent, AuthInteraction, ModelAuth, OAuthAuth, OAuthCredential};
 use crate::http::{AbortSignal, BoxFuture, HttpRequest, Transport, cancelled, is_aborted};
 use crate::oauth_flow::{
-    fetch_text, form_urlencode, generate_pkce, oauth_callback_host, oauth_error_html, oauth_redirect_host,
-    oauth_success_html,
+    TextResponse, api_key_model_auth, fetch_text, form_urlencode, generate_pkce, oauth_callback_host, oauth_error_html,
+    oauth_redirect_host, oauth_success_html, start_browser_auth_prompt,
 };
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 const AUTHORIZE_URL: &str = "https://openrouter.ai/auth";
 const TOKEN_URL: &str = "https://openrouter.ai/api/v1/auth/keys";
@@ -63,6 +63,31 @@ fn error_detail(body: &Map<String, Value>) -> Option<String> {
         .map(str::to_string)
 }
 
+fn parse_exchange_response(response: &TextResponse) -> Result<OAuthCredential, String> {
+    let body = match serde_json::from_str::<Value>(&response.text) {
+        Ok(Value::Object(body)) => body,
+        Ok(_) => Map::new(),
+        Err(_) if response.ok() => return Err("OpenRouter OAuth returned invalid JSON".into()),
+        Err(_) => Map::new(),
+    };
+    if !response.ok() {
+        let detail = error_detail(&body).map_or_default(|d| format!(": {d}"));
+        return Err(format!(
+            "OpenRouter OAuth key exchange failed (HTTP {}){detail}",
+            response.status
+        ));
+    }
+    let Some(key) = body.get("key").and_then(Value::as_str).filter(|k| !k.is_empty()) else {
+        return Err("OpenRouter OAuth response carries no \"key\"".into());
+    };
+    Ok(OAuthCredential {
+        access: key.to_string(),
+        refresh: String::new(),
+        expires: NEVER,
+        extra: Map::new(),
+    })
+}
+
 /// `exchangeAuthorizationCode`: the code and verifier for a key.
 async fn exchange(
     transport: &dyn Transport,
@@ -92,28 +117,7 @@ async fn exchange(
         }
         Err(error) => return Err(error.message()),
     };
-    let body = match serde_json::from_str::<Value>(&response.text) {
-        Ok(Value::Object(body)) => body,
-        Ok(_) => Map::new(),
-        Err(_) if response.ok() => return Err("OpenRouter OAuth returned invalid JSON".into()),
-        Err(_) => Map::new(),
-    };
-    if !response.ok() {
-        let detail = error_detail(&body).map_or_default(|d| format!(": {d}"));
-        return Err(format!(
-            "OpenRouter OAuth key exchange failed (HTTP {}){detail}",
-            response.status
-        ));
-    }
-    let Some(key) = body.get("key").and_then(Value::as_str).filter(|k| !k.is_empty()) else {
-        return Err("OpenRouter OAuth response carries no \"key\"".into());
-    };
-    Ok(OAuthCredential {
-        access: key.to_string(),
-        refresh: String::new(),
-        expires: NEVER,
-        extra: Map::new(),
-    })
+    parse_exchange_response(&response)
 }
 
 /// What the callback server settled the login with: a credential, `None` (handed over to the paste prompt), or an
@@ -137,6 +141,104 @@ impl CallbackState {
             let _ = sender.send(result);
         }
     }
+}
+
+fn http_status_reason(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        400 => "Bad Request",
+        404 => "Not Found",
+        409 => "Conflict",
+        _ => "Bad Gateway",
+    }
+}
+
+async fn exchange_callback_code(
+    code: &str,
+    shared: &Arc<Mutex<CallbackState>>,
+    verifier: &str,
+    transport: &dyn Transport,
+    signal: Option<&AbortSignal>,
+) -> (u16, String) {
+    jsrt::sync::lock(shared).claimed = true;
+    match exchange(transport, code, verifier, signal).await {
+        Ok(credential) => {
+            jsrt::sync::lock(shared).finish(Ok(Some(credential)));
+            (
+                200,
+                oauth_success_html("Signed in to OpenRouter. You may now close this page."),
+            )
+        }
+        Err(error) => {
+            let page = oauth_error_html("OpenRouter key exchange failed.", Some(&error));
+            jsrt::sync::lock(shared).finish(Err(error));
+            (502, page)
+        }
+    }
+}
+
+async fn handle_callback_request(
+    url: &reqwest::Url,
+    shared: &Arc<Mutex<CallbackState>>,
+    verifier: &str,
+    transport: &dyn Transport,
+    signal: Option<&AbortSignal>,
+) -> (u16, String) {
+    let param = |key: &str| url.query_pairs().find(|(k, _)| k == key).map(|(_, v)| v.into_owned());
+    let already_used = {
+        let guard = jsrt::sync::lock(shared);
+        guard.claimed || guard.settled
+    };
+    if already_used {
+        return (
+            409,
+            oauth_error_html("This OAuth callback has already been used.", None),
+        );
+    }
+    if let Some(error) = param("error") {
+        let description = param("error_description").unwrap_or(error);
+        jsrt::sync::lock(shared).finish(Err(format!("OpenRouter authorization failed: {description}")));
+        return (
+            400,
+            oauth_error_html("OpenRouter authorization was denied.", Some(&description)),
+        );
+    }
+    if let Some(code) = param("code") {
+        return exchange_callback_code(&code, shared, verifier, transport, signal).await;
+    }
+    (
+        400,
+        oauth_error_html("OpenRouter returned no authorization code.", None),
+    )
+}
+
+async fn serve_callback_connection(
+    mut socket: tokio::net::TcpStream,
+    base: &str,
+    shared: &Arc<Mutex<CallbackState>>,
+    verifier: &str,
+    transport: &dyn Transport,
+    signal: Option<&AbortSignal>,
+) -> bool {
+    let head = crate::oauth_flow::read_http_head(&mut socket).await;
+    let mut parts = head.split_whitespace();
+    let (method, target) = (parts.next().unwrap_or("GET"), parts.next().unwrap_or("/"));
+    let url = reqwest::Url::parse(base).and_then(|b| b.join(target));
+    let expected = reqwest::Url::parse(base).map_or_default(|b| b.path().to_string());
+    let (status, html) = match url {
+        Ok(url) if method == "GET" && url.path() == expected => {
+            handle_callback_request(&url, shared, verifier, transport, signal).await
+        }
+        _ => (404, oauth_error_html("OAuth callback route not found.", None)),
+    };
+    let reason = http_status_reason(status);
+    let response = format!(
+        "HTTP/1.1 {status} {reason}\r\ncontent-type: text/html; charset=utf-8\r\ncache-control: no-store\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{html}",
+        html.len()
+    );
+    let _ = socket.write_all(response.as_bytes()).await;
+    let _ = socket.shutdown().await;
+    jsrt::sync::lock(shared).settled
 }
 
 /// The one-shot loopback callback server (`startCallbackServer`).
@@ -172,91 +274,15 @@ impl CallbackServer {
         let shared = state.clone();
         let base = url.clone();
         tokio::spawn(async move {
-            let lock =
-                |s: &Arc<Mutex<CallbackState>>| s.lock().unwrap_or_else(std::sync::PoisonError::into_inner).settled;
             loop {
                 let accepted = tokio::select! {
                     accepted = listener.accept() => accepted,
                     _ = &mut stopped => return,
                 };
-                let Ok((mut socket, _)) = accepted else { continue };
-                let mut buffer = Vec::new();
-                let mut chunk = [0u8; 4096];
-                while !buffer.windows(4).any(|w| w == b"\r\n\r\n") {
-                    match socket.read(&mut chunk).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => buffer.extend_from_slice(&chunk[..n]),
-                    }
-                }
-                let head = String::from_utf8_lossy(&buffer).into_owned();
-                let mut parts = head.split_whitespace();
-                let (method, target) = (parts.next().unwrap_or("GET"), parts.next().unwrap_or("/"));
-                let url = reqwest::Url::parse(&base).and_then(|b| b.join(target));
-                let expected = reqwest::Url::parse(&base).map_or_default(|b| b.path().to_string());
-                let (status, html) = match url {
-                    Ok(url) if method == "GET" && url.path() == expected => {
-                        let param = |key: &str| url.query_pairs().find(|(k, _)| k == key).map(|(_, v)| v.into_owned());
-                        let claimed = shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner).claimed;
-                        if claimed || lock(&shared) {
-                            (
-                                409,
-                                oauth_error_html("This OAuth callback has already been used.", None),
-                            )
-                        } else if let Some(error) = param("error") {
-                            let description = param("error_description").unwrap_or(error);
-                            shared
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .finish(Err(format!("OpenRouter authorization failed: {description}")));
-                            (
-                                400,
-                                oauth_error_html("OpenRouter authorization was denied.", Some(&description)),
-                            )
-                        } else if let Some(code) = param("code") {
-                            shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner).claimed = true;
-                            match exchange(transport.as_ref(), &code, &verifier, signal.as_ref()).await {
-                                Ok(credential) => {
-                                    shared
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                        .finish(Ok(Some(credential)));
-                                    (
-                                        200,
-                                        oauth_success_html("Signed in to OpenRouter. You may now close this page."),
-                                    )
-                                }
-                                Err(error) => {
-                                    let page = oauth_error_html("OpenRouter key exchange failed.", Some(&error));
-                                    shared
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                        .finish(Err(error));
-                                    (502, page)
-                                }
-                            }
-                        } else {
-                            (
-                                400,
-                                oauth_error_html("OpenRouter returned no authorization code.", None),
-                            )
-                        }
-                    }
-                    _ => (404, oauth_error_html("OAuth callback route not found.", None)),
-                };
-                let reason = match status {
-                    200 => "OK",
-                    400 => "Bad Request",
-                    404 => "Not Found",
-                    409 => "Conflict",
-                    _ => "Bad Gateway",
-                };
-                let response = format!(
-                    "HTTP/1.1 {status} {reason}\r\ncontent-type: text/html; charset=utf-8\r\ncache-control: no-store\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{html}",
-                    html.len()
-                );
-                let _ = socket.write_all(response.as_bytes()).await;
-                let _ = socket.shutdown().await;
-                if lock(&shared) {
+                let Ok((socket, _)) = accepted else { continue };
+                if serve_callback_connection(socket, &base, &shared, &verifier, transport.as_ref(), signal.as_ref())
+                    .await
+                {
                     return;
                 }
             }
@@ -268,6 +294,34 @@ impl CallbackServer {
             stop,
         })
     }
+}
+
+async fn resolve_login_outcome(
+    settled: Settled,
+    manual_result: Option<Result<String, String>>,
+    manual: std::pin::Pin<&mut BoxFuture<'_, Result<String, String>>>,
+    interaction: &dyn AuthInteraction,
+    transport: &dyn Transport,
+    verifier: &str,
+    signal: Option<&AbortSignal>,
+) -> Result<OAuthCredential, String> {
+    if let Some(Err(error)) = &manual_result {
+        return Err(error.clone());
+    }
+    if let Some(credential) = settled? {
+        return Ok(credential);
+    }
+    let input = match manual_result {
+        Some(input) => input?,
+        None => manual.await?,
+    };
+    let Some(code) = parse_authorization_input(&input) else {
+        return Err("Missing authorization code".into());
+    };
+    interaction.notify(AuthEvent::Progress {
+        message: "Exchanging authorization code for an API key...".into(),
+    });
+    exchange(transport, &code, verifier, signal).await
 }
 
 impl OpenRouterOAuth {
@@ -286,24 +340,12 @@ impl OpenRouterOAuth {
             ("code_challenge", &challenge),
             ("code_challenge_method", "S256"),
         ])));
-        interaction.notify(AuthEvent::Progress {
-            message: format!("Listening for OpenRouter OAuth callback on {callback}"),
-        });
-        interaction.notify(AuthEvent::AuthUrl {
-            url: authorize.to_string(),
-            instructions: Some(
-                "Complete sign-in in your browser. If the browser is on another machine, paste the final redirect URL here."
-                    .into(),
-            ),
-        });
-        let manual_abort = AbortSignal::new();
-        let manual = interaction.prompt(
-            AuthPrompt::ManualCode {
-                message: "Complete sign-in in your browser, or paste the authorization code / redirect URL here:"
-                    .into(),
-                placeholder: Some(callback.clone()),
-            },
-            Some(manual_abort.clone()),
+        let (manual_abort, manual) = start_browser_auth_prompt(
+            interaction,
+            format!("Listening for OpenRouter OAuth callback on {callback}"),
+            authorize.to_string(),
+            "Complete sign-in in your browser. If the browser is on another machine, paste the final redirect URL here.",
+            callback,
         );
         tokio::pin!(manual);
         let CallbackServer {
@@ -312,42 +354,31 @@ impl OpenRouterOAuth {
             stop,
             ..
         } = server;
-        let cancel_wait = || {
-            let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !state.claimed {
-                state.finish(Ok(None));
-            }
-        };
         let mut manual_result: Option<Result<String, String>> = None;
         let settled = tokio::select! {
             settled = &mut receiver => settled.unwrap_or(Ok(None)),
             input = manual.as_mut() => {
                 manual_result = Some(input);
-                cancel_wait();
+                {
+                    let mut guard = jsrt::sync::lock(&state);
+                    if !guard.claimed {
+                        guard.finish(Ok(None));
+                    }
+                }
                 (&mut receiver).await.unwrap_or(Ok(None))
             }
             () = cancelled(signal.as_ref()) => Err(CANCELLED.into()),
             () = tokio::time::sleep(LOGIN_TIMEOUT) => Err("OpenRouter OAuth login timed out".into()),
         };
-        let outcome = async {
-            if let Some(Err(error)) = &manual_result {
-                return Err(error.clone());
-            }
-            if let Some(credential) = settled? {
-                return Ok(credential);
-            }
-            let input = match manual_result.take() {
-                Some(input) => input?,
-                None => manual.as_mut().await?,
-            };
-            let Some(code) = parse_authorization_input(&input) else {
-                return Err("Missing authorization code".into());
-            };
-            interaction.notify(AuthEvent::Progress {
-                message: "Exchanging authorization code for an API key...".into(),
-            });
-            exchange(self.transport.as_ref(), &code, &verifier, signal.as_ref()).await
-        }
+        let outcome = resolve_login_outcome(
+            settled,
+            manual_result,
+            manual,
+            interaction,
+            self.transport.as_ref(),
+            &verifier,
+            signal.as_ref(),
+        )
         .await;
         manual_abort.abort();
         let _ = stop.send(());
@@ -377,9 +408,6 @@ impl OAuthAuth for OpenRouterOAuth {
     }
 
     fn to_auth(&self, credential: &OAuthCredential) -> Result<ModelAuth, String> {
-        Ok(ModelAuth {
-            api_key: Some(credential.access.clone()),
-            ..Default::default()
-        })
+        api_key_model_auth(credential)
     }
 }

@@ -8,7 +8,6 @@ use crate::control::socket_path_for;
 use crate::launcher::base36;
 use crate::self_cmd::{SelfCommand, shell_command};
 use crate::{Ctx, UsageError};
-use jsrt::string::shell_quote;
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 
@@ -48,6 +47,34 @@ pub struct AgyLauncherOptions {
     pub agy_args: Vec<String>,
 }
 
+fn apply_agy_bool_flag(arg: &str, options: &mut AgyLauncherOptions) -> bool {
+    match arg {
+        "--print-config" => options.print_config = true,
+        "--keep-native-tools" => options.keep_native_tools = true,
+        "--no-hooks" => options.hooks = false,
+        "--watch" => options.watch = true,
+        "--no-context-files" | "-nc" => options.no_context_files = true,
+        "--no-skills" | "-ns" => options.no_skills = true,
+        _ => return false,
+    }
+    true
+}
+
+fn apply_agy_value_flag(
+    arg: &str,
+    args: &[String],
+    index: &mut usize,
+    options: &mut AgyLauncherOptions,
+) -> Result<bool, UsageError> {
+    match arg {
+        "--frame-model" => options.frame_model = Some(crate::launcher::next_arg_value(args, index, arg)?),
+        "--child-model" => options.child_model = Some(crate::launcher::next_arg_value(args, index, arg)?),
+        "--children" => options.children = Some(crate::launcher::parse_children_mode(args, index)?),
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
 /// Split `ultron agy` arguments into Ultron's options and `agy`'s; `None` for `--help`.
 pub fn parse_agy_args(args: &[String]) -> Result<Option<AgyLauncherOptions>, UsageError> {
     let mut options = AgyLauncherOptions {
@@ -57,32 +84,15 @@ pub fn parse_agy_args(args: &[String]) -> Result<Option<AgyLauncherOptions>, Usa
     let mut index = 0;
     while index < args.len() {
         let arg = args[index].as_str();
-        let mut value = || -> Result<String, UsageError> {
-            let next = args
-                .get(index + 1)
-                .ok_or_else(|| UsageError(format!("{arg} needs a value")))?;
-            index += 1;
-            Ok(next.clone())
-        };
-        match arg {
-            "--" => {
-                options.agy_args.extend(args[index + 1..].iter().cloned());
-                break;
-            }
-            "--help" | "-h" => return Ok(None),
-            "--print-config" => options.print_config = true,
-            "--keep-native-tools" => options.keep_native_tools = true,
-            "--no-hooks" => options.hooks = false,
-            "--watch" => options.watch = true,
-            "--no-context-files" | "-nc" => options.no_context_files = true,
-            "--no-skills" | "-ns" => options.no_skills = true,
-            "--frame-model" => options.frame_model = Some(value()?),
-            "--child-model" => options.child_model = Some(value()?),
-            "--children" => {
-                let mode = crate::settings::ChildrenMode::parse(&value()?);
-                options.children = Some(mode.ok_or_else(|| UsageError("--children must be claude or ultron".into()))?);
-            }
-            other => options.agy_args.push(other.to_string()),
+        if arg == "--" {
+            options.agy_args.extend(args[index + 1..].iter().cloned());
+            break;
+        }
+        if matches!(arg, "--help" | "-h") {
+            return Ok(None);
+        }
+        if !apply_agy_bool_flag(arg, &mut options) && !apply_agy_value_flag(arg, args, &mut index, &mut options)? {
+            options.agy_args.push(arg.to_string());
         }
         index += 1;
     }
@@ -169,23 +179,19 @@ pub fn build_agy_launch(
     }
 }
 
-/// Installs an env-guarded `ultron` entry in `<home>/.gemini/config/hooks.json` so `ultron agy` gets Ultron's
-/// `SessionStart`, `UserPromptSubmit`, and `Stop` hooks while plain `agy` runs remain unaffected.
-pub fn ensure_agy_hooks(home: &Path) -> std::io::Result<()> {
-    let config_dir = home.join(".gemini/config");
-    std::fs::create_dir_all(&config_dir)?;
-    let file = config_dir.join("hooks.json");
-    let text = match std::fs::read_to_string(&file) {
+fn read_json_or_empty_object(file: &Path) -> std::io::Result<Value> {
+    let text = match std::fs::read_to_string(file) {
         Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(json!({})),
         Err(error) => return Err(error),
     };
-    let mut root: Value = if text.trim().is_empty() {
-        json!({})
-    } else {
-        serde_json::from_str(&text)
-            .map_err(|e| std::io::Error::other(format!("{} is not valid JSON: {e}", file.display())))?
-    };
+    if text.trim().is_empty() {
+        return Ok(json!({}));
+    }
+    serde_json::from_str(&text).map_err(|e| std::io::Error::other(format!("{} is not valid JSON: {e}", file.display())))
+}
+
+fn build_agy_ultron_hooks() -> Value {
     let mut ultron_hooks = Map::new();
     for event in crate::hooks::SESSION_HOOKS {
         let cmd = format!(
@@ -197,7 +203,17 @@ pub fn ensure_agy_hooks(home: &Path) -> std::io::Result<()> {
             json!([{"hooks": [{"type": "command", "command": cmd, "timeout": event.timeout_secs()}]}]),
         );
     }
-    let entry = Value::Object(ultron_hooks);
+    Value::Object(ultron_hooks)
+}
+
+/// Installs an env-guarded `ultron` entry in `<home>/.gemini/config/hooks.json` so `ultron agy` gets Ultron's
+/// `SessionStart`, `UserPromptSubmit`, and `Stop` hooks while plain `agy` runs remain unaffected.
+pub fn ensure_agy_hooks(home: &Path) -> std::io::Result<()> {
+    let config_dir = home.join(".gemini/config");
+    std::fs::create_dir_all(&config_dir)?;
+    let file = config_dir.join("hooks.json");
+    let mut root = read_json_or_empty_object(&file)?;
+    let entry = build_agy_ultron_hooks();
     let map = root
         .as_object_mut()
         .ok_or_else(|| std::io::Error::other(format!("{} is not a JSON object", file.display())))?;
@@ -231,6 +247,43 @@ fn launch_id() -> String {
     )
 }
 
+fn prepare_agy_launch_dir(
+    var: &dyn Fn(&str) -> Option<String>,
+    home: &Path,
+    parsed: &AgyLauncherOptions,
+) -> Result<Option<PathBuf>, String> {
+    if parsed.print_config {
+        return Ok(None);
+    }
+    let path_env = var("PATH").unwrap_or_default();
+    ai::antigravity::ensure_relay(home, &path_env).map_err(|e| format!("could not configure agy MCP relay: {e}"))?;
+    if parsed.hooks {
+        ensure_agy_hooks(home).map_err(|e| format!("could not configure agy hooks: {e}"))?;
+    }
+    let base = config::paths::tmpdir(var);
+    let dir = config::paths::private_temp_dir(&base, "ultron-agy-").map_err(|e| format!("{}: {e}", base.display()))?;
+    Ok(Some(dir))
+}
+
+fn print_agy_config(out: &mut dyn std::io::Write, agy: &str, launch: &AgyLaunch, socket: &Path) -> Result<i32, String> {
+    let printed = json!({
+        "agy": agy,
+        "args": launch.args,
+        "env": crate::launcher::env_json_map(&launch.env),
+        "settings": launch.settings,
+        "socket": socket.display().to_string(),
+        "watch": launch.watch_command,
+        "command": crate::launcher::format_launch_command(agy, &launch.args, &launch.env),
+    });
+    writeln!(
+        out,
+        "{}",
+        serde_json::to_string_pretty(&printed).expect("JSON values serialize")
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(0)
+}
+
 pub fn run(
     argv: &[String],
     ctx: &Ctx,
@@ -245,48 +298,10 @@ pub fn run(
     let agy = resolve_agy_binary(var, &ctx.env.home)?;
     let self_cmd = crate::self_cmd::self_command(var)?;
     let socket = socket_path_for(&launch_id(), &crate::control::control_dir(var)?);
-    let dir = if parsed.print_config {
-        None
-    } else {
-        let path_env = var("PATH").unwrap_or_default();
-        ai::antigravity::ensure_relay(&ctx.env.home, &path_env)
-            .map_err(|e| format!("could not configure agy MCP relay: {e}"))?;
-        if parsed.hooks {
-            ensure_agy_hooks(&ctx.env.home).map_err(|e| format!("could not configure agy hooks: {e}"))?;
-        }
-        Some({
-            let base = config::paths::tmpdir(var);
-            config::paths::private_temp_dir(&base, "ultron-agy-").map_err(|e| format!("{}: {e}", base.display()))?
-        })
-    };
+    let dir = prepare_agy_launch_dir(var, &ctx.env.home, &parsed)?;
     let launch = build_agy_launch(&agy, &self_cmd, &parsed, dir.as_deref(), &socket.display().to_string());
     let Some(dir) = dir else {
-        let env_prefix: String = launch
-            .env
-            .iter()
-            .map(|(k, v)| format!("{k}={} ", shell_quote(v)))
-            .collect();
-        let command = std::iter::once(agy.as_str())
-            .chain(launch.args.iter().map(String::as_str))
-            .map(shell_quote)
-            .collect::<Vec<_>>()
-            .join(" ");
-        let printed = json!({
-            "agy": agy,
-            "args": launch.args,
-            "env": launch.env.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect::<Map<_, _>>(),
-            "settings": launch.settings,
-            "socket": socket.display().to_string(),
-            "watch": launch.watch_command,
-            "command": format!("{env_prefix}{command}"),
-        });
-        writeln!(
-            out,
-            "{}",
-            serde_json::to_string_pretty(&printed).expect("JSON values serialize")
-        )
-        .map_err(|e| e.to_string())?;
-        return Ok(0);
+        return print_agy_config(out, &agy, &launch, &socket);
     };
     for (path, content) in &launch.files {
         config::paths::write_private(path, content).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -294,7 +309,7 @@ pub fn run(
     let interactive = !parsed
         .agy_args
         .iter()
-        .any(|a| a == "-p" || a == "--print" || a == "--prompt");
+        .any(|a| matches!(a.as_str(), "-p" | "--print" | "--prompt"));
     crate::launcher::open_watch_pane(
         parsed.watch,
         interactive,

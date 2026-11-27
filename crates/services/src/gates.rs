@@ -71,6 +71,21 @@ fn hash_field(value: Option<&Value>, name: &str) -> Result<String, String> {
     }
 }
 
+fn parse_check_entry(index: usize, item: &Value) -> Result<(String, bool), String> {
+    let entry = plain_object(Some(item), &format!("checks[{index}]"))?;
+    jsrt::payload::fields(entry, &["name", "required"])?;
+    let name = entry
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| valid_check(name))
+        .ok_or_else(|| format!("checks[{index}].name must be a check name of at most 128 characters"))?;
+    let required = entry
+        .get("required")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| format!("checks[{index}].required must be a boolean"))?;
+    Ok((name.into(), required))
+}
+
 /// `checksField`: 1 to 256 uniquely named checks, at least one required, sorted by name.
 fn checks_field(value: Option<&Value>) -> Result<Vec<(String, bool)>, String> {
     let list = value
@@ -79,21 +94,11 @@ fn checks_field(value: Option<&Value>) -> Result<Vec<(String, bool)>, String> {
         .ok_or_else(|| format!("checks must be a list of 1 to {MAX_CHECKS} entries"))?;
     let mut checks: Vec<(String, bool)> = Vec::new();
     for (index, item) in list.iter().enumerate() {
-        let entry = plain_object(Some(item), &format!("checks[{index}]"))?;
-        jsrt::payload::fields(entry, &["name", "required"])?;
-        let name = entry
-            .get("name")
-            .and_then(Value::as_str)
-            .filter(|name| valid_check(name))
-            .ok_or_else(|| format!("checks[{index}].name must be a check name of at most 128 characters"))?;
-        let required = entry
-            .get("required")
-            .and_then(Value::as_bool)
-            .ok_or_else(|| format!("checks[{index}].required must be a boolean"))?;
-        if checks.iter().any(|(seen, _)| seen == name) {
+        let (name, required) = parse_check_entry(index, item)?;
+        if checks.iter().any(|(seen, _)| seen == &name) {
             return Err(format!("Duplicate check name: {name}"));
         }
-        checks.push((name.into(), required));
+        checks.push((name, required));
     }
     if !checks.iter().any(|(_, required)| *required) {
         return Err("A gate needs at least one required check; a gate with none could never block".into());
@@ -123,25 +128,11 @@ fn gate_checks(gate: &Value) -> Vec<(String, bool)> {
         .collect()
 }
 
-/// `runField`: `{variant, fixture_hash, results}` with every gate check present (absent ones `missing`).
-fn run_field(value: Option<&Value>, name: &str, gate: &Value) -> Result<Value, String> {
-    let run = plain_object(value, name)?;
-    if let Some(key) = run
-        .keys()
-        .find(|key| !["variant", "fixture_hash", "results"].contains(&key.as_str()))
-    {
-        return Err(format!(
-            "Unknown field {name}.{key}: a run is {{variant, fixture_hash, results: {{check: \"passed\" | \"failed\" | \"missing\"}}}}"
-        ));
-    }
-    let variant = run
-        .get("variant")
-        .and_then(Value::as_str)
-        .filter(|variant| valid_variant(variant))
-        .ok_or_else(|| format!("{name}.variant must be a nonempty string of at most 256 characters"))?;
-    let fixture_hash = hash_field(run.get("fixture_hash"), &format!("{name}.fixture_hash"))?;
-    let supplied = plain_object(run.get("results"), &format!("{name}.results"))?;
-    let checks = gate_checks(gate);
+fn validate_run_results(
+    supplied: &Map<String, Value>,
+    checks: &[(String, bool)],
+    name: &str,
+) -> Result<Map<String, Value>, String> {
     for (check, outcome) in supplied {
         if !checks.iter().any(|(known, _)| known == check) {
             return Err(format!(
@@ -161,12 +152,32 @@ fn run_field(value: Option<&Value>, name: &str, gate: &Value) -> Result<Value, S
             )
         })
         .collect();
+    Ok(results)
+}
+
+/// `runField`: `{variant, fixture_hash, results}` with every gate check present (absent ones `missing`).
+fn run_field(value: Option<&Value>, name: &str, gate: &Value) -> Result<Value, String> {
+    let run = plain_object(value, name)?;
+    if let Some(key) = run
+        .keys()
+        .find(|key| !["variant", "fixture_hash", "results"].contains(&key.as_str()))
+    {
+        return Err(format!(
+            "Unknown field {name}.{key}: a run is {{variant, fixture_hash, results: {{check: \"passed\" | \"failed\" | \"missing\"}}}}"
+        ));
+    }
+    let variant = run
+        .get("variant")
+        .and_then(Value::as_str)
+        .filter(|variant| valid_variant(variant))
+        .ok_or_else(|| format!("{name}.variant must be a nonempty string of at most 256 characters"))?;
+    let fixture_hash = hash_field(run.get("fixture_hash"), &format!("{name}.fixture_hash"))?;
+    let supplied = plain_object(run.get("results"), &format!("{name}.results"))?;
+    let results = validate_run_results(supplied, &gate_checks(gate), name)?;
     Ok(json!({"variant": variant, "fixture_hash": fixture_hash, "results": results}))
 }
 
-/// `judge`: the decision, its reasons, regressions and improvements.
-fn judge(gate: &Value, baseline: &Value, candidate: &Value) -> (bool, Vec<String>, Vec<Value>, Vec<Value>) {
-    let mut reasons = Vec::new();
+fn check_fixture_mismatches(gate: &Value, baseline: &Value, candidate: &Value, reasons: &mut Vec<String>) -> bool {
     let mut blocked = false;
     let gate_hash = gate["fixture_hash"].as_str().unwrap_or_default();
     for (label, run) in [("baseline", baseline), ("candidate", candidate)] {
@@ -180,29 +191,62 @@ fn judge(gate: &Value, baseline: &Value, candidate: &Value) -> (bool, Vec<String
             ));
         }
     }
+    blocked
+}
+
+fn judge_check(
+    check: &str,
+    required: bool,
+    before: &str,
+    after: &str,
+    reasons: &mut Vec<String>,
+    regressions: &mut Vec<Value>,
+    improvements: &mut Vec<Value>,
+) -> bool {
+    let change = json!({"check": check, "required": required, "baseline": before, "candidate": after});
+    match (before == "passed", after == "passed") {
+        (true, false) => {
+            regressions.push(change);
+            if required {
+                reasons.push(format!(
+                    "Required check {check} regressed: passed in baseline, {after} in candidate"
+                ));
+                return true;
+            }
+            reasons.push(format!(
+                "Optional check {check} regressed ({after}); reported, not blocking"
+            ));
+            false
+        }
+        (false, true) => {
+            improvements.push(change);
+            false
+        }
+        (false, false) if required => {
+            reasons.push(format!("Required check {check} is {after} in candidate"));
+            true
+        }
+        _ => false,
+    }
+}
+
+/// `judge`: the decision, its reasons, regressions and improvements.
+fn judge(gate: &Value, baseline: &Value, candidate: &Value) -> (bool, Vec<String>, Vec<Value>, Vec<Value>) {
+    let mut reasons = Vec::new();
+    let mut blocked = check_fixture_mismatches(gate, baseline, candidate, &mut reasons);
     let (mut regressions, mut improvements) = (Vec::new(), Vec::new());
     for (check, required) in gate_checks(gate) {
         let before = baseline["results"][&check].as_str().unwrap_or("missing");
         let after = candidate["results"][&check].as_str().unwrap_or("missing");
-        let change = json!({"check": check, "required": required, "baseline": before, "candidate": after});
-        if before == "passed" && after != "passed" {
-            regressions.push(change);
-            if required {
-                blocked = true;
-                reasons.push(format!(
-                    "Required check {check} regressed: passed in baseline, {after} in candidate"
-                ));
-            } else {
-                reasons.push(format!(
-                    "Optional check {check} regressed ({after}); reported, not blocking"
-                ));
-            }
-        } else if before != "passed" && after == "passed" {
-            improvements.push(change);
-        } else if required && after != "passed" {
-            blocked = true;
-            reasons.push(format!("Required check {check} is {after} in candidate"));
-        }
+        blocked |= judge_check(
+            &check,
+            required,
+            before,
+            after,
+            &mut reasons,
+            &mut regressions,
+            &mut improvements,
+        );
     }
     if !blocked {
         reasons.insert(
@@ -280,16 +324,7 @@ fn valid_change(change: &Value) -> bool {
     })
 }
 
-/// `attemptSchema`.
-fn valid_attempt(attempt: &Value) -> bool {
-    let Some(map) = attempt.as_object() else {
-        return false;
-    };
-    let changes = |key: &str| {
-        map.get(key)
-            .and_then(Value::as_array)
-            .is_some_and(|list| list.iter().all(valid_change))
-    };
+fn valid_attempt_metadata(map: &Map<String, Value>) -> bool {
     only(
         map,
         &[
@@ -310,18 +345,35 @@ fn valid_attempt(attempt: &Value) -> bool {
         .all(|key| nonempty_string(map.get(*key)))
         && map.get("at").is_some_and(Value::is_number)
         && string_or_null(map.get("requester_task_id"))
-        && valid_run(map.get("baseline"))
-        && valid_run(map.get("candidate"))
-        && map
-            .get("decision")
-            .and_then(Value::as_str)
-            .is_some_and(|d| d == "passed" || d == "blocked")
+}
+
+fn valid_change_list(map: &Map<String, Value>, key: &str) -> bool {
+    map.get(key)
+        .and_then(Value::as_array)
+        .is_some_and(|list| list.iter().all(valid_change))
+}
+
+fn valid_attempt_outcome(map: &Map<String, Value>) -> bool {
+    map.get("decision")
+        .and_then(Value::as_str)
+        .is_some_and(|d| d == "passed" || d == "blocked")
         && map
             .get("reasons")
             .and_then(Value::as_array)
             .is_some_and(|list| list.iter().all(Value::is_string))
-        && changes("regressions")
-        && changes("improvements")
+        && valid_change_list(map, "regressions")
+        && valid_change_list(map, "improvements")
+}
+
+/// `attemptSchema`.
+fn valid_attempt(attempt: &Value) -> bool {
+    let Some(map) = attempt.as_object() else {
+        return false;
+    };
+    valid_attempt_metadata(map)
+        && valid_run(map.get("baseline"))
+        && valid_run(map.get("candidate"))
+        && valid_attempt_outcome(map)
 }
 
 /// `documentSchema`.
@@ -427,6 +479,106 @@ impl ReleaseGateModule {
             .ok_or_else(|| format!("Unknown release gate: {id}"))
     }
 
+    fn push_document_entry(document: &mut Value, key: &str, entry: Value) {
+        if let Some(entries) = document[key].as_array_mut() {
+            entries.push(entry);
+        }
+    }
+
+    fn check_existing_gate(document: &Value, id: &str, digest: &str) -> Result<Option<Value>, String> {
+        let Ok(existing) = Self::find_gate(document, id) else {
+            return Ok(None);
+        };
+        if existing["digest"] != digest {
+            return Err(format!(
+                "Release gate {id} is already defined with different content and cannot be changed"
+            ));
+        }
+        Ok(Some(existing))
+    }
+
+    fn define_gate(&self, payload: &Map<String, Value>, caller: Option<&str>, now: i64) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &["id", "checks", "fixture_hash"])?;
+        let id = gate_id_field(payload.get("id"), "id")?;
+        let checks = checks_field(payload.get("checks"))?;
+        let fixture_hash = hash_field(payload.get("fixture_hash"), "fixture_hash")?;
+        let digest = gate_digest(&id, &checks, &fixture_hash);
+        let mut guard = jsrt::sync::lock(&self.state);
+        let state = self.ready(&mut guard)?;
+        if let Some(existing) = Self::check_existing_gate(&state.document, &id, &digest)? {
+            return Ok(existing);
+        }
+        let checks: Vec<Value> = checks
+            .iter()
+            .map(|(name, required)| json!({"name": name, "required": required}))
+            .collect();
+        let gate = json!({
+            "id": id, "checks": checks, "fixture_hash": fixture_hash, "digest": digest,
+            "defined_at": now, "defined_by": caller,
+        });
+        let mut next = state.document.clone();
+        Self::push_document_entry(&mut next, "gates", gate.clone());
+        self.write(state, next)?;
+        Ok(gate)
+    }
+
+    fn parse_compare_runs(payload: &Map<String, Value>, gate: &Value) -> Result<(Value, Value), String> {
+        let baseline = run_field(payload.get("baseline"), "baseline", gate)?;
+        let candidate = run_field(payload.get("candidate"), "candidate", gate)?;
+        Ok((baseline, candidate))
+    }
+
+    fn build_attempt(&self, gate: &Value, baseline: Value, candidate: Value, caller: Option<&str>, now: i64) -> Value {
+        let (blocked, reasons, regressions, improvements) = judge(gate, &baseline, &candidate);
+        json!({
+            "id": format!("gate-attempt-{}", (self.ids)()),
+            "gate_id": gate["id"], "gate_digest": gate["digest"], "at": now, "requester_task_id": caller,
+            "baseline": baseline, "candidate": candidate,
+            "decision": if blocked { "blocked" } else { "passed" },
+            "reasons": reasons, "regressions": regressions, "improvements": improvements,
+        })
+    }
+
+    fn compare_gate(&self, payload: &Map<String, Value>, caller: Option<&str>, now: i64) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &["gate_id", "baseline", "candidate"])?;
+        let gate_id = gate_id_field(payload.get("gate_id"), "gate_id")?;
+        let mut guard = jsrt::sync::lock(&self.state);
+        let state = self.ready(&mut guard)?;
+        if state.document["attempts"].as_array().map_or(0, Vec::len) >= MAX_ATTEMPTS {
+            return Err(format!("Release gate history is full ({MAX_ATTEMPTS} attempts)"));
+        }
+        let gate = Self::find_gate(&state.document, &gate_id)?;
+        let (baseline, candidate) = Self::parse_compare_runs(payload, &gate)?;
+        let attempt = self.build_attempt(&gate, baseline, candidate, caller, now);
+        let mut next = state.document.clone();
+        Self::push_document_entry(&mut next, "attempts", attempt.clone());
+        self.write(state, next)?;
+        Ok(attempt)
+    }
+
+    fn gate_history(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &["gate_id"])?;
+        let gate_id = gate_id_field(payload.get("gate_id"), "gate_id")?;
+        let mut guard = jsrt::sync::lock(&self.state);
+        let state = self.ready(&mut guard)?;
+        let gate = Self::find_gate(&state.document, &gate_id)?;
+        let attempts: Vec<Value> = state.document["attempts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|attempt| attempt["gate_id"] == gate_id.as_str())
+            .cloned()
+            .collect();
+        Ok(json!({"gate": gate, "attempts": attempts}))
+    }
+
+    fn list_gates(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &[])?;
+        let mut guard = jsrt::sync::lock(&self.state);
+        let state = self.ready(&mut guard)?;
+        Ok(json!({"gates": state.document["gates"]}))
+    }
+
     /// Serves one `gates.*` request from `caller` (a task id, `None` for the root) at time `now`.
     pub fn handle_at(
         &self,
@@ -437,84 +589,10 @@ impl ReleaseGateModule {
     ) -> Result<Value, String> {
         let now = self.now.as_ref().map_or(now, |clock| clock());
         match kind {
-            "gates.define" => {
-                jsrt::payload::fields(payload, &["id", "checks", "fixture_hash"])?;
-                let id = gate_id_field(payload.get("id"), "id")?;
-                let checks = checks_field(payload.get("checks"))?;
-                let fixture_hash = hash_field(payload.get("fixture_hash"), "fixture_hash")?;
-                let digest = gate_digest(&id, &checks, &fixture_hash);
-                let mut guard = jsrt::sync::lock(&self.state);
-                let state = self.ready(&mut guard)?;
-                if let Ok(existing) = Self::find_gate(&state.document, &id) {
-                    if existing["digest"] != digest.as_str() {
-                        return Err(format!(
-                            "Release gate {id} is already defined with different content and cannot be changed"
-                        ));
-                    }
-                    return Ok(existing);
-                }
-                let checks: Vec<Value> = checks
-                    .iter()
-                    .map(|(name, required)| json!({"name": name, "required": required}))
-                    .collect();
-                let gate = json!({
-                    "id": id, "checks": checks, "fixture_hash": fixture_hash, "digest": digest,
-                    "defined_at": now, "defined_by": caller,
-                });
-                let mut next = state.document.clone();
-                if let Some(gates) = next["gates"].as_array_mut() {
-                    gates.push(gate.clone());
-                }
-                self.write(state, next)?;
-                Ok(gate)
-            }
-            "gates.compare" => {
-                jsrt::payload::fields(payload, &["gate_id", "baseline", "candidate"])?;
-                let gate_id = gate_id_field(payload.get("gate_id"), "gate_id")?;
-                let mut guard = jsrt::sync::lock(&self.state);
-                let state = self.ready(&mut guard)?;
-                if state.document["attempts"].as_array().map_or(0, Vec::len) >= MAX_ATTEMPTS {
-                    return Err(format!("Release gate history is full ({MAX_ATTEMPTS} attempts)"));
-                }
-                let gate = Self::find_gate(&state.document, &gate_id)?;
-                let baseline = run_field(payload.get("baseline"), "baseline", &gate)?;
-                let candidate = run_field(payload.get("candidate"), "candidate", &gate)?;
-                let (blocked, reasons, regressions, improvements) = judge(&gate, &baseline, &candidate);
-                let attempt = json!({
-                    "id": format!("gate-attempt-{}", (self.ids)()),
-                    "gate_id": gate["id"], "gate_digest": gate["digest"], "at": now, "requester_task_id": caller,
-                    "baseline": baseline, "candidate": candidate,
-                    "decision": if blocked { "blocked" } else { "passed" },
-                    "reasons": reasons, "regressions": regressions, "improvements": improvements,
-                });
-                let mut next = state.document.clone();
-                if let Some(attempts) = next["attempts"].as_array_mut() {
-                    attempts.push(attempt.clone());
-                }
-                self.write(state, next)?;
-                Ok(attempt)
-            }
-            "gates.history" => {
-                jsrt::payload::fields(payload, &["gate_id"])?;
-                let gate_id = gate_id_field(payload.get("gate_id"), "gate_id")?;
-                let mut guard = jsrt::sync::lock(&self.state);
-                let state = self.ready(&mut guard)?;
-                let gate = Self::find_gate(&state.document, &gate_id)?;
-                let attempts: Vec<Value> = state.document["attempts"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|attempt| attempt["gate_id"] == gate_id.as_str())
-                    .cloned()
-                    .collect();
-                Ok(json!({"gate": gate, "attempts": attempts}))
-            }
-            "gates.list" => {
-                jsrt::payload::fields(payload, &[])?;
-                let mut guard = jsrt::sync::lock(&self.state);
-                let state = self.ready(&mut guard)?;
-                Ok(json!({"gates": state.document["gates"]}))
-            }
+            "gates.define" => self.define_gate(payload, caller, now),
+            "gates.compare" => self.compare_gate(payload, caller, now),
+            "gates.history" => self.gate_history(payload),
+            "gates.list" => self.list_gates(payload),
             _ => Err(format!("Unknown release gate request: {kind}")),
         }
     }

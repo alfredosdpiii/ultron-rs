@@ -77,6 +77,47 @@ class QueryError(Exception):
     """A graph query that could not run: the message says why, for the investigator to fix it."""
 
 
+def _resolve_js_import(path: str, module: str, paths: set[str]) -> str | None:
+    if not module.startswith("."):
+        return None
+    base = posixpath.normpath(posixpath.join(posixpath.dirname(path), module))
+    candidates = [base]
+    for ext in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"):
+        candidates.append(f"{base}{ext}")
+    for ext in (".ts", ".tsx", ".js"):
+        candidates.append(f"{base}/index{ext}")
+    for candidate in candidates:
+        if candidate in paths:
+            return candidate
+    return None
+
+
+def _resolve_py_import(
+    path: str,
+    module: str,
+    name: str | None,
+    paths: set[str],
+    modules: dict[str, str],
+) -> str | None:
+    if not module.startswith("."):
+        qualified = modules.get(f"{module}.{name}") if name else None
+        return qualified or modules.get(module)
+    dots = len(module) - len(module.lstrip("."))
+    directory = posixpath.dirname(path)
+    for _ in range(dots - 1):
+        directory = posixpath.dirname(directory)
+    rest = module.lstrip(".")
+    base = posixpath.join(directory, rest.replace(".", "/")) if rest else directory
+    candidates = [f"{base}.py", f"{base}/__init__.py"]
+    # `from . import name`: the name may be a module.
+    if name:
+        candidates = [f"{base}/{name}.py", f"{base}/{name}/__init__.py"] + candidates
+    for candidate in candidates:
+        if candidate in paths:
+            return candidate
+    return None
+
+
 def _import_resolver(paths: set[str]):
     """`resolve_import(path, module, name)`: the repository file an import of `path` names, or None."""
     modules: dict[str, str] = {}
@@ -94,29 +135,12 @@ def _import_resolver(paths: set[str]):
     def resolve(path: Any, module: Any, name: Any) -> str | None:
         if not isinstance(path, str) or not isinstance(module, str) or not module:
             return None
-        name = name if isinstance(name, str) and name not in ("*", "default") else None
+        symbol = (
+            name if isinstance(name, str) and name not in ("*", "default") else None
+        )
         if not path.endswith(".py"):
-            if not module.startswith("."):
-                return None
-            base = posixpath.normpath(posixpath.join(posixpath.dirname(path), module))
-            for candidate in (base, *(f"{base}{ext}" for ext in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")),
-                              *(f"{base}/index{ext}" for ext in (".ts", ".tsx", ".js"))):
-                if candidate in paths:
-                    return candidate
-            return None
-        if module.startswith("."):
-            dots = len(module) - len(module.lstrip("."))
-            directory = posixpath.dirname(path)
-            for _ in range(dots - 1):
-                directory = posixpath.dirname(directory)
-            rest = module.lstrip(".")
-            base = posixpath.join(directory, rest.replace(".", "/")) if rest else directory
-            candidates = [f"{base}.py", f"{base}/__init__.py"]
-            # `from . import name`: the name may be a module.
-            if name:
-                candidates = [f"{base}/{name}.py", f"{base}/{name}/__init__.py"] + candidates
-            return next((candidate for candidate in candidates if candidate in paths), None)
-        return (modules.get(f"{module}.{name}") if name else None) or modules.get(module)
+            return _resolve_js_import(path, module, paths)
+        return _resolve_py_import(path, module, symbol, paths, modules)
 
     return resolve
 
@@ -175,6 +199,115 @@ class Similar:
     shared: list[str]
 
 
+def _rank_similar(
+    shared: dict[str, list[str]],
+    weight: dict[str, float],
+    limit: int,
+) -> list[Similar]:
+    ranked: list[Similar] = []
+    for other, kinds in shared.items():
+        # `sql:trigger:before-update` says more than `sql:trigger`, which every such file also has.
+        kinds.sort(key=lambda kind: (-weight[kind], -kind.count(":"), kind))
+        score = round(sum(weight[kind] for kind in kinds), 3)
+        ranked.append(Similar(other, score, kinds))
+    ranked.sort(key=lambda item: (-item.score, len(item.shared), item.path))
+    return ranked[:limit]
+
+
+def _prepare_graph_views(
+    conn: sqlite3.Connection, tree: int, sql: str
+) -> set[str]:
+    if "imports" in sql.lower():
+        paths = {
+            str(path)
+            for (path,) in conn.execute(
+                "SELECT path FROM entries WHERE tree = ?", (tree,)
+            )
+        }
+        conn.create_function(
+            "resolve_import", 3, _import_resolver(paths), deterministic=True
+        )
+    else:
+        conn.create_function(
+            "resolve_import", 3, lambda *_: None, deterministic=True
+        )
+    # Two layers prevent query CTEs from shadowing view names and bypassing table isolation.
+    hidden = {name: f"g{secrets.token_hex(8)}_{name}" for name in GRAPH_VIEWS}
+    for name, body in GRAPH_VIEWS.items():
+        conn.execute(
+            f"CREATE TEMP VIEW {hidden[name]} AS {body.format(tree=int(tree))}"
+        )
+        conn.execute(
+            f"CREATE TEMP VIEW {name} AS SELECT * FROM temp.{hidden[name]}"
+        )
+    return set(hidden.values())
+
+
+def _make_query_authorizer(readers: set[str]):
+    def authorize(
+        action: int, _first: Any, second: Any, database: Any, source: Any
+    ) -> int:
+        if action in (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_RECURSIVE):
+            return sqlite3.SQLITE_OK
+        if action == sqlite3.SQLITE_READ:
+            # The views, and the tables only through them: no other revision, no review notes. A
+            # common table expression of the query has no database.
+            allowed = database is None or database == "temp" or source in readers
+            return sqlite3.SQLITE_OK if allowed else sqlite3.SQLITE_DENY
+        if action == sqlite3.SQLITE_FUNCTION:
+            denied = str(second).lower() in _DENIED_FUNCTIONS
+            return sqlite3.SQLITE_DENY if denied else sqlite3.SQLITE_OK
+        return sqlite3.SQLITE_DENY
+
+    return authorize
+
+
+def _run_graph_sql(
+    conn: sqlite3.Connection, sql: str, limit: int, seconds: float
+) -> tuple[list[str], list[tuple[Any, ...]]]:
+    deadline = time.monotonic() + seconds
+    conn.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 2000)
+    try:
+        cursor = conn.execute(sql)
+        if not cursor.description:
+            raise QueryError("a query must be a SELECT that returns rows")
+        columns = [str(item[0]) for item in cursor.description]
+        rows = cursor.fetchmany(limit + 1)
+        return columns, rows
+    except sqlite3.Warning:
+        raise QueryError("one statement only, without a trailing one") from None
+    except sqlite3.DatabaseError as error:
+        message = str(error)
+        if "interrupted" in message:
+            raise QueryError(
+                f"the query ran longer than {seconds:g}s: narrow it "
+                "(a WHERE on path or name, fewer joins)"
+            ) from None
+        if "not authorized" in message or "prohibited" in message:
+            raise QueryError(
+                "not authorized: a query reads only the views files, symbols, "
+                "calls, imports and constructs"
+            ) from None
+        raise QueryError(f"{message}. The views: {GRAPH_SCHEMA}") from None
+
+
+def _truncate_cell(value: Any) -> Any:
+    if isinstance(value, str) and len(value) > QUERY_CELL_CHARS:
+        return value[:QUERY_CELL_CHARS] + "..."
+    if isinstance(value, bytes):
+        return f"<{len(value)} bytes>"
+    return value
+
+
+def _format_query_rows(
+    rows: list[tuple[Any, ...]], limit: int
+) -> list[tuple[Any, ...]]:
+    formatted: list[tuple[Any, ...]] = []
+    for row in rows[:limit]:
+        formatted.append(tuple(_truncate_cell(value) for value in row))
+    return formatted
+
+
 class Knowledge:
     """One repository at one revision, in the store."""
 
@@ -224,126 +357,98 @@ class Knowledge:
         except sqlite3.Error:
             return []
 
-    def similar(self, path: str, *, limit: int = 3, exclude: set[str] | None = None) -> list[Similar]:
-        """The files most like `path` by shared rare constructs, best first; [] when nothing is shared."""
-        excluded = set(exclude or ()) | {path}
-        try:
-            own = self._conn.execute(
-                "SELECT e.blob, b.lang FROM entries e JOIN blobs b ON b.oid = e.blob WHERE e.tree = ? AND e.path = ?",
-                (self._tree, path),
-            ).fetchone()
-            if own is None:
-                return []
-            blob, lang = own
-            mine = [str(kind) for (kind,) in self._conn.execute("SELECT kind FROM constructs WHERE blob = ?", (blob,))]
-            if not mine:
-                return []
-            (files,) = self._conn.execute(
-                "SELECT COUNT(*) FROM entries e JOIN blobs b ON b.oid = e.blob WHERE e.tree = ? AND b.lang = ?",
-                (self._tree, lang),
-            ).fetchone()
-            marks = ",".join("?" * len(mine))
-            frequency = dict(self._conn.execute(
+    def _construct_weights(self, path: str) -> tuple[str, dict[str, float]] | None:
+        own = self._conn.execute(
+            "SELECT e.blob, b.lang FROM entries e JOIN blobs b ON b.oid = e.blob "
+            "WHERE e.tree = ? AND e.path = ?",
+            (self._tree, path),
+        ).fetchone()
+        if own is None:
+            return None
+        blob, lang = own
+        mine = [
+            str(kind)
+            for (kind,) in self._conn.execute(
+                "SELECT kind FROM constructs WHERE blob = ?", (blob,)
+            )
+        ]
+        if not mine:
+            return None
+        (files,) = self._conn.execute(
+            "SELECT COUNT(*) FROM entries e JOIN blobs b ON b.oid = e.blob "
+            "WHERE e.tree = ? AND b.lang = ?",
+            (self._tree, lang),
+        ).fetchone()
+        marks = ",".join("?" * len(mine))
+        frequency = dict(
+            self._conn.execute(
                 f"SELECT c.kind, COUNT(*) FROM entries e JOIN blobs b ON b.oid = e.blob"
                 f" JOIN constructs c ON c.blob = e.blob"
                 f" WHERE e.tree = ? AND b.lang = ? AND c.kind IN ({marks}) GROUP BY c.kind",
                 (self._tree, lang, *mine),
-            ).fetchall())
-            weight = {kind: math.log((files + 1) / (count + 1)) for kind, count in frequency.items()
-                      if count > 1 and count <= COMMON_SHARE * files}
-            weight = {kind: value for kind, value in weight.items() if value > 0}
-            if not weight:
+            ).fetchall()
+        )
+        weight: dict[str, float] = {}
+        for kind, count in frequency.items():
+            if count <= 1 or count > COMMON_SHARE * files:
+                continue
+            score = math.log((files + 1) / (count + 1))
+            if score > 0:
+                weight[kind] = score
+        return (lang, weight) if weight else None
+
+    def similar(
+        self, path: str, *, limit: int = 3, exclude: set[str] | None = None
+    ) -> list[Similar]:
+        """The files most like `path` by shared rare constructs, best first; [] when nothing is shared."""
+        excluded = set(exclude or ()) | {path}
+        try:
+            weighted = self._construct_weights(path)
+            if weighted is None:
                 return []
+            lang, weight = weighted
             rare = sorted(weight)
             marks = ",".join("?" * len(rare))
             shared: dict[str, list[str]] = {}
-            for other, kind in self._conn.execute(
+            rows = self._conn.execute(
                 f"SELECT e.path, c.kind FROM entries e JOIN blobs b ON b.oid = e.blob"
                 f" JOIN constructs c ON c.blob = e.blob"
                 f" WHERE e.tree = ? AND b.lang = ? AND c.kind IN ({marks})",
                 (self._tree, lang, *rare),
-            ):
+            )
+            for other, kind in rows:
                 if other not in excluded:
                     shared.setdefault(str(other), []).append(str(kind))
         except sqlite3.Error:
             return []
-        ranked = []
-        for other, kinds in shared.items():
-            # `sql:trigger:before-update` says more than `sql:trigger`, which every such file also has.
-            kinds.sort(key=lambda kind: (-weight[kind], -kind.count(":"), kind))
-            ranked.append(Similar(other, round(sum(weight[kind] for kind in kinds), 3), kinds))
-        ranked.sort(key=lambda item: (-item.score, len(item.shared), item.path))
-        return ranked[:limit]
+        return _rank_similar(shared, weight, limit)
 
-
-    def query(self, sql: Any, *, limit: int = QUERY_ROWS,
-              seconds: float = QUERY_SECONDS) -> tuple[list[str], list[tuple[Any, ...]], bool]:
+    def query(
+        self,
+        sql: Any,
+        *,
+        limit: int = QUERY_ROWS,
+        seconds: float = QUERY_SECONDS,
+    ) -> tuple[list[str], list[tuple[Any, ...]], bool]:
         """One read-only SELECT over the revision's graph (`GRAPH_VIEWS`): (columns, rows, whether more rows were
         left out). Raises QueryError with a message the investigator can act on."""
         if not isinstance(sql, str) or not sql.strip() or len(sql) > QUERY_CHARS or "\0" in sql:
-            raise QueryError(f"a query is one SQL SELECT of at most {QUERY_CHARS} characters")
+            raise QueryError(
+                f"a query is one SQL SELECT of at most {QUERY_CHARS} characters"
+            )
         try:
-            conn = sqlite3.connect(f"file:{urllib.parse.quote(self._db)}?mode=ro", uri=True, timeout=5)
+            conn = sqlite3.connect(
+                f"file:{urllib.parse.quote(self._db)}?mode=ro", uri=True, timeout=5
+            )
         except sqlite3.Error as error:
             raise QueryError(f"the graph is not available: {error}") from None
         try:
-            if "imports" in sql.lower():
-                paths = {str(path) for (path,) in conn.execute("SELECT path FROM entries WHERE tree = ?", (self._tree,))}
-                conn.create_function("resolve_import", 3, _import_resolver(paths), deterministic=True)
-            else:
-                conn.create_function("resolve_import", 3, lambda *_: None, deterministic=True)
-            # Two layers: only views under names this query cannot know read the tables (a common table
-            # expression of the query may take any name, `symbols` included, and its reads are reported under it);
-            # the views the query names read those.
-            hidden = {name: f"g{secrets.token_hex(8)}_{name}" for name in GRAPH_VIEWS}
-            for name, body in GRAPH_VIEWS.items():
-                conn.execute(f"CREATE TEMP VIEW {hidden[name]} AS {body.format(tree=int(self._tree))}")
-                conn.execute(f"CREATE TEMP VIEW {name} AS SELECT * FROM temp.{hidden[name]}")
-            readers = set(hidden.values())
-
-            def authorize(action: int, first: Any, second: Any, database: Any, source: Any) -> int:
-                if action in (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_RECURSIVE):
-                    return sqlite3.SQLITE_OK
-                if action == sqlite3.SQLITE_READ:
-                    # The views, and the tables only through them: no other revision, no review notes. A
-                    # common table expression of the query has no database.
-                    allowed = database is None or database == "temp" or source in readers
-                    return sqlite3.SQLITE_OK if allowed else sqlite3.SQLITE_DENY
-                if action == sqlite3.SQLITE_FUNCTION:
-                    return sqlite3.SQLITE_DENY if str(second).lower() in _DENIED_FUNCTIONS else sqlite3.SQLITE_OK
-                return sqlite3.SQLITE_DENY
-
-            deadline = time.monotonic() + seconds
-            conn.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 2000)
-            conn.set_authorizer(authorize)
-            try:
-                cursor = conn.execute(sql)
-                columns = [str(item[0]) for item in cursor.description or []]
-                if not columns:
-                    raise QueryError("a query must be a SELECT that returns rows")
-                rows = cursor.fetchmany(limit + 1)
-            except sqlite3.Warning:
-                raise QueryError("one statement only, without a trailing one") from None
-            except sqlite3.DatabaseError as error:
-                message = str(error)
-                if "interrupted" in message:
-                    raise QueryError(f"the query ran longer than {seconds:g}s: narrow it (a WHERE on path or name, "
-                                     "fewer joins)") from None
-                if "not authorized" in message or "prohibited" in message:
-                    raise QueryError("not authorized: a query reads only the views files, symbols, calls, imports "
-                                     "and constructs") from None
-                raise QueryError(f"{message}. The views: {GRAPH_SCHEMA}") from None
+            readers = _prepare_graph_views(conn, self._tree, sql)
+            conn.set_authorizer(_make_query_authorizer(readers))
+            columns, rows = _run_graph_sql(conn, sql, limit, seconds)
         finally:
             conn.close()
-
-        def cell(value: Any) -> Any:
-            if isinstance(value, str) and len(value) > QUERY_CELL_CHARS:
-                return value[:QUERY_CELL_CHARS] + "..."
-            if isinstance(value, bytes):
-                return f"<{len(value)} bytes>"
-            return value
-
-        return columns, [tuple(cell(value) for value in row) for row in rows[:limit]], len(rows) > limit
+        return columns, _format_query_rows(rows, limit), len(rows) > limit
 
     def has_notes(self) -> bool:
         """Whether the store holds any review note of this repository."""
@@ -430,6 +535,106 @@ RELATION_KINDS = ("reads_config", "serves_route", "touches_table", "tests")
 JUDGE_BATCH = MAX_QUESTIONS
 
 
+def _normalize_relation_args(
+    paths: Any, kinds: Any
+) -> tuple[list[str] | None, list[str] | None]:
+    norm_paths = [paths] if isinstance(paths, str) else paths
+    norm_kinds = [kinds] if isinstance(kinds, str) else kinds
+    for kind in norm_kinds or ():
+        if kind not in RELATION_KINDS:
+            allowed = ", ".join(RELATION_KINDS)
+            raise ValueError(
+                f"knowledge.relations kind {kind!r} is not one of {allowed}"
+            )
+    path_list = None if norm_paths is None else [str(path) for path in norm_paths]
+    kind_list = None if norm_kinds is None else list(norm_kinds)
+    return path_list, kind_list
+
+
+def _apply_relation_verdicts(
+    relations: list[dict[str, Any]],
+    verdicts: list[dict[str, Any]],
+    pruned: dict[str, Any],
+) -> list[dict[str, Any]]:
+    by_id = {verdict["id"]: verdict for verdict in verdicts}
+    kept: list[dict[str, Any]] = []
+    for relation in relations:
+        verdict = by_id.get(relation["id"])
+        if verdict is not None:
+            relation = {
+                **relation,
+                "status": verdict["status"],
+                "checked_by": verdict["backend"],
+                "rung": verdict["rung"],
+                "model": verdict["model"],
+                "confidence": verdict["confidence"],
+            }
+        if relation["status"] == "rejected":
+            pruned["rejected"] = pruned.get("rejected", 0) + 1
+            continue
+        kept.append(relation)
+    return kept
+
+
+def _group_pending_by_path(
+    pending: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    by_path: dict[str, list[dict[str, Any]]] = {}
+    for item in pending:
+        by_path.setdefault(item["path"], []).append(item)
+    return by_path
+
+
+def _judge_group_payload(
+    group: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]]:
+    state_parts: list[str] = []
+    questions: dict[str, Any] = {}
+    for index, item in enumerate(group):
+        state_parts.append(
+            f"[{index}] {item['path']} line {item['line']}:\n{item['context']}"
+        )
+        questions[f"r{index}"] = {
+            "type": "yesno",
+            "instructions": f"Snippet [{index}]: {item['question']}",
+        }
+    return "\n\n".join(state_parts), questions
+
+
+def _apply_batch_verdict(
+    group: list[dict[str, Any]],
+    verdict: dict[str, Any],
+    spent: dict[str, Any],
+    out: list[dict[str, Any]],
+) -> None:
+    spent["calls"] += verdict["calls"]
+    cost = verdict["cost_usd"]
+    if cost is None or spent["cost_usd"] is None:
+        spent["cost_usd"] = None
+    else:
+        spent["cost_usd"] += cost
+    if verdict["abstained"]:
+        spent["abstained"] += len(group)
+        return
+    for index, item in enumerate(group):
+        answer = verdict["answers"].get(f"r{index}")
+        if answer is None:
+            continue
+        if verdict["review"]:
+            status = "review"
+        else:
+            status = "accepted" if answer["value"] is True else "rejected"
+        out.append({
+            "id": item["id"],
+            "status": status,
+            "backend": verdict["backend"],
+            "rung": verdict["rung"],
+            "model": verdict["model"],
+            "confidence": answer.get("confidence"),
+            "receipt": verdict["receipt"],
+        })
+
+
 class KnowledgeApi:
     """Relations across the files of this repository at `HEAD`, read when a task needs them:
     `found = await knowledge.relations(paths=["crates/judge"], kinds=["reads_config"])`.
@@ -460,75 +665,52 @@ class KnowledgeApi:
         self._bridge = bridge
         self._judge = Judge(bridge)
 
-    async def relations(self, paths: Any = None, kinds: Any = None, *, judge: bool = True) -> dict[str, Any]:
+    async def relations(
+        self, paths: Any = None, kinds: Any = None, *, judge: bool = True
+    ) -> dict[str, Any]:
         """The relations among the files under `paths` (files or directories; all when None) of `kinds` (all when
         None); see `help(knowledge)`."""
-        if isinstance(paths, str):
-            paths = [paths]
-        if isinstance(kinds, str):
-            kinds = [kinds]
-        for kind in kinds or ():
-            if kind not in RELATION_KINDS:
-                raise ValueError(f"knowledge.relations kind {kind!r} is not one of {', '.join(RELATION_KINDS)}")
-        found = await self._bridge.request("knowledge.relations", {
-            "paths": None if paths is None else [str(path) for path in paths],
-            "kinds": None if kinds is None else list(kinds),
-        })
+        path_list, kind_list = _normalize_relation_args(paths, kinds)
+        found = await self._bridge.request(
+            "knowledge.relations",
+            {"paths": path_list, "kinds": kind_list},
+        )
         relations = list(found["relations"])
         pruned = dict(found["pruned"])
         mirror = found["mirror"]
         spent: dict[str, Any] = {"calls": 0, "cost_usd": 0.0, "abstained": 0}
         verdicts = await self._judged(found["pending"], spent) if judge else []
         if verdicts:
-            settled = await self._bridge.request("knowledge.settle", {"rev": found["rev"], "verdicts": verdicts})
-            mirror = settled["mirror"] if settled["mirror"] is not None else mirror
-            by_id = {verdict["id"]: verdict for verdict in verdicts}
-            kept = []
-            for relation in relations:
-                verdict = by_id.get(relation["id"])
-                if verdict is not None:
-                    relation = {**relation, "status": verdict["status"], "checked_by": verdict["backend"],
-                                "rung": verdict["rung"], "model": verdict["model"],
-                                "confidence": verdict["confidence"]}
-                if relation["status"] == "rejected":
-                    pruned["rejected"] = pruned.get("rejected", 0) + 1
-                    continue
-                kept.append(relation)
-            relations = kept
-        return {"rev": found["rev"], "relations": relations, "pruned": pruned, "files": found["files"],
-                "read": found["read"], "truncated": found["truncated"], "judge": spent, "mirror": mirror}
+            settled = await self._bridge.request(
+                "knowledge.settle",
+                {"rev": found["rev"], "verdicts": verdicts},
+            )
+            if settled["mirror"] is not None:
+                mirror = settled["mirror"]
+            relations = _apply_relation_verdicts(relations, verdicts, pruned)
+        return {
+            "rev": found["rev"],
+            "relations": relations,
+            "pruned": pruned,
+            "files": found["files"],
+            "read": found["read"],
+            "truncated": found["truncated"],
+            "judge": spent,
+            "mirror": mirror,
+        }
 
-    async def _judged(self, pending: list[dict[str, Any]], spent: dict[str, Any]) -> list[dict[str, Any]]:
+    async def _judged(
+        self, pending: list[dict[str, Any]], spent: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """Asks the judge about proposed relations, a file's at a time: the verdicts to settle."""
-        by_path: dict[str, list[dict[str, Any]]] = {}
-        for item in pending:
-            by_path.setdefault(item["path"], []).append(item)
-        verdicts = []
+        by_path = _group_pending_by_path(pending)
+        verdicts: list[dict[str, Any]] = []
         for items in by_path.values():
             for start in range(0, len(items), JUDGE_BATCH):
-                group = items[start:start + JUDGE_BATCH]
-                state = "\n\n".join(f"[{index}] {item['path']} line {item['line']}:\n{item['context']}"
-                                     for index, item in enumerate(group))
-                questions = {f"r{index}": {"type": "yesno", "instructions": f"Snippet [{index}]: {item['question']}"}
-                             for index, item in enumerate(group)}
+                group = items[start : start + JUDGE_BATCH]
+                state, questions = _judge_group_payload(group)
                 verdict = await self._judge.decide(state, questions, kind="relation")
-                spent["calls"] += verdict["calls"]
-                cost = verdict["cost_usd"]
-                spent["cost_usd"] = None if cost is None or spent["cost_usd"] is None else spent["cost_usd"] + cost
-                if verdict["abstained"]:
-                    spent["abstained"] += len(group)
-                    continue
-                for index, item in enumerate(group):
-                    answer = verdict["answers"].get(f"r{index}")
-                    if answer is None:
-                        continue
-                    if verdict["review"]:
-                        status = "review"
-                    else:
-                        status = "accepted" if answer["value"] is True else "rejected"
-                    verdicts.append({"id": item["id"], "status": status, "backend": verdict["backend"],
-                                     "rung": verdict["rung"], "model": verdict["model"],
-                                     "confidence": answer.get("confidence"), "receipt": verdict["receipt"]})
+                _apply_batch_verdict(group, verdict, spent, verdicts)
         return verdicts
 
     async def mirror(self) -> dict[str, Any]:

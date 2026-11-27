@@ -343,338 +343,430 @@ fn ok_record(record_path: &str) -> Option<Map<String, Value>> {
     any_record(record_path).filter(|record| jsrt::value::truthy(record.get("ok")))
 }
 
-/// Prepare the environment of `repo_dir`: toolchains, then the Python virtualenv and/or the Node modules, into
-/// `<cache_dir>/envs/<hash>/`. Cached when that hash's `toolchain.json` says it succeeded.
-pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<Prepared, String> {
-    let started = (options.now)();
-    let env = &options.env;
-    let repo = Path::new(repo_dir);
-    let found = detect_ecosystems(repo);
-    let (needs_python, needs_node) = (!found.python.is_empty(), !found.node.is_empty());
-    let hash = environment_hash(repo, options.python.as_deref());
-    let dir = jsrt::path::join(&[&options.cache_dir, "envs", &hash]);
-    let record_path = jsrt::path::join(&[&dir, "toolchain.json"]);
-    let lock = open_env_lock(&options.cache_dir, &hash)?;
-    let locked = |result: std::io::Result<()>| result.map_err(|error| io_error("cannot lock", &dir, error));
-    let cached = |mut record: Map<String, Value>, lock: fs::File| {
-        record.insert("dir".into(), json!(dir));
-        record.insert("hash".into(), json!(hash));
-        record.insert("cached".into(), json!(true));
-        record.insert("ms".into(), json!((options.now)() - started));
-        let mut prepared = Prepared::from_record(Value::Object(record));
-        prepared.lease = EnvLease {
-            _held: Some(std::sync::Arc::new(lock)),
-        };
-        prepared
-    };
-    locked(lock.lock_shared())?;
-    if !options.force
-        && exists(&record_path)
-        && let Some(record) = ok_record(&record_path)
-    {
-        return Ok(cached(record, lock));
-    }
-    let seen = fs::read(&record_path).ok();
-    locked(lock.unlock())?;
-    locked(lock.lock())?;
-    if !options.force
-        && fs::read(&record_path).ok() != seen
-        && let Some(record) = any_record(&record_path).filter(|record| {
-            record
-                .get("prepared")
-                .and_then(Value::as_array)
-                .is_some_and(|p| !p.is_empty())
-        })
-    {
-        locked(lock.lock_shared())?;
-        return Ok(cached(record, lock));
-    }
-    match fs::remove_dir_all(&dir) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(io_error("cannot remove", &dir, error)),
-    }
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o755)
-            .create(&dir)
-            .map_err(|error| io_error("cannot create", &dir, error))?;
-    }
-    let mut prepared: Vec<String> = Vec::new();
-    let mut failures: Vec<String> = Vec::new();
-    let mut requests = crate::prepare::toolchain_requests(repo);
-    if let Some(python) = options.python.as_ref().filter(|python| !python.is_empty()) {
-        requests.python = Some(python.clone());
-    }
-    let (toolchain, toolchain_failures) = resolve_toolchain(options, &requests, needs_python, needs_node);
-    failures.extend(toolchain_failures);
-    let python = toolchain.iter().find(|entry| entry.tool == "python");
-    let timeout_ms = options.timeout_ms.unwrap_or(900_000);
-    let local_bin = jsrt::path::join(&[&options.home, ".local", "bin"]);
-    let env_path = env.get("PATH").cloned().unwrap_or_default();
-    let mut path_parts: Vec<String> = toolchain
-        .iter()
-        .map(|entry| jsrt::path::join(&[&entry.path, "bin"]))
+struct EnvRunner<'a> {
+    options: &'a PrepareOptions<'a>,
+    run_env: BTreeMap<String, String>,
+    timeout_ms: u64,
+}
+
+impl<'a> EnvRunner<'a> {
+    fn new(options: &'a PrepareOptions<'a>, toolchain: &[ToolchainEntry], local_bin: &str, env_path: &str) -> Self {
+        let mut path_parts: Vec<String> = toolchain
+            .iter()
+            .map(|entry| jsrt::path::join(&[&entry.path, "bin"]))
+            .collect();
+        path_parts.push(local_bin.to_string());
+        path_parts.push(env_path.to_string());
+        let run_env: BTreeMap<String, String> = [
+            ("PATH", path_parts.join(":")),
+            ("UV_NO_PROGRESS", "1".into()),
+            ("npm_config_update_notifier", "false".into()),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
         .collect();
-    path_parts.push(local_bin.clone());
-    path_parts.push(env_path.clone());
-    let run_env: BTreeMap<String, String> = [
-        ("PATH", path_parts.join(":")),
-        ("UV_NO_PROGRESS", "1".into()),
-        ("npm_config_update_notifier", "false".into()),
-    ]
-    .into_iter()
-    .map(|(key, value)| (key.to_string(), value))
-    .collect();
-    let run = |argv: Vec<String>, cwd: &str, extra: &[(&str, &str)]| {
-        let mut env = run_env.clone();
+        EnvRunner {
+            options,
+            run_env,
+            timeout_ms: options.timeout_ms.unwrap_or(900_000),
+        }
+    }
+
+    fn run(&self, argv: Vec<String>, cwd: &str, extra: &[(&str, &str)]) -> crate::runner::RunResult {
+        let mut env = self.run_env.clone();
         for (key, value) in extra {
             env.insert(key.to_string(), value.to_string());
         }
-        options.runner.run(
+        self.options.runner.run(
             &argv,
             &RunOptions {
                 cwd: Some(cwd.to_string()),
                 env,
                 input: None,
-                timeout_ms: Some(timeout_ms),
+                timeout_ms: Some(self.timeout_ms),
             },
         )
+    }
+}
+
+fn cached_prepared(
+    mut record: Map<String, Value>,
+    lock: fs::File,
+    dir: &str,
+    hash: &str,
+    started: i64,
+    options: &PrepareOptions,
+) -> Prepared {
+    record.insert("dir".into(), json!(dir));
+    record.insert("hash".into(), json!(hash));
+    record.insert("cached".into(), json!(true));
+    record.insert("ms".into(), json!((options.now)() - started));
+    let mut prepared = Prepared::from_record(Value::Object(record));
+    prepared.lease = EnvLease {
+        _held: Some(std::sync::Arc::new(lock)),
     };
-    let uv = env_path
+    prepared
+}
+
+fn record_with_prepared(record_path: &str) -> Option<Map<String, Value>> {
+    any_record(record_path).filter(|record| {
+        record
+            .get("prepared")
+            .and_then(Value::as_array)
+            .is_some_and(|p| !p.is_empty())
+    })
+}
+
+fn try_shared_cache(record_path: &str, force: bool) -> Option<Map<String, Value>> {
+    if force || !exists(record_path) {
+        return None;
+    }
+    ok_record(record_path)
+}
+
+fn try_exclusive_cache(record_path: &str, seen: Option<Vec<u8>>, force: bool) -> Option<Map<String, Value>> {
+    if force || fs::read(record_path).ok() == seen {
+        return None;
+    }
+    record_with_prepared(record_path)
+}
+
+fn try_cached_or_lock_exclusive(
+    lock: fs::File,
+    record_path: &str,
+    dir: &str,
+    hash: &str,
+    started: i64,
+    options: &PrepareOptions,
+) -> Result<Result<Prepared, fs::File>, String> {
+    let lock_err = |error| io_error("cannot lock", dir, error);
+    lock.lock_shared().map_err(lock_err)?;
+    if let Some(record) = try_shared_cache(record_path, options.force) {
+        return Ok(Ok(cached_prepared(record, lock, dir, hash, started, options)));
+    }
+    let seen = fs::read(record_path).ok();
+    lock.unlock().map_err(lock_err)?;
+    lock.lock().map_err(lock_err)?;
+    if let Some(record) = try_exclusive_cache(record_path, seen, options.force) {
+        lock.lock_shared().map_err(lock_err)?;
+        return Ok(Ok(cached_prepared(record, lock, dir, hash, started, options)));
+    }
+    Ok(Err(lock))
+}
+
+fn reset_env_dir(dir: &str) -> Result<(), String> {
+    match fs::remove_dir_all(dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(io_error("cannot remove", dir, error)),
+    }
+    use std::os::unix::fs::DirBuilderExt;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o755)
+        .create(dir)
+        .map_err(|error| io_error("cannot create", dir, error))
+}
+
+fn is_poetry_project(project: &str) -> bool {
+    fs::read_to_string(Path::new(project).join("pyproject.toml")).is_ok_and(|text| {
+        Regex::new(r"(?m)^\[tool\.poetry\]")
+            .expect("static pattern")
+            .is_match(&text)
+    })
+}
+
+struct PythonEnv<'a> {
+    runner: &'a EnvRunner<'a>,
+    uv: &'a str,
+    venv: &'a str,
+    interpreter: &'a str,
+    repo_dir: &'a str,
+}
+
+impl<'a> PythonEnv<'a> {
+    fn pip(&self, args: &[&str]) -> crate::runner::RunResult {
+        let mut argv = vec![
+            self.uv.to_string(),
+            "pip".into(),
+            "install".into(),
+            "--python".into(),
+            self.interpreter.to_string(),
+        ];
+        argv.extend(args.iter().map(std::string::ToString::to_string));
+        self.runner.run(argv, self.repo_dir, &[])
+    }
+
+    fn install_poetry(&self, project: &str) -> crate::runner::RunResult {
+        self.runner.run(
+            vec![
+                self.uv.to_string(),
+                "tool".into(),
+                "run".into(),
+                "--python".into(),
+                self.interpreter.to_string(),
+                "--from".into(),
+                "poetry".into(),
+                "poetry".into(),
+                "--directory".into(),
+                project.into(),
+                "install".into(),
+                "--no-root".into(),
+                "--all-extras".into(),
+                "--no-interaction".into(),
+            ],
+            self.repo_dir,
+            &[("VIRTUAL_ENV", self.venv), ("POETRY_VIRTUALENVS_CREATE", "false")],
+        )
+    }
+
+    fn deps_only(&self, project: &str) -> Option<Result<(), String>> {
+        let manifest = jsrt::path::join(&[project, "pyproject.toml"]);
+        let text = fs::read_to_string(&manifest).ok()?;
+        if !Regex::new(r"(?m)^\s*dependencies\s*=")
+            .expect("static pattern")
+            .is_match(&text)
+        {
+            return None;
+        }
+        let result = self.pip(&["-r", &manifest, "--all-extras"]);
+        Some(if result.code == 0 {
+            Ok(())
+        } else {
+            Err(failure_output(&result))
+        })
+    }
+
+    fn install_editable(
+        &self,
+        project: &str,
+        display: &str,
+        manifest_display: &str,
+        prepared: &mut Vec<String>,
+        failures: &mut Vec<String>,
+    ) -> bool {
+        for suffix in ["[dev,test]", "[dev]", "[test]", ""] {
+            let result = self.pip(&["-e", &format!("{project}{suffix}")]);
+            if result.code == 0 {
+                prepared.push(format!("python: uv pip install -e {display}{suffix}"));
+                return true;
+            }
+            if suffix.is_empty() {
+                match self.deps_only(project) {
+                    Some(Ok(())) => {
+                        prepared.push(format!("python: uv pip install -r {manifest_display} --all-extras"));
+                        return true;
+                    }
+                    Some(Err(deps)) => failures.push(format!(
+                        "uv pip install -e {display} failed: {}; uv pip install -r {manifest_display} failed: {deps}",
+                        failure_output(&result)
+                    )),
+                    None => failures.push(format!(
+                        "uv pip install -e {display} failed: {}",
+                        failure_output(&result)
+                    )),
+                }
+            }
+        }
+        false
+    }
+
+    fn install_root(&self, found: &[String], prepared: &mut Vec<String>, failures: &mut Vec<String>) -> bool {
+        let has = |name: &str| found.iter().any(|item| item == name);
+        if has("uv.lock") && has("pyproject.toml") {
+            let synced = self.runner.run(
+                vec![
+                    self.uv.to_string(),
+                    "sync".into(),
+                    "--frozen".into(),
+                    "--all-extras".into(),
+                    "--project".into(),
+                    self.repo_dir.into(),
+                ],
+                self.repo_dir,
+                &[("UV_PROJECT_ENVIRONMENT", self.venv)],
+            );
+            if synced.code == 0 {
+                prepared.push("python: uv sync --frozen --all-extras (uv.lock)".into());
+                return true;
+            }
+            failures.push(format!("uv sync failed: {}", failure_output(&synced)));
+            return false;
+        }
+        if is_poetry_project(self.repo_dir) {
+            let result = self.install_poetry(self.repo_dir);
+            if result.code == 0 {
+                prepared.push("python: poetry install --no-root .".into());
+                return true;
+            }
+            failures.push(format!("poetry install . failed: {}", failure_output(&result)));
+            return false;
+        }
+        if has("pyproject.toml") || has("setup.py") {
+            return self.install_editable(self.repo_dir, ".", "pyproject.toml", prepared, failures);
+        }
+        false
+    }
+
+    fn install_nested(&self, found: &[String], prepared: &mut Vec<String>, failures: &mut Vec<String>) -> bool {
+        let manifest = Regex::new(r"(^|/)(pyproject\.toml|setup\.py)$").expect("static pattern");
+        let mut ok = false;
+        for name in found
+            .iter()
+            .filter(|name| name.contains('/') && manifest.is_match(name))
+        {
+            let sub = dirname(name);
+            let project = jsrt::path::join(&[self.repo_dir, &sub]);
+            if is_poetry_project(&project) {
+                let result = self.install_poetry(&project);
+                if result.code == 0 {
+                    prepared.push(format!("python: poetry install --no-root {sub}"));
+                    ok = true;
+                } else {
+                    failures.push(format!("poetry install {sub} failed: {}", failure_output(&result)));
+                }
+            } else if self.install_editable(&project, &sub, &format!("{sub}/pyproject.toml"), prepared, failures) {
+                ok = true;
+            }
+        }
+        ok
+    }
+
+    fn install_requirements(
+        &self,
+        found: &[String],
+        prepared: &mut Vec<String>,
+        failures: &mut Vec<String>,
+    ) -> (bool, bool) {
+        let listed = Regex::new(r"requirements.*\.txt$|requirements/").expect("static pattern");
+        let requirements: Vec<&String> = found.iter().filter(|name| listed.is_match(name)).collect();
+        let mut ok = false;
+        for file in &requirements {
+            let result = self.pip(&["-r", &jsrt::path::join(&[self.repo_dir, file])]);
+            if result.code == 0 {
+                prepared.push(format!("python: uv pip install -r {file}"));
+                ok = true;
+            } else {
+                failures.push(format!("uv pip install -r {file} failed: {}", failure_output(&result)));
+            }
+        }
+        (ok, !requirements.is_empty())
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal helper splitting prepare_environment phases"
+)]
+fn prepare_python_env(
+    runner: &EnvRunner<'_>,
+    uv: Option<&str>,
+    python: Option<&ToolchainEntry>,
+    requests: &ToolchainRequests,
+    found: &[String],
+    repo_dir: &str,
+    dir: &str,
+    prepared: &mut Vec<String>,
+    failures: &mut Vec<String>,
+) {
+    let Some(uv) = uv else {
+        failures
+            .push("uv is not installed (https://docs.astral.sh/uv/): the Python environment was not prepared".into());
+        return;
+    };
+    let venv = jsrt::path::join(&[dir, ".venv"]);
+    let python_arg = binary_of(python, "python3")
+        .or_else(|| binary_of(python, "python"))
+        .or_else(|| requests.python.clone().filter(|p| !p.is_empty()));
+    let mut argv = vec![uv.to_string(), "venv".into(), venv.clone()];
+    if let Some(python_arg) = python_arg {
+        argv.extend(["--python".into(), python_arg]);
+    }
+    let created = runner.run(argv, dir, &[]);
+    if created.code != 0 {
+        failures.push(format!("uv venv failed: {}", failure_output(&created)));
+        return;
+    }
+    let interpreter = jsrt::path::join(&[&venv, "bin", "python"]);
+    let py = PythonEnv {
+        runner,
+        uv,
+        venv: &venv,
+        interpreter: &interpreter,
+        repo_dir,
+    };
+    let root_ok = py.install_root(found, prepared, failures);
+    let nested_ok = py.install_nested(found, prepared, failures);
+    let (req_ok, has_reqs) = py.install_requirements(found, prepared, failures);
+    if !(root_ok || nested_ok || req_ok) && prepared.is_empty() && !has_reqs {
+        prepared.push("python: .venv (no dependency list found)".into());
+    }
+}
+
+fn prepare_node_env(
+    runner: &EnvRunner<'_>,
+    found: &[String],
+    repo_dir: &str,
+    dir: &str,
+    prepared: &mut Vec<String>,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    let Some(lock) = NODE_LOCKS.iter().find(|name| found.iter().any(|item| item == *name)) else {
+        failures.push(
+            "no Node lockfile (package-lock.json, pnpm-lock.yaml, yarn.lock): node_modules was not prepared".into(),
+        );
+        return Ok(());
+    };
+    for name in ["package.json", lock, ".npmrc"] {
+        let from = jsrt::path::join(&[repo_dir, name]);
+        if exists(&from) {
+            let to = jsrt::path::join(&[dir, name]);
+            fs::copy(&from, &to).map_err(|error| io_error("cannot copy", &from, error))?;
+        }
+    }
+    let argv: &[&str] = match *lock {
+        "pnpm-lock.yaml" => &["pnpm", "install", "--frozen-lockfile", "--ignore-scripts"],
+        "yarn.lock" => &[
+            "yarn",
+            "install",
+            "--frozen-lockfile",
+            "--ignore-scripts",
+            "--non-interactive",
+        ],
+        _ => &["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+    };
+    let line = argv.join(" ");
+    let result = runner.run(argv.iter().map(std::string::ToString::to_string).collect(), dir, &[]);
+    if result.code == 0 {
+        prepared.push(format!("node: {line} ({lock})"));
+    } else {
+        failures.push(format!("{line} failed: {}", failure_output(&result)));
+    }
+    Ok(())
+}
+
+fn find_uv_binary(env_path: &str, local_bin: String) -> Option<String> {
+    env_path
         .split(':')
         .map(String::from)
         .chain(std::iter::once(local_bin))
         .map(|item| jsrt::path::join(&[&item, "uv"]))
-        .find(|candidate| exists(candidate));
+        .find(|candidate| exists(candidate))
+}
 
-    if needs_python {
-        match &uv {
-            None => failures.push(
-                "uv is not installed (https://docs.astral.sh/uv/): the Python environment was not prepared".into(),
-            ),
-            Some(uv) => {
-                let venv = jsrt::path::join(&[&dir, ".venv"]);
-                let python_arg = binary_of(python, "python3")
-                    .or_else(|| binary_of(python, "python"))
-                    .or_else(|| requests.python.clone().filter(|python| !python.is_empty()));
-                let mut argv = vec![uv.clone(), "venv".into(), venv.clone()];
-                if let Some(python_arg) = python_arg {
-                    argv.extend(["--python".into(), python_arg]);
-                }
-                let created = run(argv, &dir, &[]);
-                if created.code != 0 {
-                    failures.push(format!("uv venv failed: {}", failure_output(&created)));
-                } else {
-                    let interpreter = jsrt::path::join(&[&venv, "bin", "python"]);
-                    let pip = |args: &[&str]| {
-                        let mut argv = vec![
-                            uv.clone(),
-                            "pip".into(),
-                            "install".into(),
-                            "--python".into(),
-                            interpreter.clone(),
-                        ];
-                        argv.extend(args.iter().map(std::string::ToString::to_string));
-                        run(argv, repo_dir, &[])
-                    };
-                    let poetry = |project: &str| {
-                        fs::read_to_string(Path::new(project).join("pyproject.toml")).is_ok_and(|text| {
-                            Regex::new(r"(?m)^\[tool\.poetry\]")
-                                .expect("static pattern")
-                                .is_match(&text)
-                        })
-                    };
-                    let install_poetry = |project: &str| {
-                        run(
-                            vec![
-                                uv.clone(),
-                                "tool".into(),
-                                "run".into(),
-                                "--python".into(),
-                                interpreter.clone(),
-                                "--from".into(),
-                                "poetry".into(),
-                                "poetry".into(),
-                                "--directory".into(),
-                                project.into(),
-                                "install".into(),
-                                "--no-root".into(),
-                                "--all-extras".into(),
-                                "--no-interaction".into(),
-                            ],
-                            repo_dir,
-                            &[("VIRTUAL_ENV", &venv), ("POETRY_VIRTUALENVS_CREATE", "false")],
-                        )
-                    };
-                    let deps_only = |project: &str| -> Option<Result<(), String>> {
-                        let manifest = jsrt::path::join(&[project, "pyproject.toml"]);
-                        let text = fs::read_to_string(&manifest).ok()?;
-                        if !Regex::new(r"(?m)^\s*dependencies\s*=")
-                            .expect("static pattern")
-                            .is_match(&text)
-                        {
-                            return None;
-                        }
-                        let result = pip(&["-r", &manifest, "--all-extras"]);
-                        Some(if result.code == 0 {
-                            Ok(())
-                        } else {
-                            Err(failure_output(&result))
-                        })
-                    };
-                    let mut ok = false;
-                    let has = |name: &str| found.python.iter().any(|item| item == name);
-                    if has("uv.lock") && has("pyproject.toml") {
-                        let synced = run(
-                            vec![
-                                uv.clone(),
-                                "sync".into(),
-                                "--frozen".into(),
-                                "--all-extras".into(),
-                                "--project".into(),
-                                repo_dir.into(),
-                            ],
-                            repo_dir,
-                            &[("UV_PROJECT_ENVIRONMENT", &venv)],
-                        );
-                        if synced.code == 0 {
-                            prepared.push("python: uv sync --frozen --all-extras (uv.lock)".into());
-                            ok = true;
-                        } else {
-                            failures.push(format!("uv sync failed: {}", failure_output(&synced)));
-                        }
-                    } else if poetry(repo_dir) {
-                        let result = install_poetry(repo_dir);
-                        if result.code == 0 {
-                            prepared.push("python: poetry install --no-root .".into());
-                            ok = true;
-                        } else {
-                            failures.push(format!("poetry install . failed: {}", failure_output(&result)));
-                        }
-                    } else if has("pyproject.toml") || has("setup.py") {
-                        for suffix in ["[dev,test]", "[dev]", "[test]", ""] {
-                            let result = pip(&["-e", &format!("{repo_dir}{suffix}")]);
-                            if result.code == 0 {
-                                prepared.push(format!("python: uv pip install -e .{suffix}"));
-                                ok = true;
-                                break;
-                            }
-                            if suffix.is_empty() {
-                                match deps_only(repo_dir) {
-                                    Some(Ok(())) => {
-                                        prepared.push("python: uv pip install -r pyproject.toml --all-extras".into());
-                                        ok = true;
-                                    }
-                                    Some(Err(deps)) => failures.push(format!(
-                                        "uv pip install -e . failed: {}; uv pip install -r pyproject.toml failed: {deps}",
-                                        failure_output(&result)
-                                    )),
-                                    None => {
-                                        failures.push(format!("uv pip install -e . failed: {}", failure_output(&result)));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    let manifest = Regex::new(r"(^|/)(pyproject\.toml|setup\.py)$").expect("static pattern");
-                    for name in found
-                        .python
-                        .iter()
-                        .filter(|name| name.contains('/') && manifest.is_match(name))
-                    {
-                        let sub = dirname(name);
-                        let project = jsrt::path::join(&[repo_dir, &sub]);
-                        if poetry(&project) {
-                            let result = install_poetry(&project);
-                            if result.code == 0 {
-                                prepared.push(format!("python: poetry install --no-root {sub}"));
-                                ok = true;
-                            } else {
-                                failures.push(format!("poetry install {sub} failed: {}", failure_output(&result)));
-                            }
-                            continue;
-                        }
-                        for suffix in ["[dev,test]", "[dev]", "[test]", ""] {
-                            let result = pip(&["-e", &format!("{project}{suffix}")]);
-                            if result.code == 0 {
-                                prepared.push(format!("python: uv pip install -e {sub}{suffix}"));
-                                ok = true;
-                                break;
-                            }
-                            if suffix.is_empty() {
-                                match deps_only(&project) {
-                                    Some(Ok(())) => {
-                                        prepared.push(format!("python: uv pip install -r {sub}/pyproject.toml --all-extras"));
-                                        ok = true;
-                                    }
-                                    Some(Err(deps)) => failures.push(format!(
-                                        "uv pip install -e {sub} failed: {}; uv pip install -r {sub}/pyproject.toml failed: {deps}",
-                                        failure_output(&result)
-                                    )),
-                                    None => failures
-                                        .push(format!("uv pip install -e {sub} failed: {}", failure_output(&result))),
-                                }
-                            }
-                        }
-                    }
-                    let listed = Regex::new(r"requirements.*\.txt$|requirements/").expect("static pattern");
-                    let requirements: Vec<&String> = found.python.iter().filter(|name| listed.is_match(name)).collect();
-                    for file in &requirements {
-                        let result = pip(&["-r", &jsrt::path::join(&[repo_dir, file])]);
-                        if result.code == 0 {
-                            prepared.push(format!("python: uv pip install -r {file}"));
-                            ok = true;
-                        } else {
-                            failures.push(format!("uv pip install -r {file} failed: {}", failure_output(&result)));
-                        }
-                    }
-                    if !ok && prepared.is_empty() && requirements.is_empty() {
-                        prepared.push("python: .venv (no dependency list found)".into());
-                    }
-                }
-            }
-        }
-    }
-    if needs_node {
-        match NODE_LOCKS
-            .iter()
-            .find(|name| found.node.iter().any(|item| item == *name))
-        {
-            None => failures.push(
-                "no Node lockfile (package-lock.json, pnpm-lock.yaml, yarn.lock): node_modules was not prepared".into(),
-            ),
-            Some(lock) => {
-                for name in ["package.json", lock, ".npmrc"] {
-                    let from = jsrt::path::join(&[repo_dir, name]);
-                    if exists(&from) {
-                        let to = jsrt::path::join(&[&dir, name]);
-                        fs::copy(&from, &to).map_err(|error| io_error("cannot copy", &from, error))?;
-                    }
-                }
-                let argv: &[&str] = match *lock {
-                    "pnpm-lock.yaml" => &["pnpm", "install", "--frozen-lockfile", "--ignore-scripts"],
-                    "yarn.lock" => &[
-                        "yarn",
-                        "install",
-                        "--frozen-lockfile",
-                        "--ignore-scripts",
-                        "--non-interactive",
-                    ],
-                    _ => &["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
-                };
-                let line = argv.join(" ");
-                let result = run(argv.iter().map(std::string::ToString::to_string).collect(), &dir, &[]);
-                if result.code == 0 {
-                    prepared.push(format!("node: {line} ({lock})"));
-                } else {
-                    failures.push(format!("{line} failed: {}", failure_output(&result)));
-                }
-            }
-        }
-    }
+#[expect(clippy::too_many_arguments, reason = "internal environment record writer")]
+fn finish_prepared_env(
+    lock: fs::File,
+    record_path: &str,
+    dir: &str,
+    hash: &str,
+    repo_dir: &str,
+    started: i64,
+    options: &PrepareOptions,
+    toolchain: Vec<ToolchainEntry>,
+    prepared: Vec<String>,
+    failures: Vec<String>,
+) -> Result<Prepared, String> {
     let ok = !prepared.is_empty() && failures.is_empty();
     let now = (options.now)();
     let record = json!({
@@ -689,13 +781,74 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
         "at": jsrt::date::iso_string(now),
         "repo": repo_dir,
     });
-    write_record(&record_path, &to_json_1(&record))?;
-    locked(lock.lock_shared())?;
-    let mut prepared = Prepared::from_record(record);
-    prepared.lease = EnvLease {
+    write_record(record_path, &to_json_1(&record))?;
+    lock.lock_shared()
+        .map_err(|error| io_error("cannot lock", dir, error))?;
+    let mut result = Prepared::from_record(record);
+    result.lease = EnvLease {
         _held: Some(std::sync::Arc::new(lock)),
     };
-    Ok(prepared)
+    Ok(result)
+}
+
+/// Prepare the environment of `repo_dir`: toolchains, then the Python virtualenv and/or the Node modules, into
+/// `<cache_dir>/envs/<hash>/`. Cached when that hash's `toolchain.json` says it succeeded.
+pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<Prepared, String> {
+    let started = (options.now)();
+    let repo = Path::new(repo_dir);
+    let found = detect_ecosystems(repo);
+    let (needs_python, needs_node) = (!found.python.is_empty(), !found.node.is_empty());
+    let hash = environment_hash(repo, options.python.as_deref());
+    let dir = jsrt::path::join(&[&options.cache_dir, "envs", &hash]);
+    let record_path = jsrt::path::join(&[&dir, "toolchain.json"]);
+    let lock = open_env_lock(&options.cache_dir, &hash)?;
+    let lock = match try_cached_or_lock_exclusive(lock, &record_path, &dir, &hash, started, options)? {
+        Ok(prepared) => return Ok(prepared),
+        Err(lock) => lock,
+    };
+    reset_env_dir(&dir)?;
+    let mut prepared: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+    let mut requests = crate::prepare::toolchain_requests(repo);
+    if let Some(python) = options.python.as_ref().filter(|python| !python.is_empty()) {
+        requests.python = Some(python.clone());
+    }
+    let (toolchain, toolchain_failures) = resolve_toolchain(options, &requests, needs_python, needs_node);
+    failures.extend(toolchain_failures);
+    let python = toolchain.iter().find(|entry| entry.tool == "python");
+    let local_bin = jsrt::path::join(&[&options.home, ".local", "bin"]);
+    let env_path = options.env.get("PATH").cloned().unwrap_or_default();
+    let runner = EnvRunner::new(options, &toolchain, &local_bin, &env_path);
+    let uv = find_uv_binary(&env_path, local_bin);
+
+    if needs_python {
+        prepare_python_env(
+            &runner,
+            uv.as_deref(),
+            python,
+            &requests,
+            &found.python,
+            repo_dir,
+            &dir,
+            &mut prepared,
+            &mut failures,
+        );
+    }
+    if needs_node {
+        prepare_node_env(&runner, &found.node, repo_dir, &dir, &mut prepared, &mut failures)?;
+    }
+    finish_prepared_env(
+        lock,
+        &record_path,
+        &dir,
+        &hash,
+        repo_dir,
+        started,
+        options,
+        toolchain,
+        prepared,
+        failures,
+    )
 }
 
 /// `<cache>/envs/<hash>.lock`, beside the environment so removing that leaves the lock alone.

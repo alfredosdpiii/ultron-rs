@@ -2,6 +2,8 @@
 
 use super::*;
 
+type RegisteredGeneration = (u64, mpsc::Receiver<String>, Arc<Exit>, Arc<Mutex<HashMap<i32, u64>>>);
+
 impl Shared {
     pub(super) fn cpu_exceeded(&self, generation: &Generation) -> bool {
         let limit = self.limits.max_cpu_seconds as f64;
@@ -154,54 +156,75 @@ impl Shared {
         self.spawn(state, restore)
     }
 
+    fn run_startup_restore(self: &Arc<Self>, generation: u64, path: &Path) -> Result<KernelReply, KernelError> {
+        let op = {
+            let mut state = jsrt::sync::lock(&self.state);
+            state.next_op += 1;
+            let op = state.next_op;
+            state.ops.insert(
+                op,
+                Op {
+                    running: true,
+                    outcome: None,
+                    cell: None,
+                    handler: None,
+                    recovery: None,
+                },
+            );
+            op
+        };
+        let outcome = self.verified_restore(op, generation, path);
+        jsrt::sync::lock(&self.state).ops.remove(&op);
+        outcome
+    }
+
+    fn record_startup_recovery(&self, state: &mut State, restore: Result<Option<RestoreReport>, String>) {
+        let crash = state.continuity.crash.take();
+        let restored_something = matches!(&restore, Ok(Some(report)) if !report.missing);
+        if crash.is_none() && !restored_something && restore.is_ok() {
+            return;
+        }
+        let crash = crash.unwrap_or_else(|| Crash {
+            reason: "kernel started from its checkpoint".into(),
+            interrupted_cell: false,
+            unsaved_cells: 0,
+            restore_error: None,
+        });
+        let path = self
+            .options
+            .snapshot_path
+            .as_ref()
+            .map_or_default(|path| path.display().to_string());
+        let report = recovery_report(crash, path, restore, state.continuity.checkpoint.as_ref());
+        state.continuity.notice = Some(report.clone());
+        state.continuity.last_recovery = Some(report);
+    }
+
     /// Completes a generation's startup after `ready`: restores `restore_path` (kernel.ts `completeStartup`) and, with
     /// continuity, prepares the recovery report for the next cell.
     pub(super) fn complete_startup(self: &Arc<Self>, generation: u64, restore_path: Option<PathBuf>) {
-        let restored = restore_path.as_ref().map(|path| {
-            let op = {
-                let mut state = jsrt::sync::lock(&self.state);
-                state.next_op += 1;
-                let op = state.next_op;
-                state.ops.insert(
-                    op,
-                    Op {
-                        running: true,
-                        outcome: None,
-                        cell: None,
-                        handler: None,
-                        recovery: None,
-                    },
-                );
-                op
-            };
-            let outcome = self.verified_restore(op, generation, path);
-            jsrt::sync::lock(&self.state).ops.remove(&op);
-            outcome
-        });
+        let restored = restore_path
+            .as_ref()
+            .map(|path| self.run_startup_restore(generation, path));
         let mut state = jsrt::sync::lock(&self.state);
         if state.current(generation).is_none() {
             return;
         }
-        let continuity = self.options.continuity.is_some();
         let skipped_restore = state
             .continuity
             .crash
             .as_ref()
             .and_then(|crash| crash.restore_error.clone());
-        let restore: Result<Option<RestoreReport>, String> = match restored {
-            None => skipped_restore.map_or(Ok(None), Err),
-            Some(Ok(reply)) if reply.result.status == Status::Error => Err(reply
-                .result
-                .error
-                .map_or_else(|| "unknown restore error".to_string(), |error| error.evalue)),
-            Some(Ok(reply)) => Ok(reply.restore),
-            Some(Err(error)) => {
+        let restore = match interpret_startup_restore(restored, skipped_restore) {
+            Ok(restore) => restore,
+            Err(error) => {
                 self.fail(&mut state, generation, error);
                 drop(state);
                 self.changed.notify_all();
                 return;
             }
         };
+        let continuity = self.options.continuity.is_some();
         if let Err(message) = &restore
             && !continuity
         {
@@ -212,30 +235,69 @@ impl Shared {
             return;
         }
         if continuity {
-            let crash = state.continuity.crash.take();
-            let restored_something = matches!(&restore, Ok(Some(report)) if !report.missing);
-            if crash.is_some() || restored_something || restore.is_err() {
-                let crash = crash.unwrap_or_else(|| Crash {
-                    reason: "kernel started from its checkpoint".into(),
-                    interrupted_cell: false,
-                    unsaved_cells: 0,
-                    restore_error: None,
-                });
-                let path = self
-                    .options
-                    .snapshot_path
-                    .as_ref()
-                    .map_or_default(|path| path.display().to_string());
-                let report = recovery_report(crash, path, restore, state.continuity.checkpoint.as_ref());
-                state.continuity.notice = Some(report.clone());
-                state.continuity.last_recovery = Some(report);
-            }
+            self.record_startup_recovery(&mut state, restore);
         }
         if let Some(current) = state.current(generation) {
             current.initialized = true;
         }
         drop(state);
         self.changed.notify_all();
+    }
+
+    fn verify_and_write_signed_snapshot(
+        &self,
+        unsigned: &Path,
+        path: &Path,
+        reported_sha: Option<&str>,
+    ) -> Result<(), String> {
+        let limit = snapshot::max_snapshot_bytes();
+        if limit > 0
+            && let Ok(meta) = std::fs::metadata(unsigned)
+            && meta.len() > limit
+        {
+            return Err(format!(
+                "snapshot skipped: {} bytes exceeds limit of {} bytes ({})",
+                meta.len(),
+                limit,
+                snapshot::ENV_MAX_SNAPSHOT_BYTES
+            ));
+        }
+        let content = std::fs::read(unsigned).map_err(|error| format!("snapshot signing failed: {error}"))?;
+        if reported_sha != Some(jsrt::hash::sha256_hex(&content).as_str()) {
+            return Err("snapshot changed after the kernel wrote it; refusing to sign it".into());
+        }
+        jsrt::fs::atomic_write_mode(path, sign_snapshot(&self.snapshot_key, &content), 0o600)
+            .map_err(|error| format!("snapshot signing failed: {error}"))
+    }
+
+    fn record_checkpoint(&self, path: &Path, report: Option<&SnapshotReport>) {
+        if self.options.snapshot_path.as_deref() != Some(path) {
+            return;
+        }
+        let mut state = jsrt::sync::lock(&self.state);
+        let continuity = &mut state.continuity;
+        continuity.checkpoint = report.cloned();
+        continuity.checkpoint_cells = continuity.cells;
+        continuity.last_checkpoint = Some(Instant::now());
+        continuity.dirty = false;
+        if self.options.continuity.is_some() {
+            state.no_auto_restore = false;
+        }
+    }
+
+    fn finalize_signed_snapshot(&self, reply: KernelReply, unsigned: &Path, path: &Path) -> KernelReply {
+        if reply.result.status != Status::Ok {
+            return reply;
+        }
+        let reported = reply
+            .snapshot
+            .as_ref()
+            .and_then(|report| report.content_sha256.as_deref());
+        if let Err(error) = self.verify_and_write_signed_snapshot(unsigned, path, reported) {
+            return KernelReply::from_result(snapshot::snapshot_error(error));
+        }
+        self.record_checkpoint(path, reply.snapshot.as_ref());
+        reply
     }
 
     /// kernel.ts `signedSnapshot`: the kernel writes an unsigned temporary file; the host checks it is exactly what
@@ -255,50 +317,9 @@ impl Shared {
             ("request", Value::from("snapshot")),
             ("path", Value::from(unsigned.to_string_lossy().into_owned())),
         ]);
-        let outcome = self.request(op, generation, frame).map(|reply| {
-            if reply.result.status != Status::Ok {
-                return reply;
-            }
-            let failed = |error: String| KernelReply::from_result(snapshot::snapshot_error(error));
-            let limit = snapshot::max_snapshot_bytes();
-            if limit > 0
-                && let Ok(meta) = std::fs::metadata(&unsigned)
-                && meta.len() > limit
-            {
-                return failed(format!(
-                    "snapshot skipped: {} bytes exceeds limit of {} bytes ({})",
-                    meta.len(),
-                    limit,
-                    snapshot::ENV_MAX_SNAPSHOT_BYTES
-                ));
-            }
-            let content = match std::fs::read(&unsigned) {
-                Ok(content) => content,
-                Err(error) => return failed(format!("snapshot signing failed: {error}")),
-            };
-            let reported = reply
-                .snapshot
-                .as_ref()
-                .and_then(|report| report.content_sha256.as_deref());
-            if reported != Some(jsrt::hash::sha256_hex(&content).as_str()) {
-                return failed("snapshot changed after the kernel wrote it; refusing to sign it".into());
-            }
-            if let Err(error) = jsrt::fs::atomic_write_mode(path, sign_snapshot(&self.snapshot_key, &content), 0o600) {
-                return failed(format!("snapshot signing failed: {error}"));
-            }
-            if self.options.snapshot_path.as_deref() == Some(path) {
-                let mut state = jsrt::sync::lock(&self.state);
-                let continuity = &mut state.continuity;
-                continuity.checkpoint = reply.snapshot.clone();
-                continuity.checkpoint_cells = continuity.cells;
-                continuity.last_checkpoint = Some(Instant::now());
-                continuity.dirty = false;
-                if self.options.continuity.is_some() {
-                    state.no_auto_restore = false;
-                }
-            }
-            reply
-        });
+        let outcome = self
+            .request(op, generation, frame)
+            .map(|reply| self.finalize_signed_snapshot(reply, &unsigned, path));
         let _ = std::fs::remove_file(&unsigned);
         outcome
     }
@@ -349,28 +370,58 @@ impl Shared {
             .unwrap_or_else(|| crate::env::python(|name| self.options.var(name)).into())
     }
 
-    pub(super) fn spawn(self: &Arc<Self>, state: &mut State, restore: bool) -> Result<u64, KernelError> {
-        let options = &self.options;
-        let python = self.python();
-        let spawn_error = |error: std::io::Error| KernelError::new(format!("RLM kernel spawn failed: {error}"));
-        let mechanism = match &options.sandbox {
-            Some(launcher) => sandboxed::mechanism(launcher)?,
-            None => None,
+    fn resolve_tree_backend(&self, mechanism: Option<sandbox::Mechanism>) -> TreeMemoryBackend {
+        let Some(tree) = &self.options.tree_memory else {
+            return TreeMemoryBackend::Off;
         };
-        let tree_backend = match &options.tree_memory {
-            None => TreeMemoryBackend::Off,
-            Some(tree) => {
-                let requested = tree
-                    .backend
-                    .clone()
-                    .or_else(|| options.var(crate::env::RLM_TREE_MEMORY_BACKEND_ENV));
-                tree_memory::tree_memory_backend(self.tree_memory_mb, requested.as_deref(), || {
-                    mechanism.is_none() && tree_memory::cgroup_scope_available(tree.launcher.as_os_str())
-                })
+        let requested = tree
+            .backend
+            .clone()
+            .or_else(|| self.options.var(crate::env::RLM_TREE_MEMORY_BACKEND_ENV));
+        tree_memory::tree_memory_backend(self.tree_memory_mb, requested.as_deref(), || {
+            mechanism.is_none() && tree_memory::cgroup_scope_available(tree.launcher.as_os_str())
+        })
+    }
+
+    fn build_direct_command(
+        &self,
+        argv: &[std::ffi::OsString],
+        tree_backend: TreeMemoryBackend,
+        fixed_env: Vec<(String, String)>,
+    ) -> Command {
+        let options = &self.options;
+        let mut command = match (&options.tree_memory, tree_backend) {
+            (Some(tree), TreeMemoryBackend::Cgroup) => {
+                let mut command = Command::new(&tree.launcher);
+                command
+                    .args(&tree_memory::cgroup_scope_command(self.tree_memory_mb)[1..])
+                    .args(argv);
+                command
+            }
+            _ => {
+                let mut command = Command::new(&argv[0]);
+                command.args(&argv[1..]);
+                command
             }
         };
+        command
+            .current_dir(&options.cwd)
+            .env_clear()
+            .envs(kernel_environment(options.base_environment()))
+            .envs(fixed_env)
+            .envs(options.env.iter().map(|(name, value)| (name, value)));
+        command
+    }
+
+    fn build_spawn_command(
+        &self,
+        python: &Path,
+        mechanism: Option<sandbox::Mechanism>,
+        tree_backend: TreeMemoryBackend,
+    ) -> Command {
+        let options = &self.options;
         let argv: Vec<std::ffi::OsString> = vec![
-            python.clone().into(),
+            python.to_path_buf().into(),
             options.runtime_path.clone().into(),
             "--protocol-fds".into(),
         ];
@@ -393,7 +444,7 @@ impl Shared {
             (Some(mechanism), Some(launcher)) => sandboxed::command(sandboxed::Launch {
                 launcher,
                 mechanism,
-                python: &python,
+                python,
                 argv,
                 cwd: &options.cwd,
                 runtime: &options.runtime_path,
@@ -402,63 +453,153 @@ impl Shared {
                 extra_env: &options.env,
                 base_env: options.base_environment(),
             }),
-            _ => {
-                let mut command = match (&options.tree_memory, tree_backend) {
-                    (Some(tree), TreeMemoryBackend::Cgroup) => {
-                        let mut command = Command::new(&tree.launcher);
-                        command
-                            .args(&tree_memory::cgroup_scope_command(self.tree_memory_mb)[1..])
-                            .args(&argv);
-                        command
-                    }
-                    _ => {
-                        let mut command = Command::new(&argv[0]);
-                        command.args(&argv[1..]);
-                        command
-                    }
-                };
-                command
-                    .current_dir(&options.cwd)
-                    .env_clear()
-                    .envs(kernel_environment(options.base_environment()))
-                    .envs(fixed_env)
-                    .envs(options.env.iter().map(|(name, value)| (name, value)));
-                command
-            }
+            _ => self.build_direct_command(&argv, tree_backend, fixed_env),
         };
-        command.process_group(0).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let (protocol_out, kernel_out) = std::io::pipe().map_err(spawn_error)?;
-        let (kernel_in, protocol_in) = std::io::pipe().map_err(spawn_error)?;
-        command.stdin(Stdio::null());
         command
-            .fd_mappings(vec![
-                FdMapping {
-                    parent_fd: kernel_out.into(),
-                    child_fd: 3,
-                },
-                FdMapping {
-                    parent_fd: kernel_in.into(),
-                    child_fd: 4,
-                },
-            ])
-            .map_err(|error| KernelError::new(error.to_string()))?;
-        let mut child = if mechanism.is_some() {
-            sandboxed::spawn(command).map_err(spawn_error)?
-        } else {
-            let child = command.spawn().map_err(spawn_error)?;
-            drop(command);
-            child
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
+    }
+
+    fn spawn_protocol_writer(
+        self: &Arc<Self>,
+        id: u64,
+        mut protocol_in: std::io::PipeWriter,
+        lines: mpsc::Receiver<String>,
+    ) {
+        let shared = self.clone();
+        std::thread::spawn(move || {
+            for line in lines {
+                if let Err(error) = protocol_in
+                    .write_all(line.as_bytes())
+                    .and_then(|()| protocol_in.flush())
+                {
+                    shared.with_state(|state| shared.fail(state, id, KernelError::new(error.to_string())));
+                    return;
+                }
+            }
+        });
+    }
+
+    fn spawn_protocol_reader(self: &Arc<Self>, id: u64, protocol_out: std::io::PipeReader, exit: Arc<Exit>) {
+        let shared = self.clone();
+        std::thread::spawn(move || {
+            if let Err(error) = read_chunks(protocol_out, |chunk| {
+                shared.with_state(|state| shared.handle_data(state, id, chunk));
+            }) {
+                shared.with_state(|state| shared.fail(state, id, KernelError::new(error.to_string())));
+                return;
+            }
+            if !exit.wait_reaped(CLOSED_CHANNEL_GRACE) {
+                shared.with_state(|state| {
+                    let error = KernelError::new(format!(
+                        "RLM kernel protocol channel (fd 3) closed{}",
+                        state.diagnostics()
+                    ));
+                    shared.fail(state, id, error);
+                });
+            }
+        });
+    }
+
+    fn spawn_raw_readers(
+        self: &Arc<Self>,
+        id: u64,
+        raw_stdout: Option<std::process::ChildStdout>,
+        stderr: Option<std::process::ChildStderr>,
+    ) {
+        if let Some(stdout) = raw_stdout {
+            let shared = self.clone();
+            std::thread::spawn(move || {
+                let _ = read_chunks(stdout, |chunk| {
+                    shared.with_state(|state| handle_raw(state, id, 0, chunk));
+                });
+            });
+        }
+        if let Some(stderr) = stderr {
+            let shared = self.clone();
+            std::thread::spawn(move || {
+                let _ = read_chunks(stderr, |chunk| {
+                    shared.with_state(|state| {
+                        if state.current(id).is_none() {
+                            return;
+                        }
+                        handle_raw(state, id, 1, chunk);
+                    });
+                });
+            });
+        }
+    }
+
+    fn handle_child_exit(&self, state: &mut State, id: u64, status: &std::io::Result<ExitStatus>) {
+        let Some(current) = state.current(id) else {
+            return;
         };
-        let pid = i32::try_from(child.id()).map_err(|error| KernelError::new(error.to_string()))?;
-        let stderr = child.stderr.take();
-        let raw_stdout = child.stdout.take();
-        state.next_generation += 1;
-        let id = state.next_generation;
-        let restore_path = if restore && !state.no_auto_restore {
-            options.snapshot_path.clone()
+        let killed = status
+            .as_ref()
+            .ok()
+            .and_then(std::os::unix::process::ExitStatusExt::signal)
+            .is_some_and(|signal| signal == SIGKILL || signal == SIGTERM);
+        let tree_kill = if killed {
+            self.tree_memory_exceeded(current).then_some(current.tree_backend)
         } else {
             None
         };
+        let error = match tree_kill {
+            Some(backend) => KernelError::new(tree_memory::tree_memory_limit_message(self.tree_memory_mb, backend)),
+            None => self.exit_error(state, status.as_ref().ok().copied()),
+        };
+        self.fail(state, id, error);
+    }
+
+    fn maybe_restart_after_exit(self: &Arc<Self>) {
+        let mut state = jsrt::sync::lock(&self.state);
+        if std::mem::take(&mut state.continuity.restart)
+            && !state.closed
+            && state.generation.is_none()
+            && let Ok(generation) = self.ensure_started(&mut state, true)
+        {
+            drop(self.wait_started(state, generation, None));
+        }
+    }
+
+    fn spawn_exit_reaper(self: &Arc<Self>, id: u64, pid: i32, mut child: std::process::Child, exit: Arc<Exit>) {
+        let shared = self.clone();
+        std::thread::spawn(move || {
+            wait_for_pid_exit(pid);
+            shared.with_state(|_| jsrt::sync::lock(&exit.state).0 = true);
+            let status = child.wait();
+            jsrt::sync::lock(&exit.state).1 =
+                Some(status.as_ref().copied().unwrap_or_else(|_| ExitStatus::from_raw(0)));
+            exit.changed.notify_all();
+            shared.with_state(|state| shared.handle_child_exit(state, id, &status));
+            shared.maybe_restart_after_exit();
+        });
+    }
+
+    fn resolve_sandbox_mechanism(&self) -> Result<Option<sandbox::Mechanism>, KernelError> {
+        match &self.options.sandbox {
+            Some(launcher) => sandboxed::mechanism(launcher),
+            None => Ok(None),
+        }
+    }
+
+    fn register_generation(
+        &self,
+        state: &mut State,
+        pid: i32,
+        mechanism: Option<sandbox::Mechanism>,
+        tree_backend: TreeMemoryBackend,
+        restore: bool,
+    ) -> RegisteredGeneration {
+        let options = &self.options;
+        state.next_generation += 1;
+        let id = state.next_generation;
+        let restore_path = (restore && !state.no_auto_restore)
+            .then(|| options.snapshot_path.clone())
+            .flatten();
         let host_completes_startup =
             restore_path.is_some() || (options.continuity.is_some() && state.continuity.crash.is_some());
         let (writer, lines) = mpsc::channel::<String>();
@@ -490,105 +631,28 @@ impl Shared {
             completing: false,
         });
         state.stderr.clear();
+        (id, lines, exit, known_descendants)
+    }
 
-        let shared = self.clone();
-        let mut protocol_in = protocol_in;
-        std::thread::spawn(move || {
-            for line in lines {
-                if let Err(error) = protocol_in
-                    .write_all(line.as_bytes())
-                    .and_then(|()| protocol_in.flush())
-                {
-                    shared.with_state(|state| shared.fail(state, id, KernelError::new(error.to_string())));
-                    return;
-                }
-            }
-        });
-        let shared = self.clone();
-        let channel_exit = exit.clone();
-        std::thread::spawn(move || {
-            if let Err(error) = read_chunks(protocol_out, |chunk| {
-                shared.with_state(|state| shared.handle_data(state, id, chunk));
-            }) {
-                shared.with_state(|state| shared.fail(state, id, KernelError::new(error.to_string())));
-                return;
-            }
-            if !channel_exit.wait_reaped(CLOSED_CHANNEL_GRACE) {
-                shared.with_state(|state| {
-                    let error = KernelError::new(format!(
-                        "RLM kernel protocol channel (fd 3) closed{}",
-                        state.diagnostics()
-                    ));
-                    shared.fail(state, id, error);
-                });
-            }
-        });
-        if let Some(stdout) = raw_stdout {
-            let shared = self.clone();
-            std::thread::spawn(move || {
-                let _ = read_chunks(stdout, |chunk| {
-                    shared.with_state(|state| handle_raw(state, id, 0, chunk));
-                });
-            });
-        }
-        if let Some(stderr) = stderr {
-            let shared = self.clone();
-            std::thread::spawn(move || {
-                let _ = read_chunks(stderr, |chunk| {
-                    shared.with_state(|state| {
-                        if state.current(id).is_none() {
-                            return;
-                        }
-                        handle_raw(state, id, 1, chunk);
-                    });
-                });
-            });
-        }
+    pub(super) fn spawn(self: &Arc<Self>, state: &mut State, restore: bool) -> Result<u64, KernelError> {
+        let python = self.python();
+        let mechanism = self.resolve_sandbox_mechanism()?;
+        let tree_backend = self.resolve_tree_backend(mechanism);
+        let mut command = self.build_spawn_command(&python, mechanism, tree_backend);
+        let (protocol_out, protocol_in) = attach_protocol_pipes(&mut command)?;
+        let mut child = spawn_child(command, mechanism)?;
+        let pid = i32::try_from(child.id()).map_err(|error| KernelError::new(error.to_string()))?;
+        let stderr = child.stderr.take();
+        let raw_stdout = child.stdout.take();
+        let (id, lines, exit, known_descendants) =
+            self.register_generation(state, pid, mechanism, tree_backend, restore);
+        self.spawn_protocol_writer(id, protocol_in, lines);
+        self.spawn_protocol_reader(id, protocol_out, exit.clone());
+        self.spawn_raw_readers(id, raw_stdout, stderr);
         if tree_backend != TreeMemoryBackend::Off {
             self.start_tree_memory_watchdog(id, pid, tree_backend, known_descendants, exit.clone());
         }
-        let shared = self.clone();
-        std::thread::spawn(move || {
-            if let Some(process) = rustix::process::Pid::from_raw(pid) {
-                while let Err(rustix::io::Errno::INTR) =
-                    rustix::process::waitid(WaitId::Pid(process), WaitIdOptions::EXITED | WaitIdOptions::NOWAIT)
-                {
-                }
-            }
-            shared.with_state(|_| jsrt::sync::lock(&exit.state).0 = true);
-            let status = child.wait();
-            jsrt::sync::lock(&exit.state).1 =
-                Some(status.as_ref().copied().unwrap_or_else(|_| ExitStatus::from_raw(0)));
-            exit.changed.notify_all();
-            shared.with_state(|state| {
-                if state.current(id).is_some() {
-                    let killed = status
-                        .as_ref()
-                        .ok()
-                        .and_then(std::os::unix::process::ExitStatusExt::signal)
-                        .is_some_and(|signal| signal == SIGKILL || signal == SIGTERM);
-                    let tree_kill = match state.current(id) {
-                        Some(current) if killed => shared.tree_memory_exceeded(current).then_some(current.tree_backend),
-                        _ => None,
-                    };
-                    let error = match tree_kill {
-                        Some(backend) => {
-                            KernelError::new(tree_memory::tree_memory_limit_message(shared.tree_memory_mb, backend))
-                        }
-                        None => shared.exit_error(state, status.ok()),
-                    };
-                    shared.fail(state, id, error);
-                }
-            });
-            let mut state = jsrt::sync::lock(&shared.state);
-            if std::mem::take(&mut state.continuity.restart)
-                && !state.closed
-                && state.generation.is_none()
-                && let Ok(generation) = shared.ensure_started(&mut state, true)
-            {
-                drop(shared.wait_started(state, generation, None));
-            }
-        });
+        self.spawn_exit_reaper(id, pid, child, exit);
         Ok(id)
     }
 
@@ -619,6 +683,26 @@ impl Shared {
         KernelError::new(format!("RLM kernel exited ({how}){hint}{}", state.diagnostics()))
     }
 
+    fn record_failure_continuity(&self, state: &mut State, failed: &Generation, error: &KernelError) {
+        if self.options.continuity.is_none() {
+            if failed.initialized {
+                state.no_auto_restore = true;
+            }
+            return;
+        }
+        if state.closed {
+            return;
+        }
+        update_crash_state(state, failed, error);
+        if failed.completing && !failed.initialized && failed.restore_path.is_some() {
+            state.no_auto_restore = true;
+            if let Some(crash) = state.continuity.crash.as_mut() {
+                crash.restore_error = Some(format!("the kernel failed while restoring: {}", error.message()));
+            }
+        }
+        state.continuity.restart = failed.initialized;
+    }
+
     /// Ends `generation` with `error`: rejects every call, aborts its cells' host work, and kills its process tree.
     pub(super) fn fail(&self, state: &mut State, generation: u64, error: KernelError) {
         if state.current(generation).is_none() {
@@ -628,37 +712,7 @@ impl Shared {
             return;
         };
         state.failure = Some((generation, error.clone()));
-        if self.options.continuity.is_some() {
-            if !state.closed {
-                let continuity = &mut state.continuity;
-                let unsaved_cells = continuity.cells - continuity.checkpoint_cells;
-                let interrupted_cell = failed.active_cell.is_some();
-                let restoring = failed.completing && !failed.initialized;
-                match continuity.crash.as_mut() {
-                    Some(crash) => {
-                        crash.interrupted_cell |= interrupted_cell;
-                        crash.unsaved_cells = unsaved_cells;
-                    }
-                    None => {
-                        continuity.crash = Some(Crash {
-                            reason: error.message().to_string(),
-                            interrupted_cell,
-                            unsaved_cells,
-                            restore_error: None,
-                        });
-                    }
-                }
-                if restoring && failed.restore_path.is_some() {
-                    state.no_auto_restore = true;
-                    if let Some(crash) = state.continuity.crash.as_mut() {
-                        crash.restore_error = Some(format!("the kernel failed while restoring: {}", error.message()));
-                    }
-                }
-                state.continuity.restart = failed.initialized;
-            }
-        } else if failed.initialized {
-            state.no_auto_restore = true;
-        }
+        self.record_failure_continuity(state, &failed, &error);
         for waiter in failed.pending.values() {
             waiter.controller.abort(error.message());
         }
@@ -676,6 +730,83 @@ impl Shared {
                 cgroup_dir: failed.cgroup_dir.as_deref(),
             },
         );
+    }
+}
+
+fn interpret_startup_restore(
+    restored: Option<Result<KernelReply, KernelError>>,
+    skipped_restore: Option<String>,
+) -> Result<Result<Option<RestoreReport>, String>, KernelError> {
+    match restored {
+        None => Ok(skipped_restore.map_or(Ok(None), Err)),
+        Some(Ok(reply)) if reply.result.status == Status::Error => Ok(Err(reply
+            .result
+            .error
+            .map_or_else(|| "unknown restore error".to_string(), |error| error.evalue))),
+        Some(Ok(reply)) => Ok(Ok(reply.restore)),
+        Some(Err(error)) => Err(error),
+    }
+}
+
+fn spawn_error(error: std::io::Error) -> KernelError {
+    KernelError::new(format!("RLM kernel spawn failed: {error}"))
+}
+
+fn attach_protocol_pipes(command: &mut Command) -> Result<(std::io::PipeReader, std::io::PipeWriter), KernelError> {
+    let (protocol_out, kernel_out) = std::io::pipe().map_err(spawn_error)?;
+    let (kernel_in, protocol_in) = std::io::pipe().map_err(spawn_error)?;
+    command
+        .fd_mappings(vec![
+            FdMapping {
+                parent_fd: kernel_out.into(),
+                child_fd: 3,
+            },
+            FdMapping {
+                parent_fd: kernel_in.into(),
+                child_fd: 4,
+            },
+        ])
+        .map_err(|error| KernelError::new(error.to_string()))?;
+    Ok((protocol_out, protocol_in))
+}
+
+fn spawn_child(
+    mut command: Command,
+    mechanism: Option<sandbox::Mechanism>,
+) -> Result<std::process::Child, KernelError> {
+    if mechanism.is_some() {
+        return sandboxed::spawn(command).map_err(spawn_error);
+    }
+    let child = command.spawn().map_err(spawn_error)?;
+    drop(command);
+    Ok(child)
+}
+
+fn wait_for_pid_exit(pid: i32) {
+    if let Some(process) = rustix::process::Pid::from_raw(pid) {
+        while let Err(rustix::io::Errno::INTR) =
+            rustix::process::waitid(WaitId::Pid(process), WaitIdOptions::EXITED | WaitIdOptions::NOWAIT)
+        {}
+    }
+}
+
+fn update_crash_state(state: &mut State, failed: &Generation, error: &KernelError) {
+    let continuity = &mut state.continuity;
+    let unsaved_cells = continuity.cells - continuity.checkpoint_cells;
+    let interrupted_cell = failed.active_cell.is_some();
+    match continuity.crash.as_mut() {
+        Some(crash) => {
+            crash.interrupted_cell |= interrupted_cell;
+            crash.unsaved_cells = unsaved_cells;
+        }
+        None => {
+            continuity.crash = Some(Crash {
+                reason: error.message().to_string(),
+                interrupted_cell,
+                unsaved_cells,
+                restore_error: None,
+            });
+        }
     }
 }
 

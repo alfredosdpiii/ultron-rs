@@ -34,6 +34,33 @@ pub enum Plan {
     },
 }
 
+fn walk_branch_ancestors(
+    mut current: Option<String>,
+    requested: Option<&str>,
+    before: bool,
+    parent_of: &dyn Fn(&str) -> Option<Option<String>>,
+    select: &mut dyn FnMut(&str),
+) -> Result<(bool, Option<String>), String> {
+    let mut found = requested.is_none();
+    let mut destination_tip = None;
+    while let Some(id) = current {
+        let Some(parent) = parent_of(&id) else {
+            return Err(format!("Corrupt source branch: missing parent {id}"));
+        };
+        if Some(id.as_str()) == requested {
+            found = true;
+            destination_tip = if before { parent.clone() } else { Some(id.clone()) };
+            if !before {
+                select(&id);
+            }
+        } else if found {
+            select(&id);
+        }
+        current = parent;
+    }
+    Ok((found, destination_tip))
+}
+
 /// `selectBranchFork`: the destination tip; selected entries are passed to `select`.
 pub fn select_branch_fork(
     options: &ForkOptions,
@@ -54,30 +81,15 @@ pub fn select_branch_fork(
         return Err(format!("Unknown source branch: {branch}"));
     };
     let requested = entry_id.clone().or_else(|| tip.clone());
-    let mut found = requested.is_none();
-    let mut destination_tip = None;
-    let mut current = tip;
-    if *any_tree_entry && let Some(requested) = &requested {
+    let start = if *any_tree_entry && let Some(requested) = &requested {
         if parent_of(requested).is_none() {
             return Err(format!("Unknown fork entry {requested}"));
         }
-        current = Some(requested.clone());
-    }
-    while let Some(id) = current {
-        let Some(parent) = parent_of(&id) else {
-            return Err(format!("Corrupt source branch: missing parent {id}"));
-        };
-        if Some(&id) == requested.as_ref() {
-            found = true;
-            destination_tip = if *before { parent.clone() } else { Some(id.clone()) };
-            if !before {
-                select(&id);
-            }
-        } else if found {
-            select(&id);
-        }
-        current = parent;
-    }
+        Some(requested.clone())
+    } else {
+        tip
+    };
+    let (found, destination_tip) = walk_branch_ancestors(start, requested.as_deref(), *before, parent_of, select)?;
     if !found {
         return Err(format!(
             "Fork entry {} is not on source branch {}",
@@ -91,6 +103,48 @@ pub fn select_branch_fork(
     })
 }
 
+fn is_branch_scoped(write: &Value, plan: &Plan) -> bool {
+    match plan {
+        Plan::Tree => true,
+        Plan::Branch { branch, .. } => str_of(write, "key") == branch,
+    }
+}
+
+fn project_branch_tip(write: &Value, key: &str, plan: &Plan) -> Option<Value> {
+    match plan {
+        Plan::Tree => Some(write.clone()),
+        Plan::Branch {
+            branch,
+            destination_tip,
+        } => (key == branch).then(|| {
+            let mut w = write.clone();
+            w["value"] = destination_tip.clone().map_or(Value::Null, Value::from);
+            w
+        }),
+    }
+}
+
+fn reset_lane_state(write: &Value) -> Value {
+    let mut w = write.clone();
+    w["value"] = json!({"currentOperationId": null, "lastOperationId": null, "inbox": []});
+    w
+}
+
+fn is_transient_namespace(namespace: &str) -> bool {
+    namespace == OP_RESULT || namespace.starts_with("ultron.op.") || namespace.starts_with("ultron.pending.")
+}
+
+fn project_lane_write(namespace: &str, write: &Value, plan: &Plan) -> Option<Value> {
+    if !is_branch_scoped(write, plan) {
+        return None;
+    }
+    Some(if namespace == LANE_STATE {
+        reset_lane_state(write)
+    } else {
+        write.clone()
+    })
+}
+
 /// `projectForkCurrentStateWrite`.
 pub fn project_current_state(
     write: &Value,
@@ -99,32 +153,14 @@ pub fn project_current_state(
 ) -> Result<Option<Value>, String> {
     let namespace = str_of(write, "namespace");
     let key = str_of(write, "key");
-    let branch_scoped = |w: &Value| match plan {
-        Plan::Tree => true,
-        Plan::Branch { branch, .. } => str_of(w, "key") == branch,
-    };
+    if is_transient_namespace(namespace) {
+        return Ok(None);
+    }
     Ok(match namespace {
         SESSION_NAME => Some(write.clone()),
         ENTRY_LABEL => copied(key).then(|| write.clone()),
-        BRANCH_TIP => match plan {
-            Plan::Tree => Some(write.clone()),
-            Plan::Branch {
-                branch,
-                destination_tip,
-            } => (key == branch).then(|| {
-                let mut w = write.clone();
-                w["value"] = destination_tip.clone().map_or(Value::Null, Value::from);
-                w
-            }),
-        },
-        LANE_CONFIG => branch_scoped(write).then(|| write.clone()),
-        LANE_STATE => branch_scoped(write).then(|| {
-            let mut w = write.clone();
-            w["value"] = json!({"currentOperationId": null, "lastOperationId": null, "inbox": []});
-            w
-        }),
-        OP_RESULT => None,
-        _ if namespace.starts_with("ultron.op.") || namespace.starts_with("ultron.pending.") => None,
+        BRANCH_TIP => project_branch_tip(write, key, plan),
+        LANE_CONFIG | LANE_STATE => project_lane_write(namespace, write, plan),
         _ => matches!(plan, Plan::Tree).then(|| write.clone()),
     })
 }
@@ -145,11 +181,40 @@ struct Index {
     lane_states: HashSet<String>,
 }
 
+fn update_lane_set(lanes: &mut HashSet<String>, lane: String, set: bool) {
+    if set {
+        lanes.insert(lane);
+    } else {
+        lanes.remove(&lane);
+    }
+}
+
 impl Index {
+    fn apply_value(&mut self, write: &Value, key: String, set: bool) {
+        if set {
+            self.current_scalar_seqs.insert(key, seq_of(write));
+        } else {
+            self.current_scalar_seqs.remove(&key);
+        }
+        let lane = str_of(write, "key").to_string();
+        match str_of(write, "namespace") {
+            BRANCH_TIP if set => {
+                self.branch_tips
+                    .insert(lane, write["value"].as_str().map(str::to_string));
+            }
+            BRANCH_TIP => {
+                self.branch_tips.remove(&lane);
+            }
+            LANE_CONFIG => update_lane_set(&mut self.lane_configs, lane, set),
+            LANE_STATE => update_lane_set(&mut self.lane_states, lane, set),
+            _ => {}
+        }
+    }
+
     fn apply(&mut self, writes: &[Value]) {
         for write in writes {
             let key = physical_key(write);
-            let set = str_of(write, "op") == "set" || str_of(write, "op") == "append";
+            let set = matches!(str_of(write, "op"), "set" | "append");
             match str_of(write, "kind") {
                 "entry" => {
                     self.parents.insert(
@@ -157,42 +222,12 @@ impl Index {
                         write.get("parentId").and_then(Value::as_str).map(str::to_string),
                     );
                 }
-                "value" => {
-                    if set {
-                        self.current_scalar_seqs.insert(key, seq_of(write));
-                    } else {
-                        self.current_scalar_seqs.remove(&key);
-                    }
-                    let lane = str_of(write, "key").to_string();
-                    match str_of(write, "namespace") {
-                        BRANCH_TIP if set => {
-                            self.branch_tips
-                                .insert(lane, write["value"].as_str().map(str::to_string));
-                        }
-                        BRANCH_TIP => {
-                            self.branch_tips.remove(&lane);
-                        }
-                        LANE_CONFIG if set => {
-                            self.lane_configs.insert(lane);
-                        }
-                        LANE_CONFIG => {
-                            self.lane_configs.remove(&lane);
-                        }
-                        LANE_STATE if set => {
-                            self.lane_states.insert(lane);
-                        }
-                        LANE_STATE => {
-                            self.lane_states.remove(&lane);
-                        }
-                        _ => {}
-                    }
+                "value" => self.apply_value(write, key, set),
+                "list" if set => {
+                    self.first_list_seqs.entry(key).or_insert(seq_of(write));
                 }
                 "list" => {
-                    if set {
-                        self.first_list_seqs.entry(key).or_insert(seq_of(write));
-                    } else {
-                        self.first_list_seqs.remove(&key);
-                    }
+                    self.first_list_seqs.remove(&key);
                 }
                 _ => {}
             }
@@ -214,12 +249,8 @@ pub enum ForkInput<'a> {
 /// A format-4 file's header and its complete transactions.
 type Transactions = (Map<String, Value>, Vec<Vec<Value>>);
 
-/// Complete transactions after the header, stopping at the sequence boundary.
-fn v4_transactions(path: &Path, id: &str, cwd: &str, stop_before: Option<i64>) -> Result<Transactions, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("Failed to open JSONL fork source {}: {e}", path.display()))?;
-    let lines = io::complete_lines(&content);
-    let Some(first) = lines.first().filter(|l| !l.is_empty()) else {
+fn parse_v4_header(path: &Path, first: Option<&str>, id: &str, cwd: &str) -> Result<Map<String, Value>, String> {
+    let Some(first) = first.filter(|l| !l.is_empty()) else {
         return Err(format!("Invalid JSONL storage {}: missing header", path.display()));
     };
     let header = match codec::parse_header(first) {
@@ -239,6 +270,15 @@ fn v4_transactions(path: &Path, id: &str, cwd: &str, stop_before: Option<i64>) -
     if version != codec::JSONL_STORAGE_VERSION {
         return Err(format!("Session {id} uses unsupported storage version {version}"));
     }
+    Ok(header)
+}
+
+/// Complete transactions after the header, stopping at the sequence boundary.
+fn v4_transactions(path: &Path, id: &str, cwd: &str, stop_before: Option<i64>) -> Result<Transactions, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to open JSONL fork source {}: {e}", path.display()))?;
+    let lines = io::complete_lines(&content);
+    let header = parse_v4_header(path, lines.first().copied(), id, cwd)?;
     let mut transactions = Vec::new();
     for line in &lines[1..] {
         let writes = codec::parse_transaction(line)?;
@@ -255,21 +295,14 @@ fn v4_transactions(path: &Path, id: &str, cwd: &str, stop_before: Option<i64>) -
     Ok((header, transactions))
 }
 
-/// `runJsonlFork`: publish the destination file (header gets the source's `nextSeq`).
-pub fn run_fork(
-    input: &ForkInput<'_>,
-    destination: &Path,
-    mut header: Map<String, Value>,
-    options: &ForkOptions,
-) -> Result<(), String> {
-    let mut index = Index::default();
-    let (source_writes, next_seq): (Vec<Value>, i64) = match input {
+fn load_fork_source(input: &ForkInput<'_>, index: &mut Index) -> Result<(Vec<Value>, i64), String> {
+    match input {
         ForkInput::LegacyV3(source) => {
             for (id, parent, _) in source.entry_structures() {
                 index.parents.insert(id, parent);
             }
             index.apply(&source.values);
-            (Vec::new(), source.next_seq)
+            Ok((Vec::new(), source.next_seq))
         }
         ForkInput::V4 {
             path,
@@ -290,9 +323,12 @@ pub fn run_fork(
                     .unwrap_or(1)
                     .max(highest + 1)
             });
-            (transactions.into_iter().flatten().collect(), next)
+            Ok((transactions.into_iter().flatten().collect(), next))
         }
-    };
+    }
+}
+
+fn resolve_fork_plan(input: &ForkInput<'_>, options: &ForkOptions, index: &mut Index) -> Result<Plan, String> {
     let mut options = options.clone();
     if let (
         ForkInput::LegacyV3(source),
@@ -303,29 +339,69 @@ pub fn run_fork(
     {
         *entry = source.translate_fork_entry_id(entry)?;
     }
-    let plan = match &options {
-        ForkOptions::Tree => Plan::Tree,
-        ForkOptions::Branch { branch, .. } => {
-            let parents = index.parents.clone();
-            let mut selected = HashSet::new();
-            let plan = select_branch_fork(
-                &options,
-                index.branch_tips.get(branch).cloned(),
-                &|id| parents.get(id).cloned(),
-                &mut |id| {
-                    selected.insert(id.to_string());
-                },
-            )?;
-            index.selected = selected;
-            if !(index.lane_configs.contains(branch) && index.lane_states.contains(branch)) {
-                return Err(format!(
-                    "Source branch {} is not a configured AgentLane",
-                    serde_json::to_string(branch).unwrap_or_default()
-                ));
-            }
-            plan
-        }
+    let ForkOptions::Branch { branch, .. } = &options else {
+        return Ok(Plan::Tree);
     };
+    let parents = index.parents.clone();
+    let mut selected = HashSet::new();
+    let plan = select_branch_fork(
+        &options,
+        index.branch_tips.get(branch).cloned(),
+        &|id| parents.get(id).cloned(),
+        &mut |id| {
+            selected.insert(id.to_string());
+        },
+    )?;
+    index.selected = selected;
+    if !(index.lane_configs.contains(branch) && index.lane_states.contains(branch)) {
+        return Err(format!(
+            "Source branch {} is not a configured AgentLane",
+            serde_json::to_string(branch).unwrap_or_default()
+        ));
+    }
+    Ok(plan)
+}
+
+fn project_fork_write(
+    write: Value,
+    index: &Index,
+    plan: &Plan,
+    copied: &dyn Fn(&str) -> bool,
+) -> Result<Option<Value>, String> {
+    match str_of(&write, "kind") {
+        "entry" => Ok(copied(str_of(&write, "id")).then_some(write)),
+        "value" if str_of(&write, "op") == "set" => {
+            if index.current_scalar_seqs.get(&physical_key(&write)) == Some(&seq_of(&write)) {
+                project_current_state(&write, plan, copied)
+            } else {
+                Ok(None)
+            }
+        }
+        "list" if str_of(&write, "op") == "append" => {
+            let surviving = index
+                .first_list_seqs
+                .get(&physical_key(&write))
+                .is_some_and(|first| seq_of(&write) >= *first);
+            if surviving {
+                project_current_state(&write, plan, copied)
+            } else {
+                Ok(None)
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
+/// `runJsonlFork`: publish the destination file (header gets the source's `nextSeq`).
+pub fn run_fork(
+    input: &ForkInput<'_>,
+    destination: &Path,
+    mut header: Map<String, Value>,
+    options: &ForkOptions,
+) -> Result<(), String> {
+    let mut index = Index::default();
+    let (source_writes, next_seq) = load_fork_source(input, &mut index)?;
+    let plan = resolve_fork_plan(input, options, &mut index)?;
     let copied = |id: &str| matches!(plan, Plan::Tree) || index.selected.contains(id);
     let writes = match input {
         ForkInput::LegacyV3(source) => source.writes(Some(&copied))?,
@@ -334,29 +410,7 @@ pub fn run_fork(
     header.insert("nextSeq".into(), jsrt::json::number(next_seq as f64));
     let mut content = format!("{}\n", jsrt::json::stringify(&Value::Object(header)));
     for write in writes {
-        let projected = match str_of(&write, "kind") {
-            "entry" => copied(str_of(&write, "id")).then_some(write),
-            "value" if str_of(&write, "op") == "set" => {
-                if index.current_scalar_seqs.get(&physical_key(&write)) != Some(&seq_of(&write)) {
-                    None
-                } else {
-                    project_current_state(&write, &plan, &copied)?
-                }
-            }
-            "list" if str_of(&write, "op") == "append" => {
-                let surviving = index
-                    .first_list_seqs
-                    .get(&physical_key(&write))
-                    .is_some_and(|first| seq_of(&write) >= *first);
-                if surviving {
-                    project_current_state(&write, &plan, &copied)?
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        };
-        if let Some(write) = projected {
+        if let Some(write) = project_fork_write(write, &index, &plan, &copied)? {
             content.push_str(&codec::serialize_transaction(&[write]));
             content.push('\n');
         }

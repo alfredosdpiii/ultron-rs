@@ -79,8 +79,32 @@ fn store_dir(env: Option<&ProviderEnv>) -> Option<PathBuf> {
     var("HOME").map(|h| PathBuf::from(h).join(".ultron/agent"))
 }
 
+impl Live {
+    fn is_idle(&self) -> bool {
+        self.agy.held.is_none() && self.agy.turn.is_none() && !self.agy.session.is_empty()
+    }
+}
+
+fn prune_persisted(entries: &mut Vec<PersistedSession>, current_session: &str, now: u64, ttl_ms: u64) {
+    entries.retain(|e| {
+        let keep = now.saturating_sub(e.saved_ms) < ttl_ms && Path::new(&e.workspace).is_dir();
+        if !keep && e.session_id != current_session {
+            let _ = std::fs::remove_dir_all(&e.workspace);
+        }
+        keep && e.session_id != current_session
+    });
+}
+
+fn trim_persisted(entries: &mut Vec<PersistedSession>) {
+    entries.sort_by_key(|e| e.saved_ms);
+    while entries.len() > MAX_ARCHIVED {
+        let evicted = entries.remove(0);
+        let _ = std::fs::remove_dir_all(&evicted.workspace);
+    }
+}
+
 fn persist_live(live: &Live, env: Option<&ProviderEnv>) {
-    if live.agy.held.is_some() || live.agy.turn.is_some() || live.agy.session.is_empty() {
+    if !live.is_idle() {
         return;
     }
     let Some(WorkspaceDir::Persistent(workspace)) = live.agy.workspace.as_ref() else {
@@ -99,13 +123,7 @@ fn persist_live(live: &Live, env: Option<&ProviderEnv>) {
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
-    entries.retain(|e| {
-        let keep = now.saturating_sub(e.saved_ms) < ttl_ms && Path::new(&e.workspace).is_dir();
-        if !keep && e.session_id != live.agy.session {
-            let _ = std::fs::remove_dir_all(&e.workspace);
-        }
-        keep && e.session_id != live.agy.session
-    });
+    prune_persisted(&mut entries, &live.agy.session, now, ttl_ms);
     entries.push(PersistedSession {
         session_id: live.agy.session.clone(),
         workspace: workspace.display().to_string(),
@@ -114,11 +132,7 @@ fn persist_live(live: &Live, env: Option<&ProviderEnv>) {
         hash: live.hash,
         saved_ms: now,
     });
-    entries.sort_by_key(|e| e.saved_ms);
-    while entries.len() > MAX_ARCHIVED {
-        let evicted = entries.remove(0);
-        let _ = std::fs::remove_dir_all(&evicted.workspace);
-    }
+    trim_persisted(&mut entries);
     if let Ok(bytes) = serde_json::to_vec_pretty(&entries) {
         let _ = write_atomic(&file, &bytes);
     }
@@ -225,27 +239,8 @@ pub fn ensure_relay(home: &Path, path: &str) -> io::Result<()> {
     install_relay(&home.join(".gemini/config"), path)
 }
 
-/// Writes the relay script and the `ultron` entry of `mcp_config.json` when they differ from what Ultron needs.
-fn install_relay(config: &Path, path: &str) -> io::Result<()> {
-    let python = jsrt::process::which("python3", path).ok_or_else(|| io::Error::other("python3 is not on PATH"))?;
-    std::fs::create_dir_all(config)?;
-    let script = config.join("ultron-mcp-relay.py");
-    if std::fs::read_to_string(&script).ok().as_deref() != Some(RELAY) {
-        write_atomic(&script, RELAY.as_bytes())?;
-    }
-    let file = config.join("mcp_config.json");
-    let text = match std::fs::read_to_string(&file) {
-        Ok(text) => text,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(error),
-    };
-    let mut settings: Value = if text.trim().is_empty() {
-        json!({})
-    } else {
-        serde_json::from_str(&text)
-            .map_err(|e| io::Error::other(format!("{} is not valid JSON: {e}", file.display())))?
-    };
-    let entry = json!({
+fn relay_entry(python: PathBuf, script: &Path) -> Value {
+    json!({
         "disabled": false,
         "command": python,
         "args": [script],
@@ -256,7 +251,22 @@ fn install_relay(config: &Path, path: &str) -> io::Result<()> {
                 "background": "off",
             }
         },
-    });
+    })
+}
+
+fn load_mcp_config(file: &Path) -> io::Result<Value> {
+    let text = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(json!({})),
+        Err(error) => return Err(error),
+    };
+    if text.trim().is_empty() {
+        return Ok(json!({}));
+    }
+    serde_json::from_str(&text).map_err(|e| io::Error::other(format!("{} is not valid JSON: {e}", file.display())))
+}
+
+fn upsert_ultron_entry(file: &Path, settings: &mut Value, entry: Value) -> io::Result<()> {
     let servers = settings
         .as_object_mut()
         .ok_or_else(|| io::Error::other(format!("{} is not a JSON object", file.display())))?
@@ -267,11 +277,24 @@ fn install_relay(config: &Path, path: &str) -> io::Result<()> {
         .ok_or_else(|| io::Error::other(format!("mcpServers in {} is not an object", file.display())))?;
     if servers.get("ultron") != Some(&entry) {
         servers.insert("ultron".into(), entry);
-        let mut bytes = serde_json::to_vec_pretty(&settings)?;
+        let mut bytes = serde_json::to_vec_pretty(settings)?;
         bytes.push(b'\n');
-        write_atomic(&file, &bytes)?;
+        write_atomic(file, &bytes)?;
     }
     Ok(())
+}
+
+/// Writes the relay script and the `ultron` entry of `mcp_config.json` when they differ from what Ultron needs.
+fn install_relay(config: &Path, path: &str) -> io::Result<()> {
+    let python = jsrt::process::which("python3", path).ok_or_else(|| io::Error::other("python3 is not on PATH"))?;
+    std::fs::create_dir_all(config)?;
+    let script = config.join("ultron-mcp-relay.py");
+    if std::fs::read_to_string(&script).ok().as_deref() != Some(RELAY) {
+        write_atomic(&script, RELAY.as_bytes())?;
+    }
+    let file = config.join("mcp_config.json");
+    let mut settings = load_mcp_config(&file)?;
+    upsert_ultron_entry(&file, &mut settings, relay_entry(python, &script))
 }
 
 fn write_atomic(target: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -405,6 +428,64 @@ fn take(
     (None, archived.or_else(|| load_persisted(model, messages, env)))
 }
 
+async fn try_continue_live(
+    slot: &mut Option<Live>,
+    messages: &[Message],
+    deltas: &mpsc::UnboundedSender<AgyDelta>,
+) -> Option<Outcome> {
+    let live = slot.as_mut()?;
+    let step = continuation(live, messages)?;
+    let answered = matches!(step, Step::Answer(_));
+    match live.agy.advance(step, Some(deltas)).await {
+        Ok(done) => {
+            live.seen = messages.len();
+            live.hash = prefix_hash(messages);
+            Some(Ok(done))
+        }
+        Err(error) if answered => Some(Err(slot.take().expect("matched").agy.failed(error).await)),
+        Err(error) => {
+            eprintln!("agy session ended, replaying the transcript to a fresh agy: {error}");
+            None
+        }
+    }
+}
+
+async fn try_resume_archived(
+    slot: &mut Option<Live>,
+    archived: Archived,
+    model: &Model,
+    messages: &[Message],
+    env: Option<&ProviderEnv>,
+    deltas: &mpsc::UnboundedSender<AgyDelta>,
+) -> Option<Outcome> {
+    let delta = &messages[archived.seen..];
+    if delta.iter().any(|m| matches!(m, Message::System(_))) {
+        return None;
+    }
+    let prompt = delta_prompt_after_assistant(delta)?;
+    let agy = match Agy::resume(model, messages, env, archived.session_id, archived.workspace).await {
+        Ok(agy) => agy,
+        Err(error) => {
+            eprintln!("agy session/load failed, replaying to a fresh agy: {error}");
+            return None;
+        }
+    };
+    let live = slot.insert(Live {
+        agy,
+        model: model.id.clone(),
+        seen: messages.len(),
+        hash: prefix_hash(messages),
+        used: Instant::now(),
+    });
+    match live.agy.advance(Step::Prompt(prompt), Some(deltas)).await {
+        Ok(done) => Some(Ok(done)),
+        Err(error) => {
+            eprintln!("agy resumed session failed, replaying to a fresh agy: {error}");
+            None
+        }
+    }
+}
+
 async fn serve(
     slot: &mut Option<Live>,
     archived: Option<Archived>,
@@ -413,48 +494,13 @@ async fn serve(
     env: Option<&ProviderEnv>,
     deltas: &mpsc::UnboundedSender<AgyDelta>,
 ) -> Outcome {
-    if let Some(live) = slot.as_mut()
-        && let Some(step) = continuation(live, messages)
-    {
-        let answered = matches!(step, Step::Answer(_));
-        match live.agy.advance(step, Some(deltas)).await {
-            Ok(done) => {
-                live.seen = messages.len();
-                live.hash = prefix_hash(messages);
-                return Ok(done);
-            }
-            Err(error) if answered => return Err(slot.take().expect("matched").agy.failed(error).await),
-            Err(error) => eprintln!("agy session ended, replaying the transcript to a fresh agy: {error}"),
-        }
+    if let Some(outcome) = try_continue_live(slot, messages, deltas).await {
+        return outcome;
     }
-    if let Some(archived) = archived {
-        let delta = &messages[archived.seen..];
-        let start = delta.iter().take_while(|m| matches!(m, Message::Assistant(_))).count();
-        if !delta.iter().any(|m| matches!(m, Message::System(_)))
-            && start < delta.len()
-            && let Some(prompt) = delta_prompt(&delta[start..])
-        {
-            match Agy::resume(model, messages, env, archived.session_id, archived.workspace).await {
-                Ok(agy) => {
-                    let live = slot.insert(Live {
-                        agy,
-                        model: model.id.clone(),
-                        seen: messages.len(),
-                        hash: prefix_hash(messages),
-                        used: Instant::now(),
-                    });
-                    match live.agy.advance(Step::Prompt(prompt), Some(deltas)).await {
-                        Ok(done) => return Ok(done),
-                        Err(error) => {
-                            eprintln!("agy resumed session failed, replaying to a fresh agy: {error}");
-                        }
-                    }
-                }
-                Err(error) => {
-                    eprintln!("agy session/load failed, replaying to a fresh agy: {error}");
-                }
-            }
-        }
+    if let Some(archived) = archived
+        && let Some(outcome) = try_resume_archived(slot, archived, model, messages, env, deltas).await
+    {
+        return outcome;
     }
     *slot = None;
     let workspace = session_workspace(env)?;
@@ -472,6 +518,26 @@ async fn serve(
     }
 }
 
+fn answer_held_call(id: &str, delta: &[Message]) -> Option<Step> {
+    let [Message::Assistant(call), Message::ToolResult(result), trailing @ ..] = delta else {
+        return None;
+    };
+    let matches_call = result.tool_call_id == id
+        && call
+            .content
+            .iter()
+            .any(|c| matches!(c, AssistantContent::ToolCall(t) if t.id == id));
+    if !matches_call || !trailing.iter().all(|m| matches!(m, Message::User(_))) {
+        return None;
+    }
+    Some(Step::Answer(tool_result(result, trailing)))
+}
+
+fn delta_prompt_after_assistant(delta: &[Message]) -> Option<Vec<Value>> {
+    let start = delta.iter().take_while(|m| matches!(m, Message::Assistant(_))).count();
+    (start < delta.len()).then(|| delta_prompt(&delta[start..])).flatten()
+}
+
 /// The step that feeds agy the messages after those it has seen, if they continue its session: the result of its
 /// held tool call, or new messages after its finished turn.
 fn continuation(live: &mut Live, messages: &[Message]) -> Option<Step> {
@@ -482,30 +548,13 @@ fn continuation(live: &mut Live, messages: &[Message]) -> Option<Step> {
     if delta.iter().any(|m| matches!(m, Message::System(_))) {
         return None;
     }
-    match &live.agy.held {
-        Some((_, reply)) if reply.is_closed() => None,
-        Some((id, _)) => match delta {
-            [Message::Assistant(call), Message::ToolResult(result), trailing @ ..]
-                if result.tool_call_id == *id
-                    && call
-                        .content
-                        .iter()
-                        .any(|c| matches!(c, AssistantContent::ToolCall(t) if t.id == *id))
-                    && trailing.iter().all(|m| matches!(m, Message::User(_))) =>
-            {
-                Some(Step::Answer(tool_result(result, trailing)))
-            }
-            _ => None,
-        },
-        None if live.agy.turn.is_some() => None,
-        None => {
-            let start = delta.iter().take_while(|m| matches!(m, Message::Assistant(_))).count();
-            (start < delta.len())
-                .then(|| delta_prompt(&delta[start..]))
-                .flatten()
-                .map(Step::Prompt)
-        }
+    if let Some((id, reply)) = &live.agy.held {
+        return (!reply.is_closed()).then(|| answer_held_call(id, delta)).flatten();
     }
+    if live.agy.turn.is_some() {
+        return None;
+    }
+    delta_prompt_after_assistant(delta).map(Step::Prompt)
 }
 
 /// A tool result as an MCP `CallToolResult`, carrying any `User` messages (runtime events, steering) that arrived

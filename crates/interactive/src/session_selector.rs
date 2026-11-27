@@ -341,77 +341,112 @@ impl SessionSelector {
     }
 
     pub fn handle_input(&mut self, data: &str) -> Option<SessionAction> {
-        let k = |id: &str| self.keys.matches(data, id);
-        if let Some((path, input)) = self.rename.as_mut() {
-            if k("tui.select.cancel") {
-                self.rename = None;
+        if self.rename.is_some() {
+            return self.handle_rename_input(data);
+        }
+        if self.confirming_delete.is_some() {
+            return self.handle_confirm_delete_input(data);
+        }
+        if let Some(action) = self.handle_session_command(data) {
+            return action;
+        }
+        self.handle_navigation_input(data)
+    }
+
+    fn handle_rename_input(&mut self, data: &str) -> Option<SessionAction> {
+        if self.keys.matches(data, "tui.select.cancel") {
+            self.rename = None;
+            return None;
+        }
+        let (path, input) = self.rename.as_mut()?;
+        if let Some(InputEvent::Submit(value)) = input.handle_input(data) {
+            let next = value.trim().to_string();
+            if next.is_empty() {
                 return None;
             }
-            if let Some(InputEvent::Submit(value)) = input.handle_input(data) {
-                let next = value.trim().to_string();
-                if next.is_empty() {
-                    return None;
-                }
-                let path = path.clone();
-                self.rename = None;
-                return Some(SessionAction::Rename(path, next));
-            }
-            return None;
+            let path = path.clone();
+            self.rename = None;
+            return Some(SessionAction::Rename(path, next));
         }
-        if let Some(path) = self.confirming_delete.clone() {
-            if k("tui.select.confirm") {
-                self.confirming_delete = None;
-                return Some(SessionAction::Delete(path));
-            }
-            if k("tui.select.cancel") {
-                self.confirming_delete = None;
-            }
-            return None;
+        None
+    }
+
+    fn handle_confirm_delete_input(&mut self, data: &str) -> Option<SessionAction> {
+        let path = self.confirming_delete.clone()?;
+        if self.keys.matches(data, "tui.select.confirm") {
+            self.confirming_delete = None;
+            return Some(SessionAction::Delete(path));
         }
+        if self.keys.matches(data, "tui.select.cancel") {
+            self.confirming_delete = None;
+        }
+        None
+    }
+
+    fn handle_session_command(&mut self, data: &str) -> Option<Option<SessionAction>> {
+        let k = |id: &str| self.keys.matches(data, id);
         if k("tui.input.tab") {
-            return self.toggle_scope();
+            return Some(self.toggle_scope());
         }
         if k("app.session.toggleSort") {
-            self.sort = match self.sort {
-                SortMode::Threaded => SortMode::Recent,
-                SortMode::Recent => SortMode::Relevance,
-                SortMode::Relevance => SortMode::Threaded,
-            };
-            self.filter();
-            return None;
+            self.cycle_sort();
+            return Some(None);
         }
         if k("app.session.toggleNamedFilter") {
             self.named_only = !self.named_only;
             self.filter();
-            return None;
+            return Some(None);
         }
         if k("app.session.togglePath") {
             self.show_path = !self.show_path;
-            return None;
+            return Some(None);
         }
         if k("app.session.delete") {
             self.start_delete();
-            return None;
+            return Some(None);
         }
         if k("app.session.rename") {
-            if let Some(&i) = self.filtered.get(self.selected) {
-                let session = &self.sessions[i];
-                let mut input = Input::new(self.keys.clone());
-                input.set_value(session.name.as_deref().unwrap_or(""));
-                input.focused = true;
-                self.rename = Some((session.path.clone(), input));
-            }
-            return None;
+            self.start_rename();
+            return Some(None);
         }
         if k("app.session.deleteNoninvasive") {
-            if self.search.value().is_empty() {
-                self.start_delete();
-            } else {
-                self.search.handle_input(data);
-                self.filter();
-            }
-            return None;
+            self.handle_delete_noninvasive(data);
+            return Some(None);
         }
+        None
+    }
+
+    fn cycle_sort(&mut self) {
+        self.sort = match self.sort {
+            SortMode::Threaded => SortMode::Recent,
+            SortMode::Recent => SortMode::Relevance,
+            SortMode::Relevance => SortMode::Threaded,
+        };
+        self.filter();
+    }
+
+    fn start_rename(&mut self) {
+        let Some(&i) = self.filtered.get(self.selected) else {
+            return;
+        };
+        let session = &self.sessions[i];
+        let mut input = Input::new(self.keys.clone());
+        input.set_value(session.name.as_deref().unwrap_or(""));
+        input.focused = true;
+        self.rename = Some((session.path.clone(), input));
+    }
+
+    fn handle_delete_noninvasive(&mut self, data: &str) {
+        if self.search.value().is_empty() {
+            self.start_delete();
+        } else {
+            self.search.handle_input(data);
+            self.filter();
+        }
+    }
+
+    fn handle_navigation_input(&mut self, data: &str) -> Option<SessionAction> {
+        let k = |id: &str| self.keys.matches(data, id);
         self.touched = true;
         let n = self.filtered.len();
         if k("tui.select.up") {
@@ -448,21 +483,9 @@ impl SessionSelector {
         self.confirming_delete = Some(path);
     }
 
-    fn header(&mut self, width: usize) -> Vec<String> {
-        let t = Rc::clone(&self.theme);
-        let left_text = bold(if self.scope_all {
-            "Resume Session (All)"
-        } else {
-            "Resume Session (Current Folder)"
-        });
-        let sort = match self.sort {
-            SortMode::Threaded => "Threaded",
-            SortMode::Recent => "Recent",
-            SortMode::Relevance => "Fuzzy",
-        };
-        let name = if self.named_only { "Named" } else { "All" };
-        let loading = self.scope_all && self.loading_all;
-        let scope = if loading {
+    fn scope_indicator(&self) -> String {
+        let t = &self.theme;
+        if self.scope_all && self.loading_all {
             format!(
                 "{}{}",
                 t.fg(Fg::Muted, "○ Current Folder | "),
@@ -480,7 +503,73 @@ impl SessionSelector {
                 t.fg(Fg::Accent, "◉ Current Folder"),
                 t.fg(Fg::Muted, " | ○ All")
             )
+        }
+    }
+
+    fn default_header_hints(&self, width: usize) -> (String, String) {
+        let t = &self.theme;
+        let hint = |id: &str, d: &str| key_hint(t, &key_text(&self.keys, id), d);
+        let sep = t.fg(Fg::Muted, " · ");
+        let hint1 = format!(
+            "{}{sep}{}",
+            hint("tui.input.tab", "scope"),
+            t.fg(Fg::Muted, "re:<pattern> regex · \"phrase\" exact")
+        );
+        let path_state = if self.show_path { "(on)" } else { "(off)" };
+        let mut parts = vec![
+            hint("app.session.toggleSort", "sort"),
+            hint("app.session.toggleNamedFilter", "named"),
+            hint("app.session.delete", "delete"),
+            hint("app.session.togglePath", &format!("path {path_state}")),
+        ];
+        if self.show_rename_hint {
+            parts.push(hint("app.session.rename", "rename"));
+        }
+        let hint2 = parts.join(&sep);
+        (
+            truncate_to_width(&hint1, width, "…", false),
+            truncate_to_width(&hint2, width, "…", false),
+        )
+    }
+
+    fn header_hints(&self, width: usize) -> (String, String) {
+        let t = &self.theme;
+        if self.confirming_delete.is_some() {
+            let hint = |id: &str, d: &str| key_hint(t, &key_text(&self.keys, id), d);
+            let confirm = format!(
+                "Delete session? {} · {}",
+                hint("tui.select.confirm", "confirm"),
+                hint("tui.select.cancel", "cancel")
+            );
+            return (
+                t.fg(Fg::Error, &truncate_to_width(&confirm, width, "…", false)),
+                String::new(),
+            );
+        }
+        if let Some((error, message, _)) = &self.status {
+            let color = if *error { Fg::Error } else { Fg::Accent };
+            return (
+                t.fg(color, &truncate_to_width(message, width, "…", false)),
+                String::new(),
+            );
+        }
+        self.default_header_hints(width)
+    }
+
+    fn header(&mut self, width: usize) -> Vec<String> {
+        let t = Rc::clone(&self.theme);
+        let left_text = bold(if self.scope_all {
+            "Resume Session (All)"
+        } else {
+            "Resume Session (Current Folder)"
+        });
+        let sort = match self.sort {
+            SortMode::Threaded => "Threaded",
+            SortMode::Recent => "Recent",
+            SortMode::Relevance => "Fuzzy",
         };
+        let name = if self.named_only { "Named" } else { "All" };
+        let scope = self.scope_indicator();
         let right = truncate_to_width(
             &format!(
                 "{scope}  {}{}  {}{}",
@@ -495,7 +584,6 @@ impl SessionSelector {
         );
         let left = truncate_to_width(&left_text, width.saturating_sub(visible_width(&right) + 1), "", false);
         let spacing = width.saturating_sub(visible_width(&left) + visible_width(&right));
-        let hint = |id: &str, d: &str| key_hint(&t, &key_text(&self.keys, id), d);
         if self
             .status
             .as_ref()
@@ -503,46 +591,86 @@ impl SessionSelector {
         {
             self.status = None;
         }
-        let (line1, line2) = if self.confirming_delete.is_some() {
-            let confirm = format!(
-                "Delete session? {} · {}",
-                hint("tui.select.confirm", "confirm"),
-                hint("tui.select.cancel", "cancel")
-            );
-            (
-                t.fg(Fg::Error, &truncate_to_width(&confirm, width, "…", false)),
-                String::new(),
-            )
-        } else if let Some((error, message, _)) = &self.status {
-            let color = if *error { Fg::Error } else { Fg::Accent };
-            (
-                t.fg(color, &truncate_to_width(message, width, "…", false)),
-                String::new(),
-            )
-        } else {
-            let sep = t.fg(Fg::Muted, " · ");
-            let hint1 = format!(
-                "{}{sep}{}",
-                hint("tui.input.tab", "scope"),
-                t.fg(Fg::Muted, "re:<pattern> regex · \"phrase\" exact")
-            );
-            let path_state = if self.show_path { "(on)" } else { "(off)" };
-            let mut parts = vec![
-                hint("app.session.toggleSort", "sort"),
-                hint("app.session.toggleNamedFilter", "named"),
-                hint("app.session.delete", "delete"),
-                hint("app.session.togglePath", &format!("path {path_state}")),
-            ];
-            if self.show_rename_hint {
-                parts.push(hint("app.session.rename", "rename"));
-            }
-            let hint2 = parts.join(&sep);
-            (
-                truncate_to_width(&hint1, width, "…", false),
-                truncate_to_width(&hint2, width, "…", false),
-            )
-        };
+        let (line1, line2) = self.header_hints(width);
         vec![format!("{left}{}{right}", " ".repeat(spacing)), line1, line2]
+    }
+
+    fn empty_list_message(&self) -> String {
+        let toggle = key_text(&self.keys, "app.session.toggleNamedFilter");
+        match (self.named_only, self.scope_all) {
+            (true, true) => format!("  No named sessions found. Press {toggle} to show all."),
+            (true, false) => {
+                format!("  No named sessions in current folder. Press {toggle} to show all, or Tab to view all.")
+            }
+            (false, true) => "  No sessions found".to_string(),
+            (false, false) => "  No sessions in current folder. Press Tab to view all.".to_string(),
+        }
+    }
+
+    fn session_display_name(s: &SessionListing) -> String {
+        let display = s.name.as_deref().unwrap_or(if s.first_message.is_empty() {
+            "(no messages)"
+        } else {
+            &s.first_message
+        });
+        display
+            .chars()
+            .map(|c| if (c as u32) < 0x20 || c as u32 == 0x7f { ' ' } else { c })
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
+
+    fn session_row_right(&self, s: &SessionListing) -> String {
+        let mut right = format!("{} {}", s.message_count, format_age(self.now_ms, s.modified));
+        if self.scope_all && !s.cwd.is_empty() {
+            right = format!("{} {right}", self.shorten(&s.cwd));
+        }
+        if self.show_path {
+            right = format!("{} {right}", self.shorten(&s.path));
+        }
+        right
+    }
+
+    fn session_row_color(&self, s: &SessionListing, deleting: bool) -> Option<Fg> {
+        if deleting {
+            Some(Fg::Error)
+        } else if self.is_current(&s.path) {
+            Some(Fg::Accent)
+        } else if s.name.is_some() {
+            Some(Fg::Warning)
+        } else {
+            None
+        }
+    }
+
+    fn render_session_row(&self, row: usize, width: usize) -> String {
+        let t = &self.theme;
+        let s = &self.sessions[self.filtered[row]];
+        let selected = row == self.selected;
+        let deleting = self.confirming_delete.as_deref() == Some(s.path.as_str());
+        let normalized = Self::session_display_name(s);
+        let right = self.session_row_right(s);
+        let cursor = if selected {
+            t.fg(Fg::Accent, "› ")
+        } else {
+            "  ".to_string()
+        };
+        let available = width as isize - 2 - (visible_width(&right) + 2) as isize;
+        let truncated = truncate_to_width(&normalized, available.max(10) as usize, "…", false);
+        let color = self.session_row_color(s, deleting);
+        let mut message = color.map_or(truncated.clone(), |c| t.fg(c, &truncated));
+        if selected {
+            message = bold(&message);
+        }
+        let left = format!("{cursor}{}{message}", t.fg(Fg::Dim, ""));
+        let spacing = (width as isize - visible_width(&left) as isize - visible_width(&right) as isize).max(1);
+        let styled_right = t.fg(if deleting { Fg::Error } else { Fg::Dim }, &right);
+        let mut line = format!("{left}{}{styled_right}", " ".repeat(spacing as usize));
+        if selected {
+            line = t.bg(Bg::SelectedBg, &line);
+        }
+        truncate_to_width(&line, width, "...", false)
     }
 
     fn list(&mut self, width: usize) -> Vec<String> {
@@ -550,15 +678,7 @@ impl SessionSelector {
         let mut lines = self.search.render(width);
         lines.push(String::new());
         if self.filtered.is_empty() {
-            let toggle = key_text(&self.keys, "app.session.toggleNamedFilter");
-            let message = match (self.named_only, self.scope_all) {
-                (true, true) => format!("  No named sessions found. Press {toggle} to show all."),
-                (true, false) => {
-                    format!("  No named sessions in current folder. Press {toggle} to show all, or Tab to view all.")
-                }
-                (false, true) => "  No sessions found".to_string(),
-                (false, false) => "  No sessions in current folder. Press Tab to view all.".to_string(),
-            };
+            let message = self.empty_list_message();
             lines.push(t.fg(Fg::Muted, &truncate_to_width(&message, width, "…", false)));
             return lines;
         }
@@ -567,58 +687,7 @@ impl SessionSelector {
         let start = (self.selected as isize - max / 2).min(n - max).max(0) as usize;
         let end = (start + self.max_visible).min(self.filtered.len());
         for row in start..end {
-            let s = &self.sessions[self.filtered[row]];
-            let selected = row == self.selected;
-            let deleting = self.confirming_delete.as_deref() == Some(s.path.as_str());
-            let current = self.is_current(&s.path);
-            let display = s.name.clone().unwrap_or_else(|| {
-                if s.first_message.is_empty() {
-                    "(no messages)".to_string()
-                } else {
-                    s.first_message.clone()
-                }
-            });
-            let normalized: String = display
-                .chars()
-                .map(|c| if (c as u32) < 0x20 || c as u32 == 0x7f { ' ' } else { c })
-                .collect::<String>()
-                .trim()
-                .to_string();
-            let mut right = format!("{} {}", s.message_count, format_age(self.now_ms, s.modified));
-            if self.scope_all && !s.cwd.is_empty() {
-                right = format!("{} {right}", self.shorten(&s.cwd));
-            }
-            if self.show_path {
-                right = format!("{} {right}", self.shorten(&s.path));
-            }
-            let cursor = if selected {
-                t.fg(Fg::Accent, "› ")
-            } else {
-                "  ".to_string()
-            };
-            let available = width as isize - 2 - (visible_width(&right) + 2) as isize;
-            let truncated = truncate_to_width(&normalized, available.max(10) as usize, "…", false);
-            let color = if deleting {
-                Some(Fg::Error)
-            } else if current {
-                Some(Fg::Accent)
-            } else if s.name.is_some() {
-                Some(Fg::Warning)
-            } else {
-                None
-            };
-            let mut message = color.map_or(truncated.clone(), |c| t.fg(c, &truncated));
-            if selected {
-                message = bold(&message);
-            }
-            let left = format!("{cursor}{}{message}", t.fg(Fg::Dim, ""));
-            let spacing = (width as isize - visible_width(&left) as isize - visible_width(&right) as isize).max(1);
-            let styled_right = t.fg(if deleting { Fg::Error } else { Fg::Dim }, &right);
-            let mut line = format!("{left}{}{styled_right}", " ".repeat(spacing as usize));
-            if selected {
-                line = t.bg(Bg::SelectedBg, &line);
-            }
-            lines.push(truncate_to_width(&line, width, "...", false));
+            lines.push(self.render_session_row(row, width));
         }
         if start > 0 || end < self.filtered.len() {
             let text = format!("  ({}/{})", self.selected + 1, self.filtered.len());

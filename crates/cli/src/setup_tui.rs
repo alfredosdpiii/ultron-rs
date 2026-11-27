@@ -313,6 +313,54 @@ enum Slot<'a> {
     Loader(&'a mut Loader),
 }
 
+fn tone_color(tone: Tone) -> Fg {
+    match tone {
+        Tone::Success => Fg::Success,
+        Tone::Warning => Fg::Warning,
+        Tone::Error => Fg::Error,
+        Tone::Dim => Fg::Dim,
+        Tone::Info => Fg::Text,
+    }
+}
+
+fn render_entry(entry: &Entry, t: &Theme, width: usize) -> Vec<String> {
+    match entry {
+        Entry::Heading(title) => {
+            let mut lines = vec![String::new()];
+            lines.extend(Text::new(&t.fg(Fg::Accent, &bold(title)), 1, 0, None).render(width));
+            lines
+        }
+        Entry::Note(text, tone) => Text::new(&t.fg(tone_color(*tone), text), 2, 0, None).render(width),
+    }
+}
+
+fn render_slot(slot: Slot, screen: &Screen, t: &Rc<Theme>, width: usize) -> Vec<String> {
+    match slot {
+        Slot::Empty => Vec::new(),
+        Slot::Select(select) => select.render(screen, width),
+        Slot::Input(input) => input.render(screen, width),
+        Slot::Auth(selector) => selector.render(width),
+        Slot::Dialog(dialog) => dialog.render(t, width),
+        Slot::Loader(loader) => loader.render(width),
+    }
+}
+
+fn save_auth_credential(env: &Env, provider: &str, credential: serde_json::Value) -> LoginOutcome {
+    let auth = config::paths::AgentPaths::new(env.agent_dir()).auth();
+    match config::auth::AuthStorage::create(auth).modify(provider, |_| Some(credential)) {
+        Ok(_) => LoginOutcome::Ok,
+        Err(error) => LoginOutcome::Error(error),
+    }
+}
+
+fn dialog_action_for(dialog: &mut LoginDialog, data: &str) -> DialogAction {
+    if data == CTRL_C {
+        DialogAction::Cancel
+    } else {
+        dialog.handle_input(data)
+    }
+}
+
 impl TuiSetupUi {
     pub fn start(env: &Env) -> std::io::Result<TuiSetupUi> {
         let mut ui = TuiSetupUi {
@@ -334,32 +382,9 @@ impl TuiSetupUi {
         let t = Rc::clone(&self.screen.theme);
         let mut lines = Text::new(&t.fg(Fg::Accent, &bold("Ultron setup")), 1, 0, None).render(width);
         for entry in &self.transcript {
-            match entry {
-                Entry::Heading(title) => {
-                    lines.push(String::new());
-                    lines.extend(Text::new(&t.fg(Fg::Accent, &bold(title)), 1, 0, None).render(width));
-                }
-                Entry::Note(text, tone) => {
-                    let color = match tone {
-                        Tone::Success => Fg::Success,
-                        Tone::Warning => Fg::Warning,
-                        Tone::Error => Fg::Error,
-                        Tone::Dim => Fg::Dim,
-                        Tone::Info => Fg::Text,
-                    };
-                    lines.extend(Text::new(&t.fg(color, text), 2, 0, None).render(width));
-                }
-            }
+            lines.extend(render_entry(entry, &t, width));
         }
-        let screen = &self.screen;
-        lines.extend(match slot {
-            Slot::Empty => Vec::new(),
-            Slot::Select(select) => select.render(screen, width),
-            Slot::Input(input) => input.render(screen, width),
-            Slot::Auth(selector) => selector.render(width),
-            Slot::Dialog(dialog) => dialog.render(&t, width),
-            Slot::Loader(loader) => loader.render(width),
-        });
+        lines.extend(render_slot(slot, &self.screen, &t, width));
         self.screen.paint(lines);
     }
 
@@ -373,6 +398,41 @@ impl TuiSetupUi {
         }
     }
 
+    fn poll_dialog_action(&mut self, dialog: &mut LoginDialog) -> Result<DialogAction, SetupQuit> {
+        self.paint(Slot::Dialog(dialog));
+        match self.screen.next(Duration::from_millis(100)) {
+            Some(Ev::Input(data)) => Ok(dialog_action_for(dialog, &data)),
+            Some(Ev::Closed) => Err(SetupQuit),
+            _ => Ok(DialogAction::None),
+        }
+    }
+
+    fn apply_api_key_steps(
+        &mut self,
+        env: &Env,
+        dialog: &mut LoginDialog,
+        provider: &str,
+        steps: Vec<interactive::api_key_login::Step>,
+    ) -> Option<LoginOutcome> {
+        use interactive::api_key_login::Step;
+        let t = Rc::clone(&self.screen.theme);
+        for step in steps {
+            match step {
+                Step::Event(event) => dialog.show_event(&t, &event),
+                Step::Prompt(prompt) => dialog.show_prompt(&t, &prompt),
+                Step::Done(credential) => {
+                    self.paint(Slot::Empty);
+                    return Some(save_auth_credential(env, provider, credential));
+                }
+                Step::Failed(error) => {
+                    self.paint(Slot::Empty);
+                    return Some(LoginOutcome::Error(error));
+                }
+            }
+        }
+        None
+    }
+
     /// `runProviderLogin` for a provider whose key prompt has a choice or several fields (`apiKey.login`): the
     /// flow's notices and prompts in the login dialog, its credential saved to `auth.json`.
     fn multi_field_login(
@@ -382,42 +442,13 @@ impl TuiSetupUi {
         mut flow: interactive::api_key_login::ApiKeyLogin,
         mut steps: Vec<interactive::api_key_login::Step>,
     ) -> Result<LoginOutcome, SetupQuit> {
-        use interactive::api_key_login::Step;
-        let t = Rc::clone(&self.screen.theme);
         loop {
-            for step in std::mem::take(&mut steps) {
-                match step {
-                    Step::Event(event) => dialog.show_event(&t, &event),
-                    Step::Prompt(prompt) => dialog.show_prompt(&t, &prompt),
-                    Step::Done(credential) => {
-                        self.paint(Slot::Empty);
-                        let auth = config::paths::AgentPaths::new(env.agent_dir()).auth();
-                        return Ok(
-                            match config::auth::AuthStorage::create(auth).modify(flow.provider(), |_| Some(credential))
-                            {
-                                Ok(_) => LoginOutcome::Ok,
-                                Err(error) => LoginOutcome::Error(error),
-                            },
-                        );
-                    }
-                    Step::Failed(error) => {
-                        self.paint(Slot::Empty);
-                        return Ok(LoginOutcome::Error(error));
-                    }
-                }
+            if let Some(outcome) =
+                self.apply_api_key_steps(env, &mut dialog, flow.provider(), std::mem::take(&mut steps))
+            {
+                return Ok(outcome);
             }
-            self.paint(Slot::Dialog(&mut dialog));
-            let data = match self.screen.next(Duration::from_millis(100)) {
-                Some(Ev::Input(data)) => data,
-                Some(Ev::Closed) => return Err(SetupQuit),
-                _ => continue,
-            };
-            let action = if data == CTRL_C {
-                DialogAction::Cancel
-            } else {
-                dialog.handle_input(&data)
-            };
-            match action {
+            match self.poll_dialog_action(&mut dialog)? {
                 DialogAction::Cancel => {
                     self.paint(Slot::Empty);
                     return Ok(LoginOutcome::Cancelled);
@@ -426,6 +457,121 @@ impl TuiSetupUi {
                 DialogAction::None => {}
             }
         }
+    }
+
+    fn single_api_key_login(
+        &mut self,
+        env: &Env,
+        option: &AuthProvider,
+        mut dialog: LoginDialog,
+    ) -> Result<LoginOutcome, SetupQuit> {
+        let Some((method, true)) = &option.api_key_method else {
+            return Ok(LoginOutcome::Error(
+                "this provider's sign-in is not available in the Rust build yet".into(),
+            ));
+        };
+        if !option.generic_login {
+            return Ok(LoginOutcome::Error(
+                "this provider's sign-in is not available in the Rust build yet".into(),
+            ));
+        }
+        let t = Rc::clone(&self.screen.theme);
+        dialog.show_prompt(
+            &t,
+            &LoginPrompt::Text {
+                message: format!("Enter {method}"),
+                placeholder: None,
+                secret: true,
+            },
+        );
+        loop {
+            match self.poll_dialog_action(&mut dialog)? {
+                DialogAction::Cancel => {
+                    self.paint(Slot::Empty);
+                    return Ok(LoginOutcome::Cancelled);
+                }
+                DialogAction::Answer(key) => {
+                    self.paint(Slot::Empty);
+                    let cred = serde_json::json!({"type": "api_key", "key": key});
+                    return Ok(save_auth_credential(env, &option.id, cred));
+                }
+                DialogAction::None => {}
+            }
+        }
+    }
+
+    fn oauth_login(
+        &mut self,
+        env: &Env,
+        option: &AuthProvider,
+        reach: String,
+        mut dialog: LoginDialog,
+    ) -> Result<LoginOutcome, SetupQuit> {
+        if !crate::tui_login::supported(env, &option.id) {
+            return Ok(LoginOutcome::Error(
+                "signing in with an account is not available in the Rust build yet; use an API key".into(),
+            ));
+        }
+        let t = Rc::clone(&self.screen.theme);
+        let signal = AbortSignal::new();
+        start_oauth(
+            env.clone(),
+            option.id.clone(),
+            reach,
+            signal.clone(),
+            self.screen.sender.clone(),
+        );
+        let mut pending: Option<tokio::sync::oneshot::Sender<Option<String>>> = None;
+        loop {
+            self.paint(Slot::Dialog(&mut dialog));
+            match self.screen.next(Duration::from_millis(100)) {
+                Some(Ev::Login(LoginMsg::Event(event))) => dialog.show_event(&t, &event),
+                Some(Ev::Login(LoginMsg::Prompt(prompt, reply))) => {
+                    dialog.show_prompt(&t, &prompt);
+                    pending = Some(reply);
+                }
+                Some(Ev::Login(LoginMsg::Done(result))) => {
+                    self.paint(Slot::Empty);
+                    return Ok(oauth_done_outcome(result, &signal));
+                }
+                Some(Ev::Input(data)) => handle_oauth_input(&mut dialog, &data, &signal, &mut pending),
+                Some(Ev::Closed) => {
+                    signal.abort();
+                    return Err(SetupQuit);
+                }
+                None => {}
+            }
+        }
+    }
+}
+
+fn oauth_done_outcome(result: Result<(), String>, signal: &AbortSignal) -> LoginOutcome {
+    match result {
+        Ok(()) => LoginOutcome::Ok,
+        Err(error) if error == CANCELLED || signal.aborted() => LoginOutcome::Cancelled,
+        Err(error) => LoginOutcome::Error(error),
+    }
+}
+
+fn handle_oauth_input(
+    dialog: &mut LoginDialog,
+    data: &str,
+    signal: &AbortSignal,
+    pending: &mut Option<tokio::sync::oneshot::Sender<Option<String>>>,
+) {
+    match dialog_action_for(dialog, data) {
+        DialogAction::Cancel => {
+            signal.abort();
+            if let Some(reply) = pending.take() {
+                let _ = reply.send(None);
+            }
+        }
+        DialogAction::Answer(answer) => {
+            if let Some(reply) = pending.take() {
+                let _ = reply.send(Some(answer));
+            }
+        }
+        DialogAction::None => {}
     }
 }
 
@@ -519,121 +665,14 @@ impl SetupUi for TuiSetupUi {
 
     fn login(&mut self, env: &Env, option: &AuthProvider) -> Result<LoginOutcome, SetupQuit> {
         let reach = crate::tui_login::browser_reach(env);
-        let mut dialog = LoginDialog::new(self.screen.keys.clone(), &option.name, &reach);
-        let t = Rc::clone(&self.screen.theme);
-        if option.auth_type != "oauth"
-            && let Some((flow, steps)) = interactive::api_key_login::ApiKeyLogin::start(&option.id)
-        {
-            return self.multi_field_login(env, dialog, flow, steps);
-        }
+        let dialog = LoginDialog::new(self.screen.keys.clone(), &option.name, &reach);
         if option.auth_type != "oauth" {
-            let method = match &option.api_key_method {
-                Some((method, true)) if option.generic_login => method.clone(),
-                _ => {
-                    return Ok(LoginOutcome::Error(
-                        "this provider's sign-in is not available in the Rust build yet".into(),
-                    ));
-                }
-            };
-            dialog.show_prompt(
-                &t,
-                &LoginPrompt::Text {
-                    message: format!("Enter {method}"),
-                    placeholder: None,
-                    secret: true,
-                },
-            );
-            loop {
-                self.paint(Slot::Dialog(&mut dialog));
-                let data = match self.screen.next(Duration::from_millis(100)) {
-                    Some(Ev::Input(data)) => data,
-                    Some(Ev::Closed) => return Err(SetupQuit),
-                    _ => continue,
-                };
-                let action = if data == CTRL_C {
-                    DialogAction::Cancel
-                } else {
-                    dialog.handle_input(&data)
-                };
-                match action {
-                    DialogAction::Cancel => {
-                        self.paint(Slot::Empty);
-                        return Ok(LoginOutcome::Cancelled);
-                    }
-                    DialogAction::Answer(key) => {
-                        self.paint(Slot::Empty);
-                        let auth = config::paths::AgentPaths::new(env.agent_dir()).auth();
-                        return Ok(
-                            match config::auth::AuthStorage::create(auth)
-                                .modify(&option.id, |_| Some(serde_json::json!({"type": "api_key", "key": key})))
-                            {
-                                Ok(_) => LoginOutcome::Ok,
-                                Err(error) => LoginOutcome::Error(error),
-                            },
-                        );
-                    }
-                    DialogAction::None => {}
-                }
+            if let Some((flow, steps)) = interactive::api_key_login::ApiKeyLogin::start(&option.id) {
+                return self.multi_field_login(env, dialog, flow, steps);
             }
+            return self.single_api_key_login(env, option, dialog);
         }
-        if !crate::tui_login::supported(env, &option.id) {
-            return Ok(LoginOutcome::Error(
-                "signing in with an account is not available in the Rust build yet; use an API key".into(),
-            ));
-        }
-        let signal = AbortSignal::new();
-        start_oauth(
-            env.clone(),
-            option.id.clone(),
-            reach,
-            signal.clone(),
-            self.screen.sender.clone(),
-        );
-        let mut pending: Option<tokio::sync::oneshot::Sender<Option<String>>> = None;
-        loop {
-            self.paint(Slot::Dialog(&mut dialog));
-            match self.screen.next(Duration::from_millis(100)) {
-                Some(Ev::Login(LoginMsg::Event(event))) => dialog.show_event(&t, &event),
-                Some(Ev::Login(LoginMsg::Prompt(prompt, reply))) => {
-                    dialog.show_prompt(&t, &prompt);
-                    pending = Some(reply);
-                }
-                Some(Ev::Login(LoginMsg::Done(result))) => {
-                    self.paint(Slot::Empty);
-                    return Ok(match result {
-                        Ok(()) => LoginOutcome::Ok,
-                        Err(error) if error == CANCELLED || signal.aborted() => LoginOutcome::Cancelled,
-                        Err(error) => LoginOutcome::Error(error),
-                    });
-                }
-                Some(Ev::Input(data)) => {
-                    let action = if data == CTRL_C {
-                        DialogAction::Cancel
-                    } else {
-                        dialog.handle_input(&data)
-                    };
-                    match action {
-                        DialogAction::Cancel => {
-                            signal.abort();
-                            if let Some(reply) = pending.take() {
-                                let _ = reply.send(None);
-                            }
-                        }
-                        DialogAction::Answer(answer) => {
-                            if let Some(reply) = pending.take() {
-                                let _ = reply.send(Some(answer));
-                            }
-                        }
-                        DialogAction::None => {}
-                    }
-                }
-                Some(Ev::Closed) => {
-                    signal.abort();
-                    return Err(SetupQuit);
-                }
-                None => {}
-            }
-        }
+        self.oauth_login(env, option, reach, dialog)
     }
 
     fn busy<T: Send + 'static>(
@@ -681,26 +720,30 @@ struct Interaction {
     env: Env,
 }
 
+fn auth_prompt_view(prompt: AuthPrompt) -> LoginPrompt {
+    match prompt {
+        AuthPrompt::Select { message, options } => LoginPrompt::Select {
+            message,
+            options: options.into_iter().map(|o| (o.id, o.label)).collect(),
+        },
+        AuthPrompt::ManualCode { message, .. } => LoginPrompt::ManualCode { message },
+        AuthPrompt::Text { message, placeholder } => LoginPrompt::Text {
+            message,
+            placeholder,
+            secret: false,
+        },
+        AuthPrompt::Secret { message, placeholder } => LoginPrompt::Text {
+            message,
+            placeholder,
+            secret: true,
+        },
+    }
+}
+
 impl AuthInteraction for Interaction {
     fn prompt<'a>(&'a self, prompt: AuthPrompt, cancel: Option<AbortSignal>) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
-            let view = match prompt {
-                AuthPrompt::Select { message, options } => LoginPrompt::Select {
-                    message,
-                    options: options.into_iter().map(|o| (o.id, o.label)).collect(),
-                },
-                AuthPrompt::ManualCode { message, .. } => LoginPrompt::ManualCode { message },
-                AuthPrompt::Text { message, placeholder } => LoginPrompt::Text {
-                    message,
-                    placeholder,
-                    secret: false,
-                },
-                AuthPrompt::Secret { message, placeholder } => LoginPrompt::Text {
-                    message,
-                    placeholder,
-                    secret: true,
-                },
-            };
+            let view = auth_prompt_view(prompt);
             if self.signal.aborted() || cancel.as_ref().is_some_and(AbortSignal::aborted) {
                 return Err(CANCELLED.into());
             }
@@ -783,50 +826,65 @@ fn start_oauth(env: Env, provider: String, reach: String, signal: AbortSignal, s
     });
 }
 
+fn render_startup_selector(screen: &Screen, title: &str, options: &[&str], index: usize) -> Vec<String> {
+    let (width, _) = tui::MainScreen::size();
+    let t = Rc::clone(&screen.theme);
+    let mut lines = vec![border(&t, width), String::new()];
+    lines.extend(Text::new(&t.fg(Fg::Accent, &bold(title)), 1, 0, None).render(width));
+    lines.push(String::new());
+    for (i, option) in options.iter().enumerate() {
+        let row = if i == index {
+            format!("{}{}", t.fg(Fg::Accent, "→ "), t.fg(Fg::Accent, option))
+        } else {
+            format!("  {}", t.fg(Fg::Text, option))
+        };
+        lines.extend(Text::new(&row, 1, 0, None).render(width));
+    }
+    lines.push(String::new());
+    let hints = format!(
+        "{}  {}  {}",
+        key_hint(&t, "↑↓", "navigate"),
+        hint(&t, &screen.keys, "tui.select.confirm", "select"),
+        hint(&t, &screen.keys, "tui.select.cancel", "cancel")
+    );
+    lines.extend(Text::new(&hints, 1, 0, None).render(width));
+    lines.push(String::new());
+    lines.push(border(&t, width));
+    lines
+}
+
+fn step_startup_selector(
+    keys: &KeybindingsManager,
+    data: &str,
+    index: &mut usize,
+    len: usize,
+) -> Option<Option<usize>> {
+    if keys.matches(data, "tui.select.up") || data == "k" {
+        *index = index.saturating_sub(1);
+    } else if keys.matches(data, "tui.select.down") || data == "j" {
+        *index = (*index + 1).min(len.saturating_sub(1));
+    } else if keys.matches(data, "tui.select.confirm") || data == "\n" {
+        return Some(Some(*index));
+    } else if keys.matches(data, "tui.select.cancel") {
+        return Some(None);
+    }
+    None
+}
+
 /// `showStartupSelector` (`ExtensionSelectorComponent` on a startup TUI): the picked option's index, `None` for
 /// Esc. The selector is cleared before the terminal is handed back.
 pub fn show_startup_selector(env: &Env, title: &str, options: &[&str]) -> std::io::Result<Option<usize>> {
     let mut screen = Screen::start(env)?;
     let mut index = 0usize;
     let answer = loop {
-        let (width, _) = tui::MainScreen::size();
-        let t = Rc::clone(&screen.theme);
-        let mut lines = vec![border(&t, width), String::new()];
-        lines.extend(Text::new(&t.fg(Fg::Accent, &bold(title)), 1, 0, None).render(width));
-        lines.push(String::new());
-        for (i, option) in options.iter().enumerate() {
-            let row = if i == index {
-                format!("{}{}", t.fg(Fg::Accent, "→ "), t.fg(Fg::Accent, option))
-            } else {
-                format!("  {}", t.fg(Fg::Text, option))
-            };
-            lines.extend(Text::new(&row, 1, 0, None).render(width));
-        }
-        lines.push(String::new());
-        let hints = format!(
-            "{}  {}  {}",
-            key_hint(&t, "↑↓", "navigate"),
-            hint(&t, &screen.keys, "tui.select.confirm", "select"),
-            hint(&t, &screen.keys, "tui.select.cancel", "cancel")
-        );
-        lines.extend(Text::new(&hints, 1, 0, None).render(width));
-        lines.push(String::new());
-        lines.push(border(&t, width));
-        screen.paint(lines);
+        screen.paint(render_startup_selector(&screen, title, options, index));
         let data = match screen.next(Duration::from_millis(100)) {
             Some(Ev::Input(data)) => data,
             Some(Ev::Closed) => break None,
             _ => continue,
         };
-        let k = |id: &str| screen.keys.matches(&data, id);
-        if k("tui.select.up") || data == "k" {
-            index = index.saturating_sub(1);
-        } else if k("tui.select.down") || data == "j" {
-            index = (index + 1).min(options.len().saturating_sub(1));
-        } else if k("tui.select.confirm") || data == "\n" {
-            break Some(index);
-        } else if k("tui.select.cancel") {
-            break None;
+        if let Some(result) = step_startup_selector(&screen.keys, &data, &mut index, options.len()) {
+            break result;
         }
     };
     screen.paint(Vec::new());

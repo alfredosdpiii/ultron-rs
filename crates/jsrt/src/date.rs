@@ -117,6 +117,89 @@ impl Cursor<'_> {
     fn peek_any(&self, set: &[u8]) -> Option<u8> {
         self.s.get(self.i).copied().filter(|c| set.contains(c))
     }
+
+    fn parse_year(&mut self) -> Option<i64> {
+        let Some(sign) = self.peek_any(b"+-") else {
+            return self.digits(4, 4);
+        };
+        self.i += 1;
+        let year = self.digits(6, 6)?;
+        if sign == b'-' && year == 0 {
+            return None;
+        }
+        Some(if sign == b'-' { -year } else { year })
+    }
+
+    fn parse_month_day(&mut self) -> Option<(i64, i64)> {
+        let (mut month, mut day) = (1, 1);
+        if self.eat(b'-') {
+            month = self.digits(1, 2)?;
+            if self.eat(b'-') {
+                day = self.digits(1, 2)?;
+            }
+        }
+        if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+            return None;
+        }
+        Some((month, day))
+    }
+
+    fn parse_fraction_millis(&mut self) -> Option<i64> {
+        let start = self.i;
+        self.digits(1, usize::MAX)?;
+        let fraction = std::str::from_utf8(&self.s[start..self.i]).ok()?;
+        format!("{fraction:0<3}")[..3].parse::<i64>().ok()
+    }
+
+    fn parse_seconds(&mut self) -> Option<(i64, i64)> {
+        if !self.eat(b':') {
+            return Some((0, 0));
+        }
+        let second = self.digits(2, 2)?;
+        let millis = if self.eat(b'.') {
+            self.parse_fraction_millis()?
+        } else {
+            0
+        };
+        Some((second, millis))
+    }
+
+    fn parse_time_of_day(&mut self) -> Option<i64> {
+        let hour = self.digits(2, 2)?;
+        if !self.eat(b':') {
+            return None;
+        }
+        let minute = self.digits(2, 2)?;
+        let (second, millis) = self.parse_seconds()?;
+        if !is_valid_time(hour, minute, second, millis) {
+            return None;
+        }
+        Some(((hour * 60 + minute) * 60 + second) * 1000 + millis)
+    }
+
+    fn parse_offset_minutes(&mut self) -> Option<i64> {
+        if self.peek_any(b"Zz").is_some() {
+            self.i += 1;
+            return Some(0);
+        }
+        let Some(sign) = self.peek_any(b"+-") else {
+            return Some(0);
+        };
+        self.i += 1;
+        let offset_hours = self.digits(2, 2)?;
+        self.eat(b':');
+        let offset_minutes = self.digits(2, 2)?;
+        if offset_hours > 23 || offset_minutes > 59 {
+            return None;
+        }
+        let multiplier = if sign == b'+' { 1 } else { -1 };
+        Some((offset_hours * 60 + offset_minutes) * multiplier)
+    }
+}
+
+fn is_valid_time(hour: i64, minute: i64, second: i64, millis: i64) -> bool {
+    let in_range = hour <= 24 && minute <= 59 && second <= 59;
+    in_range && (hour != 24 || (minute, second, millis) == (0, 0, 0))
 }
 
 /// `Date.parse` for the ISO-8601 forms V8 accepts: `YYYY[-MM[-DD]][THH:mm[:ss[.fff…]]][Z|±HH:mm|±HHmm]`, `±YYYYYY`
@@ -127,68 +210,19 @@ impl Cursor<'_> {
 /// Known gaps against V8's fallback parser, which no caller writes: `2026-10-07Z` is `None` (V8 accepts it), and
 /// whitespace around a date-time (`" 2026-10-07T00:00Z"`) is accepted (V8 rejects it).
 pub fn parse_date(input: &str) -> Option<i64> {
-    let mut c = Cursor {
+    let mut cursor = Cursor {
         s: trim(input).as_bytes(),
         i: 0,
     };
-    let year = match c.peek_any(b"+-") {
-        Some(sign) => {
-            c.i += 1;
-            let y = c.digits(6, 6)?;
-            if sign == b'-' && y == 0 {
-                return None;
-            }
-            if sign == b'-' { -y } else { y }
-        }
-        None => c.digits(4, 4)?,
+    let year = cursor.parse_year()?;
+    let (month, day) = cursor.parse_month_day()?;
+    let (time_ms, offset_min) = if cursor.peek_any(b"Tt ").is_some() {
+        cursor.i += 1;
+        (cursor.parse_time_of_day()?, cursor.parse_offset_minutes()?)
+    } else {
+        (0, 0)
     };
-    let (mut month, mut day) = (1, 1);
-    if c.eat(b'-') {
-        month = c.digits(1, 2)?;
-        if c.eat(b'-') {
-            day = c.digits(1, 2)?;
-        }
-    }
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    let mut time_ms = 0;
-    let mut offset_min = 0;
-    if c.peek_any(b"Tt ").is_some() {
-        c.i += 1;
-        let hour = c.digits(2, 2)?;
-        if !c.eat(b':') {
-            return None;
-        }
-        let minute = c.digits(2, 2)?;
-        let (mut second, mut millis) = (0, 0);
-        if c.eat(b':') {
-            second = c.digits(2, 2)?;
-            if c.eat(b'.') {
-                let start = c.i;
-                c.digits(1, usize::MAX)?;
-                let fraction = std::str::from_utf8(&c.s[start..c.i]).ok()?;
-                millis = format!("{fraction:0<3}")[..3].parse::<i64>().ok()?;
-            }
-        }
-        if hour > 24 || minute > 59 || second > 59 || (hour == 24 && (minute, second, millis) != (0, 0, 0)) {
-            return None;
-        }
-        time_ms = ((hour * 60 + minute) * 60 + second) * 1000 + millis;
-        if c.peek_any(b"Zz").is_some() {
-            c.i += 1;
-        } else if let Some(sign) = c.peek_any(b"+-") {
-            c.i += 1;
-            let offset_hours = c.digits(2, 2)?;
-            c.eat(b':');
-            let offset_minutes = c.digits(2, 2)?;
-            if offset_hours > 23 || offset_minutes > 59 {
-                return None;
-            }
-            offset_min = (offset_hours * 60 + offset_minutes) * if sign == b'+' { 1 } else { -1 };
-        }
-    }
-    if c.i != c.s.len() {
+    if cursor.i != cursor.s.len() {
         return None;
     }
     let days = days_from_civil(year, month as u32, 1) + (day - 1);

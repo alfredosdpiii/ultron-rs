@@ -2,52 +2,55 @@
 
 use super::*;
 
+fn parse_on_conflict(value: Option<&Value>) -> Result<&'static str, String> {
+    match value {
+        None => Ok("stop"),
+        Some(Value::String(s)) if s == "stop" => Ok("stop"),
+        Some(Value::String(s)) if s == "markers" => Ok("markers"),
+        Some(Value::String(s)) if s == "skip" => Ok("skip"),
+        Some(_) => Err("on_conflict must be \"stop\", \"skip\" or \"markers\"".into()),
+    }
+}
+
+fn parse_merge_selectors(value: Option<&Value>) -> Result<Vec<String>, String> {
+    match value.and_then(Value::as_array) {
+        Some(items) => items.iter().map(|s| nonempty_string(Some(s), "selector")).collect(),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn merge_item(base: &Value, extra: Value) -> Value {
+    let mut item = base.clone();
+    if let (Some(item), Value::Object(extra)) = (item.as_object_mut(), extra) {
+        item.extend(extra);
+    }
+    item
+}
+
 impl Delegation {
-    pub(super) fn merge_request(
-        &self,
-        payload: &Map<String, Value>,
-        parent: Option<&str>,
-        lane: &str,
-        cell: &CellContext,
-    ) -> Result<Value, String> {
-        jsrt::payload::fields(payload, &["selectors", "on_conflict", "include_failed"])?;
-        let on_conflict = match payload.get("on_conflict") {
-            None => "stop",
-            Some(Value::String(s)) if ["stop", "markers", "skip"].contains(&s.as_str()) => s.as_str(),
-            Some(_) => return Err("on_conflict must be \"stop\", \"skip\" or \"markers\"".into()),
-        };
-        let selectors = match payload.get("selectors").and_then(Value::as_array) {
-            Some(items) => items
+    fn resolve_merge_children(&self, selectors: Vec<String>, parent: Option<&str>) -> Result<Vec<String>, String> {
+        let state = sync::lock(&self.inner.state);
+        if selectors.is_empty() {
+            return Ok(state
+                .tasks
                 .iter()
-                .map(|s| nonempty_string(Some(s), "selector"))
-                .collect::<Result<Vec<_>, _>>()?,
-            None => Vec::new(),
-        };
-        let children: Vec<String> = {
-            let state = sync::lock(&self.inner.state);
-            if selectors.is_empty() {
-                state
-                    .tasks
-                    .iter()
-                    .filter(|t| t.record["definition"] == CHILD && t.parent_id.as_deref() == parent)
-                    .filter(|t| {
-                        t.worktree.is_some() || matches!(&t.outcome, Some(Ok(result)) if !result["worktree"].is_null())
-                    })
-                    .map(|t| t.id.clone())
-                    .collect()
-            } else {
-                for id in &selectors {
-                    if !state.is_child(id) || Some(id.as_str()) == parent || !state.visible(id, parent) {
-                        return Err(format!("Unknown RLM child: {id}"));
-                    }
-                }
-                selectors
-            }
-        };
-        if (1..children.len()).any(|i| children[..i].contains(&children[i])) {
-            return Err("rlm.merge: a child is listed twice".into());
+                .filter(|t| t.record["definition"] == CHILD && t.parent_id.as_deref() == parent)
+                .filter(|t| {
+                    t.worktree.is_some() || matches!(&t.outcome, Some(Ok(result)) if !result["worktree"].is_null())
+                })
+                .map(|t| t.id.clone())
+                .collect());
         }
-        let running = self.unfinished(&children);
+        for id in &selectors {
+            if !state.is_child(id) || Some(id.as_str()) == parent || !state.visible(id, parent) {
+                return Err(format!("Unknown RLM child: {id}"));
+            }
+        }
+        Ok(selectors)
+    }
+
+    fn wait_for_merge_children(&self, children: &[String], lane: &str, cell: &CellContext) -> Result<(), String> {
+        let running = self.unfinished(children);
         let park = cell
             .park
             .as_ref()
@@ -55,7 +58,7 @@ impl Delegation {
         if let Some(park) = park {
             park(true);
         }
-        let ended = self.wait_until(&children, None, cell.cancel.as_ref());
+        let ended = self.wait_until(children, None, cell.cancel.as_ref());
         if let Some(park) = park {
             park(false);
         }
@@ -68,6 +71,24 @@ impl Delegation {
                     format!("rlm.merge was cancelled: {r}")
                 }));
         }
+        Ok(())
+    }
+
+    pub(super) fn merge_request(
+        &self,
+        payload: &Map<String, Value>,
+        parent: Option<&str>,
+        lane: &str,
+        cell: &CellContext,
+    ) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &["selectors", "on_conflict", "include_failed"])?;
+        let on_conflict = parse_on_conflict(payload.get("on_conflict"))?;
+        let selectors = parse_merge_selectors(payload.get("selectors"))?;
+        let children = self.resolve_merge_children(selectors, parent)?;
+        if (1..children.len()).any(|i| children[..i].contains(&children[i])) {
+            return Err("rlm.merge: a child is listed twice".into());
+        }
+        self.wait_for_merge_children(&children, lane, cell)?;
         let target = sync::lock(&self.inner.state).workspace_of(parent, self.inner.workspace.as_deref());
         let Some(target) = target else {
             return Err("rlm.merge needs a working directory, and this session has none".into());
@@ -79,6 +100,205 @@ impl Delegation {
             on_conflict,
             payload.get("include_failed") == Some(&Value::Bool(true)),
         ))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal helper formatting a single conflicted child merge"
+    )]
+    fn finish_conflict_merge(
+        &self,
+        id: &str,
+        name: &str,
+        branch: &str,
+        info: &Value,
+        base: &Value,
+        record: Option<WorktreeRecord>,
+        files: Vec<String>,
+        conflicts: Vec<wt::ConflictFile>,
+        markers: bool,
+        message: String,
+    ) -> Value {
+        let record_error = record.and_then(|mut record| {
+            record.state = "conflict".into();
+            self.store_record(id, record).err()
+        });
+        let text = if markers {
+            format!(
+                "conflict markers written in {}: resolve them, or restore those files",
+                files.join(", ")
+            )
+        } else {
+            format!(
+                "nothing of {name} was written: {}. Its branch {branch} keeps the work (worktree {})",
+                if message.is_empty() {
+                    "the merge conflicts"
+                } else {
+                    message.as_str()
+                },
+                info["path"].as_str().unwrap_or_default()
+            )
+        };
+        let mut item = merge_item(
+            base,
+            json!({ "status": "conflict", "files": files,
+                "conflicts": conflicts.iter().map(wt::ConflictFile::to_json).collect::<Vec<_>>(),
+                "markers": markers, "message": text, "commit": info["commit"] }),
+        );
+        if let Some(error) = record_error {
+            item["record_error"] = error.into();
+        }
+        item
+    }
+
+    fn finish_clean_merge(
+        &self,
+        id: &str,
+        base: &Value,
+        record: Option<WorktreeRecord>,
+        outcome: wt::MergeOutcome,
+    ) -> Value {
+        let record_error = record.and_then(|mut record| {
+            if !self.inner.keep_worktrees {
+                wt::remove_child_worktree(&record, true);
+                return None;
+            }
+            record.state = "merged".into();
+            self.store_record(id, record).err()
+        });
+        let mut item = match outcome {
+            wt::MergeOutcome::Merged { files, diffstat } => merge_item(
+                base,
+                json!({ "status": "merged", "files": files, "diffstat": diffstat }),
+            ),
+            _ => merge_item(base, json!({ "status": "empty" })),
+        };
+        if let Some(error) = record_error {
+            item["record_error"] = error.into();
+        }
+        item
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal helper executing one child worktree merge"
+    )]
+    fn run_child_merge(
+        &self,
+        id: &str,
+        name: &str,
+        info: &Value,
+        base: &Value,
+        record: Option<WorktreeRecord>,
+        target: &Path,
+        on_conflict: &str,
+    ) -> (Value, bool) {
+        let source = wt::MergeSource {
+            name: name.to_string(),
+            branch: info["branch"].as_str().unwrap_or_default().to_string(),
+            base: info["base"].as_str().unwrap_or_default().to_string(),
+            commit: info["commit"].as_str().map(String::from),
+        };
+        let target = info["repo"].as_str().map_or(target, Path::new);
+        let outcome = match wt::merge_child_worktree(target, &source, on_conflict == "markers") {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                return (
+                    merge_item(base, json!({ "status": "failed", "reason": error.message })),
+                    on_conflict != "skip",
+                );
+            }
+        };
+        let record = record.or_else(|| {
+            wt::list_records(target)
+                .into_iter()
+                .find(|r| r.task_id.as_deref() == Some(id))
+        });
+        let status = outcome.status();
+        {
+            let mut state = sync::lock(&self.inner.state);
+            if let Some(task) = state.task_mut(id) {
+                task.merge_status = Some(status.to_string());
+            }
+        }
+        self.merged(id, status);
+        match outcome {
+            wt::MergeOutcome::Conflict {
+                files,
+                conflicts,
+                markers,
+                message,
+            } => (
+                self.finish_conflict_merge(
+                    id,
+                    name,
+                    &source.branch,
+                    info,
+                    base,
+                    record,
+                    files,
+                    conflicts,
+                    markers,
+                    message,
+                ),
+                on_conflict != "skip",
+            ),
+            other => (self.finish_clean_merge(id, base, record, other), false),
+        }
+    }
+
+    fn merge_one_child(
+        &self,
+        id: &str,
+        target: &Path,
+        on_conflict: &str,
+        include_failed: bool,
+        stopped_at: Option<&str>,
+    ) -> (Value, bool) {
+        let (result, record, merge_status) = {
+            let state = sync::lock(&self.inner.state);
+            let task = state.task(id);
+            (
+                task.and_then(|t| t.outcome.clone()).and_then(Result::ok),
+                task.and_then(|t| t.worktree.clone()),
+                task.and_then(|t| t.merge_status.clone()),
+            )
+        };
+        let result = result.unwrap_or(Value::Null);
+        let info = &result["worktree"];
+        let name = record
+            .as_ref()
+            .map(|r| r.name.clone())
+            .or_else(|| {
+                info["branch"]
+                    .as_str()
+                    .and_then(|b| b.rsplit('/').next())
+                    .map(String::from)
+            })
+            .unwrap_or_else(|| id.to_string());
+        let mut base = json!({ "id": id, "name": name });
+        if info.is_object() {
+            base["branch"] = info["branch"].clone();
+        }
+        if let Some(at) = stopped_at {
+            return (
+                merge_item(
+                    &base,
+                    json!({ "status": "not_attempted", "reason": format!("stopped at the conflict of {at}") }),
+                ),
+                false,
+            );
+        }
+        if let Some(early) = check_merge_preconditions(&result, info, merge_status.as_deref(), include_failed, &base) {
+            return early;
+        }
+        if let Some(error) = info["error"].as_str() {
+            return (
+                merge_item(&base, json!({ "status": "failed", "reason": error })),
+                on_conflict != "skip",
+            );
+        }
+        self.run_child_merge(id, &name, info, &base, record, target, on_conflict)
     }
 
     /// `mergeChildren`: the first conflict stops the rest (`skip` goes on); nothing of a conflicting child is written
@@ -93,164 +313,10 @@ impl Delegation {
         let mut results: Vec<Value> = Vec::new();
         let mut stopped_at: Option<String> = None;
         for id in children {
-            let (result, record, merge_status) = {
-                let state = sync::lock(&self.inner.state);
-                let task = state.task(id);
-                (
-                    task.and_then(|t| t.outcome.clone()).and_then(Result::ok),
-                    task.and_then(|t| t.worktree.clone()),
-                    task.and_then(|t| t.merge_status.clone()),
-                )
-            };
-            let result = result.unwrap_or(Value::Null);
-            let info = &result["worktree"];
-            let name = record
-                .as_ref()
-                .map(|r| r.name.clone())
-                .or_else(|| {
-                    info["branch"]
-                        .as_str()
-                        .and_then(|b| b.rsplit('/').next())
-                        .map(String::from)
-                })
-                .unwrap_or_else(|| id.clone());
-            let mut base = json!({ "id": id, "name": name });
-            if info.is_object() {
-                base["branch"] = info["branch"].clone();
-            }
-            let with = |extra: Value| {
-                let mut item = base.clone();
-                if let (Some(item), Value::Object(extra)) = (item.as_object_mut(), extra) {
-                    item.extend(extra);
-                }
-                item
-            };
-            if let Some(at) = &stopped_at {
-                results.push(with(
-                    json!({ "status": "not_attempted", "reason": format!("stopped at the conflict of {at}") }),
-                ));
-                continue;
-            }
-            if !info.is_object() {
-                results.push(with(json!({ "status": "no_worktree",
-                    "reason": "it ran in the shared tree: its changes are already there" })));
-                continue;
-            }
-            if merge_status.as_deref() == Some("merged") {
-                results.push(with(
-                    json!({ "status": "merged", "files": info["changed_files"], "note": "already merged" }),
-                ));
-                continue;
-            }
-            let verdict = &result["verdict"];
-            let passed = result["status"] == "succeeded" && (!verdict.is_object() || verdict["status"] == "passed");
-            if !passed && !include_failed {
-                let status = result["status"].as_str().unwrap_or("unknown");
-                let verdict_note = verdict["status"]
-                    .as_str()
-                    .map_or(String::new(), |v| format!(", verdict {v}"));
-                let mut item = with(json!({ "status": "skipped",
-                    "reason": format!("the child did not succeed ({status}{verdict_note}); include_failed=True merges it anyway") }));
-                if !info["commit"].is_null() {
-                    item["commit"] = info["commit"].clone();
-                }
-                results.push(item);
-                continue;
-            }
-            if let Some(error) = info["error"].as_str() {
-                results.push(with(json!({ "status": "failed", "reason": error })));
-                stopped_at = (on_conflict != "skip").then(|| id.clone());
-                continue;
-            }
-            let source = wt::MergeSource {
-                name: name.clone(),
-                branch: info["branch"].as_str().unwrap_or_default().to_string(),
-                base: info["base"].as_str().unwrap_or_default().to_string(),
-                commit: info["commit"].as_str().map(String::from),
-            };
-            let target = info["repo"].as_str().map_or(target, Path::new);
-            let outcome = match wt::merge_child_worktree(target, &source, on_conflict == "markers") {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    results.push(with(json!({ "status": "failed", "reason": error.message })));
-                    if on_conflict != "skip" {
-                        stopped_at = Some(id.clone());
-                    }
-                    continue;
-                }
-            };
-            let record = record.or_else(|| {
-                wt::list_records(target)
-                    .into_iter()
-                    .find(|r| r.task_id.as_deref() == Some(id))
-            });
-            let status = outcome.status();
-            {
-                let mut state = sync::lock(&self.inner.state);
-                if let Some(task) = state.task_mut(id) {
-                    task.merge_status = Some(status.to_string());
-                }
-            }
-            self.merged(id, status);
-            match outcome {
-                wt::MergeOutcome::Conflict {
-                    files,
-                    conflicts,
-                    markers,
-                    message,
-                } => {
-                    let record_error = record.and_then(|mut record| {
-                        record.state = "conflict".into();
-                        self.store_record(id, record).err()
-                    });
-                    let text = if markers {
-                        format!(
-                            "conflict markers written in {}: resolve them, or restore those files",
-                            files.join(", ")
-                        )
-                    } else {
-                        format!(
-                            "nothing of {name} was written: {}. Its branch {} keeps the work (worktree {})",
-                            if message.is_empty() {
-                                "the merge conflicts"
-                            } else {
-                                message.as_str()
-                            },
-                            source.branch,
-                            info["path"].as_str().unwrap_or_default()
-                        )
-                    };
-                    let mut item = with(json!({ "status": "conflict", "files": files,
-                        "conflicts": conflicts.iter().map(wt::ConflictFile::to_json).collect::<Vec<_>>(),
-                        "markers": markers, "message": text, "commit": info["commit"] }));
-                    if let Some(error) = record_error {
-                        item["record_error"] = error.into();
-                    }
-                    results.push(item);
-                    if on_conflict != "skip" {
-                        stopped_at = Some(id.clone());
-                    }
-                }
-                other => {
-                    let record_error = record.and_then(|mut record| {
-                        if !self.inner.keep_worktrees {
-                            wt::remove_child_worktree(&record, true);
-                            return None;
-                        }
-                        record.state = "merged".into();
-                        self.store_record(id, record).err()
-                    });
-                    let mut item = match other {
-                        wt::MergeOutcome::Merged { files, diffstat } => {
-                            with(json!({ "status": "merged", "files": files, "diffstat": diffstat }))
-                        }
-                        _ => with(json!({ "status": "empty" })),
-                    };
-                    if let Some(error) = record_error {
-                        item["record_error"] = error.into();
-                    }
-                    results.push(item);
-                }
+            let (item, stop) = self.merge_one_child(id, target, on_conflict, include_failed, stopped_at.as_deref());
+            results.push(item);
+            if stop {
+                stopped_at = Some(id.clone());
             }
         }
         let ok = results
@@ -441,29 +507,13 @@ impl Delegation {
         self.wait_until(ids, timeout, None)
     }
 
-    /// [`Delegation::wait`] that also ends when `cancel` is aborted.
-    pub fn wait_until(
+    fn wait_for_tasks_loop(
         &self,
+        mut state: std::sync::MutexGuard<'_, State>,
         ids: &[String],
-        timeout: Option<Duration>,
+        deadline: Option<std::time::Instant>,
         cancel: Option<&Signal>,
     ) -> Vec<(String, Result<Value, String>)> {
-        let listener = cancel.and_then(|cancel| {
-            let inner = self.inner.clone();
-            cancel.on_abort(move |_| {
-                std::thread::spawn(move || {
-                    let _state = sync::lock(&inner.state);
-                    inner.changed.notify_all();
-                });
-            })
-        });
-        let deadline = timeout.map(|t| std::time::Instant::now() + t);
-        let mut state = sync::lock(&self.inner.state);
-        for id in ids {
-            if let Some(task) = state.task_mut(id) {
-                task.waiters += 1;
-            }
-        }
         loop {
             let pending = ids.iter().any(|id| state.task(id).is_some_and(|t| t.outcome.is_none()));
             let left = deadline.map(|d| d.saturating_duration_since(std::time::Instant::now()));
@@ -490,7 +540,33 @@ impl Delegation {
                 }
             }
         }
-        drop(state);
+        out
+    }
+
+    /// [`Delegation::wait`] that also ends when `cancel` is aborted.
+    pub fn wait_until(
+        &self,
+        ids: &[String],
+        timeout: Option<Duration>,
+        cancel: Option<&Signal>,
+    ) -> Vec<(String, Result<Value, String>)> {
+        let listener = cancel.and_then(|cancel| {
+            let inner = self.inner.clone();
+            cancel.on_abort(move |_| {
+                std::thread::spawn(move || {
+                    let _state = sync::lock(&inner.state);
+                    inner.changed.notify_all();
+                });
+            })
+        });
+        let deadline = timeout.map(|t| std::time::Instant::now() + t);
+        let mut state = sync::lock(&self.inner.state);
+        for id in ids {
+            if let Some(task) = state.task_mut(id) {
+                task.waiters += 1;
+            }
+        }
+        let out = self.wait_for_tasks_loop(state, ids, deadline, cancel);
         if let (Some(cancel), Some(listener)) = (cancel, listener) {
             cancel.forget(listener);
         }
@@ -533,13 +609,7 @@ impl Delegation {
         if task.verdict_invalid {
             return Err("rlm.finish: no attempts left; end your turn, your reply is returned unverified".into());
         }
-        if let (Some(worktree), Some(Value::Array(files))) = (&worktree, payload.get_mut("changed_files")) {
-            for file in files.iter_mut() {
-                if let Value::String(path) = file {
-                    *path = wt::in_worktree(path, worktree);
-                }
-            }
-        }
+        normalize_worktree_changed_files(&mut payload, worktree.as_ref());
         let checked = validate_verdict(&payload, workspace.as_deref()).and_then(|verdict| {
             let problems = task
                 .contract
@@ -551,33 +621,93 @@ impl Delegation {
                 Err(problems)
             }
         });
-        match checked {
-            Ok(verdict) => {
-                let status = verdict["status"].clone();
-                task.verdict = Some(verdict);
-                Ok(json!({ "recorded": true, "status": status,
-                    "next": "End your turn now with a short reply; the host checks changed_files against the files that changed while you ran." }))
+        apply_verdict_outcome(task, checked)
+    }
+}
+
+fn check_merge_preconditions(
+    result: &Value,
+    info: &Value,
+    merge_status: Option<&str>,
+    include_failed: bool,
+    base: &Value,
+) -> Option<(Value, bool)> {
+    if !info.is_object() {
+        return Some((
+            merge_item(
+                base,
+                json!({ "status": "no_worktree",
+                    "reason": "it ran in the shared tree: its changes are already there" }),
+            ),
+            false,
+        ));
+    }
+    if merge_status == Some("merged") {
+        return Some((
+            merge_item(
+                base,
+                json!({ "status": "merged", "files": info["changed_files"], "note": "already merged" }),
+            ),
+            false,
+        ));
+    }
+    let verdict = &result["verdict"];
+    let passed = result["status"] == "succeeded" && (!verdict.is_object() || verdict["status"] == "passed");
+    if !passed && !include_failed {
+        let status = result["status"].as_str().unwrap_or("unknown");
+        let verdict_note = verdict["status"]
+            .as_str()
+            .map_or(String::new(), |v| format!(", verdict {v}"));
+        let mut item = merge_item(
+            base,
+            json!({ "status": "skipped",
+                "reason": format!("the child did not succeed ({status}{verdict_note}); include_failed=True merges it anyway") }),
+        );
+        if !info["commit"].is_null() {
+            item["commit"] = info["commit"].clone();
+        }
+        return Some((item, false));
+    }
+    None
+}
+
+fn normalize_worktree_changed_files(payload: &mut Map<String, Value>, worktree: Option<&WorktreeRecord>) {
+    if let (Some(worktree), Some(Value::Array(files))) = (worktree, payload.get_mut("changed_files")) {
+        for file in files.iter_mut() {
+            if let Value::String(path) = file {
+                *path = wt::in_worktree(path, worktree);
             }
-            Err(problems) => {
-                task.verdict_rejections += 1;
-                let list = problems.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n");
-                task.verdict_problems = problems;
-                let left = MAX_VERDICT_REJECTIONS + 1 - task.verdict_rejections.min(MAX_VERDICT_REJECTIONS + 1);
-                if left > 0 || task.verdict.is_some() {
-                    let tail = if task.verdict.is_some() {
-                        "; your earlier verdict stands until then".to_string()
-                    } else {
-                        format!(" ({left} attempt{} left)", if left == 1 { "" } else { "s" })
-                    };
-                    return Err(format!(
-                        "rlm.finish rejected:\n{list}\nFix these and call rlm.finish again{tail}."
-                    ));
-                }
-                task.verdict_invalid = true;
-                Err(format!(
-                    "rlm.finish rejected:\n{list}\nNo attempts left: end your turn; your reply is returned unverified, with these problems."
-                ))
+        }
+    }
+}
+
+fn apply_verdict_outcome(task: &mut Task, checked: Result<Value, Vec<String>>) -> Result<Value, String> {
+    match checked {
+        Ok(verdict) => {
+            let status = verdict["status"].clone();
+            task.verdict = Some(verdict);
+            Ok(json!({ "recorded": true, "status": status,
+                "next": "End your turn now with a short reply; the host checks changed_files against the files that changed while you ran." }))
+        }
+        Err(problems) => {
+            task.verdict_rejections += 1;
+            let list = problems.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n");
+            task.verdict_problems = problems;
+            let left = MAX_VERDICT_REJECTIONS + 1 - task.verdict_rejections.min(MAX_VERDICT_REJECTIONS + 1);
+            if left > 0 || task.verdict.is_some() {
+                let tail = if task.verdict.is_some() {
+                    "; your earlier verdict stands until then".to_string()
+                } else {
+                    format!(" ({left} attempt{} left)", if left == 1 { "" } else { "s" })
+                };
+                return Err(format!(
+                    "rlm.finish rejected:\n{list}\nFix these and call rlm.finish again{tail}."
+                ));
             }
+            task.verdict_invalid = true;
+            Err(format!(
+                "rlm.finish rejected:\n{list}\nNo attempts left: end your turn; your reply is returned unverified, with these problems."
+            ))
         }
     }
 }

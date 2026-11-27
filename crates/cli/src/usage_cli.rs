@@ -53,55 +53,89 @@ fn js_integer(text: &str) -> Option<f64> {
     Some(jsrt::number::parse(text)).filter(|n| jsrt::number::is_safe_integer(*n))
 }
 
-fn parse(args: &[String]) -> Result<Options, Failure> {
-    let mut options = Options::default();
-    let mut index = 0;
-    while index < args.len() {
-        let arg = &args[index];
-        let mut value = |name: &str| -> Result<String, Failure> {
-            let inline = match arg.find('=') {
-                Some(at) => Some(arg[at + 1..].to_string()),
-                None => {
-                    index += 1;
-                    args.get(index).cloned()
-                }
-            };
-            match inline {
-                Some(v) if !v.is_empty() => Ok(v),
-                _ => Err(Failure::Usage(format!("Option {name} requires a value"))),
-            }
-        };
-        if arg == "--json" {
-            options.json = true;
-        } else if arg == "--here" {
-            options.here = true;
-        } else if arg == "--all" {
-            options.all = true;
-        } else if arg == "--utc" {
-            options.utc = true;
-        } else if arg == "--last" || arg.starts_with("--last=") {
-            let count = js_integer(&value("--last")?);
-            match count {
-                Some(n) if (1.0..=1000.0).contains(&n) => options.last = Some(n as u32),
-                _ => return Err(Failure::Usage("--last needs a number between 1 and 1000".into())),
-            }
-        } else if arg == "--sessions-root" || arg.starts_with("--sessions-root=") {
-            options.sessions_root = Some(value("--sessions-root")?);
-        } else if arg.starts_with('-') {
-            return Err(Failure::Usage(format!("Unknown option {arg}")));
-        } else if options.target.is_some() {
-            return Err(Failure::Usage(format!("Unexpected argument: {arg}")));
-        } else {
-            options.target = Some(arg.clone());
+fn option_value(args: &[String], index: &mut usize, name: &str) -> Result<String, Failure> {
+    let arg = &args[*index];
+    let inline = match arg.find('=') {
+        Some(at) => Some(arg[at + 1..].to_string()),
+        None => {
+            *index += 1;
+            args.get(*index).cloned()
         }
-        index += 1;
+    };
+    match inline {
+        Some(v) if !v.is_empty() => Ok(v),
+        _ => Err(Failure::Usage(format!("Option {name} requires a value"))),
     }
+}
+
+fn parse_last_count(raw: &str) -> Result<u32, Failure> {
+    match js_integer(raw) {
+        Some(n) if (1.0..=1000.0).contains(&n) => Ok(n as u32),
+        _ => Err(Failure::Usage("--last needs a number between 1 and 1000".into())),
+    }
+}
+
+fn apply_bool_flag(arg: &str, options: &mut Options) -> bool {
+    match arg {
+        "--json" => options.json = true,
+        "--here" => options.here = true,
+        "--all" => options.all = true,
+        "--utc" => options.utc = true,
+        _ => return false,
+    }
+    true
+}
+
+fn is_flag_with_value(arg: &str, name: &str) -> bool {
+    arg == name || arg.strip_prefix(name).is_some_and(|rest| rest.starts_with('='))
+}
+
+fn apply_arg(args: &[String], index: &mut usize, options: &mut Options) -> Result<(), Failure> {
+    let arg = &args[*index];
+    if apply_bool_flag(arg, options) {
+        return Ok(());
+    }
+    if is_flag_with_value(arg, "--last") {
+        let raw = option_value(args, index, "--last")?;
+        options.last = Some(parse_last_count(&raw)?);
+        return Ok(());
+    }
+    if is_flag_with_value(arg, "--sessions-root") {
+        options.sessions_root = Some(option_value(args, index, "--sessions-root")?);
+        return Ok(());
+    }
+    if arg.starts_with('-') {
+        return Err(Failure::Usage(format!("Unknown option {arg}")));
+    }
+    set_target(options, arg)
+}
+
+fn set_target(options: &mut Options, arg: &str) -> Result<(), Failure> {
+    if options.target.is_some() {
+        return Err(Failure::Usage(format!("Unexpected argument: {arg}")));
+    }
+    options.target = Some(arg.to_string());
+    Ok(())
+}
+
+fn validate_options(options: &Options) -> Result<(), Failure> {
     if options.target.is_some() && options.last.is_some() {
         return Err(Failure::Usage("Give a session or --last, not both".into()));
     }
     if (options.here || options.all) && options.last.is_none() {
         return Err(Failure::Usage("--here and --all go with --last".into()));
     }
+    Ok(())
+}
+
+fn parse(args: &[String]) -> Result<Options, Failure> {
+    let mut options = Options::default();
+    let mut index = 0;
+    while index < args.len() {
+        apply_arg(args, &mut index, &mut options)?;
+        index += 1;
+    }
+    validate_options(&options)?;
     Ok(options)
 }
 
@@ -221,6 +255,103 @@ pub fn run(args: &[String], env: &Env, out: &mut dyn std::io::Write, err: &mut d
     Some(code)
 }
 
+fn log_failure(e: LogError) -> Failure {
+    Failure::Error(e.message().to_string())
+}
+
+fn load_candidate_report(
+    path: &Path,
+    here: bool,
+    cwd: &str,
+    subscription: &[String],
+) -> Result<Option<(Value, bool)>, LogError> {
+    if here && read_session_header(path)?.cwd != cwd {
+        return Ok(None);
+    }
+    report_of(path, subscription).map(Some)
+}
+
+fn collect_last_reports(
+    last: u32,
+    options: &Options,
+    root: &Path,
+    cwd: &str,
+    subscription: &[String],
+) -> Result<(Vec<Value>, usize), Failure> {
+    let mut reports = Vec::new();
+    let mut skipped = 0;
+    for file in list_session_files(root) {
+        if reports.len() >= last as usize {
+            break;
+        }
+        match load_candidate_report(&file.path, options.here, cwd, subscription) {
+            Ok(None) | Err(LogError::Session(_)) => {}
+            Ok(Some((_, true))) if !options.all => skipped += 1,
+            Ok(Some((report, _))) => reports.push(report),
+            Err(e) => return Err(log_failure(e)),
+        }
+    }
+    Ok((reports, skipped))
+}
+
+fn render_last_reports(
+    reports: &[Value],
+    skipped: usize,
+    options: &Options,
+    root: &Path,
+    cwd: &str,
+    text: &text::TextOptions<'_>,
+    lines: &mut Vec<String>,
+) {
+    if options.json {
+        lines.push(jsrt::json::stringify_pretty(&json!({
+            "schema": SESSION_REPORT_LIST_SCHEMA,
+            "sessions": reports,
+        })));
+        return;
+    }
+    if reports.is_empty() {
+        let scope = if options.here {
+            format!(" of {cwd}")
+        } else {
+            String::new()
+        };
+        let omitted = if skipped > 0 {
+            format!(" ({skipped} with nothing run; --all lists them)")
+        } else {
+            String::new()
+        };
+        lines.push(format!("No sessions{scope} under {}{omitted}", root.display()));
+        return;
+    }
+    lines.extend(text::render_session_table(reports, text));
+    if skipped > 0 {
+        let suffix = if skipped == 1 { "" } else { "s" };
+        lines.push(format!(
+            "({skipped} newer session{suffix} in which nothing ran not listed; --all lists them)"
+        ));
+    }
+}
+
+fn latest_session_in_cwd(root: &Path, cwd: &str) -> Result<PathBuf, Failure> {
+    let mut fallback = None;
+    for file in list_session_files(root) {
+        if !read_session_header(&file.path).is_ok_and(|h| h.cwd == cwd) {
+            continue;
+        }
+        fallback.get_or_insert_with(|| file.path.clone());
+        if !report::session_is_empty(&read_session_log(&file.path).map_err(log_failure)?) {
+            return Ok(file.path);
+        }
+    }
+    fallback.ok_or_else(|| {
+        Failure::Error(format!(
+            "No session of {cwd} under {}; name one, or see `ultron usage --last 10`",
+            root.display()
+        ))
+    })
+}
+
 fn command(rest: &[String], env: &Env, lines: &mut Vec<String>) -> Result<(), Failure> {
     let options = parse(rest)?;
     let agent_dir = env.agent_dir();
@@ -239,89 +370,17 @@ fn command(rest: &[String], env: &Env, lines: &mut Vec<String>) -> Result<(), Fa
         zone: &zone,
     };
     let cwd = env.cwd.display().to_string();
-    let error = |e: LogError| Failure::Error(e.message().to_string());
     let subscription = session_core::lane::subscription_providers(env);
     if let Some(last) = options.last {
-        let mut reports = Vec::new();
-        let mut skipped = 0;
-        for file in list_session_files(&root) {
-            if reports.len() >= last as usize {
-                break;
-            }
-            let outcome = (|| -> Result<Option<(Value, bool)>, LogError> {
-                if options.here && read_session_header(&file.path)?.cwd != cwd {
-                    return Ok(None);
-                }
-                report_of(&file.path, &subscription).map(Some)
-            })();
-            match outcome {
-                Ok(None) | Err(LogError::Session(_)) => {}
-                Ok(Some((report, empty))) => {
-                    if empty && !options.all {
-                        skipped += 1;
-                    } else {
-                        reports.push(report);
-                    }
-                }
-                Err(e) => return Err(error(e)),
-            }
-        }
-        if options.json {
-            lines.push(jsrt::json::stringify_pretty(&json!({
-                "schema": SESSION_REPORT_LIST_SCHEMA,
-                "sessions": reports,
-            })));
-        } else if reports.is_empty() {
-            lines.push(format!(
-                "No sessions{} under {}{}",
-                if options.here {
-                    format!(" of {cwd}")
-                } else {
-                    String::new()
-                },
-                root.display(),
-                if skipped > 0 {
-                    format!(" ({skipped} with nothing run; --all lists them)")
-                } else {
-                    String::new()
-                }
-            ));
-        } else {
-            lines.extend(text::render_session_table(&reports, &text));
-            if skipped > 0 {
-                lines.push(format!(
-                    "({skipped} newer session{} in which nothing ran not listed; --all lists them)",
-                    if skipped == 1 { "" } else { "s" }
-                ));
-            }
-        }
+        let (reports, skipped) = collect_last_reports(last, &options, &root, &cwd, &subscription)?;
+        render_last_reports(&reports, skipped, &options, &root, &cwd, &text, lines);
         return Ok(());
     }
     let path = match &options.target {
         Some(target) => resolve_target(target, &root, &env.cwd, &agent_dir).map_err(Failure::Error)?,
-        None => {
-            let mut found = None;
-            let mut fallback = None;
-            for file in list_session_files(&root) {
-                match read_session_header(&file.path) {
-                    Ok(header) if header.cwd == cwd => {}
-                    _ => continue,
-                }
-                fallback.get_or_insert_with(|| file.path.clone());
-                if !report::session_is_empty(&read_session_log(&file.path).map_err(error)?) {
-                    found = Some(file.path);
-                    break;
-                }
-            }
-            found.or(fallback).ok_or_else(|| {
-                Failure::Error(format!(
-                    "No session of {cwd} under {}; name one, or see `ultron usage --last 10`",
-                    root.display()
-                ))
-            })?
-        }
+        None => latest_session_in_cwd(&root, &cwd)?,
     };
-    let (report, _) = report_of(&path, &subscription).map_err(error)?;
+    let (report, _) = report_of(&path, &subscription).map_err(log_failure)?;
     if options.json {
         lines.push(jsrt::json::stringify_pretty(&report));
     } else {

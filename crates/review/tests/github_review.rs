@@ -166,7 +166,7 @@ fn review_github_a_requested_review_acknowledges_then_posts_one_atomic_review() 
     // Git authenticates per command: a credential helper on the command line, nothing stored.
     let clone = calls
         .iter()
-        .find(|c| c.argv.contains(&"clone".to_string()))
+        .find(|c| c.argv.iter().any(|i: &String| i == "clone"))
         .expect("clone")
         .argv
         .clone();
@@ -180,8 +180,8 @@ fn review_github_a_requested_review_acknowledges_then_posts_one_atomic_review() 
             "credential.helper=!gh auth git-credential"
         ]
     );
-    assert!(clone.contains(&"--filter=blob:none".to_string()));
-    assert!(clone.contains(&"https://github.com/o/r.git".to_string()));
+    assert!(clone.iter().any(|i: &String| i == "--filter=blob:none"));
+    assert!(clone.iter().any(|i: &String| i == "https://github.com/o/r.git"));
 }
 
 #[test]

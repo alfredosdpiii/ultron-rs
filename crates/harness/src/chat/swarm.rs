@@ -57,33 +57,25 @@ fn string_list(value: Option<&Value>) -> Vec<String> {
         .collect()
 }
 
-/// An agent's registry entry, merged: topics and files are sets, recent work is the newest [`MAX_RECENT`] items.
-pub fn register(
-    tx: &mut Tx<'_>,
-    name: &str,
+fn merge_string_field(entry: &mut Value, payload: &Map<String, Value>, field: &str) {
+    let mut values = string_list(entry.get(field));
+    for value in string_list(payload.get(field)) {
+        if !values.contains(&value) {
+            values.push(value);
+        }
+    }
+    entry[field] = json!(values);
+}
+
+fn apply_register_fields(
+    entry: &mut Value,
+    payload: &Map<String, Value>,
     conversation: Option<ConversationId>,
     child: Option<String>,
-    payload: &Map<String, Value>,
     now: u64,
-) -> Result<Value> {
-    if name.trim().is_empty() {
-        return Err(msg("An agent needs a non-empty name"));
-    }
-    let doc = tx.doc(&AGENTS, Owner::Session)?;
-    let current =
-        d(doc.get(&path(&["agents", name])))?.unwrap_or_else(|| json!({ "topics": [], "files": [], "recent": [] }));
-    let mut entry = current.clone();
-    let merge = |field: &str, entry: &mut Value| {
-        let mut values = string_list(entry.get(field));
-        for value in string_list(payload.get(field)) {
-            if !values.contains(&value) {
-                values.push(value);
-            }
-        }
-        entry[field] = json!(values);
-    };
-    merge("topics", &mut entry);
-    merge("files", &mut entry);
+) {
+    merge_string_field(entry, payload, "topics");
+    merge_string_field(entry, payload, "files");
     let mut recent = string_list(entry.get("recent"));
     if let Some(work) = payload
         .get("work")
@@ -104,6 +96,25 @@ pub fn register(
         entry["summary"] = json!(summary);
     }
     entry["updatedAt"] = json!(now);
+}
+
+/// An agent's registry entry, merged: topics and files are sets, recent work is the newest [`MAX_RECENT`] items.
+pub fn register(
+    tx: &mut Tx<'_>,
+    name: &str,
+    conversation: Option<ConversationId>,
+    child: Option<String>,
+    payload: &Map<String, Value>,
+    now: u64,
+) -> Result<Value> {
+    if name.trim().is_empty() {
+        return Err(msg("An agent needs a non-empty name"));
+    }
+    let doc = tx.doc(&AGENTS, Owner::Session)?;
+    let current =
+        d(doc.get(&path(&["agents", name])))?.unwrap_or_else(|| json!({ "topics": [], "files": [], "recent": [] }));
+    let mut entry = current.clone();
+    apply_register_fields(&mut entry, payload, conversation, child, now);
     if entry != current {
         d(doc.set(&path(&["agents", name]), entry.clone()))?;
     }
@@ -174,21 +185,7 @@ pub fn route(tx: &mut Tx<'_>, query: &str) -> Result<Value> {
     ))
 }
 
-/// Deliver a message to `to`'s mailbox; returns its ID.
-pub fn send(tx: &mut Tx<'_>, from: &str, to: &str, text: &str, now: u64) -> Result<u64> {
-    if to.trim().is_empty() || text.is_empty() {
-        return Err(msg("swarm.send needs a recipient and text"));
-    }
-    let doc = tx.doc(&MAIL, Owner::Session)?;
-    let id = d(doc.get(&path(&["next"])))?
-        .and_then(|next| next.as_u64())
-        .unwrap_or(1);
-    d(doc.set(&path(&["next"]), json!(id + 1)))?;
-    if d(doc.get(&path(&["boxes", to])))?.is_none() {
-        d(doc.set(&path(&["boxes", to]), json!([])))?;
-    }
-    let message = json!({ "id": id, "from": from, "text": text, "at": now, "read": false });
-    d(doc.push(&path(&["boxes", to]), vec![message]))?;
+fn trim_mailbox(doc: &chord_delta::Draft, to: &str) -> Result<()> {
     let messages = d(doc.get(&path(&["boxes", to])))?.unwrap_or(json!([]));
     if let Some(items) = messages.as_array()
         && items.len() > MAX_MAIL
@@ -196,6 +193,30 @@ pub fn send(tx: &mut Tx<'_>, from: &str, to: &str, text: &str, now: u64) -> Resu
         let drop = items.iter().position(|message| message["read"] == true).unwrap_or(0);
         d(doc.splice(&path(&["boxes", to]), drop, 1, Vec::new()))?;
     }
+    Ok(())
+}
+
+fn allocate_mail_id(doc: &chord_delta::Draft) -> Result<u64> {
+    let id = d(doc.get(&path(&["next"])))?
+        .and_then(|next| next.as_u64())
+        .unwrap_or(1);
+    d(doc.set(&path(&["next"]), json!(id + 1)))?;
+    Ok(id)
+}
+
+/// Deliver a message to `to`'s mailbox; returns its ID.
+pub fn send(tx: &mut Tx<'_>, from: &str, to: &str, text: &str, now: u64) -> Result<u64> {
+    if to.trim().is_empty() || text.is_empty() {
+        return Err(msg("swarm.send needs a recipient and text"));
+    }
+    let doc = tx.doc(&MAIL, Owner::Session)?;
+    let id = allocate_mail_id(&doc)?;
+    if d(doc.get(&path(&["boxes", to])))?.is_none() {
+        d(doc.set(&path(&["boxes", to]), json!([])))?;
+    }
+    let message = json!({ "id": id, "from": from, "text": text, "at": now, "read": false });
+    d(doc.push(&path(&["boxes", to]), vec![message]))?;
+    trim_mailbox(&doc, to)?;
     Ok(id)
 }
 
@@ -355,6 +376,22 @@ pub(crate) fn board_claim(tx: &mut Tx<'_>, owner: &str, id: u64, now: u64) -> Re
     Ok(task)
 }
 
+fn append_board_note(
+    doc: &chord_delta::Draft,
+    index: usize,
+    task: &mut Value,
+    by: &str,
+    note: &str,
+    now: u64,
+) -> Result<()> {
+    let entry = json!({ "by": by, "text": note, "at": now });
+    d(doc.push(&task_path(index, "notes"), vec![entry.clone()]))?;
+    if let Some(notes) = task["notes"].as_array_mut() {
+        notes.push(entry);
+    }
+    Ok(())
+}
+
 /// Change a task's status (`open`, `claimed`, `done`, `dropped`, by [`board_transition`]) and/or append a note.
 pub(crate) fn board_update(
     tx: &mut Tx<'_>,
@@ -371,11 +408,7 @@ pub(crate) fn board_update(
         board_set_status(&doc, index, &mut task, to, owner)?;
     }
     if let Some(note) = note {
-        let entry = json!({ "by": by, "text": note, "at": now });
-        d(doc.push(&task_path(index, "notes"), vec![entry.clone()]))?;
-        if let Some(notes) = task["notes"].as_array_mut() {
-            notes.push(entry);
-        }
+        append_board_note(&doc, index, &mut task, by, note, now)?;
     }
     d(doc.set(&task_path(index, "updatedAt"), json!(now)))?;
     task["updatedAt"] = json!(now);
@@ -455,19 +488,39 @@ pub struct Caller<'a> {
 /// `(from, to, text)` of a message that wakes the root.
 pub(crate) type RootInbox<'a> = &'a dyn Fn(&str, &str, &str);
 
-/// Serve `kind` (one of [`super::host_ops::SWARM_KINDS`]) for `caller`. A `swarm.send` with `wake` wakes its
-/// recipient: the root through `root_inbox` when it has one, else a recipient with a conversation here gets the
-/// message as a follow-up input.
-pub fn serve(
+fn serve_swarm_send(
+    chat: &ChatHarness,
+    payload: &Map<String, Value>,
+    caller: &Caller,
+    now: u64,
+) -> std::result::Result<Value, String> {
+    let to = payload
+        .get("to")
+        .and_then(Value::as_str)
+        .ok_or("swarm.send needs a recipient")?
+        .to_owned();
+    let body = payload
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or("swarm.send needs text")?
+        .to_owned();
+    let id = chat
+        .commit(|tx| send(tx, &caller.name, &to, &body, now))
+        .map_err(|error| error.message())?;
+    let wake = payload.get("wake").and_then(Value::as_bool).unwrap_or(false);
+    let woke = wake && wake_recipient(chat, caller, &to, &body).map_err(|error| error.message())?;
+    Ok(json!({"id": id, "woke": woke}))
+}
+
+fn serve_swarm(
     chat: &ChatHarness,
     kind: &str,
     payload: &Map<String, Value>,
     caller: &Caller,
+    now: u64,
 ) -> std::result::Result<Value, String> {
-    let failed = |error: HarnessError| error.message();
     let text = |key: &str| payload.get(key).and_then(Value::as_str);
     let me = caller.name.as_str();
-    let now = chat.now();
     let result = match kind {
         "swarm.register" => {
             let name = text("name").unwrap_or(me).to_owned();
@@ -478,20 +531,28 @@ pub fn serve(
             let query = text("query").ok_or("swarm.route needs a query")?.to_owned();
             chat.commit(|tx| route(tx, &query))
         }
-        "swarm.send" => {
-            let to = text("to").ok_or("swarm.send needs a recipient")?.to_owned();
-            let body = text("text").ok_or("swarm.send needs text")?.to_owned();
-            let id = chat.commit(|tx| send(tx, me, &to, &body, now)).map_err(failed)?;
-            let wake = payload.get("wake").and_then(Value::as_bool).unwrap_or(false);
-            let woke = wake && wake_recipient(chat, caller, &to, &body).map_err(failed)?;
-            return Ok(json!({"id": id, "woke": woke}));
-        }
+        "swarm.send" => return serve_swarm_send(chat, payload, caller, now),
         "swarm.inbox" => {
             let all = payload.get("all").and_then(Value::as_bool).unwrap_or(false);
             let mark = payload.get("mark").and_then(Value::as_bool).unwrap_or(true);
             let name = text("name").unwrap_or(me).to_owned();
             chat.commit(|tx| inbox(tx, &name, all, mark))
         }
+        other => return Err(format!("{other} is not one of the session's shared records")),
+    };
+    result.map_err(|error| error.message())
+}
+
+fn serve_board(
+    chat: &ChatHarness,
+    kind: &str,
+    payload: &Map<String, Value>,
+    caller: &Caller,
+    now: u64,
+) -> std::result::Result<Value, String> {
+    let text = |key: &str| payload.get(key).and_then(Value::as_str);
+    let me = caller.name.as_str();
+    let result = match kind {
         "board.add" => {
             let title = text("title").ok_or("board.add needs a title")?.to_owned();
             let detail = text("detail").map(str::to_owned);
@@ -513,6 +574,20 @@ pub fn serve(
             let status = text("status").map(str::to_owned);
             chat.commit(|tx| board_list(tx, status.as_deref()))
         }
+        other => return Err(format!("{other} is not one of the session's shared records")),
+    };
+    result.map_err(|error| error.message())
+}
+
+fn serve_notes(
+    chat: &ChatHarness,
+    kind: &str,
+    payload: &Map<String, Value>,
+    caller: &Caller,
+) -> std::result::Result<Value, String> {
+    let text = |key: &str| payload.get(key).and_then(Value::as_str);
+    let me = caller.name.as_str();
+    let result = match kind {
         "notes.read" => chat.commit(notes_read),
         "notes.append" => {
             let line = text("text").ok_or("notes.append needs text")?.to_owned();
@@ -525,7 +600,28 @@ pub fn serve(
         }
         other => return Err(format!("{other} is not one of the session's shared records")),
     };
-    result.map_err(failed)
+    result.map_err(|error| error.message())
+}
+
+/// Serve `kind` (one of [`super::host_ops::SWARM_KINDS`]) for `caller`. A `swarm.send` with `wake` wakes its
+/// recipient: the root through `root_inbox` when it has one, else a recipient with a conversation here gets the
+/// message as a follow-up input.
+pub fn serve(
+    chat: &ChatHarness,
+    kind: &str,
+    payload: &Map<String, Value>,
+    caller: &Caller,
+) -> std::result::Result<Value, String> {
+    let now = chat.now();
+    if kind.starts_with("swarm.") {
+        serve_swarm(chat, kind, payload, caller, now)
+    } else if kind.starts_with("board.") {
+        serve_board(chat, kind, payload, caller, now)
+    } else if kind.starts_with("notes.") {
+        serve_notes(chat, kind, payload, caller)
+    } else {
+        Err(format!("{kind} is not one of the session's shared records"))
+    }
 }
 
 /// Wake the recipient `to` of a message from `caller`; returns whether one was woken.

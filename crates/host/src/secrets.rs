@@ -18,41 +18,63 @@ const W: &str = "[A-Za-z0-9_]";
 const JS_SPACE: &str =
     r"\t\n\x0B\x0C\r \u{A0}\u{1680}\u{2000}-\u{200A}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}\u{FEFF}";
 
-/// Compile a JavaScript pattern (flags `i`, `m` only) with JavaScript's ASCII `\b`, `\d`, `\w` and its `\s`.
-pub fn js_regex(pattern: &str, flags: &str) -> Result<Regex, String> {
-    let mut out = String::new();
+fn push_js_flags(flags: &str, out: &mut String) -> Result<(), String> {
     for flag in flags.chars() {
         match flag {
             'i' | 'm' => out.push_str(&format!("(?{flag})")),
             _ => return Err(format!("secret pattern flag {flag} is not portable")),
         }
     }
+    Ok(())
+}
+
+fn js_escape_replacement(next: char, in_class: bool) -> Option<String> {
+    const STATIC: &[(char, bool, &str)] = &[
+        ('d', false, "[0-9]"),
+        ('d', true, "0-9"),
+        ('D', false, "[^0-9]"),
+        ('w', false, "[A-Za-z0-9_]"),
+        ('w', true, "A-Za-z0-9_"),
+        ('W', false, "[^A-Za-z0-9_]"),
+    ];
+    if let Some(&(_, _, replacement)) = STATIC.iter().find(|&&(ch, cls, _)| ch == next && cls == in_class) {
+        return Some(replacement.to_owned());
+    }
+    if in_class {
+        return None;
+    }
+    match next {
+        'b' => Some(format!("(?:(?<={W})(?!{W})|(?<!{W})(?={W}))")),
+        'B' => Some(format!("(?:(?<={W})(?={W})|(?<!{W})(?!{W}))")),
+        's' => Some(format!("[{JS_SPACE}]")),
+        'S' => Some(format!("[^{JS_SPACE}]")),
+        _ => None,
+    }
+}
+
+fn push_js_escaped(chars: &mut std::str::Chars<'_>, in_class: bool, out: &mut String) {
+    let Some(next) = chars.next() else {
+        out.push('\\');
+        return;
+    };
+    match js_escape_replacement(next, in_class) {
+        Some(replacement) => out.push_str(&replacement),
+        None => {
+            out.push('\\');
+            out.push(next);
+        }
+    }
+}
+
+/// Compile a JavaScript pattern (flags `i`, `m` only) with JavaScript's ASCII `\b`, `\d`, `\w` and its `\s`.
+pub fn js_regex(pattern: &str, flags: &str) -> Result<Regex, String> {
+    let mut out = String::new();
+    push_js_flags(flags, &mut out)?;
     let mut chars = pattern.chars();
     let mut in_class = false;
     while let Some(c) = chars.next() {
         match c {
-            '\\' => {
-                let Some(next) = chars.next() else {
-                    out.push('\\');
-                    break;
-                };
-                match (next, in_class) {
-                    ('b', false) => out.push_str(&format!("(?:(?<={W})(?!{W})|(?<!{W})(?={W}))")),
-                    ('B', false) => out.push_str(&format!("(?:(?<={W})(?={W})|(?<!{W})(?!{W}))")),
-                    ('d', false) => out.push_str("[0-9]"),
-                    ('d', true) => out.push_str("0-9"),
-                    ('D', false) => out.push_str("[^0-9]"),
-                    ('w', false) => out.push_str("[A-Za-z0-9_]"),
-                    ('w', true) => out.push_str("A-Za-z0-9_"),
-                    ('W', false) => out.push_str("[^A-Za-z0-9_]"),
-                    ('s', false) => out.push_str(&format!("[{JS_SPACE}]")),
-                    ('S', false) => out.push_str(&format!("[^{JS_SPACE}]")),
-                    _ => {
-                        out.push('\\');
-                        out.push(next);
-                    }
-                }
-            }
+            '\\' => push_js_escaped(&mut chars, in_class, &mut out),
             '[' if !in_class => {
                 in_class = true;
                 out.push(c);
@@ -124,6 +146,23 @@ pub fn preview_secret(value: &str) -> String {
 
 fn string_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(Value::as_str)
+}
+
+fn dedupe_findings(mut found: Vec<(SecretFinding, usize)>) -> Vec<SecretFinding> {
+    found.sort_by(|(a, ao), (b, bo)| {
+        a.start
+            .cmp(&b.start)
+            .then((b.end - b.start).cmp(&(a.end - a.start)))
+            .then(ao.cmp(bo))
+    });
+    let mut kept: Vec<SecretFinding> = Vec::new();
+    for (finding, _) in found {
+        if kept.last().is_some_and(|last| finding.start < last.end) {
+            continue;
+        }
+        kept.push(finding);
+    }
+    kept
 }
 
 impl SecretDetector {
@@ -203,54 +242,59 @@ impl SecretDetector {
         let safe = OnceLock::new();
         let mut found: Vec<(SecretFinding, usize)> = Vec::new();
         for (order, rule) in self.rules.iter().enumerate() {
-            if !(if mask { rule.mask } else { rule.scan }) {
+            if self.rule_applies(rule, mask, text, &lower) {
+                self.collect_rule_findings(rule, order, text, &safe, &mut found);
+            }
+        }
+        dedupe_findings(found)
+    }
+
+    fn rule_applies(&self, rule: &Rule, mask: bool, text: &str, lower: &OnceLock<String>) -> bool {
+        let in_scope = if mask { rule.mask } else { rule.scan };
+        if !in_scope {
+            return false;
+        }
+        if rule.keywords.is_empty() {
+            return true;
+        }
+        let haystack = if rule.caseless {
+            lower.get_or_init(|| text.to_lowercase()).as_str()
+        } else {
+            text
+        };
+        rule.keywords.iter().any(|word| haystack.contains(word.as_str()))
+    }
+
+    fn collect_rule_findings(
+        &self,
+        rule: &Rule,
+        order: usize,
+        text: &str,
+        safe: &OnceLock<Vec<(usize, usize)>>,
+        found: &mut Vec<(SecretFinding, usize)>,
+    ) {
+        // ponytail: a regex runtime error (backtrack limit) ends this rule's matches, like a non-match.
+        for captures in rule.regex.captures_iter(text).map_while(Result::ok) {
+            let Some(span) = captures.get(rule.group) else { continue };
+            let (start, end) = (span.start(), span.end());
+            let value = span.as_str();
+            if !self.plausible(rule, value) {
                 continue;
             }
-            if !rule.keywords.is_empty() {
-                let haystack = if rule.caseless {
-                    lower.get_or_init(|| text.to_lowercase()).as_str()
-                } else {
-                    text
-                };
-                if !rule.keywords.iter().any(|word| haystack.contains(word.as_str())) {
-                    continue;
-                }
+            let safe_spans: &Vec<(usize, usize)> = safe.get_or_init(|| self.safe_spans(text));
+            if safe_spans.iter().any(|&(from, to)| from <= start && end <= to) {
+                continue;
             }
-            // ponytail: a regex runtime error (backtrack limit) ends this rule's matches, like a non-match.
-            for captures in rule.regex.captures_iter(text).map_while(Result::ok) {
-                let Some(span) = captures.get(rule.group) else { continue };
-                let (start, end) = (span.start(), span.end());
-                let value = span.as_str();
-                if !self.plausible(rule, value) {
-                    continue;
-                }
-                let safe: &Vec<(usize, usize)> = safe.get_or_init(|| self.safe_spans(text));
-                if safe.iter().any(|&(from, to)| from <= start && end <= to) {
-                    continue;
-                }
-                let finding = SecretFinding {
+            found.push((
+                SecretFinding {
                     kind: rule.id.clone(),
                     start,
                     end,
                     preview: preview_secret(value),
-                };
-                found.push((finding, order));
-            }
+                },
+                order,
+            ));
         }
-        found.sort_by(|(a, ao), (b, bo)| {
-            a.start
-                .cmp(&b.start)
-                .then((b.end - b.start).cmp(&(a.end - a.start)))
-                .then(ao.cmp(bo))
-        });
-        let mut kept: Vec<SecretFinding> = Vec::new();
-        for (finding, _) in found {
-            if kept.last().is_some_and(|last| finding.start < last.end) {
-                continue;
-            }
-            kept.push(finding);
-        }
-        kept
     }
 
     /// `text` with every masking finding replaced by `[REDACTED:<kind>]`, and how many were replaced.

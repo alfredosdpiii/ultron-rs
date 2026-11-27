@@ -98,6 +98,48 @@ pub fn normalize(line: &str) -> String {
     line.chars().take(160).collect()
 }
 
+fn tally_record(
+    record: &Value,
+    proven: &[&Check],
+    modes: &mut BTreeMap<(String, &'static str), Tally>,
+    hits: &mut BTreeMap<&'static str, u64>,
+) {
+    let result = record.get("result").unwrap_or(record);
+    let pull = record.get("pull").and_then(Value::as_str).unwrap_or("a review");
+    for (key, description) in DROPPED {
+        let count = result["dropped"][key]
+            .as_u64()
+            .or_else(|| result["dropped"][key].as_array().map(|items| items.len() as u64))
+            .unwrap_or(0);
+        if count > 0 {
+            let tally = modes.entry((format!("dropped:{key}"), "dropped")).or_default();
+            tally.description = description.to_string();
+            tally.add(count, Some(pull.to_string()));
+        }
+    }
+    for line in result["notChecked"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        let mode = normalize(line);
+        let tally = modes.entry((format!("notChecked:{mode}"), "notChecked")).or_default();
+        tally.description = mode;
+        tally.add(1, Some(pull.to_string()));
+    }
+    for check in proven {
+        let found = (check.detect)(result);
+        if found.is_empty() {
+            continue;
+        }
+        *hits.entry(check.id).or_default() += found.len() as u64;
+        let tally = modes.entry((format!("check:{}", check.id), "check")).or_default();
+        tally.description = format!("{} ({})", check.flags, check.rule);
+        tally.add(found.len() as u64, found.first().map(|hit| format!("{pull}: {hit}")));
+    }
+}
+
 /// The register of `fates` and review `records` (each a review record, its engine result under `result`), with the
 /// library's checks run where `proofs` say they count.
 pub fn build(fates: &[Fate], records: &[Value], library: &[Check], proofs: &[Proof]) -> Register {
@@ -115,42 +157,9 @@ pub fn build(fates: &[Fate], records: &[Value], library: &[Check], proofs: &[Pro
         .iter()
         .filter(|check| proofs.iter().any(|proof| proof.id == check.id && proof.proven()))
         .collect();
-    let mut hits: BTreeMap<&str, u64> = BTreeMap::new();
+    let mut hits: BTreeMap<&'static str, u64> = BTreeMap::new();
     for record in records {
-        let result = record.get("result").unwrap_or(record);
-        let pull = record.get("pull").and_then(Value::as_str).unwrap_or("a review");
-        for (key, description) in DROPPED {
-            let count = result["dropped"][key]
-                .as_u64()
-                .or_else(|| result["dropped"][key].as_array().map(|items| items.len() as u64))
-                .unwrap_or(0);
-            if count > 0 {
-                let tally = modes.entry((format!("dropped:{key}"), "dropped")).or_default();
-                tally.description = description.to_string();
-                tally.add(count, Some(pull.to_string()));
-            }
-        }
-        for line in result["notChecked"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-        {
-            let mode = normalize(line);
-            let tally = modes.entry((format!("notChecked:{mode}"), "notChecked")).or_default();
-            tally.description = mode;
-            tally.add(1, Some(pull.to_string()));
-        }
-        for check in &proven {
-            let found = (check.detect)(result);
-            if found.is_empty() {
-                continue;
-            }
-            *hits.entry(check.id).or_default() += found.len() as u64;
-            let tally = modes.entry((format!("check:{}", check.id), "check")).or_default();
-            tally.description = format!("{} ({})", check.flags, check.rule);
-            tally.add(found.len() as u64, found.first().map(|hit| format!("{pull}: {hit}")));
-        }
+        tally_record(record, &proven, &mut modes, &mut hits);
     }
     let mut modes: Vec<Mode> = modes
         .into_iter()

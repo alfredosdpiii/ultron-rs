@@ -97,20 +97,12 @@ async fn fetch_with_retry(request: impl Fn() -> reqwest::RequestBuilder) -> Resu
     }
 }
 
-/// `downloadTool("fd")`: resolve the latest version, download its archive into `<agentDir>/bin`, extract it with
-/// `tar` (from the run's PATH) into a private directory, move the binary to `<agentDir>/bin/fd` (mode 755) and
-/// remove the archive and the directory.
-pub fn download_fd(env: &Env, host: &str) -> Result<PathBuf, String> {
-    let host = host.trim_end_matches('/');
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())?;
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| e.to_string())?;
-    let version = runtime.block_on(async {
+fn resolve_latest_fd_version(
+    runtime: &tokio::runtime::Runtime,
+    client: &reqwest::Client,
+    host: &str,
+) -> Result<String, String> {
+    runtime.block_on(async {
         let latest = format!("{host}/{FD_REPO}/releases/latest");
         let response = tokio::time::timeout(
             NETWORK_TIMEOUT,
@@ -124,7 +116,82 @@ pub fn download_fd(env: &Env, host: &str) -> Result<PathBuf, String> {
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
         latest_version_from_redirect(response.status().as_u16(), location.as_deref())
-    })?;
+    })
+}
+
+fn download_fd_archive(
+    runtime: &tokio::runtime::Runtime,
+    client: &reqwest::Client,
+    url: &str,
+    archive: &Path,
+) -> Result<(), String> {
+    runtime.block_on(async {
+        let response = tokio::time::timeout(DOWNLOAD_TIMEOUT, async {
+            let response = fetch_with_retry(|| client.get(url)).await?;
+            if !response.status().is_success() {
+                return Err(format!(
+                    "Download failed with HTTP {}: {url}",
+                    response.status().as_u16()
+                ));
+            }
+            response.bytes().await.map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|_| "The operation was aborted due to timeout".to_string())??;
+        std::fs::write(archive, &response).map_err(|e| e.to_string())
+    })
+}
+
+fn find_tar(env: &Env, asset: &str) -> Result<PathBuf, String> {
+    (env.var)("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|d| d.join("tar"))
+                .find(|p| executable(p))
+        })
+        .ok_or_else(|| format!("Failed to extract {asset}: tar: spawn tar ENOENT"))
+}
+
+fn extract_fd_binary(env: &Env, archive: &Path, extract: &Path, asset: &str, binary: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(extract).map_err(|e| e.to_string())?;
+    let tar = find_tar(env, asset)?;
+    let output = std::process::Command::new(tar)
+        .arg("xzf")
+        .arg(archive)
+        .arg("-C")
+        .arg(extract)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("Failed to extract {asset}: tar: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("Failed to extract {asset}: tar: {stderr}"));
+    }
+    let nested = extract.join(asset.trim_end_matches(".tar.gz")).join("fd");
+    let found = [nested, extract.join("fd")]
+        .into_iter()
+        .find(|p| p.exists())
+        .or_else(|| find_recursively(extract, "fd"))
+        .ok_or_else(|| format!("Binary not found in archive: expected fd under {}", extract.display()))?;
+    std::fs::rename(found, binary).map_err(|e| e.to_string())?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(binary, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())
+}
+
+/// `downloadTool("fd")`: resolve the latest version, download its archive into `<agentDir>/bin`, extract it with
+/// `tar` (from the run's PATH) into a private directory, move the binary to `<agentDir>/bin/fd` (mode 755) and
+/// remove the archive and the directory.
+pub fn download_fd(env: &Env, host: &str) -> Result<PathBuf, String> {
+    let host = host.trim_end_matches('/');
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?;
+    let version = resolve_latest_fd_version(&runtime, &client, host)?;
     let asset = fd_asset_name(&version, std::env::consts::OS, std::env::consts::ARCH).ok_or_else(|| {
         format!(
             "Unsupported platform: {}/{}",
@@ -137,21 +204,7 @@ pub fn download_fd(env: &Env, host: &str) -> Result<PathBuf, String> {
     let url = format!("{host}/{FD_REPO}/releases/download/v{version}/{asset}");
     let archive = bin.join(&asset);
     let binary = bin.join("fd");
-    runtime.block_on(async {
-        let response = tokio::time::timeout(DOWNLOAD_TIMEOUT, async {
-            let response = fetch_with_retry(|| client.get(&url)).await?;
-            if !response.status().is_success() {
-                return Err(format!(
-                    "Download failed with HTTP {}: {url}",
-                    response.status().as_u16()
-                ));
-            }
-            response.bytes().await.map_err(|e| e.to_string())
-        })
-        .await
-        .map_err(|_| "The operation was aborted due to timeout".to_string())??;
-        std::fs::write(&archive, &response).map_err(|e| e.to_string())
-    })?;
+    download_fd_archive(&runtime, &client, &url, &archive)?;
     let unique = format!(
         "extract_tmp_fd_{}_{}",
         std::process::id(),
@@ -160,37 +213,7 @@ pub fn download_fd(env: &Env, host: &str) -> Result<PathBuf, String> {
             .map_or(0, |d| d.as_nanos())
     );
     let extract = bin.join(unique);
-    let result = (|| {
-        std::fs::create_dir_all(&extract).map_err(|e| e.to_string())?;
-        let tar = (env.var)("PATH")
-            .and_then(|path| {
-                std::env::split_paths(&path)
-                    .map(|d| d.join("tar"))
-                    .find(|p| executable(p))
-            })
-            .ok_or_else(|| format!("Failed to extract {asset}: tar: spawn tar ENOENT"))?;
-        let output = std::process::Command::new(tar)
-            .arg("xzf")
-            .arg(&archive)
-            .arg("-C")
-            .arg(&extract)
-            .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|e| format!("Failed to extract {asset}: tar: {e}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(format!("Failed to extract {asset}: tar: {stderr}"));
-        }
-        let nested = extract.join(asset.trim_end_matches(".tar.gz")).join("fd");
-        let found = [nested, extract.join("fd")]
-            .into_iter()
-            .find(|p| p.exists())
-            .or_else(|| find_recursively(&extract, "fd"))
-            .ok_or_else(|| format!("Binary not found in archive: expected fd under {}", extract.display()))?;
-        std::fs::rename(found, &binary).map_err(|e| e.to_string())?;
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())
-    })();
+    let result = extract_fd_binary(env, &archive, &extract, &asset, &binary);
     let _ = std::fs::remove_file(&archive);
     let _ = std::fs::remove_dir_all(&extract);
     result.map(|()| binary)

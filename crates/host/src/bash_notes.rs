@@ -37,55 +37,147 @@ pub fn exit_note(command: &str, exit_code: Option<i32>) -> Option<&'static str> 
         .map(|(_, note)| *note)
 }
 
-/// The commands of a simple pipeline, split on `|` outside quotes; None when `command` is anything more.
-fn pipeline_commands(command: &str) -> Option<Vec<String>> {
-    let mut parts = Vec::new();
-    let mut current = String::new();
-    let (mut in_single, mut in_double) = (false, false);
-    let mut characters = command.trim().chars().peekable();
-    while let Some(character) = characters.next() {
-        if in_single {
-            in_single = character != '\'';
-            current.push(character);
-            continue;
+/// Characters that disqualify a command from being a simple pipeline when unquoted.
+const DISALLOWED_UNQUOTED: &[char] = &['`', ';', '\n', '(', ')', '{', '}'];
+
+fn is_disallowed_unquoted(character: char, next: Option<&char>) -> bool {
+    DISALLOWED_UNQUOTED.contains(&character) || (character == '$' && next == Some(&'('))
+}
+
+struct PipelineParser {
+    parts: Vec<String>,
+    current: String,
+    in_single: bool,
+    in_double: bool,
+}
+
+impl PipelineParser {
+    fn new() -> Self {
+        Self {
+            parts: Vec::new(),
+            current: String::new(),
+            in_single: false,
+            in_double: false,
+        }
+    }
+
+    fn step(&mut self, character: char, characters: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<()> {
+        if self.in_single {
+            self.in_single = character != '\'';
+            self.current.push(character);
+            return Some(());
+        }
+        if character == '\\' {
+            self.current.push(character);
+            self.current.push(characters.next()?);
+            return Some(());
+        }
+        if self.in_double {
+            return self.step_double(character, characters);
+        }
+        self.step_unquoted(character, characters)
+    }
+
+    fn step_double(
+        &mut self,
+        character: char,
+        characters: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    ) -> Option<()> {
+        match character {
+            '"' => {
+                self.in_double = false;
+                self.current.push(character);
+                Some(())
+            }
+            '`' => None,
+            '$' if characters.peek() == Some(&'(') => None,
+            _ => {
+                self.current.push(character);
+                Some(())
+            }
+        }
+    }
+
+    fn enter_quote(&mut self, quote: char) {
+        if quote == '\'' {
+            self.in_single = true;
+        } else {
+            self.in_double = true;
+        }
+        self.current.push(quote);
+    }
+
+    fn step_unquoted(
+        &mut self,
+        character: char,
+        characters: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    ) -> Option<()> {
+        if is_disallowed_unquoted(character, characters.peek()) {
+            return None;
         }
         match character {
-            '\\' => {
-                current.push(character);
-                current.push(characters.next()?);
+            '\'' | '"' => {
+                self.enter_quote(character);
+                Some(())
             }
-            '\'' if !in_double => {
-                in_single = true;
-                current.push(character);
+            '|' => self.step_pipe(characters),
+            '&' => self.step_ampersand(characters),
+            '#' => self.step_hash(),
+            _ => {
+                self.current.push(character);
+                Some(())
             }
-            '"' => {
-                in_double = !in_double;
-                current.push(character);
-            }
-            '`' => return None,
-            '$' if characters.peek() == Some(&'(') => return None,
-            _ if in_double => current.push(character),
-            '&' if current.ends_with(['>', '<']) || characters.peek() == Some(&'>') => current.push(character),
-            '#' if !(current.is_empty() || current.ends_with(char::is_whitespace)) => current.push(character),
-            ';' | '&' | '\n' | '(' | ')' | '{' | '}' | '#' => return None,
-            '|' => {
-                match characters.peek() {
-                    Some('|') => return None,
-                    Some('&') => {
-                        characters.next();
-                    }
-                    _ => {}
-                }
-                parts.push(std::mem::take(&mut current));
-            }
-            _ => current.push(character),
         }
     }
-    if in_single || in_double {
-        return None;
+
+    fn step_pipe(&mut self, characters: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<()> {
+        match characters.peek() {
+            Some('|') => return None,
+            Some('&') => {
+                characters.next();
+            }
+            _ => {}
+        }
+        self.parts.push(std::mem::take(&mut self.current));
+        Some(())
     }
-    parts.push(current);
-    parts.iter().all(|part| !part.trim().is_empty()).then_some(parts)
+
+    fn step_ampersand(&mut self, characters: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<()> {
+        if self.current.ends_with(['>', '<']) || characters.peek() == Some(&'>') {
+            self.current.push('&');
+            return Some(());
+        }
+        None
+    }
+
+    fn step_hash(&mut self) -> Option<()> {
+        if self.current.is_empty() || self.current.ends_with(char::is_whitespace) {
+            return None;
+        }
+        self.current.push('#');
+        Some(())
+    }
+
+    fn finish(mut self) -> Option<Vec<String>> {
+        if self.in_single || self.in_double {
+            return None;
+        }
+        self.parts.push(self.current);
+        self.parts
+            .iter()
+            .all(|part| !part.trim().is_empty())
+            .then_some(self.parts)
+    }
+}
+
+/// The commands of a simple pipeline, split on `|` outside quotes; None when `command` is anything more.
+fn pipeline_commands(command: &str) -> Option<Vec<String>> {
+    let mut parser = PipelineParser::new();
+    let mut characters = command.trim().chars().peekable();
+    while let Some(character) = characters.next() {
+        parser.step(character, &mut characters)?;
+    }
+    parser.finish()
 }
 
 /// The program a simple command runs: its first word after `NAME=value` assignments, unquoted (a `!` negation,

@@ -8,48 +8,53 @@ use crate::print_mode::{Target, open_route, server_options, server_start, sessio
 use client::session::{SessionLink, WatchSink};
 use serde_json::json;
 
+fn rpc_trace(mode: &str, env: &Env, label: &str) {
+    if mode == "rpc" {
+        crate::print_mode::trace_startup(env, label);
+    }
+}
+
+fn named_options(mut options: serde_json::Value, name: Option<&str>) -> serde_json::Value {
+    if let Some(name) = name {
+        options["name"] = json!(name);
+    }
+    options
+}
+
+fn select_session(link: &mut SessionLink, target: &Target, name: Option<&str>) -> Result<String, String> {
+    match target {
+        Target::Open(metadata) => match name {
+            Some(name) => link.rename(&metadata.id, name).map(|()| metadata.id.clone()),
+            None => Ok(metadata.id.clone()),
+        },
+        Target::New { id } => {
+            let base = id.as_ref().map_or_else(|| json!({}), |id| json!({"id": id}));
+            link.create(named_options(base, name))
+        }
+        Target::Fork(metadata) => link.create(named_options(json!({"forkFromSessionId": metadata.id}), name)),
+        Target::Ephemeral => link.create(named_options(json!({}), name)),
+    }
+}
+
 /// Start the server, select `target`'s session and attach to it; transcript events go to `events`. Closing the link
 /// never stops a server it did not start.
 pub fn open(parsed: &Args, env: &Env, target: &Target, mode: &str, events: WatchSink) -> Result<SessionLink, String> {
     let options = server_options(parsed, env, mode)?;
     let start = server_start(env, &options);
     let started = open_route(env, &start)?;
-    let rpc_trace = |label: &str| {
-        if mode == "rpc" {
-            crate::print_mode::trace_startup(env, label);
-        }
-    };
-    rpc_trace("rpc.open");
+    rpc_trace(mode, env, "rpc.open");
     let mut link = SessionLink::connect(start, started, session_options(env, &options), events)?;
-    rpc_trace("rpc.services-ready");
-    let name = parsed.name.as_deref();
-    let named = |mut options: serde_json::Value| {
-        if let Some(name) = name {
-            options["name"] = json!(name);
-        }
-        options
-    };
-    let selected = match target {
-        Target::Open(metadata) => match name {
-            Some(name) => link.rename(&metadata.id, name).map(|()| metadata.id.clone()),
-            None => Ok(metadata.id.clone()),
-        },
-        Target::New { id } => link.create(named(match id {
-            Some(id) => json!({"id": id}),
-            None => json!({}),
-        })),
-        Target::Fork(metadata) => link.create(named(json!({"forkFromSessionId": metadata.id}))),
-        Target::Ephemeral => link.create(named(json!({}))),
-    };
+    rpc_trace(mode, env, "rpc.services-ready");
+    let selected = select_session(&mut link, target, parsed.name.as_deref());
     let attached = selected.and_then(|id| {
-        rpc_trace("rpc.session-selected");
+        rpc_trace(mode, env, "rpc.session-selected");
         link.attach(&id)
     });
     if let Err(error) = attached {
         link.close(false);
         return Err(error);
     }
-    rpc_trace("rpc.attached");
+    rpc_trace(mode, env, "rpc.attached");
     link.supervise();
     Ok(link)
 }

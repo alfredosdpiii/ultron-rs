@@ -200,22 +200,18 @@ fn listed(snapshot: &WorkspaceSnapshot, path: &str) -> bool {
     snapshot.entries.contains_key(path) || snapshot.entries.keys().any(|e| e.starts_with(&format!("{path}/")))
 }
 
-/// `checkFiles`: compares a verdict's declared changes (`changed_files`) with the changes observed during the run.
-/// `explained`: paths declared by overlapping tasks; `concurrent`: their ids.
-pub fn check_files(
+fn classify_declared_files(
     changed_files: &[String],
     workspace: &Path,
+    root: &str,
     before: &WorkspaceSnapshot,
     after: &WorkspaceSnapshot,
     diff: &WorkspaceDiff,
-    explained: &[String],
-    concurrent: &[String],
-) -> Value {
-    let root = workspace.display().to_string();
+) -> (Vec<String>, Vec<String>) {
     let mut unobserved = Vec::new();
     let mut unlisted = Vec::new();
     for declared in changed_files {
-        let Some(path) = workspace_path(declared, Some(&root)) else {
+        let Some(path) = workspace_path(declared, Some(root)) else {
             unlisted.push(declared.clone());
             continue;
         };
@@ -230,16 +226,40 @@ pub fn check_files(
             unobserved.push(declared.clone());
         }
     }
+    (unobserved, unlisted)
+}
+
+fn find_unreported_files(
+    changed_files: &[String],
+    root: &str,
+    diff: &WorkspaceDiff,
+    explained: &[String],
+) -> Vec<String> {
     let declared: Vec<String> = changed_files
         .iter()
-        .map(|p| workspace_path(p, Some(&root)).unwrap_or_else(|| p.clone()))
+        .map(|p| workspace_path(p, Some(root)).unwrap_or_else(|| p.clone()))
         .collect();
-    let unreported: Vec<String> = diff
-        .changed
+    diff.changed
         .iter()
         .filter(|path| !declared.iter().any(|d| covers(d, path)) && !explained.iter().any(|e| covers(e, path)))
         .cloned()
-        .collect();
+        .collect()
+}
+
+/// `checkFiles`: compares a verdict's declared changes (`changed_files`) with the changes observed during the run.
+/// `explained`: paths declared by overlapping tasks; `concurrent`: their ids.
+pub fn check_files(
+    changed_files: &[String],
+    workspace: &Path,
+    before: &WorkspaceSnapshot,
+    after: &WorkspaceSnapshot,
+    diff: &WorkspaceDiff,
+    explained: &[String],
+    concurrent: &[String],
+) -> Value {
+    let root = workspace.display().to_string();
+    let (unobserved, unlisted) = classify_declared_files(changed_files, workspace, &root, before, after, diff);
+    let unreported = find_unreported_files(changed_files, &root, diff, explained);
     let outcome = if !unobserved.is_empty() {
         "contradicted"
     } else if diff.complete {

@@ -373,7 +373,8 @@ fn review_daemon_notifications_find_requests_and_mentions() {
     assert!(
         second
             .argv
-            .contains(&"If-Modified-Since: Sun, 04 Oct 2026 10:00:00 GMT".to_string())
+            .iter()
+            .any(|i: &String| i == "If-Modified-Since: Sun, 04 Oct 2026 10:00:00 GMT")
     );
     assert!(second.argv.join(" ").contains("2026-10-04T09%3A58%3A00.000Z"));
     assert_eq!(outcomes_of(&outcomes).len(), 2);

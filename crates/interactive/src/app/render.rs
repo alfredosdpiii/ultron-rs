@@ -128,136 +128,205 @@ impl App {
     /// The dock under the transcript: the running-work panel, pending messages, status, editor (or selector) and
     /// footer.
     pub(super) fn dock(&mut self, width: usize) -> Vec<Vec<String>> {
+        let pending = self.dock_pending(width);
+        let rlm_focus = matches!(self.panel, Some(Panel::RlmFocus(_)));
+        let snapshot = (self.rlm_visible || !rlm_focus).then(|| self.rlm_snapshot());
+        let options = self.rlm_options();
+        let (running, status) = self.dock_status(width, snapshot.as_ref(), &options, rlm_focus);
+        let footer = self.dock_footer(width, snapshot.as_ref(), &options, rlm_focus);
+        let focus_height = self.rows.saturating_sub(footer.len() + 1).max(10);
+        let editor = self.dock_slot(width, focus_height, &options);
+        let mut parts = vec![running, pending, status];
+        if let Some(line) = self.status_line(width) {
+            parts.push(vec![line]);
+        }
+        if let Some(chips) = self.dock_attachment_chips(width) {
+            parts.push(chips);
+        }
+        parts.push(editor);
+        parts.push(footer);
+        parts
+    }
+
+    fn dock_pending(&mut self, width: usize) -> Vec<String> {
         let mut pending = self.chat.render_pending(width);
         if let Some(bash) = self.bash.as_mut() {
             pending.extend(bash.render(width));
         }
+        pending
+    }
+
+    fn dock_status(
+        &mut self,
+        width: usize,
+        snapshot: Option<&rlm_views::visualizer::RlmSnapshot>,
+        options: &rlm_views::graph::RlmViewOptions,
+        rlm_focus: bool,
+    ) -> (Vec<String>, Vec<String>) {
         let mut status = Vec::new();
         if !self.status.is_empty() {
             status.extend(Text::new(&self.theme.fg(Fg::Dim, &self.status), 1, 0, None).render(width));
         }
-        let rlm_focus = matches!(self.panel, Some(Panel::RlmFocus(_)));
-        let need_snapshot = self.rlm_visible || !rlm_focus;
-        let snapshot = need_snapshot.then(|| self.rlm_snapshot());
-        let options = self.rlm_options();
         if self.rlm_visible
             && !rlm_focus
-            && let Some(snapshot) = &snapshot
+            && let Some(snapshot) = snapshot
         {
             let inner = width.saturating_sub(2).max(1);
             status.extend(
-                rlm_views::graph::render_rlm_dock(snapshot, inner, &options, usize::MAX)
+                rlm_views::graph::render_rlm_dock(snapshot, inner, options, usize::MAX)
                     .into_iter()
                     .map(|l| format!(" {l}")),
             );
         }
-        let running = self.running_work_lines(snapshot.as_ref(), width);
+        let running = self.running_work_lines(snapshot, width);
         status.extend(self.chat.render_status(width));
         let mut waves = self.wave_summary(width);
         if !running.is_empty() {
             waves.truncate(1);
         }
         status.extend(waves);
-        let runtime_line = match &snapshot {
+        (running, status)
+    }
+
+    fn dock_footer(
+        &self,
+        width: usize,
+        snapshot: Option<&rlm_views::visualizer::RlmSnapshot>,
+        options: &rlm_views::graph::RlmViewOptions,
+        rlm_focus: bool,
+    ) -> Vec<String> {
+        let runtime_line = match snapshot {
             Some(snapshot) if !self.rlm_visible && !rlm_focus => {
-                rlm_views::graph::render_rlm_footer(snapshot, width.max(1), &options)
+                rlm_views::graph::render_rlm_footer(snapshot, width.max(1), options)
             }
             _ => None,
         };
-        let mut footer = Vec::new();
-        footer.extend(render_footer(&self.theme, &self.footer_view(), width));
+        let mut footer = render_footer(&self.theme, &self.footer_view(), width);
         footer.extend(runtime_line);
-        let focus_height = self.rows.saturating_sub(footer.len() + 1).max(10);
+        footer
+    }
+
+    fn dock_attachment_chips(&self, width: usize) -> Option<Vec<String>> {
+        if !self.qol.attachments || self.selection.is_some() || self.panel.is_some() {
+            return None;
+        }
+        let text = self.editor.text();
+        let chips = chip_band(&draft_chips(&text, self.editor.pastes(), &self.attachments), width);
+        (!chips.is_empty()).then_some(chips)
+    }
+
+    fn dock_slot(
+        &mut self,
+        width: usize,
+        focus_height: usize,
+        options: &rlm_views::graph::RlmViewOptions,
+    ) -> Vec<String> {
+        if let Some(selection) = self.selection.as_mut() {
+            let mut lines = Text::new(&bold(&selection.title), 1, 1, None).render(width);
+            lines.extend(selection.list.render(width));
+            return lines;
+        }
+        if matches!(self.panel, Some(Panel::RlmFocus(_))) {
+            let focus_snapshot = self.rlm_snapshot();
+            if let Some(Panel::RlmFocus(focus)) = self.panel.as_mut() {
+                return focus.render(
+                    &self.keys,
+                    &focus_snapshot,
+                    width,
+                    focus_height,
+                    &options.style,
+                    options.spinner_frame,
+                );
+            }
+        }
+        if let Some(lines) = self.render_selector_panel(width) {
+            return lines;
+        }
         let now = self.now();
-        let focus_snapshot = rlm_focus.then(|| self.rlm_snapshot());
-        let editor = match (&mut self.selection, &mut self.panel) {
-            (None, Some(Panel::RlmFocus(focus))) => focus.render(
+        if let Some(lines) = self.render_dialog_panel(width, now) {
+            return lines;
+        }
+        self.editor.focused = !self.recovering && !(self.rlm_pane_focused && self.rlm_pane_shown());
+        self.editor.terminal_rows = self.rows;
+        self.editor.render(width)
+    }
+
+    fn render_selector_panel(&mut self, width: usize) -> Option<Vec<String>> {
+        match self.panel.as_mut()? {
+            Panel::Fork(selector) => Some(selector.render(width)),
+            Panel::HistorySearch(search) => Some(search.render(width)),
+            Panel::Tree(tree) => Some(tree.render(width)),
+            Panel::Settings(selector) => Some(selector.render(width)),
+            Panel::Logout(selector) => Some(selector.render(width)),
+            Panel::Trust(selector) => Some(selector.render(width)),
+            Panel::Login(selector, ..) => Some(selector.render(width)),
+            _ => None,
+        }
+    }
+
+    fn render_dialog_panel(&mut self, width: usize, now: Instant) -> Option<Vec<String>> {
+        match self.panel.as_mut()? {
+            Panel::OAuthLogin(dialog, _) => Some(dialog.render(&self.theme, width)),
+            Panel::ScopedModels { selector, .. } => Some(selector.render(width)),
+            Panel::LoginPrompt {
+                provider,
+                method,
+                input,
+            } => Some(Self::render_login_prompt(
+                &self.theme,
                 &self.keys,
-                focus_snapshot.as_ref().expect("snapshot for the focus view"),
+                &provider.name,
+                method,
+                input,
                 width,
-                focus_height,
-                &options.style,
-                options.spinner_frame,
-            ),
-            (Some(selection), _) => {
-                let mut lines = Text::new(&bold(&selection.title), 1, 1, None).render(width);
-                lines.extend(selection.list.render(width));
-                lines
-            }
-            (None, Some(Panel::Fork(selector))) => selector.render(width),
-            (None, Some(Panel::HistorySearch(search))) => search.render(width),
-            (None, Some(Panel::Tree(tree))) => tree.render(width),
-            (None, Some(Panel::Settings(selector))) => selector.render(width),
-            (None, Some(Panel::Logout(selector))) => selector.render(width),
-            (None, Some(Panel::Trust(selector))) => selector.render(width),
-            (None, Some(Panel::Login(selector, ..))) => selector.render(width),
-            (None, Some(Panel::OAuthLogin(dialog, _))) => dialog.render(&self.theme, width),
-            (None, Some(Panel::ScopedModels { selector, .. })) => selector.render(width),
-            (
+            )),
+            Panel::Sessions(selector) | Panel::PiSessions(selector) => Some(selector.render(width)),
+            Panel::ExtensionInput { dialog, .. } => Some(dialog.render(width, now)),
+            Panel::TextEditor { dialog, .. } => Some(dialog.render(width, self.rows)),
+            Panel::ShareLoader(loader) => Some(loader.render(width)),
+            Panel::BugReport(flow) => Some(flow.render(width, self.rows)),
+            _ => None,
+        }
+    }
+
+    fn render_login_prompt(
+        theme: &Rc<Theme>,
+        keys: &KeybindingsManager,
+        provider_name: &str,
+        method: &str,
+        input: &mut tui::Input,
+        width: usize,
+    ) -> Vec<String> {
+        let border = theme.fg(Fg::Border, &"─".repeat(width.max(1)));
+        let mut lines = vec![border.clone()];
+        lines.extend(
+            Text::new(
+                &theme.fg(Fg::Accent, &bold(&format!("Login to {provider_name}"))),
+                1,
+                0,
                 None,
-                Some(Panel::LoginPrompt {
-                    provider,
-                    method,
-                    input,
-                }),
-            ) => {
-                let t = Rc::clone(&self.theme);
-                let border = t.fg(Fg::Border, &"─".repeat(width.max(1)));
-                let mut lines = vec![border.clone()];
-                lines.extend(
-                    Text::new(
-                        &t.fg(Fg::Accent, &bold(&format!("Login to {}", provider.name))),
-                        1,
-                        0,
-                        None,
-                    )
-                    .render(width),
-                );
-                lines.push(String::new());
-                lines.extend(Text::new(&t.fg(Fg::Text, &format!("Enter {method}")), 1, 0, None).render(width));
-                lines.extend(input.render(width));
-                let hint = |id: &str, d: &str| crate::components::key_hint(&t, &key_text(&self.keys, id), d);
-                lines.extend(
-                    Text::new(
-                        &format!(
-                            "({} {})",
-                            hint("tui.select.cancel", "to cancel,"),
-                            hint("tui.select.confirm", "to submit")
-                        ),
-                        1,
-                        0,
-                        None,
-                    )
-                    .render(width),
-                );
-                lines.push(border);
-                lines
-            }
-            (None, Some(Panel::Sessions(selector) | Panel::PiSessions(selector))) => selector.render(width),
-            (None, Some(Panel::ExtensionInput { dialog, .. })) => dialog.render(width, now),
-            (None, Some(Panel::TextEditor { dialog, .. })) => dialog.render(width, self.rows),
-            (None, Some(Panel::ShareLoader(loader))) => loader.render(width),
-            (None, Some(Panel::BugReport(flow))) => flow.render(width, self.rows),
-            (None, None) => {
-                self.editor.focused = !self.recovering && !(self.rlm_pane_focused && self.rlm_pane_shown());
-                self.editor.terminal_rows = self.rows;
-                self.editor.render(width)
-            }
-        };
-        let mut parts = vec![running, pending, status];
-        if let Some(line) = self.status_line(width) {
-            parts.push(vec![line]);
-        }
-        if self.qol.attachments && self.selection.is_none() && self.panel.is_none() {
-            let text = self.editor.text();
-            let chips = chip_band(&draft_chips(&text, self.editor.pastes(), &self.attachments), width);
-            if !chips.is_empty() {
-                parts.push(chips);
-            }
-        }
-        parts.push(editor);
-        parts.push(footer);
-        parts
+            )
+            .render(width),
+        );
+        lines.push(String::new());
+        lines.extend(Text::new(&theme.fg(Fg::Text, &format!("Enter {method}")), 1, 0, None).render(width));
+        lines.extend(input.render(width));
+        let hint = |id: &str, d: &str| crate::components::key_hint(theme, &key_text(keys, id), d);
+        lines.extend(
+            Text::new(
+                &format!(
+                    "({} {})",
+                    hint("tui.select.cancel", "to cancel,"),
+                    hint("tui.select.confirm", "to submit")
+                ),
+                1,
+                0,
+                None,
+            )
+            .render(width),
+        );
+        lines.push(border);
+        lines
     }
 
     /// One full-screen frame of `height` rows: the chat, with the RLM pane beside it while it shows (`SplitView`).

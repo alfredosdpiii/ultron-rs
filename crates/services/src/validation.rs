@@ -46,38 +46,42 @@ fn kebab(name: &str) -> bool {
         .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
 }
 
+fn validate_skill_content(content: &Value) -> Result<bool, String> {
+    let text = content.as_str().ok_or("A skill refinement must be SKILL.md text")?;
+    if text.len() > MAX_SKILL_BYTES {
+        return Err("Skill content exceeds 64 KiB".into());
+    }
+    let (front, body) = frontmatter(text.trim_start_matches(jsrt::string::is_space), true)
+        .ok_or("Skill content needs YAML frontmatter")?;
+    if !field(front, "name").is_some_and(|name| !name.is_empty() && kebab(name)) {
+        return Err("Skill frontmatter needs a kebab-case name".into());
+    }
+    if field(front, "description").is_none_or(str::is_empty) {
+        return Err("Skill frontmatter needs a description".into());
+    }
+    if jsrt::string::trim(body).is_empty() {
+        return Err("Skill body is empty".into());
+    }
+    Ok(true)
+}
+
+fn validate_instruction_content(content: &Value) -> Result<bool, String> {
+    let text = content
+        .as_str()
+        .filter(|text| !jsrt::string::trim(text).is_empty())
+        .ok_or("An instruction refinement must be text")?;
+    if text.len() > MAX_INSTRUCTION_BYTES {
+        return Err("Instruction exceeds 16 KiB".into());
+    }
+    Ok(true)
+}
+
 /// `validateRefinementContent(kind, content)`: `Ok(true)` for a valid skill or instruction, `Ok(true)` for the
 /// kinds it does not check (TS `undefined`), an error naming the problem otherwise.
 pub fn validate_refinement_content(kind: &str, content: &Value) -> Result<bool, String> {
     match kind {
-        "skill" => {
-            let text = content.as_str().ok_or("A skill refinement must be SKILL.md text")?;
-            if text.len() > MAX_SKILL_BYTES {
-                return Err("Skill content exceeds 64 KiB".into());
-            }
-            let (front, body) = frontmatter(text.trim_start_matches(jsrt::string::is_space), true)
-                .ok_or("Skill content needs YAML frontmatter")?;
-            if !field(front, "name").is_some_and(|name| !name.is_empty() && kebab(name)) {
-                return Err("Skill frontmatter needs a kebab-case name".into());
-            }
-            if field(front, "description").is_none_or(str::is_empty) {
-                return Err("Skill frontmatter needs a description".into());
-            }
-            if jsrt::string::trim(body).is_empty() {
-                return Err("Skill body is empty".into());
-            }
-            Ok(true)
-        }
-        "instruction" => {
-            let text = content
-                .as_str()
-                .filter(|text| !jsrt::string::trim(text).is_empty())
-                .ok_or("An instruction refinement must be text")?;
-            if text.len() > MAX_INSTRUCTION_BYTES {
-                return Err("Instruction exceeds 16 KiB".into());
-            }
-            Ok(true)
-        }
+        "skill" => validate_skill_content(content),
+        "instruction" => validate_instruction_content(content),
         _ => Ok(true),
     }
 }

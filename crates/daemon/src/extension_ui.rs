@@ -126,24 +126,22 @@ impl ExtensionUiBridge {
         json!({ "seq": state.seq, "request": wire })
     }
 
-    /// `poll(after, waitMs)`: requests after `after`; `None` starts serving now and returns only the open dialogs.
-    pub fn poll(&self, requested_after: Option<u64>, wait: Duration) -> Value {
-        let mut state = self.lock();
-        let mut after = requested_after.map(|a| if a > state.seq { 0 } else { a });
-        if after.is_none() && !state.polled && self.expected_until.is_some() {
-            after = Some(0);
-        }
-        state.polled = true;
-        state.polls += 1;
-        let collect = |state: &State| -> Vec<Value> {
-            let dialogs = state.dialogs.iter().map(|(_, d)| d.item.clone());
-            let Some(after) = after else { return dialogs.collect() };
-            let mut items: Vec<Value> = state.events.iter().cloned().chain(dialogs).collect();
-            items.retain(|i| i["seq"].as_u64().unwrap_or(0) > after);
-            items.sort_by_key(|i| i["seq"].as_u64().unwrap_or(0));
-            items
-        };
-        let mut requests = collect(&state);
+    fn collect_requests(state: &State, after: Option<u64>) -> Vec<Value> {
+        let dialogs = state.dialogs.iter().map(|(_, d)| d.item.clone());
+        let Some(after) = after else { return dialogs.collect() };
+        let mut items: Vec<Value> = state.events.iter().cloned().chain(dialogs).collect();
+        items.retain(|i| i["seq"].as_u64().unwrap_or(0) > after);
+        items.sort_by_key(|i| i["seq"].as_u64().unwrap_or(0));
+        items
+    }
+
+    fn wait_for_requests<'a>(
+        &self,
+        mut state: MutexGuard<'a, State>,
+        after: Option<u64>,
+        wait: Duration,
+    ) -> (MutexGuard<'a, State>, Vec<Value>) {
+        let mut requests = Self::collect_requests(&state, after);
         if requests.is_empty() && after.is_some() && !state.closed {
             let deadline = Instant::now() + wait.min(MAX_POLL);
             while requests.is_empty() && !state.closed {
@@ -156,9 +154,22 @@ impl ExtensionUiBridge {
                     .wait_timeout(state, left)
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .0;
-                requests = collect(&state);
+                requests = Self::collect_requests(&state, after);
             }
         }
+        (state, requests)
+    }
+
+    /// `poll(after, waitMs)`: requests after `after`; `None` starts serving now and returns only the open dialogs.
+    pub fn poll(&self, requested_after: Option<u64>, wait: Duration) -> Value {
+        let mut state = self.lock();
+        let mut after = requested_after.map(|a| if a > state.seq { 0 } else { a });
+        if after.is_none() && !state.polled && self.expected_until.is_some() {
+            after = Some(0);
+        }
+        state.polled = true;
+        state.polls += 1;
+        let (mut state, requests) = self.wait_for_requests(state, after, wait);
         let cursor = match after {
             None => state.seq,
             Some(after) => requests.iter().filter_map(|i| i["seq"].as_u64()).fold(after, u64::max),

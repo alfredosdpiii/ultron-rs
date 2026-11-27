@@ -126,46 +126,62 @@ fn node_fs_error(error: &std::io::Error, path: &str) -> String {
 /// `stripJsonComments` (`coding-agent/src/utils/json.ts`): drops `//` line comments, then commas before `}`/`]`,
 /// leaving string literals untouched. Two passes, like the two upstream regexes.
 pub fn strip_json_comments(input: &str) -> String {
+    strip_trailing_commas(&strip_line_comments(input))
+}
+
+fn strip_line_comments(input: &str) -> String {
     let chars: Vec<char> = input.chars().collect();
-    let mut first = String::with_capacity(input.len());
-    let mut i = 0;
-    while i < chars.len() {
-        if let Some(end) = string_literal_end(&chars, i) {
-            first.extend(&chars[i..end]);
-            i = end;
-        } else if chars[i] == '/' && chars.get(i + 1) == Some(&'/') {
-            while i < chars.len() && chars[i] != '\n' {
-                i += 1;
-            }
-        } else {
-            first.push(chars[i]);
-            i += 1;
-        }
-    }
-    let chars: Vec<char> = first.chars().collect();
-    let mut out = String::with_capacity(first.len());
+    let mut out = String::with_capacity(input.len());
     let mut i = 0;
     while i < chars.len() {
         if let Some(end) = string_literal_end(&chars, i) {
             out.extend(&chars[i..end]);
             i = end;
-            continue;
+        } else if chars[i] == '/' && chars.get(i + 1) == Some(&'/') {
+            i = skip_to_newline(&chars, i);
+        } else {
+            out.push(chars[i]);
+            i += 1;
         }
-        if chars[i] == ',' {
-            let mut j = i + 1;
-            while j < chars.len() && jsrt::string::is_space(chars[j]) {
-                j += 1;
-            }
-            if matches!(chars.get(j), Some('}' | ']')) {
-                out.extend(&chars[i + 1..=j]);
-                i = j + 1;
-                continue;
-            }
-        }
-        out.push(chars[i]);
-        i += 1;
     }
     out
+}
+
+fn skip_to_newline(chars: &[char], mut i: usize) -> usize {
+    while i < chars.len() && chars[i] != '\n' {
+        i += 1;
+    }
+    i
+}
+
+fn strip_trailing_commas(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some(end) = string_literal_end(&chars, i) {
+            out.extend(&chars[i..end]);
+            i = end;
+        } else if let Some(close) = trailing_comma_close(&chars, i) {
+            out.extend(&chars[i + 1..=close]);
+            i = close + 1;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn trailing_comma_close(chars: &[char], i: usize) -> Option<usize> {
+    if chars[i] != ',' {
+        return None;
+    }
+    let mut j = i + 1;
+    while j < chars.len() && jsrt::string::is_space(chars[j]) {
+        j += 1;
+    }
+    matches!(chars.get(j), Some('}' | ']')).then_some(j)
 }
 
 /// End (exclusive) of `/"(?:\\.|[^"\\])*"/` matched at `start`; `.` excludes JavaScript line terminators.
@@ -266,149 +282,197 @@ fn display_path(instance_path: &str) -> String {
     if path.is_empty() { "root".into() } else { path }
 }
 
+fn push_type_error(errors: &mut Vec<SchemaError>, path: &str, name: &str) -> bool {
+    push(errors, path, format!("must be {name}"));
+    false
+}
+
+fn check_type(ok: bool, errors: &mut Vec<SchemaError>, path: &str, name: &str) -> bool {
+    if ok { true } else { push_type_error(errors, path, name) }
+}
+
 /// `ErrorSchema`: records errors in TypeBox's keyword order and returns whether `value` is valid.
 fn validate(schema: &Schema, value: &Value, path: &str, errors: &mut Vec<SchemaError>) -> bool {
     if errors.len() >= MAX_ERRORS {
         return false;
     }
-    let type_error = |name: &str, errors: &mut Vec<SchemaError>| {
-        push(errors, path, format!("must be {name}"));
-        false
-    };
+    match schema {
+        Schema::Obj(properties) => validate_obj(properties, value, path, errors),
+        Schema::Record(schema) => validate_record(schema, value, path, errors),
+        Schema::Array { items, max_items } => validate_array(items, *max_items, value, path, errors),
+        Schema::AnyOf(options) => validate_any_of(options, value, path, errors),
+        scalar => validate_scalar(scalar, value, path, errors),
+    }
+}
+
+fn validate_scalar(schema: &Schema, value: &Value, path: &str, errors: &mut Vec<SchemaError>) -> bool {
     match schema {
         Schema::Unknown => true,
-        Schema::Bool => value.is_boolean() || type_error("boolean", errors),
-        Schema::Null => value.is_null() || type_error("null", errors),
-        Schema::Str { min_length } => {
-            let Some(s) = value.as_str() else {
-                return type_error("string", errors);
-            };
-            match min_length {
-                Some(min) if s.encode_utf16().count() < *min => {
-                    push(errors, path, format!("must not have fewer than {min} characters"));
-                    false
-                }
-                _ => true,
-            }
-        }
-        Schema::Literal(constant) => {
-            let typed = value.is_string() || type_error("string", errors);
-            let equal = value.as_str() == Some(constant);
-            if !equal {
-                push(errors, path, "must be equal to constant".into());
-            }
-            typed && equal
-        }
-        Schema::Num { exclusive_minimum } => {
-            let Some(n) = value.as_f64() else {
-                return type_error("number", errors);
-            };
-            match exclusive_minimum {
-                Some(limit) if n <= *limit => {
-                    push(errors, path, format!("must be > {}", jsrt::number::to_string(*limit)));
-                    false
-                }
-                _ => true,
-            }
-        }
-        Schema::Int { minimum, maximum } => {
-            let Some(n) = value.as_f64() else {
-                return type_error("integer", errors);
-            };
-            let mut ok = n.fract() == 0.0 || type_error("integer", errors);
-            if let Some(limit) = maximum
-                && n > *limit
-            {
-                push(errors, path, format!("must be <= {}", jsrt::number::to_string(*limit)));
-                ok = false;
-            }
-            if let Some(limit) = minimum
-                && n < *limit
-            {
-                push(errors, path, format!("must be >= {}", jsrt::number::to_string(*limit)));
-                ok = false;
-            }
-            ok
-        }
-        Schema::Obj(properties) => {
-            let Some(map) = value.as_object() else {
-                return type_error("object", errors);
-            };
-            let missing: Vec<&str> = properties
-                .iter()
-                .filter(|(key, required, _)| *required && !map.contains_key(*key))
-                .map(|(key, ..)| *key)
-                .collect();
-            let mut ok = true;
-            if let Some(first) = missing.first() {
-                let base = display_path(path);
-                let shown = if path.is_empty() {
-                    (*first).to_owned()
-                } else {
-                    format!("{base}.{first}")
-                };
-                if errors.len() < MAX_ERRORS {
-                    errors.push(SchemaError {
-                        path: shown,
-                        message: format!("must have required properties {}", missing.join(", ")),
-                    });
-                }
-                ok = false;
-            }
-            for (key, _, schema) in properties {
-                if let Some(child) = map.get(*key) {
-                    ok &= validate(schema, child, &format!("{path}/{key}"), errors);
-                }
-            }
-            ok
-        }
-        Schema::Record(schema) => {
-            let Some(map) = value.as_object() else {
-                return type_error("object", errors);
-            };
-            let mut ok = true;
-            for (key, child) in map {
-                if key.chars().any(is_line_terminator) {
-                    continue;
-                }
-                ok &= validate(schema, child, &format!("{path}/{key}"), errors);
-            }
-            ok
-        }
-        Schema::Array { items, max_items } => {
-            let Some(list) = value.as_array() else {
-                return type_error("array", errors);
-            };
-            let mut ok = true;
-            for (i, item) in list.iter().enumerate() {
-                ok &= validate(items, item, &format!("{path}/{i}"), errors);
-            }
-            if let Some(max) = max_items
-                && list.len() > *max
-            {
-                push(errors, path, format!("must not have more than {max} items"));
-                ok = false;
-            }
-            ok
-        }
-        Schema::AnyOf(options) => {
-            let mut failed = Vec::new();
-            for option in options {
-                let mut branch = Vec::new();
-                if validate(option, value, path, &mut branch) {
-                    return true;
-                }
-                failed.push(branch);
-            }
-            for error in failed.into_iter().flatten() {
-                if errors.len() < MAX_ERRORS {
-                    errors.push(error);
-                }
-            }
-            push(errors, path, "must match a schema in anyOf".into());
+        Schema::Bool => check_type(value.is_boolean(), errors, path, "boolean"),
+        Schema::Null => check_type(value.is_null(), errors, path, "null"),
+        Schema::Str { min_length } => validate_str(*min_length, value, path, errors),
+        Schema::Literal(constant) => validate_literal(constant, value, path, errors),
+        Schema::Num { exclusive_minimum } => validate_num(*exclusive_minimum, value, path, errors),
+        Schema::Int { minimum, maximum } => validate_int(*minimum, *maximum, value, path, errors),
+        _ => true,
+    }
+}
+
+fn validate_str(min_length: Option<usize>, value: &Value, path: &str, errors: &mut Vec<SchemaError>) -> bool {
+    let Some(s) = value.as_str() else {
+        return push_type_error(errors, path, "string");
+    };
+    match min_length {
+        Some(min) if s.encode_utf16().count() < min => {
+            push(errors, path, format!("must not have fewer than {min} characters"));
             false
         }
+        _ => true,
     }
+}
+
+fn validate_literal(constant: &str, value: &Value, path: &str, errors: &mut Vec<SchemaError>) -> bool {
+    let typed = check_type(value.is_string(), errors, path, "string");
+    let equal = value.as_str() == Some(constant);
+    if !equal {
+        push(errors, path, "must be equal to constant".into());
+    }
+    typed && equal
+}
+
+fn validate_num(exclusive_minimum: Option<f64>, value: &Value, path: &str, errors: &mut Vec<SchemaError>) -> bool {
+    let Some(n) = value.as_f64() else {
+        return push_type_error(errors, path, "number");
+    };
+    match exclusive_minimum {
+        Some(limit) if n <= limit => {
+            push(errors, path, format!("must be > {}", jsrt::number::to_string(limit)));
+            false
+        }
+        _ => true,
+    }
+}
+
+fn validate_int(
+    minimum: Option<f64>,
+    maximum: Option<f64>,
+    value: &Value,
+    path: &str,
+    errors: &mut Vec<SchemaError>,
+) -> bool {
+    let Some(n) = value.as_f64() else {
+        return push_type_error(errors, path, "integer");
+    };
+    let mut ok = check_type(n.fract() == 0.0, errors, path, "integer");
+    if let Some(limit) = maximum
+        && n > limit
+    {
+        push(errors, path, format!("must be <= {}", jsrt::number::to_string(limit)));
+        ok = false;
+    }
+    if let Some(limit) = minimum
+        && n < limit
+    {
+        push(errors, path, format!("must be >= {}", jsrt::number::to_string(limit)));
+        ok = false;
+    }
+    ok
+}
+
+fn report_missing_properties(missing: &[&str], path: &str, errors: &mut Vec<SchemaError>) -> bool {
+    let Some(first) = missing.first() else {
+        return true;
+    };
+    let shown = if path.is_empty() {
+        (*first).to_owned()
+    } else {
+        format!("{}.{first}", display_path(path))
+    };
+    if errors.len() < MAX_ERRORS {
+        errors.push(SchemaError {
+            path: shown,
+            message: format!("must have required properties {}", missing.join(", ")),
+        });
+    }
+    false
+}
+
+fn validate_obj(
+    properties: &[(&'static str, bool, Schema)],
+    value: &Value,
+    path: &str,
+    errors: &mut Vec<SchemaError>,
+) -> bool {
+    let Some(map) = value.as_object() else {
+        return push_type_error(errors, path, "object");
+    };
+    let missing: Vec<&str> = properties
+        .iter()
+        .filter(|(key, required, _)| *required && !map.contains_key(*key))
+        .map(|(key, ..)| *key)
+        .collect();
+    let mut ok = report_missing_properties(&missing, path, errors);
+    for (key, _, schema) in properties {
+        if let Some(child) = map.get(*key) {
+            ok &= validate(schema, child, &format!("{path}/{key}"), errors);
+        }
+    }
+    ok
+}
+
+fn validate_record(schema: &Schema, value: &Value, path: &str, errors: &mut Vec<SchemaError>) -> bool {
+    let Some(map) = value.as_object() else {
+        return push_type_error(errors, path, "object");
+    };
+    let mut ok = true;
+    for (key, child) in map {
+        if key.chars().any(is_line_terminator) {
+            continue;
+        }
+        ok &= validate(schema, child, &format!("{path}/{key}"), errors);
+    }
+    ok
+}
+
+fn validate_array(
+    items: &Schema,
+    max_items: Option<usize>,
+    value: &Value,
+    path: &str,
+    errors: &mut Vec<SchemaError>,
+) -> bool {
+    let Some(list) = value.as_array() else {
+        return push_type_error(errors, path, "array");
+    };
+    let mut ok = true;
+    for (i, item) in list.iter().enumerate() {
+        ok &= validate(items, item, &format!("{path}/{i}"), errors);
+    }
+    if let Some(max) = max_items
+        && list.len() > max
+    {
+        push(errors, path, format!("must not have more than {max} items"));
+        ok = false;
+    }
+    ok
+}
+
+fn validate_any_of(options: &[Schema], value: &Value, path: &str, errors: &mut Vec<SchemaError>) -> bool {
+    let mut failed = Vec::new();
+    for option in options {
+        let mut branch = Vec::new();
+        if validate(option, value, path, &mut branch) {
+            return true;
+        }
+        failed.push(branch);
+    }
+    for error in failed.into_iter().flatten() {
+        if errors.len() < MAX_ERRORS {
+            errors.push(error);
+        }
+    }
+    push(errors, path, "must match a schema in anyOf".into());
+    false
 }
 
 fn opt(key: &'static str, schema: Schema) -> (&'static str, bool, Schema) {

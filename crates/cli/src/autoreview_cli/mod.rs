@@ -18,17 +18,19 @@ use std::sync::Arc;
 use review::engine::{EngineOptions, KernelEngine, Log, ModelResolver, ReviewEngine};
 use review::plan::{EngineResult, PlanOptions, decide_verdict, level_of, plan_review, rank_findings, severity_of};
 use review::settings::{
-    AutoreviewConfig, AutoreviewSettings, MIN_BUDGET_TOKENS, ModelFallbacks, RECOMMENDED_MODELS, autoreview_paths,
-    engine_settings, resolve_config,
+    AutoreviewConfig, AutoreviewSettings, ModelFallbacks, RECOMMENDED_MODELS, autoreview_paths, engine_settings,
+    resolve_config,
 };
 use serde_json::{Map, Value, json};
 use session_core::ModelFlags;
 
 use crate::Env;
 
+mod args;
 mod commands;
 mod offline;
 
+pub use args::{Parsed, UsageError, parse_args, parse_tokens};
 pub use commands::{Overrides, age, doctor_prepared_lines, outcome_json, outcome_text, user_service};
 pub use offline::{describe_models, describe_stages, offline_json};
 
@@ -141,284 +143,6 @@ See docs/autoreview.md."
     )
 }
 
-/// A command-line mistake: exit code 2.
-#[derive(Debug, Clone, PartialEq)]
-pub struct UsageError(pub String);
-
-/// The parsed arguments (`Parsed` of cli.ts).
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Parsed {
-    pub command: String,
-    pub target: Option<String>,
-    pub dry_run: bool,
-    pub json: bool,
-    pub account: Option<String>,
-    pub model: Option<String>,
-    pub verify_model: Option<String>,
-    pub budget: Option<f64>,
-    pub thinking: Option<String>,
-    pub verify_thinking: Option<String>,
-    pub mode: Option<String>,
-    pub deep_model: Option<String>,
-    pub finder_models: Option<Vec<String>>,
-    pub deep_thinking: Option<String>,
-    pub plan_model: Option<String>,
-    pub plan_thinking: Option<String>,
-    pub ask_model: Option<String>,
-    pub ask_thinking: Option<String>,
-    pub plan_style: Option<String>,
-    pub plan_cells: Option<f64>,
-    pub verify_candidates: Option<f64>,
-    pub verify_batch: Option<f64>,
-    pub program_path: Option<String>,
-    pub dump_program_path: Option<String>,
-    pub deadline_seconds: Option<f64>,
-    pub run_tests: Option<bool>,
-    pub test_env: Option<String>,
-    pub prepare: bool,
-    pub python: Option<String>,
-    pub repo: Option<String>,
-    pub guides: Option<Vec<String>>,
-    pub checkout_roots: Option<Vec<String>>,
-    pub block_at: Option<String>,
-    pub max_comments: Option<f64>,
-    pub repo_dir: Option<String>,
-    pub base: Option<String>,
-    pub head: Option<String>,
-    /// eval: list the cases only.
-    pub list: bool,
-    pub limit: Option<f64>,
-    pub controls: Option<f64>,
-    pub scan: Option<f64>,
-    /// eval: the cases to review, by commit prefix.
-    pub only: Option<Vec<String>>,
-    /// eval: score recorded reviews against this labels file instead of reviewing (review::eval_labels).
-    pub labels: Option<String>,
-    /// eval --labels: print what the adjudicator sees of each case, and score nothing.
-    pub packet: bool,
-    pub help: bool,
-}
-
-fn whole(value: f64, min: f64) -> Option<f64> {
-    (value.is_finite() && value.fract() == 0.0 && value >= min).then_some(value)
-}
-
-/// `parseTokens`: `300000`, `300k`, `1.5m` (commas and underscores ignored), at least the minimum budget.
-pub fn parse_tokens(value: &str) -> Result<f64, UsageError> {
-    let cleaned: String = value
-        .trim()
-        .to_lowercase()
-        .chars()
-        .filter(|c| !matches!(c, ',' | '_'))
-        .collect();
-    let refused = || {
-        UsageError(format!(
-            "--budget takes a token count such as 300000 or 300k, not {value}"
-        ))
-    };
-    let (digits, unit) = match cleaned.strip_suffix('k') {
-        Some(rest) => (rest, 1_000.0),
-        None => match cleaned.strip_suffix('m') {
-            Some(rest) => (rest, 1_000_000.0),
-            None => (cleaned.as_str(), 1.0),
-        },
-    };
-    let (int, frac) = digits.split_once('.').unwrap_or((digits, ""));
-    let numeric = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
-    if !numeric(int) || (digits.contains('.') && !numeric(frac)) {
-        return Err(refused());
-    }
-    let amount = (digits.parse::<f64>().map_err(|_| refused())? * unit).floor();
-    if amount < MIN_BUDGET_TOKENS {
-        return Err(UsageError(format!(
-            "--budget must be at least {MIN_BUDGET_TOKENS} tokens"
-        )));
-    }
-    Ok(amount)
-}
-
-fn is_python_version(value: &str) -> bool {
-    let parts: Vec<&str> = value.split('.').collect();
-    parts.len() <= 3
-        && parts
-            .iter()
-            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
-}
-
-/// `parseAutoreviewArgs`.
-pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
-    let mut parsed = Parsed {
-        command: args.first().cloned().unwrap_or_default(),
-        ..Parsed::default()
-    };
-    if matches!(parsed.command.as_str(), "" | "--help" | "-h" | "help") {
-        parsed.help = true;
-        return Ok(parsed);
-    }
-    let mut index = 1;
-    while index < args.len() {
-        let arg = args[index].clone();
-        let mut value = || -> Result<String, UsageError> {
-            index += 1;
-            args.get(index)
-                .cloned()
-                .ok_or_else(|| UsageError(format!("{arg} needs a value")))
-        };
-        let model = |ref_: String| -> Result<String, UsageError> {
-            if model_scope::is_model_ref(&ref_) {
-                Ok(ref_)
-            } else {
-                Err(UsageError(format!("{arg} takes provider/model, not {ref_}")))
-            }
-        };
-        let list = |text: String| -> Vec<String> {
-            text.split(',')
-                .map(|item| item.trim().to_string())
-                .filter(|item| !item.is_empty())
-                .collect()
-        };
-        let thinking = |name: String| -> Result<String, UsageError> {
-            if model_scope::THINKING_LEVELS.contains(&name.as_str()) {
-                Ok(name)
-            } else {
-                Err(UsageError(format!(
-                    "{arg} takes one of {}, not {name}",
-                    model_scope::THINKING_LEVELS.join(", ")
-                )))
-            }
-        };
-        match arg.as_str() {
-            "--help" | "-h" => parsed.help = true,
-            "--dry-run" => parsed.dry_run = true,
-            "--json" => parsed.json = true,
-            "--account" => parsed.account = Some(value()?),
-            "--model" => parsed.model = Some(model(value()?)?),
-            "--verify-model" => parsed.verify_model = Some(model(value()?)?),
-            "--budget" => parsed.budget = Some(parse_tokens(&value()?)?),
-            "--thinking" => parsed.thinking = Some(thinking(value()?)?),
-            "--verify-thinking" => parsed.verify_thinking = Some(thinking(value()?)?),
-            "--deep-thinking" => parsed.deep_thinking = Some(thinking(value()?)?),
-            "--deep-model" => parsed.deep_model = Some(model(value()?)?),
-            "--finder-models" => {
-                parsed.finder_models = Some(
-                    value()?
-                        .split(',')
-                        .map(|name| model(name.trim().to_string()))
-                        .collect::<Result<_, _>>()?,
-                );
-            }
-            "--plan-model" => parsed.plan_model = Some(model(value()?)?),
-            "--plan-thinking" => parsed.plan_thinking = Some(thinking(value()?)?),
-            "--ask-model" => parsed.ask_model = Some(model(value()?)?),
-            "--ask-thinking" => parsed.ask_thinking = Some(thinking(value()?)?),
-            "--plan-style" => {
-                let name = value()?;
-                if !PLAN_STYLES.contains(&name.as_str()) {
-                    return Err(UsageError(format!("--plan-style takes cell or frame, not {name}")));
-                }
-                parsed.plan_style = Some(name);
-            }
-            "--plan-cells" => {
-                parsed.plan_cells = Some(
-                    whole(jsrt::number::parse(&value()?), 1.0)
-                        .ok_or_else(|| UsageError("--plan-cells takes a whole number of cells".into()))?,
-                );
-            }
-            "--verify-candidates" => {
-                parsed.verify_candidates = Some(
-                    whole(jsrt::number::parse(&value()?), 1.0)
-                        .ok_or_else(|| UsageError("--verify-candidates takes a whole number".into()))?,
-                );
-            }
-            "--verify-batch" => {
-                parsed.verify_batch = Some(
-                    whole(jsrt::number::parse(&value()?), 1.0)
-                        .ok_or_else(|| UsageError("--verify-batch takes a whole number".into()))?,
-                );
-            }
-            "--program" => parsed.program_path = Some(value()?),
-            "--dump-program" => parsed.dump_program_path = Some(value()?),
-            "--run-tests" => parsed.run_tests = Some(true),
-            "--no-run-tests" => parsed.run_tests = Some(false),
-            "--test-env" => parsed.test_env = Some(value()?),
-            "--prepare" => parsed.prepare = true,
-            "--python" => {
-                let version = value()?;
-                if !is_python_version(&version) {
-                    return Err(UsageError(format!(
-                        "--python takes a version such as 3.12, not {version}"
-                    )));
-                }
-                parsed.python = Some(version);
-            }
-            "--repo" => parsed.repo = Some(value()?),
-            "--guides" => parsed.guides = Some(list(value()?)),
-            "--checkout-roots" => parsed.checkout_roots = Some(list(value()?)),
-            "--block-at" => {
-                let name = value()?;
-                if !LEVELS.contains(&name.as_str()) {
-                    return Err(UsageError(format!(
-                        "--block-at takes one of {}, not {name}",
-                        LEVELS.join(", ")
-                    )));
-                }
-                parsed.block_at = Some(name);
-            }
-            "--max-comments" => {
-                parsed.max_comments = Some(
-                    whole(jsrt::number::parse(&value()?), 0.0)
-                        .ok_or_else(|| UsageError("--max-comments takes a whole number".into()))?,
-                );
-            }
-            "--mode" => {
-                let name = value()?;
-                if !REVIEW_MODES.contains(&name.as_str()) {
-                    return Err(UsageError(format!(
-                        "--mode takes fast, deep, both, compiled, hybrid, auto or minimal, not {name}"
-                    )));
-                }
-                parsed.mode = Some(name);
-            }
-            "--deadline" => {
-                parsed.deadline_seconds = Some(
-                    whole(jsrt::number::parse(&value()?), 0.0)
-                        .ok_or_else(|| UsageError("--deadline takes whole seconds (0 for no deadline)".into()))?,
-                );
-            }
-            "--repo-dir" => parsed.repo_dir = Some(value()?),
-            "--list" => parsed.list = true,
-            "--labels" => parsed.labels = Some(value()?),
-            "--packet" => parsed.packet = true,
-            "--only" => parsed.only = Some(list(value()?)),
-            "--limit" | "--controls" | "--scan" => {
-                let count = whole(
-                    jsrt::number::parse(&value()?),
-                    if arg == "--controls" { 0.0 } else { 1.0 },
-                )
-                .ok_or_else(|| UsageError(format!("{arg} takes a whole number")))?;
-                match arg.as_str() {
-                    "--limit" => parsed.limit = Some(count),
-                    "--controls" => parsed.controls = Some(count),
-                    _ => parsed.scan = Some(count),
-                }
-            }
-            "--base" => parsed.base = Some(value()?),
-            "--head" => parsed.head = Some(value()?),
-            _ if arg.starts_with('-') => {
-                return Err(UsageError(format!("unknown option for {APP_NAME} autoreview: {arg}")));
-            }
-            _ if parsed.target.is_none()
-                && matches!(parsed.command.as_str(), "review" | "prepare" | "ban" | "unban" | "eval") =>
-            {
-                parsed.target = Some(arg.clone());
-            }
-            _ => return Err(UsageError(format!("unexpected argument: {arg}"))),
-        }
-        index += 1;
-    }
-    Ok(parsed)
-}
-
 /// `logoText`: Ultron's half-size logo, trimmed of blank rows and common indentation (the acknowledgement's art).
 pub fn logo_text() -> String {
     let mut rows: Vec<String> = interactive::header::halve_logo(interactive::header::ULTRON_LOGO)
@@ -526,54 +250,37 @@ pub(super) fn has_model(env: &Env, reference: &str) -> bool {
         })
 }
 
+fn override_opt<T: Clone>(target: &mut Option<T>, value: &Option<T>) {
+    if value.is_some() {
+        *target = value.clone();
+    }
+}
+
 /// The configuration of this run: the saved settings with the command line's overrides.
 pub(super) fn configure(parsed: &Parsed, saved: &Saved, env: &Env) -> AutoreviewConfig {
     let mut settings = saved.autoreview.clone();
-    let set = |target: &mut Option<String>, value: &Option<String>| {
-        if value.is_some() {
-            *target = value.clone();
-        }
-    };
-    set(&mut settings.model, &parsed.model);
-    set(&mut settings.verify_model, &parsed.verify_model);
-    if parsed.budget.is_some() {
-        settings.budget = parsed.budget;
-    }
-    set(&mut settings.thinking, &parsed.thinking);
-    set(&mut settings.verify_thinking, &parsed.verify_thinking);
-    set(&mut settings.mode, &parsed.mode);
-    if parsed.guides.is_some() {
-        settings.guides = parsed.guides.clone();
-    }
-    if parsed.checkout_roots.is_some() {
-        settings.checkout_roots = parsed.checkout_roots.clone();
-    }
-    set(&mut settings.block_at, &parsed.block_at);
-    if parsed.max_comments.is_some() {
-        settings.max_comments = parsed.max_comments;
-    }
-    set(&mut settings.deep_model, &parsed.deep_model);
-    if parsed.finder_models.is_some() {
-        settings.finder_models = parsed.finder_models.clone();
-    }
-    set(&mut settings.deep_thinking, &parsed.deep_thinking);
-    set(&mut settings.plan_model, &parsed.plan_model);
-    set(&mut settings.plan_thinking, &parsed.plan_thinking);
-    set(&mut settings.ask_model, &parsed.ask_model);
-    set(&mut settings.ask_thinking, &parsed.ask_thinking);
-    set(&mut settings.plan_style, &parsed.plan_style);
-    if parsed.plan_cells.is_some() {
-        settings.plan_cells = parsed.plan_cells;
-    }
-    if parsed.verify_candidates.is_some() {
-        settings.verify_candidates = parsed.verify_candidates;
-    }
-    if parsed.verify_batch.is_some() {
-        settings.verify_batch = parsed.verify_batch;
-    }
-    if parsed.deadline_seconds.is_some() {
-        settings.deadline_seconds = parsed.deadline_seconds;
-    }
+    override_opt(&mut settings.model, &parsed.model);
+    override_opt(&mut settings.verify_model, &parsed.verify_model);
+    override_opt(&mut settings.budget, &parsed.budget);
+    override_opt(&mut settings.thinking, &parsed.thinking);
+    override_opt(&mut settings.verify_thinking, &parsed.verify_thinking);
+    override_opt(&mut settings.mode, &parsed.mode);
+    override_opt(&mut settings.guides, &parsed.guides);
+    override_opt(&mut settings.checkout_roots, &parsed.checkout_roots);
+    override_opt(&mut settings.block_at, &parsed.block_at);
+    override_opt(&mut settings.max_comments, &parsed.max_comments);
+    override_opt(&mut settings.deep_model, &parsed.deep_model);
+    override_opt(&mut settings.finder_models, &parsed.finder_models);
+    override_opt(&mut settings.deep_thinking, &parsed.deep_thinking);
+    override_opt(&mut settings.plan_model, &parsed.plan_model);
+    override_opt(&mut settings.plan_thinking, &parsed.plan_thinking);
+    override_opt(&mut settings.ask_model, &parsed.ask_model);
+    override_opt(&mut settings.ask_thinking, &parsed.ask_thinking);
+    override_opt(&mut settings.plan_style, &parsed.plan_style);
+    override_opt(&mut settings.plan_cells, &parsed.plan_cells);
+    override_opt(&mut settings.verify_candidates, &parsed.verify_candidates);
+    override_opt(&mut settings.verify_batch, &parsed.verify_batch);
+    override_opt(&mut settings.deadline_seconds, &parsed.deadline_seconds);
     let has = |reference: &str| has_model(env, reference);
     let fallbacks = ModelFallbacks {
         review_model: saved.fallbacks_review_model.clone(),
@@ -822,6 +529,206 @@ fn getrandom_fill(bytes: &mut [u8]) -> std::io::Result<()> {
     std::fs::File::open("/dev/urandom")?.read_exact(bytes)
 }
 
+fn validate_offline_review(parsed: &Parsed, config: &AutoreviewConfig) -> Result<(), Failure> {
+    if parsed.target.is_some() {
+        return Err(UsageError("give a pull request or --repo-dir, not both".into()).into());
+    }
+    let (Some(base), Some(head)) = (&parsed.base, &parsed.head) else {
+        return Err(UsageError("--repo-dir needs --base and --head".into()).into());
+    };
+    if base.is_empty() || head.is_empty() {
+        return Err(UsageError("--repo-dir needs --base and --head".into()).into());
+    }
+    if (parsed.program_path.is_some() || parsed.dump_program_path.is_some()) && config.mode != "compiled" {
+        return Err(UsageError("--program and --dump-program need --mode compiled".into()).into());
+    }
+    Ok(())
+}
+
+fn prepare_offline_env(
+    repo_dir: &Path,
+    parsed: &Parsed,
+    config: &AutoreviewConfig,
+    env: &Env,
+    cache_dir: &str,
+    ov: &Overrides,
+    err: &mut dyn Write,
+) -> Result<Option<review::prepare_env::Prepared>, Failure> {
+    if !parsed.prepare {
+        return Ok(None);
+    }
+    let prepared = run_prepare(
+        &repo_dir.display().to_string(),
+        parsed,
+        config,
+        env,
+        cache_dir,
+        ov,
+        err,
+        false,
+    )?;
+    let mut lines = vec![format!(
+        "prepared environment {}{}: {}",
+        prepared.hash,
+        if prepared.cached { " (cached)" } else { "" },
+        if prepared.prepared.is_empty() {
+            "nothing".to_string()
+        } else {
+            prepared.prepared.join("; ")
+        }
+    )];
+    lines.extend(prepared.failures.iter().map(|item| format!("prepare: {item}")));
+    for line in lines {
+        let _ = writeln!(err, "{line}");
+    }
+    Ok(Some(prepared))
+}
+
+fn write_offline_output(
+    parsed: &Parsed,
+    config: &AutoreviewConfig,
+    result: &Value,
+    start_ms: Option<u64>,
+    head: &str,
+    out: &mut dyn Write,
+) -> Result<(), Failure> {
+    let io = |error: std::io::Error| Failure::Error(error.to_string());
+    if parsed.json {
+        let max_comments = Some(config.max_comments.0 as i64);
+        let json = offline_json(result, start_ms, Some(&config.block_at), max_comments).map_err(Failure::Error)?;
+        return writeln!(out, "{}", jsrt::json::stringify(&json)).map_err(io);
+    }
+    let typed = EngineResult::parse(result).map_err(Failure::Error)?;
+    let plan = plan_review(
+        &typed,
+        &PlanOptions {
+            self_authored: false,
+            state: "open".into(),
+            head_sha: head.to_string(),
+            since_sha: None,
+            signature: config.signature,
+            block_at: Some(config.block_at.clone()),
+            never_request_changes: config.never_request_changes,
+            max_comments: Some(config.max_comments.0 as i64),
+            promotion: None,
+            fresh_lines: None,
+        },
+    );
+    writeln!(out, "{}", plan.body).map_err(io)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal wiring helper; parameters match distinct caller inputs"
+)]
+fn review_offline(
+    repo_dir: &str,
+    parsed: &Parsed,
+    config: &AutoreviewConfig,
+    saved: &Saved,
+    env: &Env,
+    paths: &review::settings::AutoreviewPaths,
+    ov: &Overrides,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, Failure> {
+    validate_offline_review(parsed, config)?;
+    let log = logger(&env.var);
+    let dir = PathBuf::from(&paths.dir);
+    let repo_dir = absolute(&env.cwd, repo_dir);
+    let lent = match &parsed.repo {
+        Some(repo) if !config.checkout_roots.is_empty() => {
+            review::github::parse_pull_target(&format!("{repo}#1"), "github.com")
+                .and_then(|named| review::local::find_checkout(&*ov.runner(), &config.checkout_roots, &named))
+        }
+        _ => None,
+    };
+    let prepared = prepare_offline_env(&repo_dir, parsed, config, env, &paths.cache, ov, err)?;
+    let use_prepared = prepared.as_ref().filter(|prepared| !prepared.prepared.is_empty());
+    let (engine, start_ms): (Arc<dyn ReviewEngine>, Option<u64>) = match &ov.engine {
+        Some(engine) => (engine.clone(), None),
+        None => {
+            let engine = open_engine(config, saved, env, &dir, log).map_err(Failure::Error)?;
+            let start_ms = engine.start_ms;
+            (Arc::new(engine), Some(start_ms))
+        }
+    };
+    let mut spec = offline_spec(parsed, config, env, &repo_dir, lent.as_deref(), use_prepared);
+    let head = parsed
+        .head
+        .clone()
+        .filter(|head| !head.is_empty())
+        .unwrap_or_else(|| "HEAD".into());
+    index_knowledge(parsed, &paths.knowledge, &repo_dir, &head, &mut spec, err);
+    let result = engine.review(&spec, None).map_err(Failure::Error)?;
+    write_offline_output(parsed, config, &result, start_ms, &head, out)?;
+    Ok(0)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal wiring helper; parameters match distinct caller inputs"
+)]
+fn run_daemon_if_enabled(
+    parsed: &Parsed,
+    config: &AutoreviewConfig,
+    saved: &Saved,
+    env: &Env,
+    paths: &review::settings::AutoreviewPaths,
+    ov: &Overrides,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, Failure> {
+    if saved.enabled == Some(false) {
+        let _ = writeln!(
+            err,
+            "autoreview is off (autoreview.enabled: false; /autoreview on or {APP_NAME} autoreview is not needed for one review)"
+        );
+        return Ok(0);
+    }
+    daemon_command(parsed, config, saved, env, paths, ov, out)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal wiring helper; parameters match distinct caller inputs"
+)]
+fn run_eval(
+    parsed: &Parsed,
+    config: &AutoreviewConfig,
+    saved: &Saved,
+    env: &Env,
+    paths: &review::settings::AutoreviewPaths,
+    ov: &Overrides,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, Failure> {
+    if parsed.labels.is_some() {
+        return labels_command(parsed, env, ov, out, err);
+    }
+    eval_command(parsed, config, saved, env, paths, ov, out, err)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal wiring helper; parameters match distinct caller inputs"
+)]
+fn run_review(
+    parsed: &Parsed,
+    config: &AutoreviewConfig,
+    saved: &Saved,
+    env: &Env,
+    paths: &review::settings::AutoreviewPaths,
+    ov: &Overrides,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, Failure> {
+    match &parsed.repo_dir {
+        Some(repo_dir) => review_offline(repo_dir, parsed, config, saved, env, paths, ov, out, err),
+        None => review_pull_request(parsed, config, saved, env, paths, ov, out),
+    }
+}
+
 fn execute(
     parsed: &Parsed,
     env: &Env,
@@ -844,125 +751,17 @@ fn execute(
         &env.home.display().to_string(),
     );
     match parsed.command.as_str() {
-        "review" => {}
-        "run" | "once" => {
-            if saved.enabled == Some(false) {
-                let _ = writeln!(
-                    err,
-                    "autoreview is off (autoreview.enabled: false; /autoreview on or {APP_NAME} autoreview is not needed for one review)"
-                );
-                return Ok(0);
-            }
-            return daemon_command(parsed, &config, &saved, env, &paths, ov, out);
-        }
-        "install" | "uninstall" => return service(parsed, &config, env, out),
+        "review" => run_review(parsed, &config, &saved, env, &paths, ov, out, err),
+        "run" | "once" => run_daemon_if_enabled(parsed, &config, &saved, env, &paths, ov, out, err),
+        "install" | "uninstall" => service(parsed, &config, env, out),
         "status" => {
             let bans = crate::autoreview_ban::current(env);
-            return status(parsed, &config, &paths.state, &bans, ov, out);
+            status(parsed, &config, &paths.state, &bans, ov, out)
         }
-        "doctor" => return doctor(parsed, &config, &model_lines(&config), env, &paths.cache, ov, out),
-        "prepare" => return prepare_command(parsed, &config, env, &paths.cache, ov, out, err),
-        "eval" if parsed.labels.is_some() => return labels_command(parsed, env, ov, out, err),
-        "eval" => return eval_command(parsed, &config, &saved, env, &paths, ov, out, err),
-        "register" => return register_command(parsed, &paths, out),
-        other => {
-            return Err(Failure::Usage(format!("unknown command: {other}\n\n{}", usage())));
-        }
+        "doctor" => doctor(parsed, &config, &model_lines(&config), env, &paths.cache, ov, out),
+        "prepare" => prepare_command(parsed, &config, env, &paths.cache, ov, out, err),
+        "eval" => run_eval(parsed, &config, &saved, env, &paths, ov, out, err),
+        "register" => register_command(parsed, &paths, out),
+        other => Err(Failure::Usage(format!("unknown command: {other}\n\n{}", usage()))),
     }
-    let Some(repo_dir) = &parsed.repo_dir else {
-        return review_pull_request(parsed, &config, &saved, env, &paths, ov, out);
-    };
-    let log = logger(&env.var);
-    let dir = PathBuf::from(&paths.dir);
-    if parsed.target.is_some() {
-        return Err(UsageError("give a pull request or --repo-dir, not both".into()).into());
-    }
-    let (Some(base), Some(head)) = (&parsed.base, &parsed.head) else {
-        return Err(UsageError("--repo-dir needs --base and --head".into()).into());
-    };
-    if base.is_empty() || head.is_empty() {
-        return Err(UsageError("--repo-dir needs --base and --head".into()).into());
-    }
-    if (parsed.program_path.is_some() || parsed.dump_program_path.is_some()) && config.mode != "compiled" {
-        return Err(UsageError("--program and --dump-program need --mode compiled".into()).into());
-    }
-    let repo_dir = absolute(&env.cwd, repo_dir);
-    let lent = match &parsed.repo {
-        Some(repo) if !config.checkout_roots.is_empty() => {
-            review::github::parse_pull_target(&format!("{repo}#1"), "github.com")
-                .and_then(|named| review::local::find_checkout(&*ov.runner(), &config.checkout_roots, &named))
-        }
-        _ => None,
-    };
-    let prepared = if parsed.prepare {
-        let prepared = run_prepare(
-            &repo_dir.display().to_string(),
-            parsed,
-            &config,
-            env,
-            &paths.cache,
-            ov,
-            err,
-            false,
-        )?;
-        let mut lines = vec![format!(
-            "prepared environment {}{}: {}",
-            prepared.hash,
-            if prepared.cached { " (cached)" } else { "" },
-            if prepared.prepared.is_empty() {
-                "nothing".to_string()
-            } else {
-                prepared.prepared.join("; ")
-            }
-        )];
-        lines.extend(prepared.failures.iter().map(|item| format!("prepare: {item}")));
-        for line in lines {
-            let _ = writeln!(err, "{line}");
-        }
-        Some(prepared)
-    } else {
-        None
-    };
-    let use_prepared = prepared.as_ref().filter(|prepared| !prepared.prepared.is_empty());
-    let (engine, start_ms): (Arc<dyn ReviewEngine>, Option<u64>) = match &ov.engine {
-        Some(engine) => (engine.clone(), None),
-        None => {
-            let engine = open_engine(&config, &saved, env, &dir, log).map_err(Failure::Error)?;
-            let start_ms = engine.start_ms;
-            (Arc::new(engine), Some(start_ms))
-        }
-    };
-    let mut spec = offline_spec(parsed, &config, env, &repo_dir, lent.as_deref(), use_prepared);
-    let head = parsed
-        .head
-        .clone()
-        .filter(|head| !head.is_empty())
-        .unwrap_or_else(|| "HEAD".into());
-    index_knowledge(parsed, &paths.knowledge, &repo_dir, &head, &mut spec, err);
-    let result = engine.review(&spec, None).map_err(Failure::Error)?;
-    let io = |error: std::io::Error| Failure::Error(error.to_string());
-    if parsed.json {
-        let max_comments = Some(config.max_comments.0 as i64);
-        let json = offline_json(&result, start_ms, Some(&config.block_at), max_comments).map_err(Failure::Error)?;
-        writeln!(out, "{}", jsrt::json::stringify(&json)).map_err(io)?;
-    } else {
-        let typed = EngineResult::parse(&result).map_err(Failure::Error)?;
-        let plan = plan_review(
-            &typed,
-            &PlanOptions {
-                self_authored: false,
-                state: "open".into(),
-                head_sha: head.clone(),
-                since_sha: None,
-                signature: config.signature,
-                block_at: Some(config.block_at.clone()),
-                never_request_changes: config.never_request_changes,
-                max_comments: Some(config.max_comments.0 as i64),
-                promotion: None,
-                fresh_lines: None,
-            },
-        );
-        writeln!(out, "{}", plan.body).map_err(io)?;
-    }
-    Ok(0)
 }

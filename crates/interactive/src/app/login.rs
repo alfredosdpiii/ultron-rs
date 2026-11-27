@@ -2,6 +2,35 @@
 
 use super::*;
 
+fn login_method_items(options: &[crate::selectors::AuthProvider], all: bool) -> Vec<SelectItem> {
+    let oauth_label = (!all)
+        .then(|| {
+            options
+                .iter()
+                .find(|o| o.auth_type == "oauth")
+                .and_then(|o| o.login_label.clone())
+        })
+        .flatten();
+    let subscription = oauth_label.unwrap_or_else(|| "Sign in with an account".into());
+    let has = |kind: &str| all || options.iter().any(|o| o.auth_type == kind);
+    let mut items = Vec::new();
+    if has("oauth") {
+        items.push(SelectItem {
+            value: "oauth".into(),
+            label: subscription,
+            description: None,
+        });
+    }
+    if has("api_key") {
+        items.push(SelectItem {
+            value: "api_key".into(),
+            label: "Sign in with an API key".into(),
+            description: None,
+        });
+    }
+    items
+}
+
 impl App {
     pub(super) fn login(&mut self, providers: Vec<crate::selectors::AuthProvider>, query: &str) {
         let reference = query.trim().to_lowercase();
@@ -28,28 +57,12 @@ impl App {
 
     /// `showAuthTypeSelector`: account (subscription) or API key; `all` when it chooses among every provider.
     pub(super) fn ask_login_method(&mut self, options: Vec<crate::selectors::AuthProvider>, all: bool) {
-        let oauth_label = (!all)
-            .then(|| {
-                options
-                    .iter()
-                    .find(|o| o.auth_type == "oauth")
-                    .and_then(|o| o.login_label.clone())
-            })
-            .flatten();
-        let subscription = oauth_label.unwrap_or_else(|| "Sign in with an account".into());
-        let has = |kind: &str| all || options.iter().any(|o| o.auth_type == kind);
-        let mut labels = Vec::new();
-        if has("oauth") {
-            labels.push(subscription.clone());
-        }
-        if has("api_key") {
-            labels.push("Sign in with an API key".to_string());
-        }
-        if labels.is_empty() {
+        let items = login_method_items(&options, all);
+        if items.is_empty() {
             self.show_status("No login methods available.");
             return;
         }
-        if !all && labels.len() == 1 {
+        if !all && items.len() == 1 {
             self.start_login(options[0].clone());
             return;
         }
@@ -58,18 +71,6 @@ impl App {
         } else {
             format!("Select authentication method for {}:", options[0].name)
         };
-        let items = labels
-            .iter()
-            .map(|l| SelectItem {
-                value: if *l == subscription {
-                    "oauth".into()
-                } else {
-                    "api_key".into()
-                },
-                label: l.clone(),
-                description: None,
-            })
-            .collect();
         self.open_selection(&title, items, None, Purpose::LoginMethod(options, all));
     }
 

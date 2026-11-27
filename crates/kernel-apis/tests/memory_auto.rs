@@ -205,10 +205,15 @@ fn kernel_apis_memory_recall_for_turn_drops_auto_memories_unconfirmed_for_90_day
             .map(|f| f["id"].as_str().unwrap().to_string())
             .collect::<Vec<_>>()
     };
+    let tight = memory
+        .recall_for_turn("how do deploys work here", 3, &Signal::new())
+        .unwrap();
+    assert_eq!(ids(&tight), ["old-user", "fresh-auto", "confirmed-auto"]);
     let found = memory
         .recall_for_turn("how do deploys work here", 6, &Signal::new())
         .unwrap();
-    assert_eq!(ids(&found), ["old-user", "fresh-auto", "confirmed-auto"]);
+    assert_eq!(ids(&found), ["old-user", "fresh-auto", "confirmed-auto", "old-auto"]);
+    assert_eq!(found[3]["aged"], true);
     // A deliberate prepare still finds the withheld memory.
     let prepared = request(
         &memory,

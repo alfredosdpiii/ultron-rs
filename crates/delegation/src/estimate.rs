@@ -122,6 +122,24 @@ pub fn parse_plan(plan: &Value) -> Result<Vec<Unit>, String> {
     items.iter().map(unit).collect()
 }
 
+fn parse_unit_count(item: &Map<String, Value>, key: &str, minimum: f64, maximum: f64) -> Result<Option<f64>, String> {
+    match item.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_f64()
+            .filter(|n| n.fract() == 0.0 && (minimum..=maximum).contains(n))
+            .map(Some)
+            .ok_or_else(|| format!("{key} must be an integer from {minimum} to {maximum}")),
+    }
+}
+
+fn parse_unit_model(item: &Map<String, Value>) -> Result<Option<String>, String> {
+    match item.get("model") {
+        None | Some(Value::Null) => Ok(None),
+        Some(model) => Ok(Some(model_scope::model_ref(model)?)),
+    }
+}
+
 fn unit(value: &Value) -> Result<Unit, String> {
     let item = value.as_object().ok_or("a plan unit must be an object")?;
     jsrt::payload::fields(
@@ -133,27 +151,13 @@ fn unit(value: &Value) -> Result<Unit, String> {
         .and_then(Value::as_str)
         .filter(|kind| shape(kind).is_some())
         .ok_or_else(|| format!("unit kind must be one of {}", kinds()))?;
-    let count = |key: &str, minimum: f64, maximum: f64| -> Result<Option<f64>, String> {
-        match item.get(key) {
-            None | Some(Value::Null) => Ok(None),
-            Some(value) => value
-                .as_f64()
-                .filter(|n| n.fract() == 0.0 && (minimum..=maximum).contains(n))
-                .map(Some)
-                .ok_or_else(|| format!("{key} must be an integer from {minimum} to {maximum}")),
-        }
-    };
-    let model = match item.get("model") {
-        None | Some(Value::Null) => None,
-        Some(model) => Some(model_scope::model_ref(model)?),
-    };
     Ok(Unit {
         kind: kind.into(),
-        calls: count("calls", 1.0, MAX_CALLS)?.unwrap_or(1.0) as u64,
-        model,
-        requests: count("requests", 1.0, 10_000.0)?,
-        input_tokens: count("input_tokens", 0.0, 10_000_000.0)?,
-        output_tokens: count("output_tokens", 0.0, 10_000_000.0)?,
+        calls: parse_unit_count(item, "calls", 1.0, MAX_CALLS)?.unwrap_or(1.0) as u64,
+        model: parse_unit_model(item)?,
+        requests: parse_unit_count(item, "requests", 1.0, 10_000.0)?,
+        input_tokens: parse_unit_count(item, "input_tokens", 0.0, 10_000_000.0)?,
+        output_tokens: parse_unit_count(item, "output_tokens", 0.0, 10_000_000.0)?,
         node: None,
     })
 }

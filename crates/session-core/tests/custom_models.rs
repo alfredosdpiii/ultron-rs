@@ -127,7 +127,7 @@ fn session_core_custom_models_available_and_keyed() {
     let listed = ids(&with);
     let custom: Vec<&String> = listed.iter().filter(|id| id.starts_with("stubproxy/")).collect();
     assert_eq!(custom, ["stubproxy/sol", "stubproxy/plain"]);
-    assert!(listed.contains(&"deepseek/deepseek-flash".to_string()));
+    assert!(listed.iter().any(|i: &String| i == "deepseek/deepseek-flash"));
     assert!(
         lane::available_models(&with)
             .iter()

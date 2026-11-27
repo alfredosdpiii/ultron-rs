@@ -105,22 +105,24 @@ impl TerminalId {
     }
 
     fn from_program(program: &str) -> Option<Self> {
-        Some(match program.to_ascii_lowercase().as_str() {
-            "kitty" => Self::Kitty,
-            "ghostty" => Self::Ghostty,
-            "wezterm" => Self::Wezterm,
-            "iterm.app" | "iterm2" => Self::Iterm2,
-            "vscode" => Self::Vscode,
-            "alacritty" => Self::Alacritty,
-            "warpterminal" => Self::Warp,
-            "orca" => Self::Orca,
-            "otty" => Self::Otty,
-            "rio" => Self::Rio,
-            "tern" => Self::Tern,
-            "monstar" => Self::Monstar,
-            "foot" => Self::Foot,
-            _ => return None,
-        })
+        const PROGRAMS: &[(&str, TerminalId)] = &[
+            ("kitty", TerminalId::Kitty),
+            ("ghostty", TerminalId::Ghostty),
+            ("wezterm", TerminalId::Wezterm),
+            ("iterm.app", TerminalId::Iterm2),
+            ("iterm2", TerminalId::Iterm2),
+            ("vscode", TerminalId::Vscode),
+            ("alacritty", TerminalId::Alacritty),
+            ("warpterminal", TerminalId::Warp),
+            ("orca", TerminalId::Orca),
+            ("otty", TerminalId::Otty),
+            ("rio", TerminalId::Rio),
+            ("tern", TerminalId::Tern),
+            ("monstar", TerminalId::Monstar),
+            ("foot", TerminalId::Foot),
+        ];
+        let lower = program.to_ascii_lowercase();
+        PROGRAMS.iter().find(|(name, _)| *name == lower).map(|(_, id)| *id)
     }
 }
 
@@ -409,32 +411,13 @@ impl Notifier {
         format!("{prefix}{}\x1b\\", osc_safe(&text))
     }
 
-    fn format_osc99(&mut self, n: &Notification) -> String {
-        let mut id = sanitize_osc99_id(n.id.as_deref());
-        if id.is_empty() {
-            id = format!("{}-{}", self.app_name, self.next_osc99_id);
-            self.next_osc99_id += 1;
-        }
+    fn osc99_meta(&self, id: &str, n: &Notification) -> Vec<String> {
         let mut meta = vec![format!("i={id}"), format!("f={}", jsrt::base64::encode(&self.app_name))];
-        let actions = match n.actions.as_deref() {
-            Some("focus") => Some("focus"),
-            Some("report") => Some("report"),
-            Some("focus-report") => Some("focus,report"),
-            Some("none") => Some("-focus"),
-            _ => None,
-        };
-        if let Some(a) = actions {
+        if let Some(a) = osc99_action(n.actions.as_deref()) {
             meta.push(format!("a={a}"));
         }
         if let Some(u) = n.urgency {
-            meta.push(format!(
-                "u={}",
-                match u {
-                    Urgency::Low => 0,
-                    Urgency::Normal => 1,
-                    Urgency::Critical => 2,
-                }
-            ));
+            meta.push(format!("u={}", osc99_urgency(u)));
         }
         meta.extend(n.kinds.iter().map(|t| format!("t={}", jsrt::base64::encode(t))));
         if let Some(icon) = n.icon_name.as_deref().filter(|s| !s.is_empty()) {
@@ -446,6 +429,16 @@ impl Notifier {
         if let Some(w) = n.expires_ms {
             meta.push(format!("w={}", w.max(-1)));
         }
+        meta
+    }
+
+    fn format_osc99(&mut self, n: &Notification) -> String {
+        let mut id = sanitize_osc99_id(n.id.as_deref());
+        if id.is_empty() {
+            id = format!("{}-{}", self.app_name, self.next_osc99_id);
+            self.next_osc99_id += 1;
+        }
+        let meta = self.osc99_meta(&id, n);
         let title = n.title.as_deref().or(n.body.as_deref()).unwrap_or("");
         let body = n
             .title
@@ -528,21 +521,14 @@ impl Multiplexer {
         match self {
             Self::Herdr => {
                 env.get("HERDR_ENV") == Some("1")
-                    || env.truthy("HERDR_PANE_ID")
-                    || env.truthy("HERDR_TAB_ID")
-                    || env.truthy("HERDR_WORKSPACE_ID")
+                    || any_truthy(env, &["HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID"])
             }
             Self::Tmux => env.truthy("TMUX"),
             Self::Screen => env.truthy("STY"),
             Self::Zellij => env.truthy("ZELLIJ"),
-            Self::Cmux => {
-                env.truthy("CMUX_WORKSPACE_ID") || env.truthy("CMUX_SURFACE_ID") || env.truthy("CMUX_REMOTE_TRANSPORT")
-            }
+            Self::Cmux => any_truthy(env, &["CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID", "CMUX_REMOTE_TRANSPORT"]),
             Self::Wmux => env.get("WMUX") == Some("1") || env.truthy("WMUX_SURFACE_ID"),
-            Self::Orca => {
-                let nonblank = |k| env.get(k).is_some_and(|v: &str| !v.trim().is_empty());
-                nonblank("ORCA_PANE_KEY") && nonblank("ORCA_WORKTREE_ID")
-            }
+            Self::Orca => is_inside_orca(env),
         }
     }
 
@@ -585,61 +571,99 @@ impl Multiplexer {
                 sink.write(&format!("{s}\x07"));
                 true
             }),
-            Self::Cmux => {
-                let Some(surface) = env.get("CMUX_SURFACE_ID").map(str::trim).filter(|s| is_uuid(s)) else {
-                    return false;
-                };
-                let (title, body) = message.title_and_body(app_name);
-                sink.spawn(&argv(&[
-                    "cmux",
-                    "notify",
-                    "--surface",
-                    surface,
-                    "--title",
-                    &title,
-                    "--body",
-                    &body,
-                ]))
-            }
-            Self::Herdr => {
-                let valid_pane = env.get("HERDR_PANE_ID").map(str::trim).is_some_and(|p| {
-                    (1..=64).contains(&p.len())
-                        && p.chars()
-                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '_' | '-'))
-                });
-                if !valid_pane {
-                    return false;
-                }
-                let (mut title, body) = message.title_and_body(app_name);
-                if matches!(title.as_str(), "help" | "--help" | "-h") {
-                    title = app_name.to_string();
-                }
-                let kinds: &[String] = match message {
-                    Message::Structured(n) => &n.kinds,
-                    Message::Text(_) => &[],
-                };
-                let has = |k: &str| kinds.iter().any(|x| x == k);
-                let sound = if has("ask") || has("error") {
-                    "request"
-                } else if has("completion") {
-                    "done"
-                } else {
-                    "none"
-                };
-                sink.spawn(&argv(&[
-                    "herdr",
-                    "notification",
-                    "show",
-                    &title,
-                    "--body",
-                    &body,
-                    "--sound",
-                    sound,
-                ]))
-            }
+            Self::Cmux => send_cmux(message, env, app_name, sink),
+            Self::Herdr => send_herdr(message, env, app_name, sink),
             Self::Screen | Self::Wmux | Self::Orca => false,
         }
     }
+}
+
+fn osc99_action(action: Option<&str>) -> Option<&'static str> {
+    match action {
+        Some("focus") => Some("focus"),
+        Some("report") => Some("report"),
+        Some("focus-report") => Some("focus,report"),
+        Some("none") => Some("-focus"),
+        _ => None,
+    }
+}
+
+fn osc99_urgency(urgency: Urgency) -> u8 {
+    match urgency {
+        Urgency::Low => 0,
+        Urgency::Normal => 1,
+        Urgency::Critical => 2,
+    }
+}
+
+fn any_truthy(env: &Env, keys: &[&str]) -> bool {
+    keys.iter().any(|k| env.truthy(k))
+}
+
+fn is_inside_orca(env: &Env) -> bool {
+    let nonblank = |k| env.get(k).is_some_and(|v: &str| !v.trim().is_empty());
+    nonblank("ORCA_PANE_KEY") && nonblank("ORCA_WORKTREE_ID")
+}
+
+fn send_cmux(message: &Message, env: &Env, app_name: &str, sink: &mut dyn NotifySink) -> bool {
+    let Some(surface) = env.get("CMUX_SURFACE_ID").map(str::trim).filter(|s| is_uuid(s)) else {
+        return false;
+    };
+    let (title, body) = message.title_and_body(app_name);
+    sink.spawn(&argv(&[
+        "cmux",
+        "notify",
+        "--surface",
+        surface,
+        "--title",
+        &title,
+        "--body",
+        &body,
+    ]))
+}
+
+fn is_valid_herdr_pane(env: &Env) -> bool {
+    env.get("HERDR_PANE_ID").map(str::trim).is_some_and(|p| {
+        (1..=64).contains(&p.len())
+            && p.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '_' | '-'))
+    })
+}
+
+fn herdr_sound(message: &Message) -> &'static str {
+    let kinds: &[String] = match message {
+        Message::Structured(n) => &n.kinds,
+        Message::Text(_) => &[],
+    };
+    let has = |k: &str| kinds.iter().any(|x| x == k);
+    if has("ask") || has("error") {
+        "request"
+    } else if has("completion") {
+        "done"
+    } else {
+        "none"
+    }
+}
+
+fn send_herdr(message: &Message, env: &Env, app_name: &str, sink: &mut dyn NotifySink) -> bool {
+    if !is_valid_herdr_pane(env) {
+        return false;
+    }
+    let (mut title, body) = message.title_and_body(app_name);
+    if matches!(title.as_str(), "help" | "--help" | "-h") {
+        title = app_name.to_string();
+    }
+    let sound = herdr_sound(message);
+    sink.spawn(&argv(&[
+        "herdr",
+        "notification",
+        "show",
+        &title,
+        "--body",
+        &body,
+        "--sound",
+        sound,
+    ]))
 }
 
 fn argv(parts: &[&str]) -> Vec<String> {

@@ -16,8 +16,7 @@ use std::time::{Duration, Instant};
 
 const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STDERR_BYTES: usize = 4096;
-/// ponytail: past this many open documents all are closed and reopened as they are written again; an LRU if the
-/// reopening ever shows up.
+/// Maximum documents kept open per language server; least recently used documents are closed past this cap.
 const MAX_OPEN: usize = 64;
 /// How long a server that publishes without document versions gets to report on a change to a file it last called
 /// clean. typescript-language-server publishes nothing when a clean file stays clean, so silence is the answer.
@@ -77,6 +76,8 @@ struct Doc {
     hash: String,
     /// `State::received` when this version was sent.
     sent_at: u64,
+    /// Monotonic counter from `Client::doc_uses` for LRU eviction.
+    last_used: u64,
 }
 
 pub struct Client {
@@ -86,6 +87,7 @@ pub struct Client {
     shared: Arc<Shared>,
     stderr: Arc<Mutex<Vec<u8>>>,
     next_id: AtomicU64,
+    doc_uses: AtomicU64,
     pull: bool,
     status: bool,
     /// Held for a whole check: one at a time per server.
@@ -230,7 +232,82 @@ fn incoming(message: Value, shared: &Shared, out: &Sender<Vec<u8>>, settings: &M
     shared.changed.notify_all();
 }
 
+fn spawn_io_threads(
+    mut child: std::process::Child,
+    mut stdin: std::process::ChildStdin,
+    stdout: std::process::ChildStdout,
+    mut child_stderr: std::process::ChildStderr,
+    shared: Arc<Shared>,
+    settings: Arc<Mutex<Value>>,
+) -> (Sender<Vec<u8>>, Arc<Mutex<Vec<u8>>>) {
+    let (out, frames) = channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        for frame in frames {
+            if stdin.write_all(&frame).and_then(|()| stdin.flush()).is_err() {
+                break;
+            }
+        }
+    });
+    let stderr = Arc::new(Mutex::new(Vec::new()));
+    let tail = stderr.clone();
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 4096];
+        while let Ok(n @ 1..) = child_stderr.read(&mut chunk) {
+            let mut tail = sync::lock(&tail);
+            tail.extend_from_slice(&chunk[..n]);
+            let excess = tail.len().saturating_sub(MAX_STDERR_BYTES);
+            tail.drain(..excess);
+        }
+    });
+    let reader_out = out.clone();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        while let Some(message) = read_message(&mut reader) {
+            incoming(message, &shared, &reader_out, &settings);
+        }
+        sync::lock(&shared.state).exited = true;
+        shared.changed.notify_all();
+        let _ = child.wait();
+    });
+    (out, stderr)
+}
+
 impl Client {
+    fn initialize(&mut self, root_uri: &str, init: Value, limit: Duration) -> Result<(), String> {
+        let params = json!({
+            "processId": std::process::id(),
+            "rootUri": root_uri,
+            "workspaceFolders": [{ "uri": root_uri, "name": "workspace" }],
+            "initializationOptions": init,
+            "capabilities": {
+                "textDocument": {
+                    "publishDiagnostics": { "versionSupport": true },
+                    "diagnostic": {},
+                },
+                "workspace": { "configuration": true, "workspaceFolders": true },
+                "experimental": { "serverStatusNotification": true },
+            },
+        });
+        let response = self
+            .request("initialize", params, Instant::now() + limit)
+            .map_err(|unready| {
+                let said = self.said();
+                match unready {
+                    Unready::Exited if said.is_empty() => "it exited while starting".to_string(),
+                    Unready::Exited => format!("it exited while starting: {said}"),
+                    _ => format!("it did not start within {} s", limit.as_secs()),
+                }
+            })?;
+        let Some(result) = response.get("result") else {
+            return Err(format!("it refused to start: {}", response["error"]["message"]));
+        };
+        self.pull = result
+            .pointer("/capabilities/diagnosticProvider")
+            .is_some_and(|provider| !matches!(provider, Value::Null | Value::Bool(false)));
+        self.notify("initialized", json!({}));
+        Ok(())
+    }
+
     /// Starts the server and initializes it within `limit`. `settings` answers the server's configuration
     /// requests; `init` is the `initializationOptions`.
     pub fn start(
@@ -254,85 +331,28 @@ impl Client {
             .process_group(0)
             .spawn()
             .map_err(|error| format!("{program}: {error}"))?;
-        let (Some(mut stdin), Some(stdout), Some(mut child_stderr)) =
+        let (Some(stdin), Some(stdout), Some(child_stderr)) =
             (child.stdin.take(), child.stdout.take(), child.stderr.take())
         else {
             return Err(format!("{program}: no pipes"));
         };
-        let (out, frames) = channel::<Vec<u8>>();
-        std::thread::spawn(move || {
-            for frame in frames {
-                if stdin.write_all(&frame).and_then(|()| stdin.flush()).is_err() {
-                    break;
-                }
-            }
-        });
-        let stderr = Arc::new(Mutex::new(Vec::new()));
-        let tail = stderr.clone();
-        std::thread::spawn(move || {
-            let mut chunk = [0u8; 4096];
-            while let Ok(n @ 1..) = child_stderr.read(&mut chunk) {
-                let mut tail = sync::lock(&tail);
-                tail.extend_from_slice(&chunk[..n]);
-                let excess = tail.len().saturating_sub(MAX_STDERR_BYTES);
-                tail.drain(..excess);
-            }
-        });
+        let pid = child.id();
         let shared = Arc::new(Shared::default());
         let settings = Arc::new(Mutex::new(settings));
-        let (reader_shared, reader_out, reader_settings) = (shared.clone(), out.clone(), settings.clone());
-        let pid = child.id();
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            while let Some(message) = read_message(&mut reader) {
-                incoming(message, &reader_shared, &reader_out, &reader_settings);
-            }
-            sync::lock(&reader_shared.state).exited = true;
-            reader_shared.changed.notify_all();
-            let _ = child.wait();
-        });
+        let (out, stderr) = spawn_io_threads(child, stdin, stdout, child_stderr, shared.clone(), settings.clone());
         let mut client = Client {
             pid,
             out,
             shared,
             stderr,
             next_id: AtomicU64::new(1),
+            doc_uses: AtomicU64::new(0),
             pull: false,
             status,
             docs: Mutex::default(),
             settings,
         };
-        let params = json!({
-            "processId": std::process::id(),
-            "rootUri": root_uri,
-            "workspaceFolders": [{ "uri": root_uri, "name": "workspace" }],
-            "initializationOptions": init,
-            "capabilities": {
-                "textDocument": {
-                    "publishDiagnostics": { "versionSupport": true },
-                    "diagnostic": {},
-                },
-                "workspace": { "configuration": true, "workspaceFolders": true },
-                "experimental": { "serverStatusNotification": true },
-            },
-        });
-        let response = client
-            .request("initialize", params, Instant::now() + limit)
-            .map_err(|unready| {
-                let said = client.said();
-                match unready {
-                    Unready::Exited if said.is_empty() => "it exited while starting".to_string(),
-                    Unready::Exited => format!("it exited while starting: {said}"),
-                    _ => format!("it did not start within {} s", limit.as_secs()),
-                }
-            })?;
-        let Some(result) = response.get("result") else {
-            return Err(format!("it refused to start: {}", response["error"]["message"]));
-        };
-        client.pull = result
-            .pointer("/capabilities/diagnosticProvider")
-            .is_some_and(|provider| !matches!(provider, Value::Null | Value::Bool(false)));
-        client.notify("initialized", json!({}));
+        client.initialize(&root_uri, init, limit)?;
         Ok(client)
     }
 
@@ -407,12 +427,17 @@ impl Client {
         let Some(uri) = uri(path) else { return false };
         let hash = jsrt::hash::sha256_hex(text);
         let sent_at = sync::lock(&self.shared.state).received;
+        let used = self.doc_uses.fetch_add(1, Ordering::Relaxed) + 1;
         match docs.get_mut(path) {
-            Some(doc) if doc.hash == hash => return false,
+            Some(doc) if doc.hash == hash => {
+                doc.last_used = used;
+                return false;
+            }
             Some(doc) => {
                 doc.version += 1;
                 doc.hash = hash;
                 doc.sent_at = sent_at;
+                doc.last_used = used;
                 self.notify(
                     "textDocument/didChange",
                     json!({ "textDocument": { "uri": uri, "version": doc.version }, "contentChanges": [{ "text": text }] }),
@@ -425,6 +450,7 @@ impl Client {
                         version: 1,
                         hash,
                         sent_at,
+                        last_used: used,
                     },
                 );
                 self.notify(
@@ -444,58 +470,101 @@ impl Client {
         }
     }
 
-    /// The errors the server reports for `path` once its content is `content` (which is not on disk yet).
-    pub fn check(
-        &self,
-        path: &Path,
-        language: &str,
-        content: &str,
-        deadline: Instant,
-    ) -> Result<Vec<Diagnostic>, Unready> {
-        let mut docs = sync::lock(&self.docs);
-        // ponytail: files the server has not open are left to the server's own watcher (gopls has none); send
-        let others: Vec<PathBuf> = docs.keys().filter(|open| *open != path).cloned().collect();
-        let reset = others.len() + 1 >= MAX_OPEN;
+    /// Notifies the server via `workspace/didChangeWatchedFiles` about files modified on disk that it does not have
+    /// open (useful for servers without their own file watcher, such as `gopls`).
+    pub fn notify_watched_changes(&self, changed: &[PathBuf]) {
+        let docs = sync::lock(&self.docs);
+        let changes: Vec<Value> = changed
+            .iter()
+            .filter(|path| !docs.contains_key(*path))
+            .filter_map(|path| uri(path).map(|uri| json!({ "uri": uri, "type": 2 })))
+            .collect();
+        drop(docs);
+        if !changes.is_empty() {
+            self.notify("workspace/didChangeWatchedFiles", json!({ "changes": changes }));
+        }
+    }
+
+    fn evict_excess_docs(&self, docs: &mut HashMap<PathBuf, Doc>, keep: &Path) {
+        if docs.contains_key(keep) {
+            return;
+        }
+        while docs.len() >= MAX_OPEN {
+            let oldest = docs
+                .iter()
+                .filter(|(open, _)| *open != keep)
+                .min_by_key(|(_, doc)| doc.last_used)
+                .map(|(open, _)| open.clone());
+            let Some(oldest) = oldest else { break };
+            self.close(docs, &oldest);
+        }
+    }
+
+    fn refresh_other_docs(&self, docs: &mut HashMap<PathBuf, Doc>, skip: &Path, language: &str) {
+        let others: Vec<PathBuf> = docs.keys().filter(|open| *open != skip).cloned().collect();
         for other in others {
             match std::fs::read_to_string(&other) {
-                Ok(text) if !reset => {
-                    self.sync_doc(&mut docs, &other, language, &text);
+                Ok(text) => {
+                    self.sync_doc(docs, &other, language, &text);
                 }
-                _ => self.close(&mut docs, &other),
+                Err(_) => self.close(docs, &other),
             }
         }
-        let quiet_is_clean = {
-            let state = sync::lock(&self.shared.state);
-            state
-                .published
-                .get(path)
-                .is_some_and(|last| last.version.is_none() && last.errors.is_empty())
-        };
-        let changed = self.sync_doc(&mut docs, path, language, content);
-        if self.status {
-            self.wait(deadline, |state| state.quiescent.then_some(()))
-                .map_err(|unready| {
-                    if unready == Unready::Slow {
-                        Unready::Loading
-                    } else {
-                        unready
-                    }
-                })?;
+    }
+
+    fn wait_quiescent(&self, deadline: Instant) -> Result<(), Unready> {
+        if !self.status {
+            return Ok(());
         }
-        if self.pull {
-            let Some(uri) = uri(path) else { return Ok(Vec::new()) };
-            let params = json!({ "textDocument": { "uri": uri } });
-            let response = self.request("textDocument/diagnostic", params, deadline)?;
-            return match response.get("result") {
-                Some(result) => Ok(errors(result.get("items"))),
-                None => Err(Unready::Slow),
-            };
+        self.wait(deadline, |state| state.quiescent.then_some(()))
+            .map_err(|unready| {
+                if unready == Unready::Slow {
+                    Unready::Loading
+                } else {
+                    unready
+                }
+            })
+    }
+
+    fn pull_diagnostics(&self, path: &Path, deadline: Instant) -> Result<Vec<Diagnostic>, Unready> {
+        let Some(uri) = uri(path) else { return Ok(Vec::new()) };
+        let params = json!({ "textDocument": { "uri": uri } });
+        let response = self.request("textDocument/diagnostic", params, deadline)?;
+        match response.get("result") {
+            Some(result) => Ok(errors(result.get("items"))),
+            None => Err(Unready::Slow),
         }
-        let Some(doc) = docs.get(path) else {
-            return Ok(Vec::new());
-        };
-        let (version, sent_at) = (doc.version, doc.sent_at);
-        let quiet_is_clean = quiet_is_clean && changed;
+    }
+
+    fn settle_unversioned(
+        &self,
+        path: &Path,
+        mut unversioned: Option<u64>,
+        mut found: Vec<Diagnostic>,
+        deadline: Instant,
+    ) -> Result<Vec<Diagnostic>, Unready> {
+        while let Some(at) = unversioned {
+            let later = self.wait(deadline.min(Instant::now() + SETTLE), |state| {
+                let last = state.published.get(path)?;
+                (last.at > at).then(|| (last.at, last.errors.clone()))
+            });
+            match later {
+                Ok((at, errors)) => (unversioned, found) = (Some(at), errors),
+                Err(Unready::Slow) => break,
+                Err(unready) => return Err(unready),
+            }
+        }
+        Ok(found)
+    }
+
+    fn wait_published(
+        &self,
+        path: &Path,
+        version: i64,
+        sent_at: u64,
+        quiet_is_clean: bool,
+        deadline: Instant,
+    ) -> Result<Vec<Diagnostic>, Unready> {
         let deadline = if quiet_is_clean {
             deadline.min(Instant::now() + QUIET)
         } else {
@@ -510,23 +579,39 @@ impl Client {
             };
             fresh.then(|| (last.version.is_none().then_some(last.at), last.errors.clone()))
         });
-        let (mut unversioned, mut found) = match answer {
+        let (unversioned, found) = match answer {
             Ok(answer) => answer,
             Err(Unready::Slow) if quiet_is_clean => return Ok(Vec::new()),
             Err(unready) => return Err(unready),
         };
-        while let Some(at) = unversioned {
-            let later = self.wait(deadline.min(Instant::now() + SETTLE), |state| {
-                let last = state.published.get(path)?;
-                (last.at > at).then(|| (last.at, last.errors.clone()))
-            });
-            match later {
-                Ok((at, errors)) => (unversioned, found) = (Some(at), errors),
-                Err(Unready::Slow) => break,
-                Err(unready) => return Err(unready),
-            }
+        self.settle_unversioned(path, unversioned, found, deadline)
+    }
+
+    /// The errors the server reports for `path` once its content is `content` (which is not on disk yet).
+    pub fn check(
+        &self,
+        path: &Path,
+        language: &str,
+        content: &str,
+        deadline: Instant,
+    ) -> Result<Vec<Diagnostic>, Unready> {
+        let mut docs = sync::lock(&self.docs);
+        self.evict_excess_docs(&mut docs, path);
+        self.refresh_other_docs(&mut docs, path, language);
+        let was_clean = sync::lock(&self.shared.state)
+            .published
+            .get(path)
+            .is_some_and(|last| last.version.is_none() && last.errors.is_empty());
+        let changed = self.sync_doc(&mut docs, path, language, content);
+        self.wait_quiescent(deadline)?;
+        if self.pull {
+            return self.pull_diagnostics(path, deadline);
         }
-        Ok(found)
+        let Some(doc) = docs.get(path) else {
+            return Ok(Vec::new());
+        };
+        let (version, sent_at) = (doc.version, doc.sent_at);
+        self.wait_published(path, version, sent_at, was_clean && changed, deadline)
     }
 }
 

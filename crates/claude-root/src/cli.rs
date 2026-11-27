@@ -39,54 +39,70 @@ fn usage_message(message: &str) -> bool {
     message.starts_with("unknown option") || message.contains("needs a value") || message.contains("must be ")
 }
 
-fn guide(args: &[String], ctx: &Ctx, out: &mut dyn Write) -> Result<i32, Failure> {
-    let mut audience = Audience::Ultron;
-    let mut cwd: Option<String> = None;
-    let mut flags = ResourceFlags::default();
+struct GuideArgs {
+    audience: Audience,
+    cwd: Option<String>,
+    flags: ResourceFlags,
+}
+
+fn parse_audience(value: Option<&str>) -> Result<Audience, UsageError> {
+    match value {
+        Some("ultron") => Ok(Audience::Ultron),
+        Some("claude") => Ok(Audience::Claude),
+        Some("claude-child") => Ok(Audience::ClaudeChild),
+        _ => Err(UsageError("--for must be ultron, claude or claude-child".into())),
+    }
+}
+
+fn parse_guide_args(args: &[String]) -> Result<Option<GuideArgs>, UsageError> {
+    let mut parsed = GuideArgs {
+        audience: Audience::Ultron,
+        cwd: None,
+        flags: ResourceFlags::default(),
+    };
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
-            "--help" | "-h" => {
-                writeln!(out, "{GUIDE_HELP}").map_err(|e| e.to_string())?;
-                return Ok(0);
-            }
+            "--help" | "-h" => return Ok(None),
             "--for" => {
                 index += 1;
-                audience = match args.get(index).map(String::as_str) {
-                    Some("ultron") => Audience::Ultron,
-                    Some("claude") => Audience::Claude,
-                    Some("claude-child") => Audience::ClaudeChild,
-                    _ => return Err(UsageError("--for must be ultron, claude or claude-child".into()).into()),
-                };
+                parsed.audience = parse_audience(args.get(index).map(String::as_str))?;
             }
             "--cwd" => {
                 index += 1;
-                cwd = Some(
-                    args.get(index)
-                        .cloned()
-                        .ok_or_else(|| UsageError("--cwd needs a directory".into()))?,
-                );
+                let dir = args
+                    .get(index)
+                    .cloned()
+                    .ok_or_else(|| UsageError("--cwd needs a directory".into()))?;
+                parsed.cwd = Some(dir);
             }
-            "--no-context-files" | "-nc" => flags.no_context_files = true,
-            "--no-skills" | "-ns" => flags.no_skills = true,
-            other => return Err(UsageError(format!("unknown option for ultron guide: {other}")).into()),
+            "--no-context-files" | "-nc" => parsed.flags.no_context_files = true,
+            "--no-skills" | "-ns" => parsed.flags.no_skills = true,
+            other => return Err(UsageError(format!("unknown option for ultron guide: {other}"))),
         }
         index += 1;
     }
-    let var = &*ctx.env.var;
-    let hints = session_core::compose::hints(var);
-    let dir = cwd.unwrap_or_else(|| ctx.env.cwd.display().to_string());
+    Ok(Some(parsed))
+}
+
+fn guide(args: &[String], ctx: &Ctx, out: &mut dyn Write) -> Result<i32, Failure> {
+    let Some(parsed) = parse_guide_args(args)? else {
+        writeln!(out, "{GUIDE_HELP}").map_err(|e| e.to_string())?;
+        return Ok(0);
+    };
+    let hints = session_core::compose::hints(&*ctx.env.var);
+    let dir = parsed.cwd.unwrap_or_else(|| ctx.env.cwd.display().to_string());
     let bundled = ctx.bundled_skills();
     let resources;
     let apis;
-    let options = if audience == Audience::Ultron {
+    let options = if parsed.audience == Audience::Ultron {
         GuideOptions::default()
     } else {
         let env = RunEnv {
             cwd: PathBuf::from(&dir),
             ..ctx.env.clone()
         };
-        resources = crate::guide::load_prompt_resources(&env, bundled.as_deref(), flags);
+        resources = crate::guide::load_prompt_resources(&env, bundled.as_deref(), parsed.flags);
         apis = crate::guide::runtime_apis(&env);
         GuideOptions {
             cwd: Some(dir),
@@ -99,7 +115,7 @@ fn guide(args: &[String], ctx: &Ctx, out: &mut dyn Write) -> Result<i32, Failure
             apis: Some(&apis),
         }
     };
-    let text = crate::guide::runtime_guide(audience, &options, hints);
+    let text = crate::guide::runtime_guide(parsed.audience, &options, hints);
     writeln!(out, "{text}").map_err(|e| e.to_string())?;
     Ok(0)
 }

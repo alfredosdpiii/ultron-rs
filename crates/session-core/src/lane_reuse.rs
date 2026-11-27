@@ -59,18 +59,34 @@ pub fn continue_lane(chat: &ChatHarness, conversation: ConversationId, run: &Lan
     let submission = handle
         .submit(SubmissionDraft::input(run.prompt.clone()).when_busy(WhenBusy::Reject))
         .map_err(|e| e.to_string())?;
+    let settled = wait_lane_submission(&handle, submission, &run.signal)?;
+    settled_lane_reply(chat, &run.lane, &settled)
+}
+
+fn wait_lane_submission(
+    handle: &harness::chat::Conversation,
+    submission: harness::chat::Submission,
+    signal: &kernel::Signal,
+) -> Result<durable::SubmissionRecord, String> {
     let cancel = Cancel::new();
     let target = cancel.clone();
-    let link = run.signal.link(move |_| target.abort());
+    let link = signal.link(move |_| target.abort());
     let settled = submission.wait(&Ctx::with_signal(&cancel));
     drop(link);
-    let settled = match settled {
-        Ok(settled) => settled,
+    match settled {
+        Ok(settled) => Ok(settled),
         Err(error) => {
             let _ = handle.abort(false, &Ctx::background());
-            return Err(run.signal.reason().unwrap_or_else(|| error.to_string()));
+            Err(signal.reason().unwrap_or_else(|| error.to_string()))
         }
-    };
+    }
+}
+
+fn settled_lane_reply(
+    chat: &ChatHarness,
+    lane: &str,
+    settled: &durable::SubmissionRecord,
+) -> Result<LaneReply, String> {
     match (settled.status, settled.answer) {
         (SubmissionStatus::Done, Some(answer)) => {
             let text = chat
@@ -85,7 +101,7 @@ pub fn continue_lane(chat: &ChatHarness, conversation: ConversationId, run: &Lan
         }
         _ => Err(format!(
             "Lane {} ended without an answer: {}",
-            run.lane,
+            lane,
             settled
                 .detail
                 .as_ref()

@@ -24,6 +24,116 @@ pub struct Reattached {
     pub run: Option<ChildRun>,
 }
 
+struct PendingWaiter {
+    id: String,
+    signal: Signal,
+    waiter: ChildWaiter,
+    run: Option<ChildRun>,
+    unreadable: Option<String>,
+}
+
+fn build_restored_task(
+    id: String,
+    record: Value,
+    reattached: Option<Reattached>,
+    saved: &[WorktreeRecord],
+    state: &mut State,
+) -> Option<PendingWaiter> {
+    let child = record["definition"] == CHILD;
+    let (waiter, contract, run) = match reattached {
+        Some(r) => (Some(r.waiter), r.contract, r.run),
+        None => (None, None, None),
+    };
+    let git_baseline = contract
+        .as_ref()
+        .and_then(|kept| GitBaseline::from_value(&kept["baseline"]));
+    let contract = contract.map(|kept| SpawnContract::from_described(&kept).map(Arc::new));
+    let signal = Signal::new();
+    let outcome = match &waiter {
+        Some(_) => None,
+        None => {
+            signal.abort("ended");
+            Some(Ok(record["result"].clone()))
+        }
+    };
+    let lane_name = child.then(|| lanes::lane_names::child_lane(&id));
+    let saved = saved
+        .iter()
+        .find(|record| child && record.task_id.as_deref() == Some(id.as_str()));
+    let merge_status = saved
+        .filter(|record| record.state == "merged")
+        .map(|_| "merged".to_string());
+    let worktree = waiter.as_ref().and(saved.cloned()).map(|mut record| {
+        record.owner = wt::Owner::of_this_process();
+        let _ = wt::save_record(&record);
+        record
+    });
+    if let (Some(lane), Some(_)) = (&lane_name, &waiter) {
+        state.lane_tasks.insert(lane.clone(), id.clone());
+    }
+    state.tasks.push(Task {
+        id: id.clone(),
+        parent_id: record["parentId"].as_str().map(String::from),
+        record,
+        outcome,
+        spawn_depth: 0,
+        lane_name,
+        name: run.as_ref().map(|run| run.name.clone()),
+        model: run.as_ref().and_then(|run| run.model.clone()),
+        started_at: None,
+        ended_at: None,
+        timeout_ms: run.as_ref().map(|run| run.timeout_ms).filter(|ms| *ms > 0),
+        verdict: None,
+        verdict_rejections: 0,
+        verdict_problems: Vec::new(),
+        verdict_invalid: false,
+        waiters: 0,
+        signal: signal.clone(),
+        finishing: false,
+        cwd: run
+            .as_ref()
+            .filter(|_| worktree.is_none())
+            .and_then(|run| run.cwd.as_deref().map(PathBuf::from)),
+        worktree,
+        worktree_baseline: None,
+        outside_before: None,
+        before: None,
+        merge_status,
+        contract: contract.clone().and_then(Result::ok),
+        git_baseline,
+    });
+    waiter.map(|waiter| PendingWaiter {
+        id,
+        signal,
+        waiter,
+        run,
+        unreadable: contract.and_then(Result::err),
+    })
+}
+
+fn reopen_kept_records(
+    state: &mut State,
+    unfinished: &[String],
+    mut reattach: impl FnMut(&str) -> Option<Reattached>,
+) -> Result<(Vec<Value>, HashMap<String, Reattached>), String> {
+    let known: Vec<String> = state.tasks.iter().map(|task| task.id.clone()).collect();
+    let mut kept: HashMap<String, Reattached> = HashMap::new();
+    let records = state.journal.reopen(|record| {
+        let id = record["id"].as_str().unwrap_or_default();
+        if record["definition"] != CHILD || !unfinished.iter().any(|u| u == id) || known.iter().any(|k| k == id) {
+            return false;
+        }
+        match reattach(id) {
+            Some(reattached) => {
+                kept.insert(id.to_string(), reattached);
+                true
+            }
+            None => false,
+        }
+    })?;
+    Ok((records, kept))
+}
+
 impl Delegation {
     /// Load the journal's tasks after a restart. `reattach` is asked about every subagent task the journal held
     /// unfinished before it was reopened (`unfinished`, read from the stored document first) and returns a waiter
@@ -34,106 +144,36 @@ impl Delegation {
     pub fn restore(
         &self,
         unfinished: &[String],
-        mut reattach: impl FnMut(&str) -> Option<Reattached>,
+        reattach: impl FnMut(&str) -> Option<Reattached>,
     ) -> Result<Vec<String>, String> {
         let mut waiters = Vec::new();
         {
             let mut state = sync::lock(&self.inner.state);
-            let known: Vec<String> = state.tasks.iter().map(|task| task.id.clone()).collect();
-            let mut kept: HashMap<String, Reattached> = HashMap::new();
-            let records = state.journal.reopen(|record| {
-                let id = record["id"].as_str().unwrap_or_default();
-                if record["definition"] != CHILD || !unfinished.iter().any(|u| u == id) || known.iter().any(|k| k == id)
-                {
-                    return false;
-                }
-                match reattach(id) {
-                    Some(reattached) => {
-                        kept.insert(id.to_string(), reattached);
-                        true
-                    }
-                    None => false,
-                }
-            })?;
+            let (records, mut kept) = reopen_kept_records(&mut state, unfinished, reattach)?;
             let saved = self.inner.workspace.as_deref().map_or_default(wt::list_records);
             for record in records {
                 let id = record["id"].as_str().unwrap_or_default().to_string();
                 if id.is_empty() || state.task(&id).is_some() {
                     continue;
                 }
-                let child = record["definition"] == CHILD;
-                let (waiter, contract, run) = match kept.remove(&id) {
-                    Some(r) => (Some(r.waiter), r.contract, r.run),
-                    None => (None, None, None),
-                };
-                let git_baseline = contract
-                    .as_ref()
-                    .and_then(|kept| GitBaseline::from_value(&kept["baseline"]));
-                let contract = contract.map(|kept| SpawnContract::from_described(&kept).map(Arc::new));
-                let signal = Signal::new();
-                let outcome = match &waiter {
-                    Some(_) => None,
-                    None => {
-                        signal.abort("ended");
-                        Some(Ok(record["result"].clone()))
-                    }
-                };
-                let lane_name = child.then(|| lanes::lane_names::child_lane(&id));
-                let saved = saved
-                    .iter()
-                    .find(|record| child && record.task_id.as_deref() == Some(id.as_str()));
-                let merge_status = saved
-                    .filter(|record| record.state == "merged")
-                    .map(|_| "merged".to_string());
-                let worktree = waiter.as_ref().and(saved.cloned()).map(|mut record| {
-                    record.owner = wt::Owner::of_this_process();
-                    let _ = wt::save_record(&record);
-                    record
-                });
-                if let (Some(lane), Some(_)) = (&lane_name, &waiter) {
-                    state.lane_tasks.insert(lane.clone(), id.clone());
-                }
-                state.tasks.push(Task {
-                    id: id.clone(),
-                    parent_id: record["parentId"].as_str().map(String::from),
-                    record,
-                    outcome,
-                    spawn_depth: 0,
-                    lane_name,
-                    name: run.as_ref().map(|run| run.name.clone()),
-                    model: run.as_ref().and_then(|run| run.model.clone()),
-                    started_at: None,
-                    ended_at: None,
-                    timeout_ms: run.as_ref().map(|run| run.timeout_ms).filter(|ms| *ms > 0),
-                    verdict: None,
-                    verdict_rejections: 0,
-                    verdict_problems: Vec::new(),
-                    verdict_invalid: false,
-                    waiters: 0,
-                    signal: signal.clone(),
-                    finishing: false,
-                    cwd: run
-                        .as_ref()
-                        .filter(|_| worktree.is_none())
-                        .and_then(|run| run.cwd.as_deref().map(PathBuf::from)),
-                    worktree,
-                    worktree_baseline: None,
-                    outside_before: None,
-                    before: None,
-                    merge_status,
-                    contract: contract.clone().and_then(Result::ok),
-                    git_baseline,
-                });
-                if let Some(waiter) = waiter {
-                    let unreadable = contract.and_then(Result::err);
-                    waiters.push((id, signal, waiter, run, unreadable));
+                let reattached = kept.remove(&id);
+                if let Some(pending) = build_restored_task(id, record, reattached, &saved, &mut state) {
+                    waiters.push(pending);
                 }
             }
         }
-        let resumed = waiters.iter().map(|(id, ..)| id.clone()).collect();
-        for (id, signal, waiter, run, unreadable) in waiters {
+        let resumed = waiters.iter().map(|w| w.id.clone()).collect();
+        for pending in waiters {
             let host = self.clone();
-            std::thread::spawn(move || host.run_restored(&id, &signal, waiter, run, unreadable));
+            std::thread::spawn(move || {
+                host.run_restored(
+                    &pending.id,
+                    &pending.signal,
+                    pending.waiter,
+                    pending.run,
+                    pending.unreadable,
+                );
+            });
         }
         Ok(resumed)
     }

@@ -69,6 +69,88 @@ async fn post(
         .map_err(|e| e.message())
 }
 
+enum RefreshOutcome {
+    Done(Result<OAuthCredential, String>),
+    Retry(String),
+}
+
+struct KimiDeviceAuth {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    interval: f64,
+    expires_in: f64,
+}
+
+fn format_status_error(prefix: &str, response: &TextResponse) -> String {
+    let suffix = if response.text.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", response.text)
+    };
+    format!("{prefix} failed with status {}{suffix}", response.status)
+}
+
+async fn refresh_backoff(attempt: u32, signal: Option<&AbortSignal>) -> Result<(), String> {
+    if attempt == 0 {
+        return Ok(());
+    }
+    let delay = Duration::from_millis(1000 * 2u64.pow(attempt - 1));
+    tokio::select! {
+        () = tokio::time::sleep(delay) => Ok(()),
+        () = crate::http::cancelled(signal) => Err(crate::provider::OPERATION_ABORTED.into()),
+    }
+}
+
+fn parse_device_auth(response: &TextResponse) -> Result<KimiDeviceAuth, String> {
+    if !response.ok() {
+        return Err(format_status_error("Kimi Code device authorization", response));
+    }
+    let json = read_json(response);
+    let text = |key: &str| field(&json, key).and_then(Value::as_str).map(str::to_string);
+    let (Some(device_code), Some(user_code), Some(uri), Some(complete)) = (
+        text("device_code"),
+        text("user_code"),
+        text("verification_uri"),
+        text("verification_uri_complete"),
+    ) else {
+        return Err(format!(
+            "Invalid Kimi Code device authorization response: {}",
+            json_text(&json)
+        ));
+    };
+    if trusted_http_url(Some(&json!(complete)), false).is_none() || trusted_http_url(Some(&json!(uri)), false).is_none()
+    {
+        return Err(format!(
+            "Invalid Kimi Code device authorization response: {}",
+            json_text(&json)
+        ));
+    }
+    Ok(KimiDeviceAuth {
+        device_code,
+        user_code,
+        verification_uri: complete,
+        interval: positive(field(&json, "interval")).unwrap_or(DEFAULT_POLL_INTERVAL_SECONDS),
+        expires_in: positive(field(&json, "expires_in")).unwrap_or(DEVICE_CODE_TIMEOUT_SECONDS),
+    })
+}
+
+fn parse_poll_error(json: &Option<Value>, status: u16) -> Poll<OAuthCredential> {
+    let description = field(json, "error_description")
+        .and_then(Value::as_str)
+        .map_or_default(|d| format!(": {d}"));
+    match field(json, "error").and_then(Value::as_str) {
+        Some("authorization_pending") => Poll::Pending,
+        Some("slow_down") => Poll::SlowDown(positive(field(json, "interval"))),
+        Some("expired_token") => Poll::Failed("Kimi Code device authorization expired. Please restart login.".into()),
+        Some("access_denied") => Poll::Failed("Kimi Code login was denied.".into()),
+        other => Poll::Failed(format!(
+            "Kimi Code device token request failed (status {status}){}",
+            other.map_or_default(|e| format!(": {e}{description}"))
+        )),
+    }
+}
+
 impl KimiCodingOAuth {
     fn parse_token(&self, json: &Option<Value>, operation: &str) -> Result<OAuthCredential, String> {
         let access = field(json, "access_token")
@@ -92,27 +174,59 @@ impl KimiCodingOAuth {
         }
     }
 
+    fn classify_refresh_response(&self, response: &TextResponse, attempt: u32) -> RefreshOutcome {
+        let json = read_json(response);
+        if response.ok() {
+            return RefreshOutcome::Done(self.parse_token(&json, "refresh"));
+        }
+        let status = response.status;
+        if status == 401 || status == 403 || field(&json, "error") == Some(&json!("invalid_grant")) {
+            let description = field(&json, "error_description")
+                .and_then(Value::as_str)
+                .map_or_default(|d| format!(": {d}"));
+            return RefreshOutcome::Done(Err(format!(
+                "Kimi Code token refresh unauthorized (status {status}){description}"
+            )));
+        }
+        if (status == 429 || status >= 500) && attempt < REFRESH_MAX_RETRIES {
+            return RefreshOutcome::Retry(format!("Kimi Code token refresh failed with status {status}"));
+        }
+        RefreshOutcome::Done(Err(format!(
+            "Kimi Code token refresh failed with status {status}: {}",
+            json_text(&json)
+        )))
+    }
+
+    fn parse_poll_response(&self, response: &TextResponse) -> Poll<OAuthCredential> {
+        if response.status >= 500 {
+            return Poll::Failed(format_status_error("Kimi Code device token request", response));
+        }
+        let json = read_json(response);
+        if response.ok() && field(&json, "access_token").is_some_and(Value::is_string) {
+            return match self.parse_token(&json, "poll") {
+                Ok(token) => Poll::Complete(token),
+                Err(message) => Poll::Failed(message),
+            };
+        }
+        parse_poll_error(&json, response.status)
+    }
+
     async fn refresh_token(
         &self,
         host: &str,
         refresh: &str,
         signal: Option<&AbortSignal>,
     ) -> Result<OAuthCredential, String> {
+        let url = format!("{host}/api/oauth/token");
         let mut last_error: Option<String> = None;
         for attempt in 0..=REFRESH_MAX_RETRIES {
-            if attempt > 0 {
-                let delay = Duration::from_millis(1000 * 2u64.pow(attempt - 1));
-                tokio::select! {
-                    () = tokio::time::sleep(delay) => {}
-                    () = crate::http::cancelled(signal) => return Err(crate::provider::OPERATION_ABORTED.into()),
-                }
-            }
+            refresh_backoff(attempt, signal).await?;
             if is_aborted(signal) {
                 return Err("Kimi Code token refresh aborted".into());
             }
             let response = match post(
                 self.transport.as_ref(),
-                &format!("{host}/api/oauth/token"),
+                &url,
                 &[
                     ("client_id", CLIENT_ID),
                     ("grant_type", "refresh_token"),
@@ -128,27 +242,10 @@ impl KimiCodingOAuth {
                     continue;
                 }
             };
-            let json = read_json(&response);
-            if response.ok() {
-                return self.parse_token(&json, "refresh");
+            match self.classify_refresh_response(&response, attempt) {
+                RefreshOutcome::Done(result) => return result,
+                RefreshOutcome::Retry(error) => last_error = Some(error),
             }
-            let status = response.status;
-            if status == 401 || status == 403 || field(&json, "error") == Some(&json!("invalid_grant")) {
-                let description = field(&json, "error_description")
-                    .and_then(Value::as_str)
-                    .map_or_default(|d| format!(": {d}"));
-                return Err(format!(
-                    "Kimi Code token refresh unauthorized (status {status}){description}"
-                ));
-            }
-            if (status == 429 || status >= 500) && attempt < REFRESH_MAX_RETRIES {
-                last_error = Some(format!("Kimi Code token refresh failed with status {status}"));
-                continue;
-            }
-            return Err(format!(
-                "Kimi Code token refresh failed with status {status}: {}",
-                json_text(&json)
-            ));
         }
         Err(last_error.unwrap_or_else(|| "Kimi Code token refresh failed".into()))
     }
@@ -180,52 +277,19 @@ impl OAuthAuth for KimiCodingOAuth {
                 signal,
             )
             .await?;
-            if !response.ok() {
-                return Err(format!(
-                    "Kimi Code device authorization failed with status {}{}",
-                    response.status,
-                    if response.text.is_empty() {
-                        String::new()
-                    } else {
-                        format!(": {}", response.text)
-                    }
-                ));
-            }
-            let json = read_json(&response);
-            let text = |key: &str| field(&json, key).and_then(Value::as_str).map(str::to_string);
-            let (Some(device_code), Some(user_code), Some(uri), Some(complete)) = (
-                text("device_code"),
-                text("user_code"),
-                text("verification_uri"),
-                text("verification_uri_complete"),
-            ) else {
-                return Err(format!(
-                    "Invalid Kimi Code device authorization response: {}",
-                    json_text(&json)
-                ));
-            };
-            if trusted_http_url(Some(&json!(complete)), false).is_none()
-                || trusted_http_url(Some(&json!(uri)), false).is_none()
-            {
-                return Err(format!(
-                    "Invalid Kimi Code device authorization response: {}",
-                    json_text(&json)
-                ));
-            }
-            let interval = positive(field(&json, "interval")).unwrap_or(DEFAULT_POLL_INTERVAL_SECONDS);
-            let expires_in = positive(field(&json, "expires_in")).unwrap_or(DEVICE_CODE_TIMEOUT_SECONDS);
+            let auth = parse_device_auth(&response)?;
             interaction.notify(AuthEvent::DeviceCode {
-                user_code,
-                verification_uri: complete,
-                interval_seconds: Some(interval),
-                expires_in_seconds: Some(expires_in),
+                user_code: auth.user_code,
+                verification_uri: auth.verification_uri,
+                interval_seconds: Some(auth.interval),
+                expires_in_seconds: Some(auth.expires_in),
             });
             let token_url = format!("{host}/api/oauth/token");
             poll_device_code_flow(
                 &ClockLoginEnv(self.clock),
                 signal,
-                Some(interval),
-                Some(expires_in),
+                Some(auth.interval),
+                Some(auth.expires_in),
                 true,
                 || async {
                     let response = post(
@@ -233,47 +297,13 @@ impl OAuthAuth for KimiCodingOAuth {
                         &token_url,
                         &[
                             ("client_id", CLIENT_ID),
-                            ("device_code", &device_code),
+                            ("device_code", &auth.device_code),
                             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
                         ],
                         signal,
                     )
                     .await?;
-                    if response.status >= 500 {
-                        return Ok(Poll::Failed(format!(
-                            "Kimi Code device token request failed with status {}{}",
-                            response.status,
-                            if response.text.is_empty() {
-                                String::new()
-                            } else {
-                                format!(": {}", response.text)
-                            }
-                        )));
-                    }
-                    let json = read_json(&response);
-                    if response.ok() && field(&json, "access_token").is_some_and(Value::is_string) {
-                        return Ok(match self.parse_token(&json, "poll") {
-                            Ok(token) => Poll::Complete(token),
-                            Err(message) => Poll::Failed(message),
-                        });
-                    }
-                    let error = field(&json, "error");
-                    let description = field(&json, "error_description")
-                        .and_then(Value::as_str)
-                        .map_or_default(|d| format!(": {d}"));
-                    Ok(match error.and_then(Value::as_str) {
-                        Some("authorization_pending") => Poll::Pending,
-                        Some("slow_down") => Poll::SlowDown(positive(field(&json, "interval"))),
-                        Some("expired_token") => {
-                            Poll::Failed("Kimi Code device authorization expired. Please restart login.".into())
-                        }
-                        Some("access_denied") => Poll::Failed("Kimi Code login was denied.".into()),
-                        other => Poll::Failed(format!(
-                            "Kimi Code device token request failed (status {}){}",
-                            response.status,
-                            other.map_or_default(|e| format!(": {e}{description}"))
-                        )),
-                    })
+                    Ok(self.parse_poll_response(&response))
                 },
             )
             .await

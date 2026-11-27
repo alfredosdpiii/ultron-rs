@@ -335,39 +335,93 @@ fn default_root() -> Inherited {
     }
 }
 
+fn parse_attr_f64(tag: &str, name: &str) -> Option<f64> {
+    attribute(tag, name).and_then(|v| v.trim().parse::<f64>().ok())
+}
+
+struct TextRunState {
+    text_run: Run,
+    own_runs: Vec<Run>,
+    line: Line,
+    owner: Option<usize>,
+    stack: Vec<(Inherited, Option<usize>)>,
+}
+
+impl TextRunState {
+    fn flush(&mut self) {
+        if self.line.chars > 0 {
+            let run = match self.owner {
+                Some(i) => &mut self.own_runs[i],
+                None => &mut self.text_run,
+            };
+            run.lines.push(self.line.clone());
+        }
+        self.line.chars = 0;
+    }
+
+    fn handle_close(&mut self) {
+        if self.stack.len() > 1 {
+            self.flush();
+            self.stack.pop();
+            if let Some((style, run)) = self.stack.last() {
+                self.line.style = style.clone();
+                self.owner = *run;
+            }
+        }
+    }
+
+    fn handle_open(&mut self, inner: &str, range: (usize, usize), parent: &Inherited) {
+        let (style, run) = self.stack.last().cloned().unwrap_or((parent.clone(), None));
+        let style = style.child(inner);
+        let run = if property(inner, "fill").is_some() || property(inner, "fill-opacity").is_some() {
+            self.own_runs.push(Run {
+                tag: range,
+                style: style.clone(),
+                lines: Vec::new(),
+            });
+            Some(self.own_runs.len() - 1)
+        } else {
+            run
+        };
+        self.flush();
+        if let Some(x) = parse_attr_f64(inner, "x") {
+            self.line.x = x;
+        }
+        if let Some(y) = parse_attr_f64(inner, "y") {
+            self.line.y = y;
+        }
+        self.line.style = style.clone();
+        self.owner = run;
+        if !inner.ends_with("/>") {
+            self.stack.push((style, run));
+        }
+    }
+}
+
 /// The runs of one `<text>` element (start tag at `tag`, content up to `close`).
 fn text_runs(svg: &str, tag: (usize, usize), close: usize, parent: &Inherited) -> Vec<Run> {
     let text_tag = &svg[tag.0..tag.1];
     let text_style = parent.child(text_tag);
-    let number = |tag: &str, name: &str| attribute(tag, name).and_then(|v| v.trim().parse::<f64>().ok());
-    let mut text_run = Run {
-        tag,
-        style: text_style.clone(),
-        lines: Vec::new(),
+    let mut state = TextRunState {
+        text_run: Run {
+            tag,
+            style: text_style.clone(),
+            lines: Vec::new(),
+        },
+        own_runs: Vec::new(),
+        line: Line {
+            x: parse_attr_f64(text_tag, "x").unwrap_or(0.0),
+            y: parse_attr_f64(text_tag, "y").unwrap_or(0.0),
+            chars: 0,
+            style: text_style.clone(),
+        },
+        owner: None,
+        stack: vec![(text_style, None)],
     };
-    let mut own_runs: Vec<Run> = Vec::new();
-    let mut line = Line {
-        x: number(text_tag, "x").unwrap_or(0.0),
-        y: number(text_tag, "y").unwrap_or(0.0),
-        chars: 0,
-        style: text_style.clone(),
-    };
-    let mut owner: Option<usize> = None;
-    let mut stack: Vec<(Inherited, Option<usize>)> = vec![(text_style, None)];
     let mut at = tag.1;
-    let flush = |line: &mut Line, owner: Option<usize>, text_run: &mut Run, own_runs: &mut Vec<Run>| {
-        if line.chars > 0 {
-            let run = match owner {
-                Some(i) => &mut own_runs[i],
-                None => &mut *text_run,
-            };
-            run.lines.push(line.clone());
-        }
-        line.chars = 0;
-    };
     while at < close {
         let next = svg[at..close].find('<').map_or(close, |i| at + i);
-        line.chars += char_count(svg[at..next].trim_matches(['\n', '\r', '\t']));
+        state.line.chars += char_count(svg[at..next].trim_matches(['\n', '\r', '\t']));
         if next >= close {
             break;
         }
@@ -375,47 +429,14 @@ fn text_runs(svg: &str, tag: (usize, usize), close: usize, parent: &Inherited) -
         let inner = &svg[next..end];
         at = end;
         if inner.starts_with("</") {
-            if stack.len() > 1 {
-                flush(&mut line, owner, &mut text_run, &mut own_runs);
-                stack.pop();
-                if let Some((style, run)) = stack.last() {
-                    line.style = style.clone();
-                    owner = *run;
-                }
-            }
-            continue;
-        }
-        if inner.starts_with("<!") || inner.starts_with("<?") {
-            continue;
-        }
-        let (style, run) = stack.last().cloned().unwrap_or((parent.clone(), None));
-        let style = style.child(inner);
-        let run = if property(inner, "fill").is_some() || property(inner, "fill-opacity").is_some() {
-            own_runs.push(Run {
-                tag: (next, end),
-                style: style.clone(),
-                lines: Vec::new(),
-            });
-            Some(own_runs.len() - 1)
-        } else {
-            run
-        };
-        flush(&mut line, owner, &mut text_run, &mut own_runs);
-        if let Some(x) = number(inner, "x") {
-            line.x = x;
-        }
-        if let Some(y) = number(inner, "y") {
-            line.y = y;
-        }
-        line.style = style.clone();
-        owner = run;
-        if !inner.ends_with("/>") {
-            stack.push((style, run));
+            state.handle_close();
+        } else if !inner.starts_with("<!") && !inner.starts_with("<?") {
+            state.handle_open(inner, (next, end), parent);
         }
     }
-    flush(&mut line, owner, &mut text_run, &mut own_runs);
-    let mut runs = vec![text_run];
-    runs.extend(own_runs);
+    state.flush();
+    let mut runs = vec![state.text_run];
+    runs.extend(state.own_runs);
     runs
 }
 
@@ -529,6 +550,47 @@ pub fn ensure_contrast(svg: &str, palette: &DiagramPalette) -> String {
     ensure_contrast_report(svg, palette).0
 }
 
+fn sample_run_backdrops(run: &Run, fill: Rgb, view: &Affine, pixmap: &tiny_skia::Pixmap, page: Rgb) -> Vec<(Rgb, Rgb)> {
+    let opacity = run.style.fill_opacity;
+    run.lines
+        .iter()
+        .map(|line| {
+            let (x0, y0, x1, y1) = line_box(line);
+            let (px0, py0) = view.apply(x0, y0);
+            let (px1, py1) = view.apply(x1, y1);
+            let area = (px0.min(px1), py0.min(py1), px0.max(px1), py0.max(py1));
+            let under = backdrop(pixmap, area).unwrap_or(page);
+            (blend(fill, opacity, under), under)
+        })
+        .collect()
+}
+
+fn recolor_tag(tag: &str, color: Rgb, opacity: f64) -> String {
+    let (r, g, b) = color;
+    let mut updated = set_attribute(
+        &drop_style_property(tag, "fill"),
+        "fill",
+        &format!("#{r:02x}{g:02x}{b:02x}"),
+    );
+    if opacity < 1.0 {
+        updated = set_attribute(&drop_style_property(&updated, "fill-opacity"), "fill-opacity", "1");
+    }
+    updated
+}
+
+fn apply_tag_edits(svg: &str, mut edits: Vec<((usize, usize), String)>) -> String {
+    edits.sort_by_key(|(range, _)| range.0);
+    let mut out = String::with_capacity(svg.len() + edits.len() * 20);
+    let mut at = 0;
+    for ((start, end), tag) in edits {
+        out.push_str(&svg[at..start]);
+        out.push_str(&tag);
+        at = end;
+    }
+    out.push_str(&svg[at..]);
+    out
+}
+
 /// [`ensure_contrast`], and what it found for each label run.
 pub fn ensure_contrast_report(svg: &str, palette: &DiagramPalette) -> (String, Vec<LabelColor>) {
     let root = Inherited {
@@ -552,18 +614,7 @@ pub fn ensure_contrast_report(svg: &str, palette: &DiagramPalette) -> (String, V
             continue;
         };
         let opacity = run.style.fill_opacity;
-        let drawn: Vec<(Rgb, Rgb)> = run
-            .lines
-            .iter()
-            .map(|line| {
-                let (x0, y0, x1, y1) = line_box(line);
-                let (px0, py0) = view.apply(x0, y0);
-                let (px1, py1) = view.apply(x1, y1);
-                let area = (px0.min(px1), py0.min(py1), px0.max(px1), py0.max(py1));
-                let under = backdrop(&pixmap, area).unwrap_or(page);
-                (blend(fill, opacity, under), under)
-            })
-            .collect();
+        let drawn = sample_run_backdrops(run, fill, &view, &pixmap, page);
         if drawn.is_empty() {
             continue;
         }
@@ -579,28 +630,10 @@ pub fn ensure_contrast_report(svg: &str, palette: &DiagramPalette) -> (String, V
             });
         }
         if changed {
-            let (r, g, b) = color;
-            let mut tag = set_attribute(
-                &drop_style_property(tag, "fill"),
-                "fill",
-                &format!("#{r:02x}{g:02x}{b:02x}"),
-            );
-            if opacity < 1.0 {
-                tag = set_attribute(&drop_style_property(&tag, "fill-opacity"), "fill-opacity", "1");
-            }
-            edits.push((run.tag, tag));
+            edits.push((run.tag, recolor_tag(tag, color, opacity)));
         }
     }
-    edits.sort_by_key(|(range, _)| range.0);
-    let mut out = String::with_capacity(svg.len() + edits.len() * 20);
-    let mut at = 0;
-    for ((start, end), tag) in edits {
-        out.push_str(&svg[at..start]);
-        out.push_str(&tag);
-        at = end;
-    }
-    out.push_str(&svg[at..]);
-    (out, report)
+    (apply_tag_edits(svg, edits), report)
 }
 
 /// The SVG drawn at `scale` on `background`, without fonts.

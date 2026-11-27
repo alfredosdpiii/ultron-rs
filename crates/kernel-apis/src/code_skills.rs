@@ -351,6 +351,238 @@ impl CodeSkills {
             json!({"status": "clean"})
         }
     }
+}
+
+struct ProposalInput {
+    name: String,
+    source: String,
+    test_source: String,
+    evidence: Value,
+    family: Value,
+}
+
+fn spawn_test_watcher(run: Signal, done: Signal, parent: Signal, timeout: Duration) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if done.wait(left.min(Duration::from_millis(50))) {
+                return;
+            }
+            if let Some(reason) = parent.reason() {
+                run.abort(reason);
+                return;
+            }
+            if Instant::now() >= deadline {
+                run.abort(format!("test timed out after {} ms", timeout.as_millis()));
+                return;
+            }
+        }
+    })
+}
+
+fn extract_test_outcome(
+    outcome: Result<kernel::ExecutionResult, kernel::KernelError>,
+    report_path: &Path,
+) -> Result<Value, String> {
+    match outcome {
+        Ok(result) if result.status == Status::Error => {
+            let error = result.error.unwrap_or_else(|| kernel::CellError {
+                ename: "PythonError".into(),
+                evalue: "Execution failed".into(),
+                traceback: Vec::new(),
+            });
+            Err(format!("{}: {}", error.ename, error.evalue))
+        }
+        Ok(_) => std::fs::read_to_string(report_path)
+            .map_err(|error| error.to_string())
+            .and_then(|text| parse_report(&text)),
+        Err(error) => Err(error.message().to_string()),
+    }
+}
+
+fn parse_family(value: Option<&Value>) -> Result<Value, String> {
+    match value {
+        None => Ok(Value::Null),
+        Some(Value::String(family))
+            if !jsrt::string::trim(family).is_empty() && jsrt::utf16::len(family) <= MAX_FAMILY_CHARS =>
+        {
+            Ok(Value::String(jsrt::string::trim(family).to_string()))
+        }
+        Some(_) => Err(format!(
+            "family must be a nonempty string of at most {MAX_FAMILY_CHARS} characters"
+        )),
+    }
+}
+
+fn parse_proposal(kind: CodeSkillKind, payload: &Map<String, Value>) -> Result<ProposalInput, String> {
+    let op = match kind {
+        CodeSkillKind::Code => "skills.propose_code",
+        CodeSkillKind::Policy => "skills.propose_policy",
+    };
+    kernel::ops::fields(op, payload)?;
+    let name = code_skill_name(payload.get("name"))?;
+    let source = source_text(payload.get("source"), "source")?;
+    let test_source = source_text(payload.get("test_source"), "test_source")?;
+    let evidence = evidence_value(payload.get("evidence"))?;
+    let family = parse_family(payload.get("family"))?;
+    Ok(ProposalInput {
+        name,
+        source,
+        test_source,
+        evidence,
+        family,
+    })
+}
+
+fn refused_proposal(name: &str, kind: CodeSkillKind, secret_check: Value) -> Value {
+    object(vec![
+        ("status", "refused".into()),
+        ("name", name.into()),
+        ("kind", kind.as_str().into()),
+        ("version", Value::Null),
+        ("previous", Value::Null),
+        (
+            "reason",
+            format!("{}; nothing was written", secret_check["reason"].as_str().unwrap_or("")).into(),
+        ),
+        ("test", Value::Null),
+        ("secretCheck", secret_check),
+    ])
+}
+
+fn apply_proposal_outcome(
+    history: &mut Value,
+    index: usize,
+    version: i64,
+    passed: bool,
+    at: &str,
+    cause: &str,
+) -> Value {
+    let active = history["active"].clone();
+    let entries = versions(history);
+    if !passed {
+        push_state_history(&mut entries[index], "rejected", at, cause);
+        return Value::Null;
+    }
+    let mut previous = Value::Null;
+    if let Some(current) = entries
+        .iter_mut()
+        .find(|item| item["version"] == active && item["state"] == "active")
+    {
+        push_state_history(current, "superseded", at, cause);
+        previous = current["version"].clone();
+    }
+    entries[index]["previous"] = previous.clone();
+    push_state_history(&mut entries[index], "active", at, cause);
+    history["active"] = version.into();
+    previous
+}
+
+fn push_state_history(record: &mut Value, state: &str, at: &str, cause: &str) {
+    record["state"] = state.into();
+    if let Some(Value::Array(changes)) = record.get_mut("history") {
+        changes.push(json!({"state": state, "at": at, "cause": cause}));
+    }
+}
+
+fn parse_rollback_args(payload: &Map<String, Value>) -> Result<(String, i64), String> {
+    kernel::ops::fields("skills.rollback", payload)?;
+    let name = code_skill_name(payload.get("name"))?;
+    let version = payload
+        .get("version")
+        .and_then(jsrt::number::safe_integer)
+        .filter(|version| *version >= 1)
+        .ok_or("version must be a positive integer")?;
+    Ok((name, version))
+}
+
+fn apply_rollback(history: &mut Value, name: &str, version: i64, at: &str, cause: &str) -> Result<Value, String> {
+    let active = history["active"].clone();
+    let entries = versions(history);
+    let index = entries
+        .iter()
+        .position(|item| item["version"] == version)
+        .ok_or_else(|| format!("Unknown version {version} of code skill {name}"))?;
+    if active != version || entries[index]["state"] != "active" {
+        let has = if active.is_null() {
+            "no active version".to_string()
+        } else {
+            format!("version {active} active")
+        };
+        return Err(format!("Only the active version can be rolled back: {name} has {has}"));
+    }
+    push_state_history(&mut entries[index], "rolled_back", at, cause);
+    let superseded = entries[index]["previous"].clone();
+    let restored = entries
+        .iter_mut()
+        .find(|item| item["version"] == superseded && item["state"] == "superseded")
+        .map_or(Value::Null, |previous| {
+            push_state_history(previous, "active", at, cause);
+            previous["version"].clone()
+        });
+    history["active"] = restored.clone();
+    Ok(restored)
+}
+
+fn format_skill_description(skill: &Value) -> String {
+    let signatures: Vec<&str> = skill["functions"]
+        .as_array()
+        .map_or_default(|functions| functions.iter().filter_map(|f| f["signature"].as_str()).collect());
+    let signatures = signatures.join("; ");
+    let summary = one_line(nonempty_str(&skill["doc"]), 160);
+    let policy = if skill["kind"] == "policy" {
+        match nonempty_str(&skill["family"]) {
+            Some(family) => format!(" (policy, {family})"),
+            None => " (policy)".to_string(),
+        }
+    } else {
+        String::new()
+    };
+    let gap = if !summary.is_empty() && !signatures.is_empty() {
+        " "
+    } else {
+        ""
+    };
+    let listed = if signatures.is_empty() {
+        String::new()
+    } else {
+        format!("[{signatures}]")
+    };
+    let mut line = format!(
+        "- {} v{}{policy}: {summary}{gap}{listed}",
+        skill["name"].as_str().unwrap_or(""),
+        skill["version"]
+    );
+    if jsrt::utf16::len(&line) > MAX_DESCRIPTION_ENTRY_CHARS {
+        line = format!("{}…", jsrt::utf16::head(&line, MAX_DESCRIPTION_ENTRY_CHARS - 1));
+    }
+    line
+}
+
+impl CodeSkills {
+    fn resolve_test_result(
+        &self,
+        outcome: Result<Value, String>,
+        signal: &Signal,
+        started: i64,
+    ) -> Result<Value, String> {
+        match outcome {
+            Ok(report) => Ok(report),
+            Err(message) => {
+                if let Some(reason) = signal.reason() {
+                    return Err(reason);
+                }
+                let elapsed = self.now() - started;
+                let message = if elapsed >= self.options.test_timeout_ms as i64 {
+                    format!("test timed out after {} ms", self.options.test_timeout_ms)
+                } else {
+                    message
+                };
+                Ok(failed_report(&message, elapsed))
+            }
+        }
+    }
 
     fn run_test(
         &self,
@@ -380,26 +612,7 @@ impl CodeSkills {
         let timeout = Duration::from_millis(self.options.test_timeout_ms);
         let run = Signal::new();
         let done = Signal::new();
-        let watcher = {
-            let (run, done, parent) = (run.clone(), done.clone(), signal.clone());
-            std::thread::spawn(move || {
-                let deadline = Instant::now() + timeout;
-                loop {
-                    let left = deadline.saturating_duration_since(Instant::now());
-                    if done.wait(left.min(Duration::from_millis(50))) {
-                        return;
-                    }
-                    if let Some(reason) = parent.reason() {
-                        run.abort(reason);
-                        return;
-                    }
-                    if Instant::now() >= deadline {
-                        run.abort(format!("test timed out after {} ms", timeout.as_millis()));
-                        return;
-                    }
-                }
-            })
-        };
+        let watcher = spawn_test_watcher(run.clone(), done.clone(), signal.clone(), timeout);
         let outcome = Kernel::new(options, Arc::new(Refuse)).and_then(|kernel| {
             let result = kernel.execute(&test_runner(name, kind, &dir, &report_path), Some(&run), None);
             kernel.shutdown();
@@ -407,127 +620,67 @@ impl CodeSkills {
         });
         done.abort("finished");
         let _ = watcher.join();
-        let outcome = match outcome {
-            Ok(result) if result.status == Status::Error => {
-                let error = result.error.unwrap_or_else(|| kernel::CellError {
-                    ename: "PythonError".into(),
-                    evalue: "Execution failed".into(),
-                    traceback: Vec::new(),
-                });
-                Err(format!("{}: {}", error.ename, error.evalue))
-            }
-            Ok(_) => std::fs::read_to_string(&report_path)
-                .map_err(|error| error.to_string())
-                .and_then(|text| parse_report(&text)),
-            Err(error) => Err(error.message().to_string()),
-        };
-        match outcome {
-            Ok(report) => Ok(report),
-            Err(message) => {
-                if let Some(reason) = signal.reason() {
-                    return Err(reason);
-                }
-                let elapsed = self.now() - started;
-                let timed_out = elapsed >= self.options.test_timeout_ms as i64;
-                let message = if timed_out {
-                    format!("test timed out after {} ms", self.options.test_timeout_ms)
-                } else {
-                    message
-                };
-                Ok(failed_report(&message, elapsed))
-            }
-        }
+        let outcome = extract_test_outcome(outcome, &report_path);
+        self.resolve_test_result(outcome, signal, started)
     }
 
-    /// `skills.propose_code` / `skills.propose_policy`.
-    pub fn propose(&self, kind: CodeSkillKind, payload: &Map<String, Value>, signal: &Signal) -> Result<Value, String> {
-        let op = match kind {
-            CodeSkillKind::Code => "skills.propose_code",
-            CodeSkillKind::Policy => "skills.propose_policy",
-        };
-        kernel::ops::fields(op, payload)?;
-        let name = code_skill_name(payload.get("name"))?;
-        let source = source_text(payload.get("source"), "source")?;
-        let test_source = source_text(payload.get("test_source"), "test_source")?;
-        let evidence = evidence_value(payload.get("evidence"))?;
-        let family = match payload.get("family") {
-            None => Value::Null,
-            Some(Value::String(family))
-                if !jsrt::string::trim(family).is_empty() && jsrt::utf16::len(family) <= MAX_FAMILY_CHARS =>
-            {
-                Value::String(jsrt::string::trim(family).to_string())
-            }
-            Some(_) => {
-                return Err(format!(
-                    "family must be a nonempty string of at most {MAX_FAMILY_CHARS} characters"
-                ));
-            }
-        };
-        let base = self.base(&name);
-        if base.join("SKILL.md").exists() && !base.join(".history.json").exists() {
-            return Err(format!(
-                "{name} is an instruction skill (SKILL.md without code history); choose another name"
-            ));
+    fn write_proposed_version(
+        &self,
+        base: &Path,
+        input: &ProposalInput,
+        kind: CodeSkillKind,
+        secret_check: &Value,
+        cause: &str,
+    ) -> Result<i64, String> {
+        let _lock = lock_skill(base)?;
+        let mut history = read_history(base, &input.name)?;
+        let next = versions(&mut history)
+            .iter()
+            .filter_map(|item| item["version"].as_i64())
+            .fold(0, i64::max)
+            + 1;
+        let directory = base.join(".versions").join(next.to_string());
+        std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let at = jsrt::date::iso_string(self.now());
+        let record = object(vec![
+            ("version", next.into()),
+            ("kind", kind.as_str().into()),
+            ("family", input.family.clone()),
+            ("state", "proposed".into()),
+            ("createdAt", at.clone().into()),
+            (
+                "sha256",
+                json!({"skill": jsrt::hash::sha256_hex(input.source.as_bytes()), "test": jsrt::hash::sha256_hex(input.test_source.as_bytes())}),
+            ),
+            ("evidence", input.evidence.clone()),
+            ("previous", Value::Null),
+            ("secretCheck", secret_check.clone()),
+            ("test", Value::Null),
+            ("history", json!([{"state": "proposed", "at": at, "cause": cause}])),
+        ]);
+        for (file, content) in [
+            ("skill.py", input.source.as_str()),
+            ("test_skill.py", input.test_source.as_str()),
+            ("SKILL.md", &skill_markdown(&input.name, &record)),
+        ] {
+            std::fs::write(directory.join(file), content).map_err(|error| error.to_string())?;
         }
-        let secret_check = Self::secret_check(&name, &source, &test_source, &evidence);
-        if secret_check["status"] == "sensitive" {
-            return Ok(object(vec![
-                ("status", "refused".into()),
-                ("name", name.into()),
-                ("kind", kind.as_str().into()),
-                ("version", Value::Null),
-                ("previous", Value::Null),
-                (
-                    "reason",
-                    format!("{}; nothing was written", secret_check["reason"].as_str().unwrap_or("")).into(),
-                ),
-                ("test", Value::Null),
-                ("secretCheck", secret_check),
-            ]));
-        }
-        let at = || jsrt::date::iso_string(self.now());
-        let cause = jsrt::random::uuid_v4();
-        let version = {
-            let _lock = lock_skill(&base)?;
-            let mut history = read_history(&base, &name)?;
-            let next = versions(&mut history)
-                .iter()
-                .filter_map(|item| item["version"].as_i64())
-                .fold(0, i64::max)
-                + 1;
-            let directory = base.join(".versions").join(next.to_string());
-            std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-            let record = object(vec![
-                ("version", next.into()),
-                ("kind", kind.as_str().into()),
-                ("family", family),
-                ("state", "proposed".into()),
-                ("createdAt", at().into()),
-                (
-                    "sha256",
-                    json!({"skill": jsrt::hash::sha256_hex(source.as_bytes()), "test": jsrt::hash::sha256_hex(test_source.as_bytes())}),
-                ),
-                ("evidence", evidence),
-                ("previous", Value::Null),
-                ("secretCheck", secret_check.clone()),
-                ("test", Value::Null),
-                ("history", json!([{"state": "proposed", "at": at(), "cause": cause}])),
-            ]);
-            let write = |file: &str, content: &str| {
-                std::fs::write(directory.join(file), content).map_err(|error| error.to_string())
-            };
-            write("skill.py", &source)?;
-            write("test_skill.py", &test_source)?;
-            write("SKILL.md", &skill_markdown(&name, &record))?;
-            versions(&mut history).push(record);
-            self.write_history(&history)?;
-            next
-        };
-        let report = self.run_test(&name, kind, &source, &test_source, signal)?;
-        let _lock = lock_skill(&base)?;
-        let mut history = read_history(&base, &name)?;
+        versions(&mut history).push(record);
+        self.write_history(&history)?;
+        Ok(next)
+    }
+
+    fn finalize_proposal(
+        &self,
+        base: &Path,
+        name: &str,
+        version: i64,
+        report: &Value,
+        cause: &str,
+    ) -> Result<Value, String> {
+        let _lock = lock_skill(base)?;
+        let mut history = read_history(base, name)?;
         let passed = report["passed"] == true;
-        let active = history["active"].clone();
         let entries = versions(&mut history);
         let index = entries
             .iter()
@@ -535,42 +688,45 @@ impl CodeSkills {
             .ok_or_else(|| format!("Code skill {name} lost version {version}"))?;
         entries[index]["test"] = report.clone();
         let directory = base.join(".versions").join(version.to_string());
-        std::fs::write(directory.join("SKILL.md"), skill_markdown(&name, &entries[index]))
+        std::fs::write(directory.join("SKILL.md"), skill_markdown(name, &entries[index]))
             .map_err(|error| error.to_string())?;
-        let mut previous = Value::Null;
-        let push = |record: &mut Value, state: &str| {
-            record["state"] = state.into();
-            if let Some(Value::Array(changes)) = record.get_mut("history") {
-                changes.push(json!({"state": state, "at": at(), "cause": cause}));
-            }
-        };
-        if passed {
-            if let Some(current) = entries
-                .iter_mut()
-                .find(|item| item["version"] == active && item["state"] == "active")
-            {
-                push(current, "superseded");
-                previous = current["version"].clone();
-            }
-            entries[index]["previous"] = previous.clone();
-            push(&mut entries[index], "active");
-            history["active"] = version.into();
-        } else {
-            push(&mut entries[index], "rejected");
-        }
+        let at = jsrt::date::iso_string(self.now());
+        let previous = apply_proposal_outcome(&mut history, index, version, passed, &at, cause);
         self.write_history(&history)?;
         if passed {
             self.publish(&history)?;
         }
+        Ok(previous)
+    }
+
+    /// `skills.propose_code` / `skills.propose_policy`.
+    pub fn propose(&self, kind: CodeSkillKind, payload: &Map<String, Value>, signal: &Signal) -> Result<Value, String> {
+        let input = parse_proposal(kind, payload)?;
+        let base = self.base(&input.name);
+        if base.join("SKILL.md").exists() && !base.join(".history.json").exists() {
+            return Err(format!(
+                "{} is an instruction skill (SKILL.md without code history); choose another name",
+                input.name
+            ));
+        }
+        let secret_check = Self::secret_check(&input.name, &input.source, &input.test_source, &input.evidence);
+        if secret_check["status"] == "sensitive" {
+            return Ok(refused_proposal(&input.name, kind, secret_check));
+        }
+        let cause = jsrt::random::uuid_v4();
+        let version = self.write_proposed_version(&base, &input, kind, &secret_check, &cause)?;
+        let report = self.run_test(&input.name, kind, &input.source, &input.test_source, signal)?;
+        let previous = self.finalize_proposal(&base, &input.name, version, &report, &cause)?;
+        let passed = report["passed"] == true;
         let mut result = vec![
             ("status", Value::from(if passed { "active" } else { "rejected" })),
-            ("name", name.clone().into()),
+            ("name", input.name.clone().into()),
             ("kind", kind.as_str().into()),
             ("version", version.into()),
             ("previous", previous),
         ];
         if passed {
-            result.push(("import", format!("from code_skills import {name}").into()));
+            result.push(("import", format!("from code_skills import {}", input.name).into()));
         }
         result.push(("test", report));
         result.push(("secretCheck", secret_check));
@@ -579,51 +735,16 @@ impl CodeSkills {
 
     /// `skills.rollback`: only the active version can be rolled back; the version it superseded returns.
     pub fn rollback(&self, payload: &Map<String, Value>) -> Result<Value, String> {
-        kernel::ops::fields("skills.rollback", payload)?;
-        let name = code_skill_name(payload.get("name"))?;
-        let version = payload
-            .get("version")
-            .and_then(jsrt::number::safe_integer)
-            .filter(|version| *version >= 1)
-            .ok_or("version must be a positive integer")?;
+        let (name, version) = parse_rollback_args(payload)?;
         let base = self.base(&name);
         if !base.join(".history.json").exists() {
             return Err(format!("Unknown code skill: {name}"));
         }
         let _lock = lock_skill(&base)?;
         let mut history = read_history(&base, &name)?;
-        let active = history["active"].clone();
         let at = jsrt::date::iso_string(self.now());
         let cause = jsrt::random::uuid_v4();
-        let entries = versions(&mut history);
-        let index = entries
-            .iter()
-            .position(|item| item["version"] == version)
-            .ok_or_else(|| format!("Unknown version {version} of code skill {name}"))?;
-        if active != version || entries[index]["state"] != "active" {
-            let has = if active.is_null() {
-                "no active version".to_string()
-            } else {
-                format!("version {active} active")
-            };
-            return Err(format!("Only the active version can be rolled back: {name} has {has}"));
-        }
-        let change = |record: &mut Value, state: &str| {
-            record["state"] = state.into();
-            if let Some(Value::Array(changes)) = record.get_mut("history") {
-                changes.push(json!({"state": state, "at": at, "cause": cause}));
-            }
-        };
-        change(&mut entries[index], "rolled_back");
-        let superseded = entries[index]["previous"].clone();
-        let restored = entries
-            .iter_mut()
-            .find(|item| item["version"] == superseded && item["state"] == "superseded")
-            .map_or(Value::Null, |previous| {
-                change(previous, "active");
-                previous["version"].clone()
-            });
-        history["active"] = restored.clone();
+        let restored = apply_rollback(&mut history, &name, version, &at, &cause)?;
         self.write_history(&history)?;
         self.publish(&history)?;
         Ok(json!({"name": name, "rolledBack": version, "active": restored}))
@@ -704,37 +825,7 @@ impl CodeSkills {
         let mut lines = Vec::new();
         let mut size = 0;
         for (index, skill) in skills.iter().enumerate() {
-            let signatures: Vec<&str> = skill["functions"]
-                .as_array()
-                .map_or_default(|functions| functions.iter().filter_map(|f| f["signature"].as_str()).collect());
-            let signatures = signatures.join("; ");
-            let summary = one_line(nonempty_str(&skill["doc"]), 160);
-            let policy = if skill["kind"] == "policy" {
-                match nonempty_str(&skill["family"]) {
-                    Some(family) => format!(" (policy, {family})"),
-                    None => " (policy)".to_string(),
-                }
-            } else {
-                String::new()
-            };
-            let gap = if !summary.is_empty() && !signatures.is_empty() {
-                " "
-            } else {
-                ""
-            };
-            let listed = if signatures.is_empty() {
-                String::new()
-            } else {
-                format!("[{signatures}]")
-            };
-            let mut line = format!(
-                "- {} v{}{policy}: {summary}{gap}{listed}",
-                skill["name"].as_str().unwrap_or(""),
-                skill["version"]
-            );
-            if jsrt::utf16::len(&line) > MAX_DESCRIPTION_ENTRY_CHARS {
-                line = format!("{}…", jsrt::utf16::head(&line, MAX_DESCRIPTION_ENTRY_CHARS - 1));
-            }
+            let line = format_skill_description(skill);
             if index >= MAX_DESCRIPTION_ENTRIES || size + jsrt::utf16::len(&line) > MAX_DESCRIPTION_CHARS {
                 lines.push(format!("- … {} more: `await skills.code_list()`", skills.len() - index));
                 break;

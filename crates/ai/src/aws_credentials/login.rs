@@ -164,6 +164,117 @@ enum Failure {
     Other(String),
 }
 
+fn build_refresh_body(fresh: &Map<String, Value>) -> String {
+    let mut body = Map::new();
+    for (key, value) in [
+        ("clientId", fresh.get("clientId")),
+        ("grantType", Some(&json!("refresh_token"))),
+        ("refreshToken", fresh.get("refreshToken")),
+    ] {
+        if let Some(value) = value.filter(|v| !v.is_null()) {
+            body.insert(key.into(), value.clone());
+        }
+    }
+    Value::Object(body).to_string()
+}
+
+async fn send_token_request(
+    input: &super::ChainInput<'_>,
+    path: &PathBuf,
+    url: &str,
+    body: &str,
+) -> std::result::Result<super::Reply, Failure> {
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let proof = dpop(path, "POST", url, input.now_ms).map_err(|e| Failure::Other(thrown(&e.name, &e.message)))?;
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type".into(), "application/json".into());
+        headers.insert("dpop".into(), proof);
+        let reply = request(input, "POST", url.to_string(), headers, body.to_string(), None)
+            .await
+            .map_err(|e| Failure::Other(thrown("Error", &e)))?;
+        let retryable = reply.status >= 500 || reply.status == 429;
+        if !retryable || attempt >= MAX_ATTEMPTS {
+            return Ok(reply);
+        }
+    }
+}
+
+fn parse_token_error(reply: &super::Reply, parsed: &Value) -> Failure {
+    let name = reply
+        .headers
+        .get("x-amzn-errortype")
+        .map(|t| t.split(':').next().unwrap_or_default().to_string())
+        .or_else(|| {
+            parsed
+                .get("__type")
+                .and_then(Value::as_str)
+                .map(|t| t.rsplit('#').next().unwrap_or_default().to_string())
+        })
+        .or_else(|| parsed.get("code").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_else(|| "UnknownError".into());
+    let message = parsed
+        .get("message")
+        .or_else(|| parsed.get("Message"))
+        .and_then(Value::as_str)
+        .unwrap_or("UnknownError")
+        .to_string();
+    let text = thrown(&name, &message);
+    if name == "AccessDeniedException" {
+        Failure::AccessDenied {
+            error: parsed.get("error").map_or_else(|| "undefined".into(), js_string),
+            text,
+        }
+    } else {
+        Failure::Other(text)
+    }
+}
+
+fn validate_token_response(parsed: &Value) -> std::result::Result<(), Failure> {
+    let access = parsed.get("accessToken");
+    let required_present = ["accessKeyId", "secretAccessKey", "sessionToken"]
+        .iter()
+        .all(|key| jsrt::value::truthy(access.and_then(|a| a.get(*key))))
+        && jsrt::value::truthy(parsed.get("refreshToken"));
+    if required_present {
+        Ok(())
+    } else {
+        Err(Failure::Other(thrown(
+            "CredentialsProviderError",
+            "Token refresh response missing required fields",
+        )))
+    }
+}
+
+fn build_updated_token(fresh: &Map<String, Value>, parsed: &Value, expires_at: String) -> Map<String, Value> {
+    let access = parsed.get("accessToken");
+    let mut updated = fresh.clone();
+    let mut access_token = match updated.get("accessToken") {
+        Some(Value::Object(map)) => map.clone(),
+        _ => Map::new(),
+    };
+    for key in ["accessKeyId", "secretAccessKey", "sessionToken"] {
+        let value = access.and_then(|a| a.get(key)).cloned().unwrap_or(Value::Null);
+        access_token.insert(key.into(), value);
+    }
+    access_token.insert("expiresAt".into(), json!(expires_at));
+    updated.insert("accessToken".into(), Value::Object(access_token));
+    updated.insert(
+        "refreshToken".into(),
+        parsed.get("refreshToken").cloned().unwrap_or(Value::Null),
+    );
+    updated
+}
+
+fn write_cached_token(path: &PathBuf, updated: &Map<String, Value>) -> std::result::Result<(), Failure> {
+    if let Some(directory) = path.parent() {
+        let _ = std::fs::create_dir_all(directory);
+    }
+    let text = serde_json::to_string_pretty(&Value::Object(updated.clone())).unwrap_or_default();
+    std::fs::write(path, text).map_err(|e| Failure::Other(thrown("Error", &jsrt::fs::error_message(&e, "open", path))))
+}
+
 /// `SigninClient.send(new CreateOAuth2TokenCommand(...))`, then the updated token saved.
 async fn create_token(
     input: &super::ChainInput<'_>,
@@ -177,97 +288,20 @@ async fn create_token(
         .unwrap_or_else(|| input.region.to_string());
     let endpoint = configured_endpoint(input, "SIGNIN").unwrap_or_else(|| signin_endpoint(&region));
     let url = format!("{endpoint}/v1/token");
-    let mut body = Map::new();
-    for (key, value) in [
-        ("clientId", fresh.get("clientId")),
-        ("grantType", Some(&json!("refresh_token"))),
-        ("refreshToken", fresh.get("refreshToken")),
-    ] {
-        if let Some(value) = value.filter(|v| !v.is_null()) {
-            body.insert(key.into(), value.clone());
-        }
-    }
-    let body = Value::Object(body).to_string();
-    let mut attempt = 0;
-    let reply = loop {
-        attempt += 1;
-        let proof = dpop(path, "POST", &url, input.now_ms).map_err(|e| Failure::Other(thrown(&e.name, &e.message)))?;
-        let mut headers = HeaderMap::new();
-        headers.insert("content-type".into(), "application/json".into());
-        headers.insert("dpop".into(), proof);
-        let reply = request(input, "POST", url.clone(), headers, body.clone(), None)
-            .await
-            .map_err(|e| Failure::Other(thrown("Error", &e)))?;
-        let retryable = reply.status >= 500 || reply.status == 429;
-        if !retryable || attempt >= MAX_ATTEMPTS {
-            break reply;
-        }
-    };
+    let body = build_refresh_body(fresh);
+    let reply = send_token_request(input, path, &url, &body).await?;
     let parsed: Value = serde_json::from_str(&reply.body).unwrap_or(Value::Null);
     if !(200..300).contains(&reply.status) {
-        let name = reply
-            .headers
-            .get("x-amzn-errortype")
-            .map(|t| t.split(':').next().unwrap_or_default().to_string())
-            .or_else(|| {
-                parsed
-                    .get("__type")
-                    .and_then(Value::as_str)
-                    .map(|t| t.rsplit('#').next().unwrap_or_default().to_string())
-            })
-            .or_else(|| parsed.get("code").and_then(Value::as_str).map(str::to_string))
-            .unwrap_or_else(|| "UnknownError".into());
-        let message = parsed
-            .get("message")
-            .or_else(|| parsed.get("Message"))
-            .and_then(Value::as_str)
-            .unwrap_or("UnknownError")
-            .to_string();
-        let text = thrown(&name, &message);
-        return Err(if name == "AccessDeniedException" {
-            Failure::AccessDenied {
-                error: parsed.get("error").map_or_else(|| "undefined".into(), js_string),
-                text,
-            }
-        } else {
-            Failure::Other(text)
-        });
+        return Err(parse_token_error(&reply, &parsed));
     }
-    let access = parsed.get("accessToken");
-    let field = |key: &str| access.and_then(|a| a.get(key));
-    let refresh_token = parsed.get("refreshToken");
-    if !jsrt::value::truthy(field("accessKeyId"))
-        || !jsrt::value::truthy(field("secretAccessKey"))
-        || !jsrt::value::truthy(field("sessionToken"))
-        || !jsrt::value::truthy(refresh_token)
-    {
-        return Err(Failure::Other(thrown(
-            "CredentialsProviderError",
-            "Token refresh response missing required fields",
-        )));
-    }
+    validate_token_response(&parsed)?;
     let expires_in = parsed.get("expiresIn").and_then(Value::as_f64).unwrap_or(900.0);
     let Some(expires_at) = jsrt::date::time_clip(input.now_ms as f64 + expires_in * 1000.0).map(jsrt::date::iso_string)
     else {
         return Err(Failure::Other(thrown("RangeError", "Invalid time value")));
     };
-    let mut updated = fresh.clone();
-    let mut access_token = match updated.get("accessToken") {
-        Some(Value::Object(map)) => map.clone(),
-        _ => Map::new(),
-    };
-    for key in ["accessKeyId", "secretAccessKey", "sessionToken"] {
-        access_token.insert(key.into(), field(key).cloned().unwrap_or(Value::Null));
-    }
-    access_token.insert("expiresAt".into(), json!(expires_at));
-    updated.insert("accessToken".into(), Value::Object(access_token));
-    updated.insert("refreshToken".into(), refresh_token.cloned().unwrap_or(Value::Null));
-    if let Some(directory) = path.parent() {
-        let _ = std::fs::create_dir_all(directory);
-    }
-    let text = serde_json::to_string_pretty(&Value::Object(updated.clone())).unwrap_or_default();
-    std::fs::write(path, text)
-        .map_err(|e| Failure::Other(thrown("Error", &jsrt::fs::error_message(&e, "open", path))))?;
+    let updated = build_updated_token(fresh, &parsed, expires_at);
+    write_cached_token(path, &updated)?;
     Ok(credentials(input, &updated))
 }
 
@@ -319,52 +353,67 @@ fn der(der: &[u8]) -> std::result::Result<(u8, &[u8], &[u8]), String> {
     Ok((tag, &rest[..length], &rest[length..]))
 }
 
-/// The private scalar and uncompressed public point of a P-256 `EC PRIVATE KEY` (RFC 5915).
-pub fn parse_sec1_pem(pem: &str) -> std::result::Result<(Vec<u8>, Vec<u8>), String> {
-    let invalid = || "Invalid EC private key".to_string();
+const P256_OID: &[u8] = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+
+fn invalid_ec_key() -> String {
+    "Invalid EC private key".to_string()
+}
+
+fn decode_ec_pem_der(pem: &str) -> std::result::Result<Vec<u8>, String> {
+    if !pem.contains("-----BEGIN EC PRIVATE KEY-----") {
+        return Err(invalid_ec_key());
+    }
     let body: String = pem
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with("-----"))
         .collect();
-    if !pem.contains("-----BEGIN EC PRIVATE KEY-----") {
-        return Err(invalid());
-    }
-    let bytes = jsrt::base64::atob(&body).ok_or_else(invalid)?;
-    let (tag, mut contents, _) = der(&bytes)?;
+    jsrt::base64::atob(&body).ok_or_else(invalid_ec_key)
+}
+
+fn parse_sec1_header(bytes: &[u8]) -> std::result::Result<(&[u8], &[u8]), String> {
+    let (tag, contents, _) = der(bytes)?;
     if tag != 0x30 {
-        return Err(invalid());
+        return Err(invalid_ec_key());
     }
     let (version_tag, version, rest) = der(contents)?;
     if version_tag != 0x02 || version != [1] {
-        return Err(invalid());
+        return Err(invalid_ec_key());
     }
-    contents = rest;
-    let (scalar_tag, scalar, rest) = der(contents)?;
+    let (scalar_tag, scalar, rest) = der(rest)?;
     if scalar_tag != 0x04 || scalar.len() != 32 {
-        return Err(invalid());
+        return Err(invalid_ec_key());
     }
-    contents = rest;
+    Ok((scalar, rest))
+}
+
+fn parse_sec1_public_point(inner: &[u8]) -> std::result::Result<Vec<u8>, String> {
+    let (bits_tag, bits, _) = der(inner)?;
+    if bits_tag != 0x03 || bits.len() != 66 || bits[0] != 0 || bits[1] != 0x04 {
+        return Err(invalid_ec_key());
+    }
+    Ok(bits[1..].to_vec())
+}
+
+fn parse_sec1_optional_fields(mut contents: &[u8]) -> std::result::Result<Vec<u8>, String> {
     let mut public = None;
     while !contents.is_empty() {
         let (tag, inner, rest) = der(contents)?;
         contents = rest;
         match tag {
-            0xa0 => {
-                if inner != [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07] {
-                    return Err("Unsupported curve: the DPoP key must be P-256".into());
-                }
-            }
-            0xa1 => {
-                let (bits_tag, bits, _) = der(inner)?;
-                if bits_tag != 0x03 || bits.len() != 66 || bits[0] != 0 || bits[1] != 0x04 {
-                    return Err(invalid());
-                }
-                public = Some(bits[1..].to_vec());
-            }
-            _ => return Err(invalid()),
+            0xa0 if inner == P256_OID => {}
+            0xa0 => return Err("Unsupported curve: the DPoP key must be P-256".into()),
+            0xa1 => public = Some(parse_sec1_public_point(inner)?),
+            _ => return Err(invalid_ec_key()),
         }
     }
-    let public = public.ok_or("The DPoP key has no public key")?;
+    public.ok_or_else(|| "The DPoP key has no public key".to_string())
+}
+
+/// The private scalar and uncompressed public point of a P-256 `EC PRIVATE KEY` (RFC 5915).
+pub fn parse_sec1_pem(pem: &str) -> std::result::Result<(Vec<u8>, Vec<u8>), String> {
+    let bytes = decode_ec_pem_der(pem)?;
+    let (scalar, rest) = parse_sec1_header(&bytes)?;
+    let public = parse_sec1_optional_fields(rest)?;
     Ok((scalar.to_vec(), public))
 }

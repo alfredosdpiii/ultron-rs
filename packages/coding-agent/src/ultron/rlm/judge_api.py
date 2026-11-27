@@ -13,6 +13,36 @@ _TYPES = ("choice", "yesno", "score", "number")
 MAX_QUESTIONS = 16
 
 
+def _normalize_state(state: Any) -> str:
+    text = state if isinstance(state, str) else json.dumps(state, ensure_ascii=False)
+    if not text.strip():
+        raise ValueError("judge.decide state must not be empty")
+    return text
+
+
+def _validate_questions(questions: Any) -> None:
+    if not isinstance(questions, dict) or not questions:
+        raise ValueError(
+            "judge.decide questions must be a non-empty dict of {name: spec}"
+        )
+    for name, spec in questions.items():
+        if not isinstance(spec, dict) or spec.get("type") not in _TYPES:
+            raise ValueError(
+                f"judge.decide questions[{name!r}] needs a type: "
+                "choice, yesno, score or number"
+            )
+
+
+def _validate_expect(expect: Any, questions: dict[str, Any]) -> None:
+    if expect is None:
+        return
+    if not isinstance(expect, dict):
+        raise ValueError("judge.decide expect must be {question name: answer}")
+    for name in expect:
+        if name not in questions:
+            raise ValueError("judge.decide expect must be {question name: answer}")
+
+
 class Judge:
     """Decisions over evidence, for batch and background work (checking memories, findings, relations), not for every
     turn. `v = await judge.decide(state, questions, kind="memory")`:
@@ -41,25 +71,27 @@ class Judge:
     def __init__(self, bridge: Any) -> None:
         self._bridge = bridge
 
-    async def decide(self, state: Any, questions: dict[str, Any], kind: str | None = None,
-                     expect: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def decide(
+        self,
+        state: Any,
+        questions: dict[str, Any],
+        kind: str | None = None,
+        expect: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Decide `questions` about `state` (see `help(judge)`); returns the verdict. `expect`: answers already held,
         by question name; one the judge disputes is escalated."""
-        if not isinstance(state, str):
-            state = json.dumps(state, ensure_ascii=False)
-        if not state.strip():
-            raise ValueError("judge.decide state must not be empty")
-        if not isinstance(questions, dict) or not questions:
-            raise ValueError("judge.decide questions must be a non-empty dict of {name: spec}")
-        for name, spec in questions.items():
-            if not isinstance(spec, dict) or spec.get("type") not in _TYPES:
-                raise ValueError(f"judge.decide questions[{name!r}] needs a type: choice, yesno, score or number")
+        state_text = _normalize_state(state)
+        _validate_questions(questions)
         if kind is not None and not isinstance(kind, str):
             raise ValueError("judge.decide kind must be a string")
-        if expect is not None and (not isinstance(expect, dict) or any(name not in questions for name in expect)):
-            raise ValueError("judge.decide expect must be {question name: answer}")
-        return await self._bridge.request("judge.decide", {"state": state, "questions": questions, "kind": kind,
-                                                           "expect": expect})
+        _validate_expect(expect, questions)
+        payload = {
+            "state": state_text,
+            "questions": questions,
+            "kind": kind,
+            "expect": expect,
+        }
+        return await self._bridge.request("judge.decide", payload)
 
     def __repr__(self) -> str:
         return "<judge: decide(state, questions, kind=None)>"

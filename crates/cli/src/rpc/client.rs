@@ -48,54 +48,68 @@ pub struct RpcClient {
 
 pub const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
+fn build_command(options: &RpcClientOptions) -> Command {
+    let mut command = Command::new(&options.program);
+    command.args(&options.program_args).args(["--mode", "rpc"]);
+    if let Some(provider) = &options.provider {
+        command.args(["--provider", provider]);
+    }
+    if let Some(model) = &options.model {
+        command.args(["--model", model]);
+    }
+    command.args(&options.args);
+    if options.env_clear {
+        command.env_clear();
+    }
+    command.envs(options.env.iter().map(|(k, v)| (k, v)));
+    if let Some(cwd) = &options.cwd {
+        command.current_dir(cwd);
+    }
+    command
+}
+
+fn spawn_stderr_reader(mut stderr_pipe: std::process::ChildStderr) -> Arc<Mutex<String>> {
+    let stderr = Arc::new(Mutex::new(String::new()));
+    let collected = stderr.clone();
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 4096];
+        while let Ok(n) = stderr_pipe.read(&mut buffer) {
+            if n == 0 {
+                break;
+            }
+            jsrt::sync::lock(&collected).push_str(&String::from_utf8_lossy(&buffer[..n]));
+        }
+    });
+    stderr
+}
+
+fn spawn_stdout_reader(stdout: std::process::ChildStdout) -> Receiver<Line> {
+    let (tx, lines) = channel();
+    std::thread::spawn(move || {
+        for line in JsonlLines::new(stdout).map_while(Result::ok) {
+            if let Ok(value) = serde_json::from_str(&line)
+                && tx.send(Line::Record(value)).is_err()
+            {
+                return;
+            }
+        }
+        let _ = tx.send(Line::Closed);
+    });
+    lines
+}
+
 impl RpcClient {
     pub fn start(options: &RpcClientOptions) -> Result<Self, String> {
-        let mut command = Command::new(&options.program);
-        command.args(&options.program_args).args(["--mode", "rpc"]);
-        if let Some(provider) = &options.provider {
-            command.args(["--provider", provider]);
-        }
-        if let Some(model) = &options.model {
-            command.args(["--model", model]);
-        }
-        command.args(&options.args);
-        if options.env_clear {
-            command.env_clear();
-        }
-        command.envs(options.env.iter().map(|(k, v)| (k, v)));
-        if let Some(cwd) = &options.cwd {
-            command.current_dir(cwd);
-        }
-        let mut child = command
+        let mut child = build_command(options)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("Agent process error: {e}"))?;
         let stdout = child.stdout.take().ok_or("no stdout")?;
-        let mut stderr_pipe = child.stderr.take().ok_or("no stderr")?;
-        let stderr = Arc::new(Mutex::new(String::new()));
-        let collected = stderr.clone();
-        std::thread::spawn(move || {
-            let mut buffer = [0u8; 4096];
-            while let Ok(n) = stderr_pipe.read(&mut buffer) {
-                if n == 0 {
-                    break;
-                }
-                jsrt::sync::lock(&collected).push_str(&String::from_utf8_lossy(&buffer[..n]));
-            }
-        });
-        let (tx, lines) = channel();
-        std::thread::spawn(move || {
-            for line in JsonlLines::new(stdout).map_while(Result::ok) {
-                if let Ok(value) = serde_json::from_str(&line)
-                    && tx.send(Line::Record(value)).is_err()
-                {
-                    return;
-                }
-            }
-            let _ = tx.send(Line::Closed);
-        });
+        let stderr_pipe = child.stderr.take().ok_or("no stderr")?;
+        let stderr = spawn_stderr_reader(stderr_pipe);
+        let lines = spawn_stdout_reader(stdout);
         let stdin = child.stdin.take();
         Ok(RpcClient {
             child: signals::child::Watched::new(child),

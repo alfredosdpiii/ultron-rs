@@ -253,18 +253,7 @@ fn openrouter_output(response: &Value, out: &mut AssistantImages, model: &Images
     }
 }
 
-async fn openrouter_request(
-    model: &ImagesModel,
-    context: &ImagesContext,
-    options: &ImagesOptions,
-    transport: &dyn Transport,
-    out: &mut AssistantImages,
-) -> Result<(), Failure> {
-    let api_key = options
-        .api_key
-        .as_deref()
-        .filter(|k| !k.is_empty())
-        .ok_or_else(|| Failure::plain(format!("No API key for provider: {}", model.provider)))?;
+fn build_openrouter_headers(model: &ImagesModel, options: &ImagesOptions, api_key: &str) -> crate::http::HeaderMap {
     let mut custom: IndexMap<String, Option<String>> = model
         .headers
         .iter()
@@ -284,16 +273,48 @@ async fn openrouter_request(
             headers.set(name, value.clone());
         }
     }
+    headers.build()
+}
+
+fn build_openrouter_request(
+    model: &ImagesModel,
+    context: &ImagesContext,
+    options: &ImagesOptions,
+    api_key: &str,
+) -> HttpRequest {
     let mut params = openrouter_images_params(model, context);
     if let Some(next) = options.on_payload.as_ref().and_then(|hook| hook(&params, model)) {
         params = next;
     }
-    let request = HttpRequest {
+    HttpRequest {
         method: "POST".into(),
         url: join_url(&model.base_url, "/chat/completions"),
-        headers: headers.build(),
+        headers: build_openrouter_headers(model, options, api_key),
         body: serde_json::to_string(&params).unwrap_or_default(),
-    };
+    }
+}
+
+async fn read_json_response(response: &mut crate::http::HttpResponse) -> Result<Value, Failure> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.body.next_chunk().await.map_err(Failure::plain)? {
+        bytes.extend(chunk);
+    }
+    parse_json(&String::from_utf8_lossy(&bytes)).map_err(|e| Failure::plain(e.to_string()))
+}
+
+async fn openrouter_request(
+    model: &ImagesModel,
+    context: &ImagesContext,
+    options: &ImagesOptions,
+    transport: &dyn Transport,
+    out: &mut AssistantImages,
+) -> Result<(), Failure> {
+    let api_key = options
+        .api_key
+        .as_deref()
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| Failure::plain(format!("No API key for provider: {}", model.provider)))?;
+    let request = build_openrouter_request(model, context, options, api_key);
     let retry = crate::http::RetryOptions {
         max_retries: options.max_retries,
         max_retry_delay_ms: options.max_retry_delay_ms,
@@ -312,11 +333,7 @@ async fn openrouter_request(
         None => transport,
     };
     let mut response = send_with_retry(transport, &request, Sdk::OpenAi, retry, signal).await?;
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.body.next_chunk().await.map_err(Failure::plain)? {
-        bytes.extend(chunk);
-    }
-    let body = parse_json(&String::from_utf8_lossy(&bytes)).map_err(|e| Failure::plain(e.to_string()))?;
+    let body = read_json_response(&mut response).await?;
     openrouter_output(&body, out, model);
     Ok(())
 }

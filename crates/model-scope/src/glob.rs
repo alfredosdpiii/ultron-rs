@@ -74,29 +74,84 @@ fn matching_brace(chars: &[char], open: usize) -> Option<usize> {
 
 /// The comma-separated parts of a brace body, nested braces kept whole.
 fn split_top_level(inner: &str) -> Option<Vec<String>> {
-    let mut parts = vec![String::new()];
+    let mut parts = Vec::new();
+    let mut current = String::new();
     let mut depth = 0;
     let mut chars = inner.chars();
     while let Some(c) = chars.next() {
         match c {
             '\\' => {
-                parts.last_mut()?.push(c);
+                current.push(c);
                 if let Some(next) = chars.next() {
-                    parts.last_mut()?.push(next);
+                    current.push(next);
                 }
                 continue;
             }
             '{' => depth += 1,
             '}' => depth -= 1,
             ',' if depth == 0 => {
-                parts.push(String::new());
+                parts.push(std::mem::take(&mut current));
                 continue;
             }
             _ => {}
         }
-        parts.last_mut()?.push(c);
+        current.push(c);
     }
+    parts.push(current);
     Some(parts)
+}
+
+fn step_range(a: i64, b: i64, step: i64) -> Vec<i64> {
+    let delta = if a < b { step } else { -step };
+    let passed = |n: i64| if a < b { n > b } else { n < b };
+    let mut out = Vec::new();
+    let mut n = a;
+    loop {
+        out.push(n);
+        if n == b {
+            break;
+        }
+        n += delta;
+        if passed(n) {
+            break;
+        }
+    }
+    out
+}
+
+fn int_range(start: &str, end: &str, step: i64) -> Option<Vec<String>> {
+    let (a, b) = (start.parse::<i64>().ok()?, end.parse::<i64>().ok()?);
+    let padded = |s: &str| {
+        let stripped = s.trim_start_matches('-');
+        stripped.len() > 1 && stripped.starts_with('0')
+    };
+    let width = if padded(start) || padded(end) {
+        start.len().max(end.len())
+    } else {
+        0
+    };
+    let values = step_range(a, b, step)
+        .into_iter()
+        .map(|n| {
+            if width > 0 {
+                format!("{n:0width$}")
+            } else {
+                n.to_string()
+            }
+        })
+        .collect();
+    Some(values)
+}
+
+fn char_range(start: &str, end: &str, step: i64) -> Option<Vec<String>> {
+    let (mut a, mut b) = (start.chars(), end.chars());
+    let (Some(a), None, Some(b), None) = (a.next(), a.next(), b.next(), b.next()) else {
+        return None;
+    };
+    step_range(a as i64, b as i64, step)
+        .into_iter()
+        .map(|n| char::from_u32(n as u32).map(|c| c.to_string()))
+        .collect()
 }
 
 /// `{x..y}` / `{x..y..step}` over integers (zero-padded when an end is) or single characters.
@@ -110,49 +165,7 @@ fn range(inner: &str) -> Option<Vec<String>> {
         None => 1,
     };
     let (start, end) = (parts[0], parts[1]);
-    if let (Ok(a), Ok(b)) = (start.parse::<i64>(), end.parse::<i64>()) {
-        let padded = |s: &str| s.trim_start_matches('-').len() > 1 && s.trim_start_matches('-').starts_with('0');
-        let width = if padded(start) || padded(end) {
-            start.len().max(end.len())
-        } else {
-            0
-        };
-        let mut out = Vec::new();
-        let mut n = a;
-        loop {
-            out.push(if width > 0 {
-                format!("{n:0width$}")
-            } else {
-                n.to_string()
-            });
-            if n == b {
-                break;
-            }
-            n += if a < b { step } else { -step };
-            if (a < b && n > b) || (a > b && n < b) {
-                break;
-            }
-        }
-        return Some(out);
-    }
-    let (mut a, mut b) = (start.chars(), end.chars());
-    let (Some(a), None, Some(b), None) = (a.next(), a.next(), b.next(), b.next()) else {
-        return None;
-    };
-    let (a, b) = (a as i64, b as i64);
-    let mut out = Vec::new();
-    let mut n = a;
-    loop {
-        out.push(char::from_u32(n as u32)?.to_string());
-        if n == b {
-            break;
-        }
-        n += if a < b { step } else { -step };
-        if (a < b && n > b) || (a > b && n < b) {
-            break;
-        }
-    }
-    Some(out)
+    int_range(start, end, step).or_else(|| char_range(start, end, step))
 }
 
 fn match_path(text: &str, pattern: &str, nocase: bool) -> bool {
@@ -215,52 +228,62 @@ fn match_segment(text: &str, pattern: &str, nocase: bool) -> bool {
     match_nodes(&text, &nodes, nocase)
 }
 
+fn parse_ext(chars: &[char], i: usize) -> Option<(Node, usize)> {
+    let c = chars[i];
+    if !matches!(c, '+' | '*' | '?' | '@' | '!') || chars.get(i + 1) != Some(&'(') {
+        return None;
+    }
+    let close = closing_paren(chars, i + 1)?;
+    let alternatives = split_alternatives(&chars[i + 2..close])
+        .iter()
+        .map(|alt| parse(alt))
+        .collect();
+    Some((Node::Ext { kind: c, alternatives }, close + 1))
+}
+
+fn parse_node(chars: &[char], i: usize, nodes: &mut Vec<Node>) -> usize {
+    let c = chars[i];
+    match c {
+        '\\' if i + 1 < chars.len() => {
+            nodes.push(Node::Lit(chars[i + 1]));
+            i + 2
+        }
+        '*' => {
+            if !matches!(nodes.last(), Some(Node::Star)) {
+                nodes.push(Node::Star);
+            }
+            i + 1
+        }
+        '?' => {
+            nodes.push(Node::Any);
+            i + 1
+        }
+        '[' => match parse_class(chars, i) {
+            Some((node, next)) => {
+                nodes.push(node);
+                next
+            }
+            None => {
+                nodes.push(Node::Lit('['));
+                i + 1
+            }
+        },
+        _ => {
+            nodes.push(Node::Lit(c));
+            i + 1
+        }
+    }
+}
+
 fn parse(chars: &[char]) -> Vec<Node> {
     let mut nodes = Vec::new();
     let mut i = 0;
     while i < chars.len() {
-        let c = chars[i];
-        if matches!(c, '+' | '*' | '?' | '@' | '!')
-            && chars.get(i + 1) == Some(&'(')
-            && let Some(close) = closing_paren(chars, i + 1)
-        {
-            let alternatives = split_alternatives(&chars[i + 2..close])
-                .iter()
-                .map(|alt| parse(alt))
-                .collect();
-            nodes.push(Node::Ext { kind: c, alternatives });
-            i = close + 1;
-            continue;
-        }
-        match c {
-            '\\' if i + 1 < chars.len() => {
-                nodes.push(Node::Lit(chars[i + 1]));
-                i += 2;
-            }
-            '*' => {
-                if !matches!(nodes.last(), Some(Node::Star)) {
-                    nodes.push(Node::Star);
-                }
-                i += 1;
-            }
-            '?' => {
-                nodes.push(Node::Any);
-                i += 1;
-            }
-            '[' => match parse_class(chars, i) {
-                Some((node, next)) => {
-                    nodes.push(node);
-                    i = next;
-                }
-                None => {
-                    nodes.push(Node::Lit('['));
-                    i += 1;
-                }
-            },
-            _ => {
-                nodes.push(Node::Lit(c));
-                i += 1;
-            }
+        if let Some((node, next)) = parse_ext(chars, i) {
+            nodes.push(node);
+            i = next;
+        } else {
+            i = parse_node(chars, i, &mut nodes);
         }
     }
     nodes
@@ -317,6 +340,38 @@ fn split_alternatives(chars: &[char]) -> Vec<Vec<char>> {
     out
 }
 
+fn parse_posix_class(chars: &[char], i: usize) -> Option<(ClassItem, usize)> {
+    if chars.get(i) != Some(&'[') || chars.get(i + 1) != Some(&':') {
+        return None;
+    }
+    let rest: String = chars[i + 2..].iter().collect();
+    let end = rest.find(":]")?;
+    let next = i + 2 + rest[..end].chars().count() + 2;
+    Some((ClassItem::Posix(rest[..end].to_string()), next))
+}
+
+fn parse_class_char(chars: &[char], i: usize) -> Option<(char, usize)> {
+    let c = *chars.get(i)?;
+    if c == '\\' {
+        Some((*chars.get(i + 1)?, i + 2))
+    } else {
+        Some((c, i + 1))
+    }
+}
+
+fn parse_class_item(chars: &[char], i: usize) -> Option<(ClassItem, usize)> {
+    if let Some(posix) = parse_posix_class(chars, i) {
+        return Some(posix);
+    }
+    let (lo, next) = parse_class_char(chars, i)?;
+    if chars.get(next) == Some(&'-') && chars.get(next + 1).is_some_and(|c| *c != ']') {
+        let (hi, after) = parse_class_char(chars, next + 1)?;
+        Some((ClassItem::Range(lo, hi), after))
+    } else {
+        Some((ClassItem::Char(lo), next))
+    }
+}
+
 /// A `[...]` class starting at `open`, and the index after it; None when it never closes.
 fn parse_class(chars: &[char], open: usize) -> Option<(Node, usize)> {
     let mut i = open + 1;
@@ -327,42 +382,47 @@ fn parse_class(chars: &[char], open: usize) -> Option<(Node, usize)> {
     let mut items = Vec::new();
     let mut first = true;
     loop {
-        let c = *chars.get(i)?;
-        if c == ']' && !first {
+        if *chars.get(i)? == ']' && !first {
             return Some((Node::Class { negated, items }, i + 1));
         }
         first = false;
-        if c == '[' && chars.get(i + 1) == Some(&':') {
-            let rest: String = chars[i + 2..].iter().collect();
-            if let Some(end) = rest.find(":]") {
-                items.push(ClassItem::Posix(rest[..end].to_string()));
-                i += 2 + rest[..end].chars().count() + 2;
-                continue;
-            }
-        }
-        let (lo, next) = if c == '\\' {
-            (*chars.get(i + 1)?, i + 2)
-        } else {
-            (c, i + 1)
-        };
-        if chars.get(next) == Some(&'-') && chars.get(next + 1).is_some_and(|c| *c != ']') {
-            let hi_at = next + 1;
-            let (hi, after) = if chars[hi_at] == '\\' {
-                (*chars.get(hi_at + 1)?, hi_at + 2)
-            } else {
-                (chars[hi_at], hi_at + 1)
-            };
-            items.push(ClassItem::Range(lo, hi));
-            i = after;
-        } else {
-            items.push(ClassItem::Char(lo));
-            i = next;
-        }
+        let (item, next) = parse_class_item(chars, i)?;
+        items.push(item);
+        i = next;
     }
 }
 
 fn eq_char(a: char, b: char, nocase: bool) -> bool {
     a == b || nocase && a.to_lowercase().eq(b.to_lowercase())
+}
+
+type CharPredicate = fn(char) -> bool;
+
+const POSIX_CLASSES: &[(&str, CharPredicate)] = &[
+    ("alpha", char::is_alphabetic),
+    ("digit", |c| c.is_ascii_digit()),
+    ("alnum", char::is_alphanumeric),
+    ("upper", char::is_uppercase),
+    ("lower", char::is_lowercase),
+    ("space", char::is_whitespace),
+    ("punct", |c| c.is_ascii_punctuation()),
+    ("xdigit", |c| c.is_ascii_hexdigit()),
+    ("word", |c| c.is_alphanumeric() || c == '_'),
+    ("blank", |c| c == ' ' || c == '\t'),
+    ("cntrl", char::is_control),
+    ("print", |c| !c.is_control()),
+    ("graph", |c| !c.is_control() && !c.is_whitespace()),
+    ("ascii", |c| c.is_ascii()),
+];
+
+fn posix_has(name: &str, c: char, nocase: bool) -> bool {
+    if nocase && matches!(name, "upper" | "lower") {
+        return c.is_alphabetic();
+    }
+    POSIX_CLASSES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .is_some_and(|(_, f)| f(c))
 }
 
 fn class_has(items: &[ClassItem], c: char, nocase: bool) -> bool {
@@ -374,25 +434,22 @@ fn class_has(items: &[ClassItem], c: char, nocase: bool) -> bool {
     items.iter().any(|item| match item {
         ClassItem::Char(x) => eq_char(*x, c, nocase),
         ClassItem::Range(lo, hi) => variants.iter().any(|v| lo <= v && v <= hi),
-        ClassItem::Posix(name) => match name.as_str() {
-            "alpha" => c.is_alphabetic(),
-            "digit" => c.is_ascii_digit(),
-            "alnum" => c.is_alphanumeric(),
-            "upper" | "lower" if nocase => c.is_alphabetic(),
-            "upper" => c.is_uppercase(),
-            "lower" => c.is_lowercase(),
-            "space" => c.is_whitespace(),
-            "punct" => c.is_ascii_punctuation(),
-            "xdigit" => c.is_ascii_hexdigit(),
-            "word" => c.is_alphanumeric() || c == '_',
-            "blank" => c == ' ' || c == '\t',
-            "cntrl" => c.is_control(),
-            "print" => !c.is_control(),
-            "graph" => !c.is_control() && !c.is_whitespace(),
-            "ascii" => c.is_ascii(),
-            _ => false,
-        },
+        ClassItem::Posix(name) => posix_has(name, c, nocase),
     })
+}
+
+fn match_ext(text: &[char], rest: &[Node], kind: char, alternatives: &[Vec<Node>], nocase: bool) -> bool {
+    let one = |chunk: &[char]| alternatives.iter().any(|alt| match_nodes(chunk, alt, nocase));
+    match kind {
+        '@' => (0..=text.len()).any(|n| one(&text[..n]) && match_nodes(&text[n..], rest, nocase)),
+        '?' => {
+            match_nodes(text, rest, nocase)
+                || (0..=text.len()).any(|n| one(&text[..n]) && match_nodes(&text[n..], rest, nocase))
+        }
+        '+' => repeat(text, rest, &one, false, nocase),
+        '*' => repeat(text, rest, &one, true, nocase),
+        _ => (0..=text.len()).any(|n| !one(&text[..n]) && match_nodes(&text[n..], rest, nocase)),
+    }
 }
 
 fn match_nodes(text: &[char], nodes: &[Node], nocase: bool) -> bool {
@@ -407,19 +464,7 @@ fn match_nodes(text: &[char], nodes: &[Node], nocase: bool) -> bool {
                 && match_nodes(&text[1..], rest, nocase)
         }
         Node::Star => (0..=text.len()).any(|n| match_nodes(&text[n..], rest, nocase)),
-        Node::Ext { kind, alternatives } => {
-            let one = |chunk: &[char]| alternatives.iter().any(|alt| match_nodes(chunk, alt, nocase));
-            match kind {
-                '@' => (0..=text.len()).any(|n| one(&text[..n]) && match_nodes(&text[n..], rest, nocase)),
-                '?' => {
-                    match_nodes(text, rest, nocase)
-                        || (0..=text.len()).any(|n| one(&text[..n]) && match_nodes(&text[n..], rest, nocase))
-                }
-                '+' => repeat(text, rest, &one, false, nocase),
-                '*' => repeat(text, rest, &one, true, nocase),
-                _ => (0..=text.len()).any(|n| !one(&text[..n]) && match_nodes(&text[n..], rest, nocase)),
-            }
-        }
+        Node::Ext { kind, alternatives } => match_ext(text, rest, *kind, alternatives, nocase),
     }
 }
 

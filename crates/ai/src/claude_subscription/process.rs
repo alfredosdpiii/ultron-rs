@@ -3,10 +3,12 @@
 //! stable working directory, the private per-request files, the stream-json exchange, process-group cancellation
 //! and the reconciliation of native's output with what the admission relay captured.
 
+mod finalize;
+
 use super::admission::{AbortHandle, Admission};
 use super::catalog::native_model;
-use super::history::{Body, PREFIX, TOOL, conversation_session_id};
-use super::{ClaudeError, Config, Env, INSTALL_HINT, LOGGED_OUT_HINT};
+use super::history::{Body, PREFIX, conversation_session_id};
+use super::{ClaudeError, Config, Env, INSTALL_HINT};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
@@ -87,18 +89,34 @@ pub fn native_error_status(code: &str) -> Option<u16> {
     }
 }
 
+fn default_claude_command(env: &Env) -> Vec<String> {
+    let named = |name: &str| env.get(name).filter(|v| !v.trim().is_empty()).cloned();
+    let bin = named(COMMAND_ENV)
+        .or_else(|| named(crate::claude_code_cli::CLAUDE_CODE_BIN_ENV).map(|v| v.trim().to_string()))
+        .unwrap_or_else(|| "claude".into());
+    vec![bin]
+}
+
+fn probe_install_dirs(head: &str, env: &Env) -> Option<PathBuf> {
+    if head != "claude" {
+        return None;
+    }
+    let home = env.get("HOME").filter(|h| !h.is_empty() && Path::new(h).is_absolute());
+    let prefixes: Vec<String> = home
+        .into_iter()
+        .flat_map(|home| HOME_PREFIXES.iter().map(move |p| format!("{home}/{p}")))
+        .chain(SYSTEM_PREFIXES.iter().map(std::string::ToString::to_string))
+        .collect();
+    jsrt::process::which(head, &prefixes.join(":"))
+}
+
 /// The argv prefix that runs Claude Code (`_resolve`): `command`, else `ULTRON_CLAUDE_COMMAND`, else
 /// `ULTRON_CLAUDE_CODE_BIN` (the binary the `claude-code` provider runs and is listed by), else `claude` on the
 /// env's PATH, then in the usual install directories. Only the bare default name is probed outside PATH.
 pub fn resolve_claude(command: Option<&[String]>, env: &Env) -> Option<Vec<String>> {
-    let named = |name: &str| env.get(name).filter(|v| !v.trim().is_empty()).cloned();
-    let command: Vec<String> = match command {
+    let command = match command {
         Some(command) if !command.is_empty() => command.to_vec(),
-        _ => vec![
-            named(COMMAND_ENV)
-                .or_else(|| named(crate::claude_code_cli::CLAUDE_CODE_BIN_ENV).map(|v| v.trim().to_string()))
-                .unwrap_or_else(|| "claude".into()),
-        ],
+        _ => default_claude_command(env),
     };
     let head = &command[0];
     let found = if Path::new(head).is_absolute() && jsrt::process::is_executable(Path::new(head)) {
@@ -106,18 +124,7 @@ pub fn resolve_claude(command: Option<&[String]>, env: &Env) -> Option<Vec<Strin
     } else {
         jsrt::process::which(head, env.get("PATH").map_or(DEFAULT_PATH, String::as_str))
     };
-    let found = found.or_else(|| {
-        if head != "claude" {
-            return None;
-        }
-        let home = env.get("HOME").filter(|h| !h.is_empty() && Path::new(h).is_absolute());
-        let prefixes: Vec<String> = home
-            .into_iter()
-            .flat_map(|home| HOME_PREFIXES.iter().map(move |p| format!("{home}/{p}")))
-            .chain(SYSTEM_PREFIXES.iter().map(std::string::ToString::to_string))
-            .collect();
-        jsrt::process::which(head, &prefixes.join(":"))
-    })?;
+    let found = found.or_else(|| probe_install_dirs(head, env))?;
     let mut resolved = vec![found.to_string_lossy().into_owned()];
     resolved.extend(command[1..].iter().cloned());
     Some(resolved)
@@ -568,40 +575,35 @@ struct SpawnedNative {
     stderr: Arc<Mutex<VecDeque<String>>>,
 }
 
-fn prepare_launch(
-    config: &Config,
-    mut env: Env,
-    prepared: &Prepared,
-    resolved: Vec<String>,
-    model: &str,
-    root: &Path,
-    cleanup: &mut Cleanup<'_>,
-) -> Result<PreparedLaunch, ClaudeError> {
-    let write = |name: &str, text: &str| -> Result<PathBuf, ClaudeError> {
-        let path = root.join(name);
-        std::fs::write(&path, text).map_err(|e| ClaudeError::Failed(e.to_string()))?;
-        Ok(path)
+fn write_request_file(root: &Path, name: &str, text: &str) -> Result<PathBuf, ClaudeError> {
+    let path = root.join(name);
+    std::fs::write(&path, text).map_err(|e| ClaudeError::Failed(e.to_string()))?;
+    Ok(path)
+}
+
+fn build_mcp_config(config: &Config, manifest: &[Value], root: &Path) -> Result<Value, ClaudeError> {
+    if manifest.is_empty() {
+        return Ok(json!({"mcpServers": {}}));
+    }
+    let manifest_path = write_request_file(root, "tools.json", &Value::Array(manifest.to_vec()).to_string())?;
+    let mut inert = match &config.inert_mcp {
+        Some(command) => command.clone(),
+        None => {
+            let exe = config::paths::own_executable().map_err(|e| ClaudeError::Failed(e.to_string()))?;
+            vec![
+                exe.to_string_lossy().into_owned(),
+                "__internal".into(),
+                "inert-mcp".into(),
+            ]
+        }
     };
-    let mcp = if prepared.body.manifest.is_empty() {
-        json!({"mcpServers": {}})
-    } else {
-        let manifest = write("tools.json", &Value::Array(prepared.body.manifest.clone()).to_string())?;
-        let mut inert = match &config.inert_mcp {
-            Some(command) => command.clone(),
-            None => {
-                let exe = config::paths::own_executable().map_err(|e| ClaudeError::Failed(e.to_string()))?;
-                vec![
-                    exe.to_string_lossy().into_owned(),
-                    "__internal".into(),
-                    "inert-mcp".into(),
-                ]
-            }
-        };
-        inert.push(manifest.to_string_lossy().into_owned());
-        json!({"mcpServers": {"ultron": {"command": inert[0], "args": inert[1..]}}})
-    };
-    with_login_identity(&mut env);
-    reap_orphaned_refresh_lock(&env);
+    inert.push(manifest_path.to_string_lossy().into_owned());
+    Ok(json!({"mcpServers": {"ultron": {"command": inert[0], "args": inert[1..]}}}))
+}
+
+fn configure_child_env(config: &Config, env: &mut Env) {
+    with_login_identity(env);
+    reap_orphaned_refresh_lock(env);
     for key in crate::claude_code_cli::PARENT_SESSION_ENV
         .iter()
         .chain(&REQUEST_KNOB_ENV)
@@ -622,31 +624,20 @@ fn prepare_launch(
     {
         env.insert((*k).into(), (*v).into());
     }
-    let telemetry = telemetry_enabled(config, &env);
-    apply_traffic_policy(&mut env, telemetry);
-    let queried = prepared
-        .frames
-        .last()
-        .and_then(|f| f["message"]["content"].as_array())
-        .cloned();
-    let admission =
-        Admission::new(&config.upstream, config.timeout, queried, config.idle, &env).map_err(ClaudeError::Invalid)?;
-    env.insert("ANTHROPIC_BASE_URL".into(), admission.url.clone());
-    let warnings = admission.warnings.clone();
-    *jsrt::sync::lock(&cleanup.handle.admission) = Some(admission.abort_handle());
-    cleanup.admission = Some(admission);
-    let settings = write(
-        "settings.json",
-        &json!({"env": {"CLAUDE_CODE_EXTRA_BODY": prepared.body.encoded}}).to_string(),
-    )?;
-    let system = write("system.md", &prepared.system)?;
-    let parsed = prepared.body.value();
-    if let Some(max) = parsed.get("max_tokens") {
-        env.insert("CLAUDE_CODE_MAX_OUTPUT_TOKENS".into(), max.to_string());
-    }
-    let session_id = conversation_session_id(&prepared.system, &prepared.frames);
-    let mut argv: Vec<String> = resolved;
-    argv.extend(
+    let telemetry = telemetry_enabled(config, env);
+    apply_traffic_policy(env, telemetry);
+}
+
+fn build_launch_argv(
+    mut resolved: Vec<String>,
+    model: &str,
+    system: &Path,
+    settings: &Path,
+    session_id: &str,
+    mcp: &Value,
+    effort: Option<&str>,
+) -> Vec<String> {
+    resolved.extend(
         [
             "-p",
             "--model",
@@ -673,16 +664,111 @@ fn prepare_launch(
             "dontAsk",
             "--no-session-persistence",
             "--session-id",
-            &session_id,
+            session_id,
             "--mcp-config",
             &mcp.to_string(),
         ]
         .map(str::to_string),
     );
-    if let Some(effort) = parsed["output_config"]["effort"].as_str() {
-        argv.extend(["--effort".to_string(), effort.to_string()]);
+    if let Some(effort) = effort {
+        resolved.extend(["--effort".to_string(), effort.to_string()]);
     }
+    resolved
+}
+
+fn prepare_launch(
+    config: &Config,
+    mut env: Env,
+    prepared: &Prepared,
+    resolved: Vec<String>,
+    model: &str,
+    root: &Path,
+    cleanup: &mut Cleanup<'_>,
+) -> Result<PreparedLaunch, ClaudeError> {
+    let mcp = build_mcp_config(config, &prepared.body.manifest, root)?;
+    configure_child_env(config, &mut env);
+    let queried = prepared
+        .frames
+        .last()
+        .and_then(|f| f["message"]["content"].as_array())
+        .cloned();
+    let admission =
+        Admission::new(&config.upstream, config.timeout, queried, config.idle, &env).map_err(ClaudeError::Invalid)?;
+    env.insert("ANTHROPIC_BASE_URL".into(), admission.url.clone());
+    let warnings = admission.warnings.clone();
+    *jsrt::sync::lock(&cleanup.handle.admission) = Some(admission.abort_handle());
+    cleanup.admission = Some(admission);
+    let settings = write_request_file(
+        root,
+        "settings.json",
+        &json!({"env": {"CLAUDE_CODE_EXTRA_BODY": prepared.body.encoded}}).to_string(),
+    )?;
+    let system = write_request_file(root, "system.md", &prepared.system)?;
+    let parsed = prepared.body.value();
+    if let Some(max) = parsed.get("max_tokens") {
+        env.insert("CLAUDE_CODE_MAX_OUTPUT_TOKENS".into(), max.to_string());
+    }
+    let session_id = conversation_session_id(&prepared.system, &prepared.frames);
+    let argv = build_launch_argv(
+        resolved,
+        model,
+        &system,
+        &settings,
+        &session_id,
+        &mcp,
+        parsed["output_config"]["effort"].as_str(),
+    );
     Ok(PreparedLaunch { env, argv, warnings })
+}
+
+fn spawn_stderr_reader(
+    stderr: std::process::ChildStderr,
+    err_sink: Arc<Mutex<VecDeque<String>>>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else { break };
+            let mut guard = jsrt::sync::lock(&err_sink);
+            if guard.len() >= 40 {
+                guard.pop_front();
+            }
+            guard.push_back(line);
+        }
+    })
+}
+
+fn spawn_stdout_reader(
+    stdout: std::process::ChildStdout,
+    sender: std::sync::mpsc::Sender<Event>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut preamble: Option<String> = None;
+        let mut started = false;
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if line.trim().is_empty() {
+                continue;
+            }
+            let event = match serde_json::from_str::<Value>(&line) {
+                Ok(value) => {
+                    started = true;
+                    Event::Line(value)
+                }
+                Err(_) if !started => {
+                    preamble.get_or_insert(line);
+                    continue;
+                }
+                Err(_) => Event::Invalid(line.chars().take(300).collect()),
+            };
+            if sender.send(event).is_err() {
+                return;
+            }
+        }
+        if let Some(line) = preamble.filter(|_| !started) {
+            let _ = sender.send(Event::Invalid(line.chars().take(300).collect()));
+        }
+        let _ = sender.send(Event::Eof);
+    })
 }
 
 fn spawn_native(
@@ -714,45 +800,8 @@ fn spawn_native(
     let stderr = child.stderr.take().expect("stderr is piped");
     let stdin = child.stdin.take().expect("stdin is piped");
     *child_slot = Some(signals::child::Watched::new(child));
-    let err_sink = native_stderr.clone();
-    cleanup.err_reader = Some(std::thread::spawn(move || {
-        for line in BufReader::new(stderr).lines() {
-            let Ok(line) = line else { break };
-            let mut guard = jsrt::sync::lock(&err_sink);
-            if guard.len() >= 40 {
-                guard.pop_front();
-            }
-            guard.push_back(line);
-        }
-    }));
-    cleanup.reader = Some(std::thread::spawn(move || {
-        let mut preamble: Option<String> = None;
-        let mut started = false;
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
-            if line.trim().is_empty() {
-                continue;
-            }
-            let event = match serde_json::from_str::<Value>(&line) {
-                Ok(value) => {
-                    started = true;
-                    Event::Line(value)
-                }
-                Err(_) if !started => {
-                    preamble.get_or_insert(line);
-                    continue;
-                }
-                Err(_) => Event::Invalid(line.chars().take(300).collect()),
-            };
-            if sender.send(event).is_err() {
-                return;
-            }
-        }
-        if let Some(line) = preamble.filter(|_| !started) {
-            let _ = sender.send(Event::Invalid(line.chars().take(300).collect()));
-        }
-        let _ = sender.send(Event::Eof);
-    }));
+    cleanup.err_reader = Some(spawn_stderr_reader(stderr, native_stderr.clone()));
+    cleanup.reader = Some(spawn_stdout_reader(stdout, sender));
     Ok(SpawnedNative {
         stdin,
         events,
@@ -790,17 +839,37 @@ fn receive_event(
     }
 }
 
-fn replay_and_collect(
-    mut stdin: std::process::ChildStdin,
+fn wait_for_replay_ack(
     events: &Receiver<Event>,
-    prepared: &Prepared,
     handle: &Handle,
     timeout: Duration,
-    on_delta: &mut dyn FnMut(Delta),
-) -> Result<StreamOutcome, ClaudeError> {
-    let mut deadline = Instant::now() + timeout;
-    let last = prepared.frames.len().saturating_sub(1);
-    for (index, frame) in prepared.frames.iter().enumerate() {
+    deadline: &mut Instant,
+) -> Result<(), ClaudeError> {
+    loop {
+        let Some(ack) = receive_event(events, handle, timeout, deadline)? else {
+            return Err(ClaudeError::Failed("Native exited before replay acknowledgment".into()));
+        };
+        if ack["type"] == "result" {
+            if ack["num_turns"] != json!(0) || jsrt::value::truthy(ack.get("is_error")) {
+                return Err(ClaudeError::Failed(
+                    "Native history replay not supported: expected zero-turn acknowledgment".into(),
+                ));
+            }
+            return Ok(());
+        }
+    }
+}
+
+fn replay_frames(
+    mut stdin: std::process::ChildStdin,
+    events: &Receiver<Event>,
+    frames: &[Value],
+    handle: &Handle,
+    timeout: Duration,
+    deadline: &mut Instant,
+) -> Result<(), ClaudeError> {
+    let last = frames.len().saturating_sub(1);
+    for (index, frame) in frames.iter().enumerate() {
         let mut frame = frame.clone();
         let parked = frame["type"] == "user" && index < last;
         if parked {
@@ -811,88 +880,86 @@ fn replay_and_collect(
             break;
         }
         if parked {
-            loop {
-                let Some(ack) = receive_event(events, handle, timeout, &mut deadline)? else {
-                    return Err(ClaudeError::Failed("Native exited before replay acknowledgment".into()));
-                };
-                if ack["type"] == "result" {
-                    if ack["num_turns"] != json!(0) || jsrt::value::truthy(ack.get("is_error")) {
-                        return Err(ClaudeError::Failed(
-                            "Native history replay not supported: expected zero-turn acknowledgment".into(),
-                        ));
-                    }
-                    break;
-                }
-            }
+            wait_for_replay_ack(events, handle, timeout, deadline)?;
         }
     }
-    drop(stdin);
-    let mut assistants: Vec<Value> = Vec::new();
-    let mut results: Vec<Value> = Vec::new();
-    let mut stopped = false;
-    let mut emitted = String::new();
-    let mut native_error: Option<(String, Option<String>)> = None;
-    let mut signals = super::limit::Signals::default();
-    while let Some(event) = receive_event(events, handle, timeout, &mut deadline)? {
+    Ok(())
+}
+
+fn record_assistant_event(outcome: &mut StreamOutcome, event: &Value) {
+    let failed = jsrt::value::truthy(event.get("error")) || jsrt::value::truthy(event["message"].get("error"));
+    if failed {
+        let detail = event["message"]["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|b| b["type"] == "text")
+            .filter_map(|b| b["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        outcome.native_error = Some((detail, event["error"].as_str().map(str::to_string)));
+    } else {
+        outcome.assistants.push(event["message"].clone());
+    }
+}
+
+fn record_stream_event(outcome: &mut StreamOutcome, event: &Value, on_delta: &mut dyn FnMut(Delta)) {
+    let native = &event["event"];
+    if native["type"] == "message_stop" {
+        outcome.stopped = true;
+    }
+    let index = native["index"].as_u64();
+    let delta = &native["delta"];
+    match delta["type"].as_str() {
+        Some("text_delta") => {
+            let text = delta["text"].as_str().unwrap_or_default().to_string();
+            outcome.emitted.push_str(&text);
+            on_delta(Delta::Text(index, text));
+        }
+        Some("thinking_delta") => {
+            on_delta(Delta::Thinking(
+                index,
+                delta["thinking"].as_str().unwrap_or_default().to_string(),
+            ));
+        }
+        _ => {}
+    }
+}
+
+fn replay_and_collect(
+    stdin: std::process::ChildStdin,
+    events: &Receiver<Event>,
+    prepared: &Prepared,
+    handle: &Handle,
+    timeout: Duration,
+    on_delta: &mut dyn FnMut(Delta),
+) -> Result<StreamOutcome, ClaudeError> {
+    let mut deadline = Instant::now() + timeout;
+    replay_frames(stdin, events, &prepared.frames, handle, timeout, &mut deadline)?;
+    let mut outcome = StreamOutcome {
+        assistants: Vec::new(),
+        results: Vec::new(),
+        stopped: false,
+        emitted: String::new(),
+        native_error: None,
+        signals: super::limit::Signals::default(),
+        deadline,
+    };
+    while let Some(event) = receive_event(events, handle, timeout, &mut outcome.deadline)? {
         match event["type"].as_str() {
             Some("rate_limit_event") => {
                 if let Some(info) = event.get("rate_limit_info").filter(|i| i.is_object()) {
-                    signals.event = Some(info.clone());
-                    *jsrt::sync::lock(&handle.rate_limit_event) = Some(event.clone());
+                    outcome.signals.event = Some(info.clone());
+                    *jsrt::sync::lock(&handle.rate_limit_event) = Some(event);
                 }
             }
-            Some("assistant") => {
-                let failed =
-                    jsrt::value::truthy(event.get("error")) || jsrt::value::truthy(event["message"].get("error"));
-                if failed {
-                    let detail = event["message"]["content"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter(|b| b["type"] == "text")
-                        .filter_map(|b| b["text"].as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    native_error = Some((detail, event["error"].as_str().map(str::to_string)));
-                } else {
-                    assistants.push(event["message"].clone());
-                }
-            }
-            Some("result") => results.push(event),
-            Some("stream_event") => {
-                let native = &event["event"];
-                if native["type"] == "message_stop" {
-                    stopped = true;
-                }
-                let index = native["index"].as_u64();
-                let delta = &native["delta"];
-                match delta["type"].as_str() {
-                    Some("text_delta") => {
-                        let text = delta["text"].as_str().unwrap_or_default().to_string();
-                        emitted.push_str(&text);
-                        on_delta(Delta::Text(index, text));
-                    }
-                    Some("thinking_delta") => {
-                        on_delta(Delta::Thinking(
-                            index,
-                            delta["thinking"].as_str().unwrap_or_default().to_string(),
-                        ));
-                    }
-                    _ => {}
-                }
-            }
+            Some("assistant") => record_assistant_event(&mut outcome, &event),
+            Some("result") => outcome.results.push(event),
+            Some("stream_event") => record_stream_event(&mut outcome, &event, on_delta),
             _ => {}
         }
     }
-    Ok(StreamOutcome {
-        assistants,
-        results,
-        stopped,
-        emitted,
-        native_error,
-        signals,
-        deadline,
-    })
+    Ok(outcome)
 }
 
 fn extract_calls(assistants: &mut [Value], names: &std::collections::BTreeSet<String>) -> Vec<NativeCall> {
@@ -922,168 +989,56 @@ fn extract_calls(assistants: &mut [Value], names: &std::collections::BTreeSet<St
     calls
 }
 
-fn finalize_response(
-    stream: StreamOutcome,
-    outcome: &super::admission::Outcome,
-    prepared: &Prepared,
-    code: Option<i32>,
-    err_tail: &str,
-    warnings: Vec<String>,
-) -> Result<NativeResponse, ClaudeError> {
-    let StreamOutcome {
-        mut assistants,
-        results,
-        mut stopped,
-        emitted,
-        native_error,
-        mut signals,
-        ..
-    } = stream;
-    signals.header_status = outcome.unified_status.clone();
-    signals.header_reset = outcome.unified_reset.clone();
-    signals.native_code = native_error.as_ref().and_then(|(_, code)| code.clone());
-    if outcome.used {
-        let complete = outcome.capture.complete;
-        if outcome.status != Some(200) || !complete {
-            let mut first = format!(
-                "first upstream attempt: status {}, capture {}",
-                outcome.status.map_or("None".into(), |s| s.to_string()),
-                if complete { "complete" } else { "incomplete" }
-            );
-            if let Some(failure) = &outcome.failure {
-                first.push_str(&format!(", relay failure {failure}"));
-            }
-            first.push_str(&format!(", native retries denied: {}", outcome.denied));
-            let said = outcome.error_text();
-            if !said.is_empty() {
-                first.push_str(&format!(
-                    ", upstream said: {}",
-                    said.chars().take(500).collect::<String>()
-                ));
-            }
-            let mut message = format!("Incomplete upstream response ({first})");
-            if let Some((detail, _)) = &native_error {
-                message.push_str(&format!(": {detail}"));
-            }
-            let status = outcome.status.filter(|s| *s >= 400);
-            return Err(super::limit::classify(ClaudeError::Api { message, status }, &signals));
-        }
-        assistants = vec![outcome.capture.message.clone().unwrap_or(Value::Null)];
-        stopped = true;
+fn prepare_run_env(mut env: Env) -> Result<Env, ClaudeError> {
+    refuse_overrides(&env)?;
+    for key in AUTH_OVERRIDES.iter().chain(BACKEND_OVERRIDES).chain(API_CREDENTIALS) {
+        env.remove(*key);
     }
-    let handled = outcome.denied > 0 || (outcome.used && assistants[0]["stop_reason"] == "refusal");
-    if let Some((detail, code)) = &native_error
-        && !handled
-    {
-        if code.as_deref() == Some("authentication_failed") && !outcome.used {
-            return Err(ClaudeError::LoggedOut(format!(
-                "{LOGGED_OUT_HINT} (native: {detail}){err_tail}"
-            )));
-        }
-        let error = ClaudeError::Api {
-            message: format!("Native API error: {detail}{err_tail}"),
-            status: code.as_deref().and_then(native_error_status),
-        };
-        return Err(super::limit::classify(error, &signals));
+    Ok(env)
+}
+
+fn wait_for_native_exit(
+    handle: &Handle,
+    deadline: Instant,
+    cleanup: &mut Cleanup<'_>,
+) -> Result<Option<i32>, ClaudeError> {
+    let child = handle.watched().expect("native was spawned");
+    let ended = child.wait_timeout(deadline.saturating_duration_since(Instant::now()));
+    if !ended {
+        return Err(if handle.cancelled() {
+            ClaudeError::Cancelled
+        } else {
+            ClaudeError::Timeout
+        });
     }
-    if results.len() != 1 || assistants.is_empty() || !stopped {
-        return Err(ClaudeError::Failed(format!(
-            "Incomplete native response: assistant, message_stop and one result required{err_tail}"
-        )));
+    let code = child.status().and_then(|s| s.code());
+    if let Some(reader) = cleanup.reader.take() {
+        let _ = reader.join();
     }
-    let last_result = &results[0];
-    let mut calls = extract_calls(&mut assistants, &prepared.body.names);
-    let subtype = last_result.get("subtype");
-    let boundary = !calls.is_empty() && subtype == Some(&json!("error_max_turns")) && code == Some(1);
-    if !boundary
-        && !handled
-        && (code != Some(0) || jsrt::value::truthy(last_result.get("is_error")) || subtype != Some(&json!("success")))
-    {
-        return Err(ClaudeError::Failed(format!(
-            "Native request failed: {}{err_tail}",
-            python_str(subtype)
-        )));
+    if let Some(err_reader) = cleanup.err_reader.take() {
+        let _ = err_reader.join();
     }
-    let usage = if outcome.used {
-        assistants[0]["usage"].clone()
-    } else {
-        last_result["usage"].clone()
-    };
-    if !usage["input_tokens"].is_number() || !usage["output_tokens"].is_number() {
-        return Err(ClaudeError::Failed("Native result missing complete token usage".into()));
+    if handle.cancelled() {
+        return Err(ClaudeError::Cancelled);
     }
-    let blocks: Vec<Value> = assistants
-        .iter()
-        .flat_map(|a| a["content"].as_array().cloned().unwrap_or_default())
-        .collect();
-    let text = text_of(&blocks, "text", "text");
-    let tail = if emitted == text {
-        String::new()
-    } else if let Some(rest) = text.strip_prefix(&emitted) {
-        rest.to_string()
-    } else {
-        return Err(ClaudeError::Failed(
-            "Native final text differs from incremental stream".into(),
-        ));
-    };
-    let refused = assistants.iter().any(|a| a["stop_reason"] == "refusal");
-    let mut refusal = None;
-    if refused {
-        let details = assistants
-            .iter()
-            .find_map(|a| a.get("stop_details").filter(|d| d.is_object()))
-            .cloned()
-            .unwrap_or(json!({}));
-        let explanation = details["explanation"].as_str().map(str::trim).filter(|e| !e.is_empty());
-        let category = details["category"].as_str().filter(|c| !c.is_empty());
-        refusal = explanation
-            .map(str::to_string)
-            .or_else(|| category.map(|c| format!("provider refusal category: {c}")));
-        calls.clear();
-    } else if let Some(other) = calls.iter().find(|c| c.name != TOOL) {
-        return Err(ClaudeError::Failed(format!(
-            "The model called `{}`, which is not an Ultron tool: claude-subscription advertises exactly one tool, `{TOOL}`",
-            other.name
-        )));
+    Ok(code)
+}
+
+struct RunParams {
+    env: Env,
+    resolved: Vec<String>,
+    model: String,
+}
+
+fn validate_run_params(config: &Config, env: Env, prepared: &Prepared) -> Result<RunParams, ClaudeError> {
+    if config.timeout.is_zero() {
+        return Err(ClaudeError::Invalid("timeout must be positive seconds".into()));
     }
-    let finish = if refused {
-        Finish::ContentFilter
-    } else if !calls.is_empty() {
-        Finish::ToolCalls
-    } else if assistants.iter().any(|a| {
-        matches!(
-            a["stop_reason"].as_str(),
-            Some("max_tokens" | "model_context_window_exceeded")
-        )
-    }) {
-        Finish::Length
-    } else {
-        Finish::Stop
-    };
-    let mut admission_report = json!({
-        "upstream_requests": u64::from(outcome.used),
-        "blocked_requests": outcome.denied,
-        "request_id": outcome.request_id,
-    });
-    if let Some(unrestored) = &outcome.unrestored {
-        admission_report["unrestored"] = json!(unrestored);
-    }
-    let cost = json!({
-        "total_cost_usd": last_result.get("total_cost_usd").cloned().unwrap_or(Value::Null),
-        "modelUsage": last_result.get("modelUsage").cloned().unwrap_or(Value::Null),
-    });
-    Ok(NativeResponse {
-        assistants,
-        blocks,
-        calls,
-        refusal,
-        finish,
-        usage,
-        cost,
-        admission: admission_report,
-        tail,
-        warnings,
-    })
+    let env = prepare_run_env(env)?;
+    let resolved =
+        resolve_claude(config.command.as_deref(), &env).ok_or_else(|| ClaudeError::Missing(INSTALL_HINT.into()))?;
+    let model = native_model(&prepared.model).map_err(ClaudeError::Invalid)?;
+    Ok(RunParams { env, resolved, model })
 }
 
 /// Run one model call against native (blocking). `upstream` is where the admitted request goes.
@@ -1094,19 +1049,9 @@ pub fn run(
     handle: &Arc<Handle>,
     on_delta: &mut dyn FnMut(Delta),
 ) -> Result<NativeResponse, ClaudeError> {
+    let params = validate_run_params(config, env, prepared)?;
     let timeout = config.timeout;
-    if timeout.is_zero() {
-        return Err(ClaudeError::Invalid("timeout must be positive seconds".into()));
-    }
-    let mut env = env;
-    refuse_overrides(&env)?;
-    for key in AUTH_OVERRIDES.iter().chain(BACKEND_OVERRIDES).chain(API_CREDENTIALS) {
-        env.remove(*key);
-    }
-    let resolved =
-        resolve_claude(config.command.as_deref(), &env).ok_or_else(|| ClaudeError::Missing(INSTALL_HINT.into()))?;
-    let model = native_model(&prepared.model).map_err(ClaudeError::Invalid)?;
-    let _slot = acquire_slot(max_concurrent(&env), handle, timeout)?;
+    let _slot = acquire_slot(max_concurrent(&params.env), handle, timeout)?;
     let temp_root = config.temp_root.clone().unwrap_or_else(std::env::temp_dir);
     let mut cleanup = Cleanup {
         handle,
@@ -1117,31 +1062,22 @@ pub fn run(
     };
     let root = private_temp(&temp_root, "ultron-claude-").map_err(|e| ClaudeError::Failed(e.to_string()))?;
     cleanup.dir = Some(root.clone());
-    let launch = prepare_launch(config, env, prepared, resolved, &model, &root, &mut cleanup)?;
+    let launch = prepare_launch(
+        config,
+        params.env,
+        prepared,
+        params.resolved,
+        &params.model,
+        &root,
+        &mut cleanup,
+    )?;
     let cwd = workdir(&temp_root).map_err(|e| ClaudeError::Failed(e.to_string()))?;
     let spawned = spawn_native(&launch.argv, &launch.env, &cwd, handle, &mut cleanup)?;
     let stream = replay_and_collect(spawned.stdin, &spawned.events, prepared, handle, timeout, on_delta)?;
-    let child = handle.watched().expect("native was spawned");
-    let ended = child.wait_timeout(stream.deadline.saturating_duration_since(Instant::now()));
-    if !ended && handle.cancelled() {
-        return Err(ClaudeError::Cancelled);
-    }
-    if !ended {
-        return Err(ClaudeError::Timeout);
-    }
-    let code = child.status().and_then(|s| s.code());
-    if let Some(reader) = cleanup.reader.take() {
-        let _ = reader.join();
-    }
-    if let Some(err_reader) = cleanup.err_reader.take() {
-        let _ = err_reader.join();
-    }
+    let code = wait_for_native_exit(handle, stream.deadline, &mut cleanup)?;
     let err_tail = stderr_tail(&spawned.stderr);
-    if handle.cancelled() {
-        return Err(ClaudeError::Cancelled);
-    }
     let admission = cleanup.admission.as_mut().expect("the relay is open");
     admission.close();
     let outcome = admission.outcome();
-    finalize_response(stream, &outcome, prepared, code, &err_tail, launch.warnings)
+    finalize::finalize_response(stream, &outcome, prepared, code, &err_tail, launch.warnings)
 }

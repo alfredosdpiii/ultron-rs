@@ -200,19 +200,23 @@ fn str_of<'a>(value: &'a Value, pointer: &str) -> &'a str {
     value.pointer(pointer).and_then(Value::as_str).unwrap_or("")
 }
 
-/// The full report of one session, as lines.
-pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    let empty = Map::new();
-    let unrecorded = report["unrecorded"].as_object().unwrap_or(&empty);
-    let missing = |path: &str| match unrecorded.get(path).and_then(Value::as_str).filter(|s| !s.is_empty()) {
+fn missing_reason(unrecorded: &Map<String, Value>, path: &str) -> String {
+    match unrecorded.get(path).and_then(Value::as_str).filter(|s| !s.is_empty()) {
         Some(why) => format!("{NOT_RECORDED} ({why})"),
         None => NOT_RECORDED.into(),
-    };
-    let row = |lines: &mut Vec<String>, name: &str, text: &str| lines.push(format!("{}{text}", pad_end(name, 11)));
-    let more = |lines: &mut Vec<String>, text: &str| lines.push(format!("{}{text}", " ".repeat(11)));
+    }
+}
+
+fn push_row(lines: &mut Vec<String>, name: &str, text: &str) {
+    lines.push(format!("{}{text}", pad_end(name, 11)));
+}
+
+fn push_more(lines: &mut Vec<String>, text: &str) {
+    lines.push(format!("{}{text}", " ".repeat(11)));
+}
+
+fn render_header(lines: &mut Vec<String>, report: &Value, options: &TextOptions) {
     let session = &report["session"];
-    let depth = &report["depth"];
     let mode = str_of(report, "/mode");
     let name = str_of(session, "/name");
     lines.push(format!(
@@ -233,23 +237,20 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
         format_bytes(n(session, "/bytes"))
     ));
     lines.push(String::new());
-    row(&mut lines, "Depth", str_of(depth, "/verdict"));
-    let counters_since = report.pointer("/guardrails/countersSince").and_then(Value::as_f64);
-    let partial = match counters_since {
-        Some(since) if mode == "ultron claude" => format!(" (counted since {})", format_date(since, options)),
-        _ => String::new(),
-    };
+}
+
+fn render_turns_and_root(lines: &mut Vec<String>, report: &Value, unrecorded: &Map<String, Value>, partial: &str) {
     let turns = &report["turns"];
     if turns.is_null() {
-        row(&mut lines, "Turns", &missing("turns"));
+        push_row(lines, "Turns", &missing_reason(unrecorded, "turns"));
     } else {
         let ended = non_zero(&[
             ("aborted", n(turns, "/aborted")),
             ("failed", n(turns, "/failed")),
             ("running", n(turns, "/running")),
         ]);
-        row(
-            &mut lines,
+        push_row(
+            lines,
             "Turns",
             &format!(
                 "{}, {} wall{}{partial}",
@@ -279,222 +280,235 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
         .and_then(Value::as_str)
         .is_some_and(|s| !s.is_empty())
     {
-        missing("root.models")
+        missing_reason(unrecorded, "root.models")
     } else {
         "no model response yet".into()
     };
-    row(&mut lines, "Root", &root_text);
+    push_row(lines, "Root", &root_text);
+}
+
+fn render_cells(lines: &mut Vec<String>, report: &Value, unrecorded: &Map<String, Value>, partial: &str) {
     let cells = &report["cells"];
     if cells.is_null() {
-        row(&mut lines, "Cells", &missing("cells"));
-    } else {
-        row(
-            &mut lines,
-            "Cells",
-            &format!(
-                "{}{}{partial}",
-                cells_line(&cells["total"]),
-                if str_of(cells, "/source") == "counters" {
-                    "  (runtime count)"
-                } else {
-                    ""
-                }
-            ),
-        );
-        let apis = apis_line(&cells["total"]["apis"]);
-        if !apis.is_empty() {
-            more(&mut lines, &apis);
-        }
-        let (sub, other) = (n(cells, "/subagents/count"), n(cells, "/other/count"));
-        if sub > 0.0 || other > 0.0 {
-            more(
-                &mut lines,
-                &format!(
-                    "root {} · sub-agents {}{}",
-                    jsrt::number::to_string(n(cells, "/root/count")),
-                    jsrt::number::to_string(sub),
-                    if other > 0.0 {
-                        format!(" · other lanes {}", jsrt::number::to_string(other))
-                    } else {
-                        String::new()
-                    }
-                ),
-            );
-        }
-        let tools = entries(&cells["otherTools"]);
-        if !tools.is_empty() {
-            let text = tools
-                .iter()
-                .map(|(name, tool)| {
-                    let failed = n(tool, "/failed");
-                    format!(
-                        "{name} {}{}",
-                        jsrt::number::to_string(n(tool, "/calls")),
-                        if failed > 0.0 {
-                            format!(" ({} failed)", jsrt::number::to_string(failed))
-                        } else {
-                            String::new()
-                        }
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(" · ");
-            more(&mut lines, &format!("other tools: {text}"));
-        }
+        push_row(lines, "Cells", &missing_reason(unrecorded, "cells"));
+        return;
     }
-
-    let frames = &depth["frames"];
-    let subagents = &depth["subagents"];
-    if n(frames, "/count") == 0.0 {
-        row(&mut lines, "Frames", "0");
-    } else {
-        let states = non_zero(&[
-            ("complete", n(frames, "/complete")),
-            ("incomplete", n(frames, "/incomplete")),
-            ("failed", n(frames, "/failed")),
-            ("cancelled", n(frames, "/cancelled")),
-            ("running", n(frames, "/running")),
-        ]);
-        let nested = n(frames, "/nested");
-        row(
-            &mut lines,
-            "Frames",
-            &format!(
-                "{}: {states}{} · {} tokens",
-                jsrt::number::to_string(n(frames, "/count")),
-                if nested > 0.0 {
-                    format!(" · {} nested", jsrt::number::to_string(nested))
-                } else {
-                    String::new()
-                },
-                tokens_text(&report["usage"]["lanes"]["frames"])
-            ),
-        );
-        let calls = &frames["calls"];
-        if !calls.is_null() {
-            more(
-                &mut lines,
-                &format!(
-                    "from {} and {}",
-                    plural(n(calls, "/map"), "rlm.map call"),
-                    plural(n(calls, "/infer"), "rlm.infer call")
-                ),
-            );
-        }
-        let reasons = entries(&frames["incompleteReasons"]);
-        if !reasons.is_empty() {
-            let text = reasons
-                .iter()
-                .map(|(r, c)| format!("{r} {}", jsrt::number::to_string(c.as_f64().unwrap_or(0.0))))
-                .collect::<Vec<_>>()
-                .join(" · ");
-            more(&mut lines, &format!("incomplete: {text}"));
-        }
-        for model in frames["byModel"].as_array().into_iter().flatten() {
-            more(
-                &mut lines,
-                &format!(
-                    "{}  {}  {} tokens",
-                    str_of(model, "/model"),
-                    plural(n(model, "/count"), "frame"),
-                    format_tokens(n(model, "/tokens"))
-                ),
-            );
-        }
-    }
-    if n(subagents, "/count") == 0.0 {
-        row(&mut lines, "Sub-agents", "0");
-    } else {
-        let states = non_zero(&[
-            ("completed", n(subagents, "/completed")),
-            ("failed", n(subagents, "/failed")),
-            ("cancelled", n(subagents, "/cancelled")),
-            ("interrupted", n(subagents, "/interrupted")),
-            ("running", n(subagents, "/running")),
-        ]);
-        let nested = n(subagents, "/nested");
-        row(
-            &mut lines,
-            "Sub-agents",
-            &format!(
-                "{}: {states} · max depth {}{}",
-                jsrt::number::to_string(n(subagents, "/count")),
-                jsrt::number::to_string(n(subagents, "/maxDepth")),
-                if nested > 0.0 {
-                    format!(" ({} nested)", jsrt::number::to_string(nested))
-                } else {
-                    String::new()
-                }
-            ),
-        );
-        let v = &subagents["verdicts"];
-        let unverified = n(v, "/unverified");
-        more(
-            &mut lines,
-            &format!(
-                "verdicts: {} verified · {} contradicted · {} unverified{}",
-                jsrt::number::to_string(n(v, "/verified")),
-                jsrt::number::to_string(n(v, "/contradicted")),
-                jsrt::number::to_string(unverified),
-                if unverified > 0.0 {
-                    format!(
-                        " ({})",
-                        non_zero(&[
-                            ("without a verdict", n(v, "/none")),
-                            ("unchecked", n(v, "/unchecked")),
-                            ("invalid", n(v, "/invalid")),
-                        ])
-                    )
-                } else {
-                    String::new()
-                }
-            ),
-        );
-        for model in subagents["byModel"].as_array().into_iter().flatten() {
-            let (count, unmeasured) = (n(model, "/count"), n(model, "/unmeasured"));
-            let tokens = if unmeasured == count {
-                format!("tokens {NOT_RECORDED}")
+    push_row(
+        lines,
+        "Cells",
+        &format!(
+            "{}{}{partial}",
+            cells_line(&cells["total"]),
+            if str_of(cells, "/source") == "counters" {
+                "  (runtime count)"
             } else {
+                ""
+            }
+        ),
+    );
+    let apis = apis_line(&cells["total"]["apis"]);
+    if !apis.is_empty() {
+        push_more(lines, &apis);
+    }
+    let (sub, other) = (n(cells, "/subagents/count"), n(cells, "/other/count"));
+    if sub > 0.0 || other > 0.0 {
+        push_more(
+            lines,
+            &format!(
+                "root {} · sub-agents {}{}",
+                jsrt::number::to_string(n(cells, "/root/count")),
+                jsrt::number::to_string(sub),
+                if other > 0.0 {
+                    format!(" · other lanes {}", jsrt::number::to_string(other))
+                } else {
+                    String::new()
+                }
+            ),
+        );
+    }
+    let tools = entries(&cells["otherTools"]);
+    if !tools.is_empty() {
+        let text = tools
+            .iter()
+            .map(|(name, tool)| {
+                let failed = n(tool, "/failed");
                 format!(
-                    "{} tokens{}",
-                    format_tokens(n(model, "/tokens")),
-                    if unmeasured > 0.0 {
-                        format!(" ({} {NOT_RECORDED})", jsrt::number::to_string(unmeasured))
+                    "{name} {}{}",
+                    jsrt::number::to_string(n(tool, "/calls")),
+                    if failed > 0.0 {
+                        format!(" ({} failed)", jsrt::number::to_string(failed))
                     } else {
                         String::new()
                     }
                 )
-            };
-            more(
-                &mut lines,
-                &format!("{}  {}  {tokens}", str_of(model, "/model"), plural(count, "sub-agent")),
-            );
-        }
-        for worktree in subagents["worktrees"].as_array().into_iter().flatten() {
-            more(
-                &mut lines,
-                &format!(
-                    "worktree {}: {}, merge {}",
-                    str_of(worktree, "/branch"),
-                    plural(n(worktree, "/changedFiles"), "file"),
-                    worktree["merge"].as_str().unwrap_or(NOT_RECORDED)
-                ),
-            );
-        }
+            })
+            .collect::<Vec<_>>()
+            .join(" · ");
+        push_more(lines, &format!("other tools: {text}"));
     }
+}
+
+fn render_frames(lines: &mut Vec<String>, report: &Value, frames: &Value) {
+    if n(frames, "/count") == 0.0 {
+        push_row(lines, "Frames", "0");
+        return;
+    }
+    let states = non_zero(&[
+        ("complete", n(frames, "/complete")),
+        ("incomplete", n(frames, "/incomplete")),
+        ("failed", n(frames, "/failed")),
+        ("cancelled", n(frames, "/cancelled")),
+        ("running", n(frames, "/running")),
+    ]);
+    let nested = n(frames, "/nested");
+    push_row(
+        lines,
+        "Frames",
+        &format!(
+            "{}: {states}{} · {} tokens",
+            jsrt::number::to_string(n(frames, "/count")),
+            if nested > 0.0 {
+                format!(" · {} nested", jsrt::number::to_string(nested))
+            } else {
+                String::new()
+            },
+            tokens_text(&report["usage"]["lanes"]["frames"])
+        ),
+    );
+    let calls = &frames["calls"];
+    if !calls.is_null() {
+        push_more(
+            lines,
+            &format!(
+                "from {} and {}",
+                plural(n(calls, "/map"), "rlm.map call"),
+                plural(n(calls, "/infer"), "rlm.infer call")
+            ),
+        );
+    }
+    let reasons = entries(&frames["incompleteReasons"]);
+    if !reasons.is_empty() {
+        let text = reasons
+            .iter()
+            .map(|(r, c)| format!("{r} {}", jsrt::number::to_string(c.as_f64().unwrap_or(0.0))))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        push_more(lines, &format!("incomplete: {text}"));
+    }
+    for model in frames["byModel"].as_array().into_iter().flatten() {
+        push_more(
+            lines,
+            &format!(
+                "{}  {}  {} tokens",
+                str_of(model, "/model"),
+                plural(n(model, "/count"), "frame"),
+                format_tokens(n(model, "/tokens"))
+            ),
+        );
+    }
+}
+
+fn render_subagent_models(lines: &mut Vec<String>, subagents: &Value) {
+    for model in subagents["byModel"].as_array().into_iter().flatten() {
+        let (count, unmeasured) = (n(model, "/count"), n(model, "/unmeasured"));
+        let tokens = if unmeasured == count {
+            format!("tokens {NOT_RECORDED}")
+        } else {
+            format!(
+                "{} tokens{}",
+                format_tokens(n(model, "/tokens")),
+                if unmeasured > 0.0 {
+                    format!(" ({} {NOT_RECORDED})", jsrt::number::to_string(unmeasured))
+                } else {
+                    String::new()
+                }
+            )
+        };
+        push_more(
+            lines,
+            &format!("{}  {}  {tokens}", str_of(model, "/model"), plural(count, "sub-agent")),
+        );
+    }
+}
+
+fn render_subagents(lines: &mut Vec<String>, subagents: &Value) {
+    if n(subagents, "/count") == 0.0 {
+        push_row(lines, "Sub-agents", "0");
+        return;
+    }
+    let states = non_zero(&[
+        ("completed", n(subagents, "/completed")),
+        ("failed", n(subagents, "/failed")),
+        ("cancelled", n(subagents, "/cancelled")),
+        ("interrupted", n(subagents, "/interrupted")),
+        ("running", n(subagents, "/running")),
+    ]);
+    let nested = n(subagents, "/nested");
+    push_row(
+        lines,
+        "Sub-agents",
+        &format!(
+            "{}: {states} · max depth {}{}",
+            jsrt::number::to_string(n(subagents, "/count")),
+            jsrt::number::to_string(n(subagents, "/maxDepth")),
+            if nested > 0.0 {
+                format!(" ({} nested)", jsrt::number::to_string(nested))
+            } else {
+                String::new()
+            }
+        ),
+    );
+    let v = &subagents["verdicts"];
+    let unverified = n(v, "/unverified");
+    push_more(
+        lines,
+        &format!(
+            "verdicts: {} verified · {} contradicted · {} unverified{}",
+            jsrt::number::to_string(n(v, "/verified")),
+            jsrt::number::to_string(n(v, "/contradicted")),
+            jsrt::number::to_string(unverified),
+            if unverified > 0.0 {
+                format!(
+                    " ({})",
+                    non_zero(&[
+                        ("without a verdict", n(v, "/none")),
+                        ("unchecked", n(v, "/unchecked")),
+                        ("invalid", n(v, "/invalid")),
+                    ])
+                )
+            } else {
+                String::new()
+            }
+        ),
+    );
+    render_subagent_models(lines, subagents);
+    for worktree in subagents["worktrees"].as_array().into_iter().flatten() {
+        push_more(
+            lines,
+            &format!(
+                "worktree {}: {}, merge {}",
+                str_of(worktree, "/branch"),
+                plural(n(worktree, "/changedFiles"), "file"),
+                worktree["merge"].as_str().unwrap_or(NOT_RECORDED)
+            ),
+        );
+    }
+}
+
+fn render_other_work(lines: &mut Vec<String>, depth: &Value, unrecorded: &Map<String, Value>) {
     let workflows = &depth["workflows"];
-    row(
-        &mut lines,
+    push_row(
+        lines,
         "Workflows",
         &if workflows.is_null() {
-            missing("depth.workflows")
+            missing_reason(unrecorded, "depth.workflows")
         } else {
             plural(n(workflows, "/runs"), "run")
         },
     );
     let typed = entries(&depth["typedAgents"]["byDefinition"]);
-    row(
-        &mut lines,
+    push_row(
+        lines,
         "Other work",
         &format!(
             "{}{} · {}",
@@ -514,62 +528,37 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
             plural(n(depth, "/backgroundJobs/count"), "background job")
         ),
     );
+}
 
-    lines.push(String::new());
-    lines.push("Tokens and cost".into());
-    let usage_row = |name: &str, bucket: &Value| -> Vec<String> {
-        vec![
-            format!("  {name}"),
-            jsrt::number::to_string(n(bucket, "/responses")),
-            format_tokens(n(bucket, "/input")),
-            format_tokens(n(bucket, "/output")),
-            format_tokens(n(bucket, "/cacheRead")),
-            format_tokens(n(bucket, "/cacheWrite")),
-            tokens_text(bucket),
-            format_cost(&bucket["cost"], n(bucket, "/totalTokens")),
-        ]
-    };
-    let header = |first: &str| -> Vec<String> {
-        [
-            first,
-            "responses",
-            "input",
-            "output",
-            "cache read",
-            "cache write",
-            "total",
-            "cost",
-        ]
-        .map(String::from)
-        .to_vec()
-    };
-    let usage = &report["usage"];
-    let lanes = &usage["lanes"];
-    let mut rows = vec![header("  lane")];
-    if mode == "ultron claude" && n(lanes, "/root/responses") == 0.0 {
-        let mut r = vec!["  root".to_string()];
-        r.extend(std::iter::repeat_n("n/r".to_string(), 7));
-        rows.push(r);
-    } else {
-        rows.push(usage_row("root", &lanes["root"]));
-    }
-    rows.push(usage_row("frames", &lanes["frames"]));
-    rows.push(usage_row("sub-agents", &lanes["subagents"]));
-    if n(lanes, "/other/responses") > 0.0 || n(lanes, "/other/unmeasured") > 0.0 {
-        rows.push(usage_row("other", &lanes["other"]));
-    }
-    rows.push(usage_row("total", &usage["total"]));
-    let numeric = [1, 2, 3, 4, 5, 6];
-    lines.extend(table(&rows, &numeric));
-    let models = usage["models"].as_array().cloned().unwrap_or_default();
-    if !models.is_empty() {
-        let mut model_rows = vec![header("  model")];
-        for model in &models {
-            model_rows.push(usage_row(str_of(model, "/model"), model));
-        }
-        lines.extend(table(&model_rows, &numeric));
-    }
-    let total = &usage["total"];
+fn usage_row(name: &str, bucket: &Value) -> Vec<String> {
+    vec![
+        format!("  {name}"),
+        jsrt::number::to_string(n(bucket, "/responses")),
+        format_tokens(n(bucket, "/input")),
+        format_tokens(n(bucket, "/output")),
+        format_tokens(n(bucket, "/cacheRead")),
+        format_tokens(n(bucket, "/cacheWrite")),
+        tokens_text(bucket),
+        format_cost(&bucket["cost"], n(bucket, "/totalTokens")),
+    ]
+}
+
+fn usage_header(first: &str) -> Vec<String> {
+    [
+        first,
+        "responses",
+        "input",
+        "output",
+        "cache read",
+        "cache write",
+        "total",
+        "cost",
+    ]
+    .map(String::from)
+    .to_vec()
+}
+
+fn render_usage_notes(lines: &mut Vec<String>, total: &Value, mode: &str) {
     let mut notes = Vec::new();
     if mode == "ultron claude" {
         notes.push(
@@ -599,7 +588,47 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
     for note in notes {
         lines.push(format!("  {note}"));
     }
+}
 
+fn render_tokens_and_cost(lines: &mut Vec<String>, report: &Value, mode: &str) {
+    lines.push(String::new());
+    lines.push("Tokens and cost".into());
+    let usage = &report["usage"];
+    let lanes = &usage["lanes"];
+    let mut rows = vec![usage_header("  lane")];
+    if mode == "ultron claude" && n(lanes, "/root/responses") == 0.0 {
+        let mut r = vec!["  root".to_string()];
+        r.extend(std::iter::repeat_n("n/r".to_string(), 7));
+        rows.push(r);
+    } else {
+        rows.push(usage_row("root", &lanes["root"]));
+    }
+    rows.push(usage_row("frames", &lanes["frames"]));
+    rows.push(usage_row("sub-agents", &lanes["subagents"]));
+    if n(lanes, "/other/responses") > 0.0 || n(lanes, "/other/unmeasured") > 0.0 {
+        rows.push(usage_row("other", &lanes["other"]));
+    }
+    rows.push(usage_row("total", &usage["total"]));
+    let numeric = [1, 2, 3, 4, 5, 6];
+    lines.extend(table(&rows, &numeric));
+    let models = usage["models"].as_array().cloned().unwrap_or_default();
+    if !models.is_empty() {
+        let mut model_rows = vec![usage_header("  model")];
+        for model in &models {
+            model_rows.push(usage_row(str_of(model, "/model"), model));
+        }
+        lines.extend(table(&model_rows, &numeric));
+    }
+    render_usage_notes(lines, &usage["total"], mode);
+}
+
+fn render_guardrails(
+    lines: &mut Vec<String>,
+    report: &Value,
+    unrecorded: &Map<String, Value>,
+    counters_since: Option<f64>,
+    options: &TextOptions,
+) {
     lines.push(String::new());
     lines.push("Guardrails".into());
     let guardrails = &report["guardrails"];
@@ -608,13 +637,13 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
     });
     let guards = &guardrails["guards"];
     if guards.is_null() {
-        row(&mut lines, "  Loki", &missing("guardrails.guards"));
+        push_row(lines, "  Loki", &missing_reason(unrecorded, "guardrails.guards"));
     } else if entries(guards).is_empty() {
-        row(&mut lines, "  Loki", &format!("no write was checked{since}"));
+        push_row(lines, "  Loki", &format!("no write was checked{since}"));
     } else {
         for (name, g) in entries(guards) {
-            row(
-                &mut lines,
+            push_row(
+                lines,
                 &format!("  {name}"),
                 &format!(
                     "{}, {} blocked, {} unchecked · after cells: {}, {} · {}{since}",
@@ -629,19 +658,19 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
         }
     }
     let secrets = &guardrails["secretsMasked"];
-    row(
-        &mut lines,
+    push_row(
+        lines,
         "  Secrets",
         &if secrets.is_null() {
-            missing("guardrails.secretsMasked")
+            missing_reason(unrecorded, "guardrails.secretsMasked")
         } else {
             format!("{} masked", jsrt::number::to_string(secrets.as_f64().unwrap_or(0.0)))
         },
     );
     let hints = entries(&guardrails["hints"]);
     let stuck = guardrails["hints"]["stuck-loop"].as_f64().unwrap_or(0.0);
-    row(
-        &mut lines,
+    push_row(
+        lines,
         "  Hints",
         &format!(
             "stuck-loop {}{}",
@@ -654,11 +683,11 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
         ),
     );
     let nudges = &guardrails["nudges"];
-    row(
-        &mut lines,
+    push_row(
+        lines,
         "  Nudges",
         &if nudges.is_null() {
-            missing("guardrails.nudges")
+            missing_reason(unrecorded, "guardrails.nudges")
         } else {
             format!(
                 "tool rounds {} · wait {} · skill {}",
@@ -669,28 +698,30 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
         },
     );
     let limits = &guardrails["usageLimitBlocks"];
-    row(
-        &mut lines,
+    push_row(
+        lines,
         "  Limits",
         &if limits.is_null() {
-            missing("guardrails.usageLimitBlocks")
+            missing_reason(unrecorded, "guardrails.usageLimitBlocks")
         } else {
             format!("{}{since}", plural(limits.as_f64().unwrap_or(0.0), "usage-limit block"))
         },
     );
+}
 
+fn render_memory(lines: &mut Vec<String>, report: &Value, unrecorded: &Map<String, Value>) {
     lines.push(String::new());
     lines.push("Memory".into());
     let operations = &report["memory"]["operations"];
     if operations.is_null() {
-        row(&mut lines, "  Store", &missing("memory.operations"));
+        push_row(lines, "  Store", &missing_reason(unrecorded, "memory.operations"));
     } else {
         let text = entries(operations)
             .iter()
             .map(|(op, c)| format!("{op} {}", jsrt::number::to_string(c.as_f64().unwrap_or(0.0))))
             .collect::<Vec<_>>()
             .join(" · ");
-        row(&mut lines, "  Store", &text);
+        push_row(lines, "  Store", &text);
     }
     let recall = &report["memory"]["recall"];
     if recall.is_object() {
@@ -708,8 +739,32 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
         if count("stale") > 0.0 {
             text.push_str(&format!(" · {} stale", jsrt::number::to_string(count("stale"))));
         }
-        row(&mut lines, "  Recall", &text);
+        push_row(lines, "  Recall", &text);
     }
+}
+
+/// The full report of one session, as lines.
+pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let empty = Map::new();
+    let unrecorded = report["unrecorded"].as_object().unwrap_or(&empty);
+    let depth = &report["depth"];
+    let mode = str_of(report, "/mode");
+    render_header(&mut lines, report, options);
+    push_row(&mut lines, "Depth", str_of(depth, "/verdict"));
+    let counters_since = report.pointer("/guardrails/countersSince").and_then(Value::as_f64);
+    let partial = match counters_since {
+        Some(since) if mode == "ultron claude" => format!(" (counted since {})", format_date(since, options)),
+        _ => String::new(),
+    };
+    render_turns_and_root(&mut lines, report, unrecorded, &partial);
+    render_cells(&mut lines, report, unrecorded, &partial);
+    render_frames(&mut lines, report, &depth["frames"]);
+    render_subagents(&mut lines, &depth["subagents"]);
+    render_other_work(&mut lines, depth, unrecorded);
+    render_tokens_and_cost(&mut lines, report, mode);
+    render_guardrails(&mut lines, report, unrecorded, counters_since, options);
+    render_memory(&mut lines, report, unrecorded);
     lines
 }
 

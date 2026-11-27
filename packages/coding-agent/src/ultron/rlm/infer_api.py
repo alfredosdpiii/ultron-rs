@@ -84,6 +84,22 @@ class ContextView:
         }
 
 
+def _validate_chunk_args(size: int, overlap: int) -> None:
+    if type(size) is not int or size < 1:
+        raise ValueError("size must be a positive int")
+    if type(overlap) is not int or overlap < 0 or overlap >= size:
+        raise ValueError("overlap must be an int in [0, size)")
+
+
+def _next_chunk_end(text: str, position: int, size: int, overlap: int) -> int:
+    end = min(position + size, len(text))
+    if end < len(text):
+        cut = text.rfind("\n", position, end)
+        if cut >= position and cut + 1 > position + overlap:
+            return cut + 1
+    return end
+
+
 class ContextHandle:
     """Interned content. Printing a handle shows its label, size and digest, never the content."""
 
@@ -171,19 +187,12 @@ class ContextHandle:
 
     def chunks(self, size: int, overlap: int = 0) -> list[ContextView]:
         """Views of at most `size` characters that end on a line boundary when one exists in range."""
-        if type(size) is not int or size < 1:
-            raise ValueError("size must be a positive int")
-        if type(overlap) is not int or overlap < 0 or overlap >= size:
-            raise ValueError("overlap must be an int in [0, size)")
+        _validate_chunk_args(size, overlap)
         text = self._text
         views: list[ContextView] = []
         position = 0
         while position < len(text):
-            end = min(position + size, len(text))
-            if end < len(text):
-                cut = text.rfind("\n", position, end)
-                if cut >= position and cut + 1 > position + overlap:
-                    end = cut + 1
+            end = _next_chunk_end(text, position, size, overlap)
             views.append(ContextView(self, position, end))
             if end >= len(text):
                 break
@@ -258,42 +267,84 @@ _TYPE_NAMES = {kind.__name__: kind for kind in _TYPE_SCHEMAS if kind is not type
 _SCHEMA_KEYS = {"type", "properties", "items", "enum", "const", "anyOf", "oneOf", "allOf", "$ref", "not"}
 
 
-def _schema(contract: Any) -> Any:
-    if contract is None:
-        return None
-    if isinstance(contract, dict):
-        typed = any(isinstance(value, type) or hasattr(value, "__origin__") for value in contract.values())
-        if not contract or (_SCHEMA_KEYS & contract.keys() and not typed):
-            return contract
-        # {"field": type, ...} shorthand for an object whose fields are all required.
-        return {"type": "object", "properties": {key: _schema(value) for key, value in contract.items()},
-                "required": list(contract)}
-    if isinstance(contract, type) and contract in _TYPE_SCHEMAS:
+def _has_type_annotation(contract: dict[Any, Any]) -> bool:
+    for value in contract.values():
+        if isinstance(value, type) or hasattr(value, "__origin__"):
+            return True
+    return False
+
+
+def _dict_schema(contract: dict[Any, Any]) -> dict[str, Any]:
+    if not contract:
+        return contract
+    if _SCHEMA_KEYS & contract.keys() and not _has_type_annotation(contract):
+        return contract
+    # {"field": type, ...} shorthand for an object whose fields are all required.
+    properties: dict[str, Any] = {}
+    for key, value in contract.items():
+        properties[key] = _schema(value)
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(contract),
+    }
+
+
+def _class_schema(contract: type) -> dict[str, Any] | None:
+    if contract in _TYPE_SCHEMAS:
         return dict(_TYPE_SCHEMAS[contract])
-    if callable(getattr(contract, "model_json_schema", None)):  # a pydantic model
-        return contract.model_json_schema()
     dataclass_fields = getattr(contract, "__dataclass_fields__", None)
-    fields = ({name: field.type for name, field in dataclass_fields.items()} if isinstance(dataclass_fields, dict)
-              else getattr(contract, "__annotations__", None))
-    if isinstance(contract, type) and isinstance(fields, dict) and fields:  # a dataclass or TypedDict
-        return _schema({name: _TYPE_NAMES.get(kind, Any) if isinstance(kind, str) else kind
-                        for name, kind in fields.items()})
+    if isinstance(dataclass_fields, dict):
+        fields = {name: field.type for name, field in dataclass_fields.items()}
+    else:
+        fields = getattr(contract, "__annotations__", None)
+    if not isinstance(fields, dict) or not fields:
+        return None
+    normalized: dict[Any, Any] = {}
+    for name, kind in fields.items():
+        normalized[name] = (
+            _TYPE_NAMES.get(kind, Any) if isinstance(kind, str) else kind
+        )
+    return _schema(normalized)
+
+
+def _generic_schema(contract: Any) -> dict[str, Any] | None:
+    import typing
+
     origin = getattr(contract, "__origin__", None)
     arguments = getattr(contract, "__args__", ())
     if origin is list and len(arguments) == 1:
         return {"type": "array", "items": _schema(arguments[0])}
     if origin is dict and len(arguments) == 2 and arguments[0] is str:
         return {"type": "object", "additionalProperties": _schema(arguments[1])}
-    import typing
-
     if origin is typing.Literal:
         return {"enum": list(arguments)}
-    if origin is typing.Union or type(contract).__name__ == "UnionType":  # Optional[T], T | None
-        return {"anyOf": [_schema(argument) for argument in arguments]}
+    if origin is typing.Union or type(contract).__name__ == "UnionType":
+        return {"anyOf": list(map(_schema, arguments))}
+    return None
+
+
+def _schema(contract: Any) -> Any:
+    if contract is None:
+        return None
     if contract is Any:
         return {}
-    raise TypeError("contract must be a JSON schema dict, a builtin type (int, str, float, bool, list, dict), "
-                    "list[T], Literal[...], T | None, a dataclass or {'field': type}")
+    if isinstance(contract, dict):
+        return _dict_schema(contract)
+    if callable(getattr(contract, "model_json_schema", None)):
+        return contract.model_json_schema()
+    resolved = (
+        _class_schema(contract)
+        if isinstance(contract, type)
+        else _generic_schema(contract)
+    )
+    if resolved is not None:
+        return resolved
+    raise TypeError(
+        "contract must be a JSON schema dict, a builtin type "
+        "(int, str, float, bool, list, dict), list[T], Literal[...], "
+        "T | None, a dataclass or {'field': type}"
+    )
 
 
 def _wire_item(item: Any, out: list[dict[str, Any]]) -> None:
@@ -361,60 +412,149 @@ class MapResults(list):
                 f"spent {spent}{of}")
 
 
+def _require_single_load_source(
+    source: Any, path: Any, text: str | None, data: bytes | None
+) -> None:
+    count = 0
+    for item in (source, path, text, data):
+        if item is not None:
+            count += 1
+    if count != 1:
+        raise ValueError("rlm.load takes exactly one of a path, text, or bytes")
+
+
+def _resolve_load_path(source: Any, path: Any) -> Path | None:
+    if path is not None or isinstance(source, Path):
+        return Path(path if path is not None else source)
+    if (
+        isinstance(source, str)
+        and "\n" not in source
+        and len(source) < _MAX_PATH_TEXT
+        and os.path.isfile(source)
+    ):
+        return Path(source)
+    return None
+
+
+def _read_load_content(
+    source: Any,
+    file_path: Path | None,
+    text: str | None,
+    data: bytes | None,
+) -> tuple[str, str, Path | None]:
+    if file_path is not None:
+        from worktree_api import worktree_path
+
+        resolved = worktree_path(file_path)
+        content = resolved.read_bytes().decode("utf-8", errors="replace")
+        return content, resolved.name, resolved
+    if data is not None or isinstance(source, (bytes, bytearray)):
+        raw = bytes(source if data is None else data)
+        return raw.decode("utf-8", errors="replace"), "bytes", None
+    content = source if text is None else text
+    if not isinstance(content, str):
+        raise TypeError("rlm.load takes a path, str, or bytes")
+    return content, "text", None
+
+
+def _write_stored_context(path_str: str, encoded: bytes) -> None:
+    target = Path(path_str)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name + f".{os.getpid()}.tmp")
+    temporary.write_bytes(encoded)
+    os.replace(temporary, target)
+
+
+def _build_map_frames(
+    tasks: Any, items: Any, shared: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    if isinstance(tasks, str):
+        if items is None:
+            raise ValueError(
+                "rlm.map(task, items): items is required with a single task"
+            )
+        return [
+            {"task": tasks, "context": shared + _wire_context(item)}
+            for item in items
+        ]
+    task_list = list(tasks)
+    if items is None:
+        return [{"task": task, "context": shared} for task in task_list]
+    item_list = list(items)
+    if len(item_list) != len(task_list):
+        raise ValueError(
+            "rlm.map(tasks, items): tasks and items must have the same length"
+        )
+    return [
+        {"task": task, "context": shared + _wire_context(item)}
+        for task, item in zip(task_list, item_list)
+    ]
+
+
+def _dict_field(mapping: dict[str, Any], key: str) -> dict[str, Any]:
+    value = mapping.get(key)
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _finalize_map_results(reply: dict[str, Any]) -> MapResults:
+    results = MapResults(
+        _outcome(item, raise_errors=False) for item in reply["results"]
+    )
+    raw_budget = reply.get("budget")
+    budget = raw_budget if isinstance(raw_budget, dict) else {}
+    results.spent = _dict_field(budget, "spent")
+    results.budget = _dict_field(budget, "limits")
+    results.remaining = _dict_field(budget, "remaining")
+    results.usage = _dict_field(reply, "usage")
+    print(results.summary())
+    return results
+
+
 class Inference:
     def __init__(self, bridge: Any) -> None:
         self._bridge = bridge
         self._handles: dict[str, ContextHandle] = {}
 
-    async def load(self, source: Any = None, *, path: Any = None, text: str | None = None,
-                   data: bytes | None = None, label: str | None = None) -> ContextHandle:
+    async def load(
+        self,
+        source: Any = None,
+        *,
+        path: Any = None,
+        text: str | None = None,
+        data: bytes | None = None,
+        label: str | None = None,
+    ) -> ContextHandle:
         """Intern a file (path), text, or bytes and return a ContextHandle. The content is never returned.
 
         A handle (`h.size`, `h.digest`; printing it never shows content) is programmed over, not read:
         `h.search(regex, limit=20)` -> [{start, end, line, text}], `h.count(regex)`, `h.lines(a, b)` (0-based,
         end-exclusive), `h.slice(a, b)` and `h.chunks(chars)` return views, which print their text: print only
         what you must read, and hand views to `rlm.infer` / `rlm.map`."""
-        given = [item for item in (source, path, text, data) if item is not None]
-        if len(given) != 1:
-            raise ValueError("rlm.load takes exactly one of a path, text, or bytes")
-        file_path: Path | None = None
-        if path is not None or isinstance(source, Path):
-            file_path = Path(path if path is not None else source)
-        elif isinstance(source, str) and "\n" not in source and len(source) < _MAX_PATH_TEXT and os.path.isfile(source):
-            file_path = Path(source)
-        if file_path is not None:
-            from worktree_api import worktree_path
-            file_path = worktree_path(file_path)
-            raw = file_path.read_bytes()
-            content = raw.decode("utf-8", errors="replace")
-            label = label or file_path.name
-        elif data is not None or isinstance(source, (bytes, bytearray)):
-            content = bytes(data if data is not None else source).decode("utf-8", errors="replace")
-            label = label or "bytes"
-        else:
-            content = text if text is not None else source
-            if not isinstance(content, str):
-                raise TypeError("rlm.load takes a path, str, or bytes")
-            label = label or "text"
+        _require_single_load_source(source, path, text, data)
+        file_path = _resolve_load_path(source, path)
+        content, default_label, resolved_path = _read_load_content(
+            source, file_path, text, data
+        )
+        chosen_label = label or default_label
         encoded = content.encode("utf-8", errors="surrogatepass")
         digest = "sha256:" + hashlib.sha256(encoded).hexdigest()
-        reply = await self._bridge.request("rlm.load", {
-            "digest": digest,
-            "label": label,
-            "size": len(encoded),
-            "chars": len(content),
-            "source": str(file_path) if file_path is not None else None,
-        })
+        reply = await self._bridge.request(
+            "rlm.load",
+            {
+                "digest": digest,
+                "label": chosen_label,
+                "size": len(encoded),
+                "chars": len(content),
+                "source": str(resolved_path) if resolved_path is not None else None,
+            },
+        )
         if not reply.get("stored"):
-            target = Path(reply["path"])
-            target.parent.mkdir(parents=True, exist_ok=True)
-            temporary = target.with_name(target.name + f".{os.getpid()}.tmp")
-            temporary.write_bytes(encoded)
-            os.replace(temporary, target)
+            _write_stored_context(reply["path"], encoded)
         existing = self._handles.get(digest)
-        if existing is not None and existing.label == label:
+        if existing is not None and existing.label == chosen_label:
             return existing
-        handle = ContextHandle(existing._text if existing is not None else content, digest, label, len(encoded))
+        stored_text = existing._text if existing is not None else content
+        handle = ContextHandle(stored_text, digest, chosen_label, len(encoded))
         self._handles[digest] = handle
         return handle
 
@@ -505,23 +645,13 @@ class Inference:
                                    [h.lines(m['line'] - 20, m['line'] + 5) for m in hits], contract=str)"""
         prefix = _wire_context(context) if shared_prefix else []
         shared = [] if shared_prefix else _wire_context(context)
-        if isinstance(tasks, str):
-            if items is None:
-                raise ValueError("rlm.map(task, items): items is required with a single task")
-            frames = [{"task": tasks, "context": shared + _wire_context(item)} for item in items]
-        else:
-            tasks = list(tasks)
-            if items is not None:
-                items = list(items)
-                if len(items) != len(tasks):
-                    raise ValueError("rlm.map(tasks, items): tasks and items must have the same length")
-                frames = [{"task": task, "context": shared + _wire_context(item)} for task, item in zip(tasks, items)]
-            else:
-                frames = [{"task": task, "context": shared} for task in tasks]
-        await self._by_reference([frame["context"] for frame in frames] + ([prefix] if prefix else []))
-        reply = await self._bridge.request("rlm.map", {
+        frames = _build_map_frames(tasks, items, shared)
+        by_ref_contexts = [frame["context"] for frame in frames]
+        if prefix:
+            by_ref_contexts.append(prefix)
+        await self._by_reference(by_ref_contexts)
+        payload: dict[str, Any] = {
             "frames": frames,
-            **({"prefix": prefix} if prefix else {}),
             "contract": _schema(contract),
             "budget": _budget(budget),
             "model": model,
@@ -529,16 +659,13 @@ class Inference:
             "concurrency": concurrency,
             "timeout_ms": timeout_ms,
             "thinking": thinking,
-            **({"session_id": session_id} if session_id else {}),
-        })
-        results = MapResults(_outcome(item, raise_errors=False) for item in reply["results"])
-        budget = reply.get("budget") if isinstance(reply.get("budget"), dict) else {}
-        results.spent = dict(budget.get("spent") or {})
-        results.budget = dict(budget.get("limits") or {})
-        results.remaining = dict(budget.get("remaining") or {})
-        results.usage = dict(reply.get("usage") or {}) if isinstance(reply.get("usage"), dict) else {}
-        print(results.summary())
-        return results
+        }
+        if prefix:
+            payload["prefix"] = prefix
+        if session_id:
+            payload["session_id"] = session_id
+        reply = await self._bridge.request("rlm.map", payload)
+        return _finalize_map_results(reply)
 
     async def frames(self, trace_id: str | None = None, limit: int = 20) -> Any:
         """Recent frame summaries, or one frame's full trace by id."""

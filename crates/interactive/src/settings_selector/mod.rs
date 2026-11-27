@@ -278,6 +278,26 @@ fn model_ref(m: &ModelInfo) -> String {
     format!("{}/{}", m.provider, m.id)
 }
 
+fn header_rows(header: &[String], width: usize) -> i64 {
+    header
+        .iter()
+        .map(|h| {
+            if h.is_empty() {
+                1
+            } else {
+                wrap_text_with_ansi(h, width).len() as i64
+            }
+        })
+        .sum()
+}
+
+fn focused_mouse_result(result: MouseResult) -> MouseResult {
+    MouseResult {
+        focus: Some(true),
+        ..result
+    }
+}
+
 impl SettingsSelector {
     pub fn new(theme: Rc<Theme>, keys: KeybindingsManager, input: SettingsInput) -> Self {
         let model_thinking: BTreeMap<String, String> = input
@@ -310,76 +330,82 @@ impl SettingsSelector {
         if event.y < 1 {
             return None;
         }
-        let width = event.width;
-        let header_rows = |header: &[String]| -> i64 {
-            header
-                .iter()
-                .map(|h| {
-                    if h.is_empty() {
-                        1
-                    } else {
-                        wrap_text_with_ansi(h, width).len() as i64
-                    }
-                })
-                .sum()
-        };
-        let mut y = event.y - 1;
-        let depth = self.stack.len();
-        for sub in self.stack.iter().take(depth.saturating_sub(1)) {
-            if let Sub::List { header, .. } = sub {
-                y -= header_rows(header);
-            }
-        }
-        let focused = |result: MouseResult| MouseResult {
-            focus: Some(true),
-            ..result
-        };
+        let y = event.y - 1 - self.stack_header_offset(event.width);
         let Some(sub) = self.stack.pop() else {
             let local = MouseEvent { y, ..*event };
             let (result, action) = self.list.handle_mouse(&local)?;
             return Some((result, action.and_then(|a| self.main_action(a)).into_iter().collect()));
         };
         match sub {
-            Sub::List { kind, mut list, header } => {
-                let local = MouseEvent {
-                    y: y - header_rows(&header),
-                    ..*event
-                };
-                match list.handle_mouse(&local) {
-                    None => {
-                        self.stack.push(Sub::List { kind, list, header });
-                        None
-                    }
-                    Some((result, action)) => {
-                        let event = self.list_sub(kind, list, header, action);
-                        Some((focused(result), event.into_iter().collect()))
-                    }
-                }
-            }
-            Sub::Select { kind, mut menu } => {
-                let local = MouseEvent { y, ..*event };
-                let Some((result, outcomes)) = menu.handle_mouse(&local) else {
-                    self.stack.push(Sub::Select { kind, menu });
-                    return None;
-                };
-                let mut events = Vec::new();
-                let mut open = Some((kind, menu));
-                for outcome in outcomes {
-                    let Some((kind, menu)) = open.take() else { break };
-                    events.extend(self.select_sub(kind.clone(), menu, Some(outcome)));
-                    if let Some(Sub::Select { kind: top, .. }) = self.stack.last()
-                        && *top == kind
-                        && let Some(Sub::Select { kind, menu }) = self.stack.pop()
-                    {
-                        open = Some((kind, menu));
-                    }
-                }
-                if let Some((kind, menu)) = open {
-                    self.stack.push(Sub::Select { kind, menu });
-                }
-                Some((focused(result), events))
-            }
+            Sub::List { kind, list, header } => self.handle_list_sub_mouse(kind, list, header, event, y),
+            Sub::Select { kind, menu } => self.handle_select_sub_mouse(kind, menu, event, y),
         }
+    }
+
+    fn stack_header_offset(&self, width: usize) -> i64 {
+        let depth = self.stack.len();
+        self.stack
+            .iter()
+            .take(depth.saturating_sub(1))
+            .map(|sub| match sub {
+                Sub::List { header, .. } => header_rows(header, width),
+                Sub::Select { .. } => 0,
+            })
+            .sum()
+    }
+
+    fn handle_list_sub_mouse(
+        &mut self,
+        kind: SubKind,
+        mut list: List,
+        header: Vec<String>,
+        event: &MouseEvent,
+        y: i64,
+    ) -> Option<(MouseResult, Vec<SettingsEvent>)> {
+        let local = MouseEvent {
+            y: y - header_rows(&header, event.width),
+            ..*event
+        };
+        let Some((result, action)) = list.handle_mouse(&local) else {
+            self.stack.push(Sub::List { kind, list, header });
+            return None;
+        };
+        let event = self.list_sub(kind, list, header, action);
+        Some((focused_mouse_result(result), event.into_iter().collect()))
+    }
+
+    fn handle_select_sub_mouse(
+        &mut self,
+        kind: SubKind,
+        mut menu: SelectSubmenu,
+        event: &MouseEvent,
+        y: i64,
+    ) -> Option<(MouseResult, Vec<SettingsEvent>)> {
+        let local = MouseEvent { y, ..*event };
+        let Some((result, outcomes)) = menu.handle_mouse(&local) else {
+            self.stack.push(Sub::Select { kind, menu });
+            return None;
+        };
+        let mut events = Vec::new();
+        let mut open = Some((kind, menu));
+        for outcome in outcomes {
+            let Some((kind, menu)) = open.take() else { break };
+            events.extend(self.select_sub(kind.clone(), menu, Some(outcome)));
+            open = self.pop_matching_select(&kind);
+        }
+        if let Some((kind, menu)) = open {
+            self.stack.push(Sub::Select { kind, menu });
+        }
+        Some((focused_mouse_result(result), events))
+    }
+
+    fn pop_matching_select(&mut self, kind: &SubKind) -> Option<(SubKind, SelectSubmenu)> {
+        if matches!(self.stack.last(), Some(Sub::Select { kind: top, .. }) if top == kind)
+            && let Some(Sub::Select { kind, menu }) = self.stack.pop()
+        {
+            return Some((kind, menu));
+        }
+        None
     }
 
     pub fn handle_input(&mut self, data: &str) -> Option<SettingsEvent> {
@@ -472,173 +498,188 @@ impl SettingsSelector {
                 None
             }
             Some(SelectOutcome::Highlight(value)) => {
-                let preview = match kind {
-                    SubKind::Theme if value == AUTOMATIC_THEME => Some(self.automatic_setting()),
-                    SubKind::Theme | SubKind::LightTheme | SubKind::DarkTheme => Some(value),
-                    _ => None,
-                };
+                let event = self.select_sub_highlight(&kind, value);
                 self.stack.push(Sub::Select { kind, menu });
-                preview.map(SettingsEvent::Preview)
+                event
             }
-            Some(SelectOutcome::Back) => {
-                match kind {
-                    SubKind::Theme => return Some(SettingsEvent::Preview(self.input.str("theme", "dark"))),
-                    SubKind::LightTheme | SubKind::DarkTheme => {
-                        return Some(SettingsEvent::Preview(self.automatic_setting()));
-                    }
-                    _ => {}
-                }
-                if matches!(kind, SubKind::ModelThinking) && self.thinking_model.take().is_some() {
+            Some(SelectOutcome::Back) => self.select_sub_back(kind),
+            Some(SelectOutcome::Picked(value)) => self.picked(kind, value),
+        }
+    }
+
+    fn select_sub_highlight(&self, kind: &SubKind, value: String) -> Option<SettingsEvent> {
+        let preview = match kind {
+            SubKind::Theme if value == AUTOMATIC_THEME => Some(self.automatic_setting()),
+            SubKind::Theme | SubKind::LightTheme | SubKind::DarkTheme => Some(value),
+            _ => None,
+        };
+        preview.map(SettingsEvent::Preview)
+    }
+
+    fn select_sub_back(&mut self, kind: SubKind) -> Option<SettingsEvent> {
+        match kind {
+            SubKind::Theme => Some(SettingsEvent::Preview(self.input.str("theme", "dark"))),
+            SubKind::LightTheme | SubKind::DarkTheme => Some(SettingsEvent::Preview(self.automatic_setting())),
+            SubKind::ModelThinking => {
+                if self.thinking_model.take().is_some() {
                     self.stack.push(self.thinking_step());
                 }
-                if matches!(kind, SubKind::ModelThinking) {
-                    self.list.update("model-thinking", &self.thinking_summary());
-                }
+                self.list.update("model-thinking", &self.thinking_summary());
                 None
             }
-            Some(SelectOutcome::Picked(value)) => self.picked(kind, value),
+            _ => None,
         }
     }
 
     fn picked(&mut self, kind: SubKind, value: String) -> Option<SettingsEvent> {
         match kind {
-            SubKind::Theme => {
-                if value == AUTOMATIC_THEME {
-                    self.stack.push(self.theme_automatic());
-                    return Some(SettingsEvent::Preview(self.automatic_setting()));
-                }
-                Some(self.set_theme(value))
-            }
-            SubKind::LightTheme | SubKind::DarkTheme => {
-                if matches!(kind, SubKind::LightTheme) {
-                    self.light = value.clone();
-                } else {
-                    self.dark = value.clone();
-                }
-                if let Some(Sub::List { list, .. }) = self.stack.last_mut() {
-                    list.update(
-                        if matches!(kind, SubKind::LightTheme) {
-                            "light-theme"
-                        } else {
-                            "dark-theme"
-                        },
-                        &value,
-                    );
-                }
-                Some(SettingsEvent::Preview(self.automatic_setting()))
-            }
-            SubKind::ModelThinking => match self.thinking_model.take() {
-                None => {
-                    if value != "__none__" {
-                        self.thinking_model = Some(value);
-                    }
-                    self.stack.push(self.thinking_step());
-                    None
-                }
-                Some(key) => {
-                    let (provider, id) = key.split_once('/').unwrap_or(("", key.as_str()));
-                    let level = if value == CLEAR_OVERRIDE {
-                        self.model_thinking.remove(&key);
-                        Value::Null
-                    } else {
-                        self.model_thinking.insert(key.clone(), value.clone());
-                        Value::String(value)
-                    };
-                    let event = SettingsEvent::Change(
-                        "modelThinkingLevel".into(),
-                        json!({"provider": provider, "modelId": id, "level": level}),
-                    );
-                    self.stack.push(self.thinking_step());
-                    Some(event)
-                }
-            },
-            SubKind::ModelPick(id) => {
-                if value.starts_with(GROUP_PREFIX) {
-                    if let Some(row) = self.model_rows().into_iter().find(|r| r.id == id) {
-                        self.stack.push(Sub::Select {
-                            menu: SelectSubmenu::new(
-                                Rc::clone(&self.theme),
-                                self.keys.clone(),
-                                (&row.label, &row.description),
-                                self.picker_items(&row),
-                                &row.current,
-                                true,
-                                (12, 46),
-                            ),
-                            kind: SubKind::ModelPick(id),
-                        });
-                    }
-                    return None;
-                }
-                let row = self.model_rows().into_iter().find(|r| r.id == id)?;
-                let event = if id == RACE_MODELS {
-                    let mut picked = self.input.race_models();
-                    if value.is_empty() {
-                        picked.clear();
-                    } else if let Some(i) = picked.iter().position(|m| *m == value) {
-                        picked.remove(i);
-                    } else {
-                        picked.push(value.clone());
-                    }
-                    let stored = if picked.is_empty() { Value::Null } else { json!(picked) };
-                    set_path(&mut self.input.settings, &id, stored);
-                    SettingsEvent::ModelSetting {
-                        key: id.clone(),
-                        label: row.label,
-                        value: picked.join(", "),
-                    }
-                } else if id == "session" {
-                    if let Some(m) = self.input.models.iter().find(|m| model_ref(m) == value) {
-                        self.input.session = Some(m.clone());
-                    }
-                    SettingsEvent::SessionModel(value.clone())
-                } else {
-                    let stored = if value.is_empty() {
-                        Value::Null
-                    } else if id == "claudeCode.model" || id == "claudeCode.childModel" {
-                        Value::String(value.trim_start_matches("claude-code/").to_string())
-                    } else {
-                        Value::String(value.clone())
-                    };
-                    set_path(&mut self.input.settings, &id, stored);
-                    SettingsEvent::ModelSetting {
-                        key: id.clone(),
-                        label: row.label,
-                        value: value.clone(),
-                    }
-                };
-                let rows = self.model_rows();
-                if let Some(Sub::List { list, .. }) = self.stack.last_mut() {
-                    for row in rows {
-                        if !row.heading {
-                            let shown = match &row.locked {
-                                None => row.display.clone(),
-                                Some(_) => format!("{} · locked", row.display),
-                            };
-                            list.update(&row.id, &shown);
-                        }
-                    }
-                }
-                if id == RACE_MODELS
-                    && let Some(row) = self.model_rows().into_iter().find(|r| r.id == id)
-                {
-                    self.stack.push(Sub::Select {
-                        menu: SelectSubmenu::new(
-                            Rc::clone(&self.theme),
-                            self.keys.clone(),
-                            (&row.label, &row.description),
-                            self.picker_items(&row),
-                            &value,
-                            true,
-                            (12, 46),
-                        ),
-                        kind: SubKind::ModelPick(id),
-                    });
-                }
-                Some(event)
-            }
+            SubKind::Theme => self.picked_theme(value),
+            SubKind::LightTheme => self.picked_auto_theme_side(true, value),
+            SubKind::DarkTheme => self.picked_auto_theme_side(false, value),
+            SubKind::ModelThinking => self.picked_model_thinking(value),
+            SubKind::ModelPick(id) => self.picked_model(id, value),
             SubKind::Warnings | SubKind::Models => None,
         }
+    }
+
+    fn picked_theme(&mut self, value: String) -> Option<SettingsEvent> {
+        if value == AUTOMATIC_THEME {
+            self.stack.push(self.theme_automatic());
+            return Some(SettingsEvent::Preview(self.automatic_setting()));
+        }
+        Some(self.set_theme(value))
+    }
+
+    fn picked_auto_theme_side(&mut self, is_light: bool, value: String) -> Option<SettingsEvent> {
+        let row_id = if is_light {
+            self.light = value.clone();
+            "light-theme"
+        } else {
+            self.dark = value.clone();
+            "dark-theme"
+        };
+        if let Some(Sub::List { list, .. }) = self.stack.last_mut() {
+            list.update(row_id, &value);
+        }
+        Some(SettingsEvent::Preview(self.automatic_setting()))
+    }
+
+    fn picked_model_thinking(&mut self, value: String) -> Option<SettingsEvent> {
+        let Some(key) = self.thinking_model.take() else {
+            if value != "__none__" {
+                self.thinking_model = Some(value);
+            }
+            self.stack.push(self.thinking_step());
+            return None;
+        };
+        let (provider, id) = key.split_once('/').unwrap_or(("", key.as_str()));
+        let level = if value == CLEAR_OVERRIDE {
+            self.model_thinking.remove(&key);
+            Value::Null
+        } else {
+            self.model_thinking.insert(key.clone(), value.clone());
+            Value::String(value)
+        };
+        let event = SettingsEvent::Change(
+            "modelThinkingLevel".into(),
+            json!({"provider": provider, "modelId": id, "level": level}),
+        );
+        self.stack.push(self.thinking_step());
+        Some(event)
+    }
+
+    fn picked_model(&mut self, id: String, value: String) -> Option<SettingsEvent> {
+        if value.starts_with(GROUP_PREFIX) {
+            self.reopen_model_picker(id, None);
+            return None;
+        }
+        let row = self.model_rows().into_iter().find(|r| r.id == id)?;
+        let event = self.apply_model_pick(&id, row.label, &value);
+        self.refresh_model_list_values();
+        if id == RACE_MODELS {
+            self.reopen_model_picker(id, Some(&value));
+        }
+        Some(event)
+    }
+
+    fn apply_model_pick(&mut self, id: &str, label: String, value: &str) -> SettingsEvent {
+        if id == RACE_MODELS {
+            return self.toggle_race_model(id, label, value);
+        }
+        if id == "session" {
+            if let Some(m) = self.input.models.iter().find(|m| model_ref(m) == value) {
+                self.input.session = Some(m.clone());
+            }
+            return SettingsEvent::SessionModel(value.to_string());
+        }
+        self.save_model_setting(id, label, value)
+    }
+
+    fn toggle_race_model(&mut self, id: &str, label: String, value: &str) -> SettingsEvent {
+        let mut picked = self.input.race_models();
+        if value.is_empty() {
+            picked.clear();
+        } else if let Some(i) = picked.iter().position(|m| *m == value) {
+            picked.remove(i);
+        } else {
+            picked.push(value.to_string());
+        }
+        let stored = if picked.is_empty() { Value::Null } else { json!(picked) };
+        set_path(&mut self.input.settings, id, stored);
+        SettingsEvent::ModelSetting {
+            key: id.to_string(),
+            label,
+            value: picked.join(", "),
+        }
+    }
+
+    fn save_model_setting(&mut self, id: &str, label: String, value: &str) -> SettingsEvent {
+        let stored = if value.is_empty() {
+            Value::Null
+        } else if id == "claudeCode.model" || id == "claudeCode.childModel" {
+            Value::String(value.trim_start_matches("claude-code/").to_string())
+        } else {
+            Value::String(value.to_string())
+        };
+        set_path(&mut self.input.settings, id, stored);
+        SettingsEvent::ModelSetting {
+            key: id.to_string(),
+            label,
+            value: value.to_string(),
+        }
+    }
+
+    fn refresh_model_list_values(&mut self) {
+        let rows = self.model_rows();
+        let Some(Sub::List { list, .. }) = self.stack.last_mut() else {
+            return;
+        };
+        for row in rows.into_iter().filter(|r| !r.heading) {
+            let shown = match &row.locked {
+                None => row.display,
+                Some(_) => format!("{} · locked", row.display),
+            };
+            list.update(&row.id, &shown);
+        }
+    }
+
+    fn reopen_model_picker(&mut self, id: String, current_override: Option<&str>) {
+        let Some(row) = self.model_rows().into_iter().find(|r| r.id == id) else {
+            return;
+        };
+        let current = current_override.unwrap_or(&row.current);
+        self.stack.push(Sub::Select {
+            menu: SelectSubmenu::new(
+                Rc::clone(&self.theme),
+                self.keys.clone(),
+                (&row.label, &row.description),
+                self.picker_items(&row),
+                current,
+                true,
+                (12, 46),
+            ),
+            kind: SubKind::ModelPick(id),
+        });
     }
 
     /// `getAutomaticThemeSetting`.

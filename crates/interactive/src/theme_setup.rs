@@ -112,42 +112,26 @@ impl ThemeController {
         self.background_queries > 0
     }
 
-    /// An OSC 11 reply (`consumeOsc11BackgroundResponse` resolving `detectTerminalBackgroundTheme`): the reported
-    /// background is the terminal's appearance. Without a setting its theme applies and is saved (the detection is
-    /// confident); with an automatic pair its side applies unless a scheme report came first. A reply nobody asked
-    /// for, an unparseable one, or one after the setting became a name changes nothing. The theme to draw with and
-    /// the setting to save, when something changed.
-    pub fn background_reported(&mut self, rgb: Option<(u8, u8, u8)>) -> Option<Applied> {
-        if self.background_queries == 0 {
+    fn apply_auto_background(&mut self, light: String, dark: String, theme: TerminalTheme) -> Option<Applied> {
+        if self.scheme_reported {
             return None;
         }
-        self.background_queries -= 1;
-        let detection = detect_terminal_background_theme(Some(rgb?), None);
-        if let Some((light, dark)) = parse_auto_theme_setting(self.setting.as_deref()) {
-            if self.scheme_reported {
-                return None;
-            }
-            self.terminal = detection.theme;
-            let name = if detection.theme == TerminalTheme::Light {
-                light
-            } else {
-                dark
-            };
-            if self.active.as_deref() == Some(name.as_str()) {
-                return None;
-            }
-            return Some(Applied {
-                theme: self.apply_name(&name, false).0,
-                save: None,
-                query_scheme: false,
-                query_background: false,
-                error: None,
-            });
-        }
-        if self.setting.is_some() {
+        self.terminal = theme;
+        let name = if theme == TerminalTheme::Light { light } else { dark };
+        if self.active.as_deref() == Some(name.as_str()) {
             return None;
         }
-        self.terminal = detection.theme;
+        Some(Applied {
+            theme: self.apply_name(&name, false).0,
+            save: None,
+            query_scheme: false,
+            query_background: false,
+            error: None,
+        })
+    }
+
+    fn apply_detected_background(&mut self, theme: TerminalTheme) -> Option<Applied> {
+        self.terminal = theme;
         let detected = self.terminal_theme();
         if self.detection_confident && self.active.as_deref() == Some(detected) {
             return None;
@@ -161,6 +145,26 @@ impl ThemeController {
             query_background: false,
             error: None,
         })
+    }
+
+    /// An OSC 11 reply (`consumeOsc11BackgroundResponse` resolving `detectTerminalBackgroundTheme`): the reported
+    /// background is the terminal's appearance. Without a setting its theme applies and is saved (the detection is
+    /// confident); with an automatic pair its side applies unless a scheme report came first. A reply nobody asked
+    /// for, an unparseable one, or one after the setting became a name changes nothing. The theme to draw with and
+    /// the setting to save, when something changed.
+    pub fn background_reported(&mut self, rgb: Option<(u8, u8, u8)>) -> Option<Applied> {
+        if self.background_queries == 0 {
+            return None;
+        }
+        self.background_queries -= 1;
+        let detection = detect_terminal_background_theme(Some(rgb?), None);
+        if let Some((light, dark)) = parse_auto_theme_setting(self.setting.as_deref()) {
+            return self.apply_auto_background(light, dark, detection.theme);
+        }
+        if self.setting.is_some() {
+            return None;
+        }
+        self.apply_detected_background(detection.theme)
     }
 
     /// The name of the theme applied last (`theme.name`): the theme document's own name, `dark` after a fallback.

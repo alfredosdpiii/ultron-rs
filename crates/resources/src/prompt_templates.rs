@@ -23,6 +23,18 @@ pub struct LoadPromptTemplatesResult {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+fn push_unquoted_char(c: char, quote: &mut Option<char>, current: &mut String, out: &mut Vec<String>) {
+    if c == '"' || c == '\'' {
+        *quote = Some(c);
+    } else if jsrt::string::is_space(c) {
+        if !current.is_empty() {
+            out.push(std::mem::take(current));
+        }
+    } else {
+        current.push(c);
+    }
+}
+
 /// Split arguments bash-style: whitespace separates, single or double quotes group.
 pub fn parse_command_args(args: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -32,13 +44,7 @@ pub fn parse_command_args(args: &str) -> Vec<String> {
         match quote {
             Some(q) if c == q => quote = None,
             Some(_) => current.push(c),
-            None if c == '"' || c == '\'' => quote = Some(c),
-            None if jsrt::string::is_space(c) => {
-                if !current.is_empty() {
-                    out.push(std::mem::take(&mut current));
-                }
-            }
-            None => current.push(c),
+            None => push_unquoted_char(c, &mut quote, &mut current, &mut out),
         }
     }
     if !current.is_empty() {
@@ -56,47 +62,62 @@ fn number(s: &str) -> usize {
     s.parse().unwrap_or(usize::MAX)
 }
 
+fn arg_at(args: &[String], n: usize) -> Option<String> {
+    n.checked_sub(1).and_then(|i| args.get(i)).cloned()
+}
+
+fn default_target(inner: &str) -> Option<&str> {
+    match digits(inner) {
+        0 if inner.starts_with("ARGUMENTS") => Some("ARGUMENTS"),
+        0 if inner.starts_with('@') => Some("@"),
+        0 => None,
+        n => Some(&inner[..n]),
+    }
+}
+
+fn braced_default(inner: &str, args: &[String], all: &str) -> Option<(usize, String)> {
+    let target = default_target(inner)?;
+    let rest = inner[target.len()..].strip_prefix(":-")?;
+    let end = rest.find('}')?;
+    let value = if target == "@" || target == "ARGUMENTS" {
+        Some(all.to_string())
+    } else {
+        arg_at(args, number(target))
+    };
+    let replacement = value
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| rest[..end].to_string());
+    Some((2 + target.len() + 2 + end + 1, replacement))
+}
+
+fn slice_length(after: &str) -> Option<(Option<usize>, usize)> {
+    if let Some(l) = after.strip_prefix(':') {
+        let len_digits = digits(l);
+        if len_digits > 0 && l[len_digits..].starts_with('}') {
+            return Some((Some(number(&l[..len_digits])), 1 + len_digits));
+        }
+        return None;
+    }
+    after.starts_with('}').then_some((None, 0))
+}
+
+fn braced_slice(inner: &str, args: &[String]) -> Option<(usize, String)> {
+    let rest = inner.strip_prefix("@:")?;
+    let n = digits(rest);
+    if n == 0 {
+        return None;
+    }
+    let start = number(&rest[..n]).saturating_sub(1);
+    let (length, used) = slice_length(&rest[n..])?;
+    let end = args.len().min(length.map_or(usize::MAX, |l| start.saturating_add(l)));
+    let slice = args.get(start..end.max(start)).unwrap_or(&[]);
+    Some((2 + 2 + n + used + 1, slice.join(" ")))
+}
+
 /// One placeholder at the start of `s` (which begins with `$`): (bytes consumed, replacement).
 fn placeholder(s: &str, args: &[String], all: &str) -> Option<(usize, String)> {
-    let arg = |n: usize| n.checked_sub(1).and_then(|i| args.get(i)).cloned();
     if let Some(inner) = s.strip_prefix("${") {
-        let target = match digits(inner) {
-            0 if inner.starts_with("ARGUMENTS") => Some("ARGUMENTS"),
-            0 if inner.starts_with('@') => Some("@"),
-            0 => None,
-            n => Some(&inner[..n]),
-        };
-        if let Some(target) = target
-            && let Some(rest) = inner[target.len()..].strip_prefix(":-")
-            && let Some(end) = rest.find('}')
-        {
-            let value = if target == "@" || target == "ARGUMENTS" {
-                Some(all.to_string())
-            } else {
-                arg(number(target))
-            };
-            let replacement = value
-                .filter(|v| !v.is_empty())
-                .unwrap_or_else(|| rest[..end].to_string());
-            return Some((2 + target.len() + 2 + end + 1, replacement));
-        }
-        let rest = inner.strip_prefix("@:")?;
-        let n = digits(rest);
-        if n == 0 {
-            return None;
-        }
-        let start = number(&rest[..n]).saturating_sub(1);
-        let after = &rest[n..];
-        let (length, used) = match after.strip_prefix(':') {
-            Some(l) if digits(l) > 0 && l[digits(l)..].starts_with('}') => {
-                (Some(number(&l[..digits(l)])), 1 + digits(l))
-            }
-            _ if after.starts_with('}') => (None, 0),
-            _ => return None,
-        };
-        let end = args.len().min(length.map_or(usize::MAX, |l| start.saturating_add(l)));
-        let slice = args.get(start..end.max(start)).unwrap_or(&[]);
-        return Some((2 + 2 + n + used + 1, slice.join(" ")));
+        return braced_default(inner, args, all).or_else(|| braced_slice(inner, args));
     }
     let rest = &s[1..];
     if rest.starts_with("ARGUMENTS") {
@@ -107,7 +128,7 @@ fn placeholder(s: &str, args: &[String], all: &str) -> Option<(usize, String)> {
     }
     match digits(rest) {
         0 => None,
-        n => Some((1 + n, arg(number(&rest[..n])).unwrap_or_default())),
+        n => Some((1 + n, arg_at(args, number(&rest[..n])).unwrap_or_default())),
     }
 }
 

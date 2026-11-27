@@ -102,61 +102,65 @@ fn group_label(m: &PathMetadata, agent_dir: &str, home: &str) -> String {
     .to_string()
 }
 
-fn build_groups(resolved: &ResolvedPaths, agent_dir: &str, home: &str) -> Vec<Group> {
-    let mut groups: Vec<(String, Group)> = Vec::new();
-    for kind in RESOURCE_TYPES {
-        for res in resolved.of(kind) {
-            let m = &res.metadata;
-            let key = format!(
-                "{}:{}:{}",
-                m.scope.name(),
-                m.source,
-                m.base_dir.as_deref().unwrap_or("")
-            );
-            let index = match groups.iter().position(|(k, _)| *k == key) {
-                Some(i) => i,
-                None => {
-                    groups.push((
-                        key,
-                        Group {
-                            label: group_label(m, agent_dir, home),
-                            scope: m.scope,
-                            source: m.source.clone(),
-                            subgroups: Vec::new(),
-                        },
-                    ));
-                    groups.len() - 1
-                }
-            };
-            let group = &mut groups[index].1;
-            let sub = match group.subgroups.iter().position(|s| s.kind == kind) {
-                Some(i) => i,
-                None => {
-                    group.subgroups.push(Subgroup {
-                        kind,
-                        items: Vec::new(),
-                    });
-                    group.subgroups.len() - 1
-                }
-            };
-            let file = basename(&res.path).to_string();
-            let parent_dir = dirname(&res.path);
-            let parent = basename(&parent_dir).to_string();
-            let display_name = if kind == ResourceType::Skills && file == "SKILL.md" {
-                parent
-            } else {
-                file
-            };
-            group.subgroups[sub].items.push(Item {
-                path: res.path.clone(),
-                enabled: res.enabled,
-                metadata: m.clone(),
-                kind,
-                display_name,
-            });
+fn insert_resource(
+    groups: &mut Vec<(String, Group)>,
+    kind: ResourceType,
+    path: &str,
+    enabled: bool,
+    m: &PathMetadata,
+    agent_dir: &str,
+    home: &str,
+) {
+    let key = format!(
+        "{}:{}:{}",
+        m.scope.name(),
+        m.source,
+        m.base_dir.as_deref().unwrap_or("")
+    );
+    let index = match groups.iter().position(|(k, _)| *k == key) {
+        Some(i) => i,
+        None => {
+            groups.push((
+                key,
+                Group {
+                    label: group_label(m, agent_dir, home),
+                    scope: m.scope,
+                    source: m.source.clone(),
+                    subgroups: Vec::new(),
+                },
+            ));
+            groups.len() - 1
         }
-    }
-    let mut groups: Vec<Group> = groups.into_iter().map(|(_, g)| g).collect();
+    };
+    let group = &mut groups[index].1;
+    let sub = match group.subgroups.iter().position(|s| s.kind == kind) {
+        Some(i) => i,
+        None => {
+            group.subgroups.push(Subgroup {
+                kind,
+                items: Vec::new(),
+            });
+            group.subgroups.len() - 1
+        }
+    };
+    let file = basename(path).to_string();
+    let parent_dir = dirname(path);
+    let parent = basename(&parent_dir).to_string();
+    let display_name = if kind == ResourceType::Skills && file == "SKILL.md" {
+        parent
+    } else {
+        file
+    };
+    group.subgroups[sub].items.push(Item {
+        path: path.to_string(),
+        enabled,
+        metadata: m.clone(),
+        kind,
+        display_name,
+    });
+}
+
+fn sort_groups(groups: &mut [Group]) {
     groups.sort_by(|a, b| {
         if a.scope != b.scope {
             return if a.scope == Scope::User {
@@ -167,13 +171,32 @@ fn build_groups(resolved: &ResolvedPaths, agent_dir: &str, home: &str) -> Vec<Gr
         }
         jsrt::collate::locale_compare(&a.source, &b.source)
     });
-    for group in &mut groups {
+    for group in groups {
         group.subgroups.sort_by_key(|s| s.kind);
         for sub in &mut group.subgroups {
             sub.items
                 .sort_by(|a, b| jsrt::collate::locale_compare(&a.display_name, &b.display_name));
         }
     }
+}
+
+fn build_groups(resolved: &ResolvedPaths, agent_dir: &str, home: &str) -> Vec<Group> {
+    let mut groups: Vec<(String, Group)> = Vec::new();
+    for kind in RESOURCE_TYPES {
+        for res in resolved.of(kind) {
+            insert_resource(
+                &mut groups,
+                kind,
+                &res.path,
+                res.enabled,
+                &res.metadata,
+                agent_dir,
+                home,
+            );
+        }
+    }
+    let mut groups: Vec<Group> = groups.into_iter().map(|(_, g)| g).collect();
+    sort_groups(&mut groups);
     groups
 }
 
@@ -357,64 +380,88 @@ impl ConfigSelector {
         }
     }
 
+    fn page_up(&mut self) {
+        let mut t = self.selected.saturating_sub(self.max_visible);
+        while t < self.filtered.len() && !matches!(self.filtered[t], Row::Item(..)) {
+            t += 1;
+        }
+        if t < self.filtered.len() {
+            self.selected = t;
+        }
+    }
+
+    fn page_down(&mut self) {
+        let mut t = (self.selected + self.max_visible).min(self.filtered.len().saturating_sub(1)) as i64;
+        while t >= 0 && !matches!(self.filtered[t as usize], Row::Item(..)) {
+            t -= 1;
+        }
+        if t >= 0 {
+            self.selected = t as usize;
+        }
+    }
+
+    fn handle_navigation(&mut self, data: &str) -> bool {
+        if self.keys.matches(data, "tui.select.up") {
+            self.selected = self.next_item(self.selected, false);
+        } else if self.keys.matches(data, "tui.select.down") {
+            self.selected = self.next_item(self.selected, true);
+        } else if self.keys.matches(data, "tui.select.pageUp") {
+            self.page_up();
+        } else if self.keys.matches(data, "tui.select.pageDown") {
+            self.page_down();
+        } else {
+            return false;
+        }
+        true
+    }
+
+    fn switch_write_scope(&mut self) {
+        if !self.project_mode {
+            return;
+        }
+        self.write_scope = match self.write_scope {
+            WriteScope::Global => WriteScope::Project,
+            WriteScope::Project => WriteScope::Global,
+        };
+        self.build_rows();
+        self.filter();
+    }
+
+    fn toggle_selected(&mut self) {
+        let Some(row) = self.filtered.get(self.selected).copied() else {
+            return;
+        };
+        let Some(item) = self.item(row).cloned() else {
+            return;
+        };
+        if self.write_scope != WriteScope::Project && item_scope(&item) != Scope::User {
+            return;
+        }
+        if let Some(enabled) = self.toggle(&item)
+            && let Row::Item(g, s, i) = row
+        {
+            let index = self.index();
+            self.groups[index][g].subgroups[s].items[i].enabled = enabled;
+        }
+    }
+
     /// `ResourceList.handleInput`.
     pub fn handle_input(&mut self, data: &str) -> Action {
-        let kb = &self.keys;
-        if kb.matches(data, "tui.select.up") {
-            self.selected = self.next_item(self.selected, false);
+        if self.handle_navigation(data) {
             return Action::None;
         }
-        if kb.matches(data, "tui.select.down") {
-            self.selected = self.next_item(self.selected, true);
-            return Action::None;
-        }
-        if kb.matches(data, "tui.select.pageUp") {
-            let mut t = self.selected.saturating_sub(self.max_visible);
-            while t < self.filtered.len() && !matches!(self.filtered[t], Row::Item(..)) {
-                t += 1;
-            }
-            if t < self.filtered.len() {
-                self.selected = t;
-            }
-            return Action::None;
-        }
-        if kb.matches(data, "tui.select.pageDown") {
-            let mut t = (self.selected + self.max_visible).min(self.filtered.len().saturating_sub(1)) as i64;
-            while t >= 0 && !matches!(self.filtered[t as usize], Row::Item(..)) {
-                t -= 1;
-            }
-            if t >= 0 {
-                self.selected = t as usize;
-            }
-            return Action::None;
-        }
-        if kb.matches(data, "tui.select.cancel") {
+        if self.keys.matches(data, "tui.select.cancel") {
             return Action::Close;
         }
         if data == "\x03" {
             return Action::Exit;
         }
-        if kb.matches(data, "tui.input.tab") {
-            if self.project_mode {
-                self.write_scope = match self.write_scope {
-                    WriteScope::Global => WriteScope::Project,
-                    WriteScope::Project => WriteScope::Global,
-                };
-                self.build_rows();
-                self.filter();
-            }
+        if self.keys.matches(data, "tui.input.tab") {
+            self.switch_write_scope();
             return Action::None;
         }
-        if data == " " || kb.matches(data, "tui.select.confirm") {
-            if let Some(row) = self.filtered.get(self.selected).copied()
-                && let Some(item) = self.item(row).cloned()
-                && (self.write_scope == WriteScope::Project || item_scope(&item) == Scope::User)
-                && let Some(enabled) = self.toggle(&item)
-                && let Row::Item(g, s, i) = row
-            {
-                let index = self.index();
-                self.groups[index][g].subgroups[s].items[i].enabled = enabled;
-            }
+        if data == " " || self.keys.matches(data, "tui.select.confirm") {
+            self.toggle_selected();
             return Action::None;
         }
         self.search.handle_input(data);
@@ -555,8 +602,23 @@ impl ConfigSelector {
         }
     }
 
+    fn keep_override_entry(
+        entry: &str,
+        patterns: &[String],
+        pattern: &str,
+        state: OverrideState,
+        inherited: bool,
+    ) -> bool {
+        let t = target(entry);
+        let prefixed = entry.starts_with(['!', '+', '-']);
+        if prefixed && patterns.iter().any(|p| p == t) {
+            return false;
+        }
+        !(state == OverrideState::Inherit && inherited && t == pattern)
+    }
+
     fn set_project_override(&mut self, item: &Item, state: OverrideState) -> bool {
-        let sign = |s: OverrideState| if s == OverrideState::Load { "+" } else { "-" };
+        let sign = if state == OverrideState::Load { "+" } else { "-" };
         let current = strings(self.settings.project_settings().get(item.kind.key()));
         let inherited = self.is_inherited_global(item);
         let pattern = if inherited {
@@ -567,19 +629,13 @@ impl ConfigSelector {
         let patterns = self.top_level_patterns(item);
         let mut updated: Vec<String> = current
             .into_iter()
-            .filter(|e| {
-                let t = target(e);
-                if (e.starts_with('!') || e.starts_with('+') || e.starts_with('-')) && patterns.iter().any(|p| p == t) {
-                    return false;
-                }
-                !(state == OverrideState::Inherit && inherited && t == pattern)
-            })
+            .filter(|e| Self::keep_override_entry(e, &patterns, &pattern, state, inherited))
             .collect();
         if state != OverrideState::Inherit {
             if inherited && !updated.contains(&pattern) {
                 updated.push(pattern.clone());
             }
-            updated.push(format!("{}{pattern}", sign(state)));
+            updated.push(format!("{sign}{pattern}"));
         }
         let _ = self.settings.set_project(item.kind.key(), Some(to_value(updated)));
         true
@@ -656,6 +712,54 @@ impl ConfigSelector {
         ]
     }
 
+    fn render_group_row(&self, group: &Group, width: usize) -> String {
+        let inherited = self.write_scope == WriteScope::Project && group.scope == Scope::User;
+        let suffix = if inherited { " · inherited global" } else { "" };
+        let label = bold(&format!("{}{suffix}", group.label));
+        let line = self.theme.fg(if inherited { Fg::Dim } else { Fg::Accent }, &label);
+        truncate_to_width(&format!("  {line}"), width, "", false)
+    }
+
+    fn render_subgroup_row(&self, group: &Group, kind: ResourceType, width: usize) -> String {
+        let color = if self.write_scope == WriteScope::Project && group.scope == Scope::User {
+            Fg::Dim
+        } else {
+            Fg::Muted
+        };
+        let label = self.theme.fg(color, type_label(kind));
+        truncate_to_width(&format!("    {label}"), width, "", false)
+    }
+
+    fn render_item_row(&self, row: Row, selected: bool, width: usize) -> Option<String> {
+        let item = self.item(row)?;
+        let dimmed = self.write_scope == WriteScope::Project
+            && self.is_inherited_global(item)
+            && self.override_state(item) == OverrideState::Inherit;
+        let text = if selected && !dimmed {
+            bold(&item.display_name)
+        } else {
+            item.display_name.clone()
+        };
+        let name = if dimmed { self.theme.fg(Fg::Dim, &text) } else { text };
+        let cursor = if selected { "> " } else { "  " };
+        Some(truncate_to_width(
+            &format!("{cursor}    {} {name}{}", self.checkbox(item), self.suffix(item)),
+            width,
+            "...",
+            false,
+        ))
+    }
+
+    fn scroll_counter(&self) -> String {
+        let count = self.filtered.iter().filter(|r| matches!(r, Row::Item(..))).count();
+        let current = self.filtered[..self.selected]
+            .iter()
+            .filter(|r| matches!(r, Row::Item(..)))
+            .count()
+            + 1;
+        self.theme.fg(Fg::Dim, &format!("  ({current}/{count})"))
+    }
+
     fn list(&mut self, width: usize) -> Vec<String> {
         let mut lines = self.search.render(width);
         lines.push(String::new());
@@ -670,56 +774,19 @@ impl ConfigSelector {
         let groups = &self.groups[self.index()];
         for i in start..end {
             match self.filtered[i] {
-                Row::Group(g) => {
-                    let group = &groups[g];
-                    let inherited = self.write_scope == WriteScope::Project && group.scope == Scope::User;
-                    let label = bold(&format!(
-                        "{}{}",
-                        group.label,
-                        if inherited { " · inherited global" } else { "" }
-                    ));
-                    let line = self.theme.fg(if inherited { Fg::Dim } else { Fg::Accent }, &label);
-                    lines.push(truncate_to_width(&format!("  {line}"), width, "", false));
-                }
+                Row::Group(g) => lines.push(self.render_group_row(&groups[g], width)),
                 Row::Subgroup(g, s) => {
-                    let color = if self.write_scope == WriteScope::Project && groups[g].scope == Scope::User {
-                        Fg::Dim
-                    } else {
-                        Fg::Muted
-                    };
-                    let label = self.theme.fg(color, type_label(groups[g].subgroups[s].kind));
-                    lines.push(truncate_to_width(&format!("    {label}"), width, "", false));
+                    lines.push(self.render_subgroup_row(&groups[g], groups[g].subgroups[s].kind, width));
                 }
                 row @ Row::Item(..) => {
-                    let Some(item) = self.item(row) else { continue };
-                    let selected = i == self.selected;
-                    let dimmed = self.write_scope == WriteScope::Project
-                        && self.is_inherited_global(item)
-                        && self.override_state(item) == OverrideState::Inherit;
-                    let text = if selected && !dimmed {
-                        bold(&item.display_name)
-                    } else {
-                        item.display_name.clone()
-                    };
-                    let name = if dimmed { self.theme.fg(Fg::Dim, &text) } else { text };
-                    let cursor = if selected { "> " } else { "  " };
-                    lines.push(truncate_to_width(
-                        &format!("{cursor}    {} {name}{}", self.checkbox(item), self.suffix(item)),
-                        width,
-                        "...",
-                        false,
-                    ));
+                    if let Some(line) = self.render_item_row(row, i == self.selected, width) {
+                        lines.push(line);
+                    }
                 }
             }
         }
         if start > 0 || end < self.filtered.len() {
-            let count = self.filtered.iter().filter(|r| matches!(r, Row::Item(..))).count();
-            let current = self.filtered[..self.selected]
-                .iter()
-                .filter(|r| matches!(r, Row::Item(..)))
-                .count()
-                + 1;
-            lines.push(self.theme.fg(Fg::Dim, &format!("  ({current}/{count})")));
+            lines.push(self.scroll_counter());
         }
         lines
     }

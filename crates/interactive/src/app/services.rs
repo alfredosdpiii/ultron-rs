@@ -27,39 +27,57 @@ impl App {
 
     /// `#applySettingLocally` (and what reads its setting on use): a presentation setting changed in `/settings`.
     pub(super) fn apply_local_setting(&mut self, key: &str, value: &Value) {
+        if self.apply_bool_setting(key, value) {
+            return;
+        }
+        match key {
+            "theme" => self.apply_theme_setting(value),
+            "editorPaddingX" => self.apply_editor_padding(value),
+            "autocompleteMaxVisible" => self.apply_autocomplete_max_visible(value),
+            "doubleEscapeAction" => self.double_escape_action = value.as_str().unwrap_or("tree").to_string(),
+            _ => {}
+        }
+    }
+
+    fn apply_bool_setting(&mut self, key: &str, value: &Value) -> bool {
         match key {
             "hideThinkingBlock" => self.chat.set_hide_thinking(*value == true),
-            "theme" => {
-                if let Some(setting) = value.as_str()
-                    && let Some(controller) = self.theme_controller.as_mut()
-                {
-                    let applied = controller.set_setting(setting);
-                    self.adopt_theme(&applied.theme);
-                    self.sync_scheme_notifications(applied.query_scheme);
-                    self.query_background(applied.query_background);
-                    if let Some(error) = applied.error {
-                        self.show_status(&format!("Error: {error}"));
-                    }
-                }
-            }
             "showHardwareCursor" => self.show_hardware_cursor = *value == true,
             "terminal.clearOnShrink" => self.clear_on_shrink = *value == true,
-            "editorPaddingX" => {
-                if let Some(padding) = value.as_f64().filter(|p| p.is_finite()) {
-                    self.editor.set_padding_x(padding.max(0.0).floor() as usize);
-                }
-            }
-            "autocompleteMaxVisible" => {
-                if let Some(visible) = value.as_f64().filter(|v| v.is_finite()) {
-                    self.editor
-                        .set_autocomplete_max_visible(visible.clamp(3.0, 20.0).floor() as usize);
-                }
-            }
             "compaction.enabled" => self.auto_compact = *value != false,
-            "doubleEscapeAction" => self.double_escape_action = value.as_str().unwrap_or("tree").to_string(),
             "quietStartup" => self.header.splash = self.splash_allowed && *value != true,
             "rlmPaneAutoOpen" => self.rlm_pane_auto = *value != false,
-            _ => {}
+            _ => return false,
+        }
+        true
+    }
+
+    fn apply_theme_setting(&mut self, value: &Value) {
+        let Some(setting) = value.as_str() else {
+            return;
+        };
+        let Some(controller) = self.theme_controller.as_mut() else {
+            return;
+        };
+        let applied = controller.set_setting(setting);
+        self.adopt_theme(&applied.theme);
+        self.sync_scheme_notifications(applied.query_scheme);
+        self.query_background(applied.query_background);
+        if let Some(error) = applied.error {
+            self.show_status(&format!("Error: {error}"));
+        }
+    }
+
+    fn apply_editor_padding(&mut self, value: &Value) {
+        if let Some(padding) = value.as_f64().filter(|p| p.is_finite()) {
+            self.editor.set_padding_x(padding.max(0.0).floor() as usize);
+        }
+    }
+
+    fn apply_autocomplete_max_visible(&mut self, value: &Value) {
+        if let Some(visible) = value.as_f64().filter(|v| v.is_finite()) {
+            self.editor
+                .set_autocomplete_max_visible(visible.clamp(3.0, 20.0).floor() as usize);
         }
     }
 
@@ -271,59 +289,83 @@ impl App {
     /// Apply what background services produced (clipboard reads, git changes, notification bytes); true when the
     /// screen may have changed. Never blocks.
     pub fn poll_services(&mut self) -> bool {
-        let mut changed = false;
+        let mut changed = self.poll_clipboard();
+        changed |= self.chat.poll_images();
+        changed |= self.poll_git_sources();
+        changed |= self.drain_side_writes();
+        changed
+    }
+
+    fn poll_clipboard(&mut self) -> bool {
         let replies: Vec<ClipboardReply> = self
             .clipboard
             .as_ref()
             .map_or_default(|c| std::iter::from_fn(|| c.try_reply()).collect());
+        let changed = !replies.is_empty();
         for reply in replies {
-            match reply {
-                ClipboardReply::Copied(result) => match (self.pending_copies.pop_front().flatten(), result) {
-                    (Some(done), Ok(osc52)) => {
-                        self.terminal_writes.extend(osc52);
-                        self.show_status(&done);
-                    }
-                    (Some(_), Err(error)) => self.show_status(&format!("Error: {error}")),
-                    (None, Ok(osc52)) => {
-                        self.terminal_writes.extend(osc52);
-                        self.viewport.copied(Ok(()), self.now());
-                    }
-                    (None, Err(error)) => self.viewport.copied(Err(error), self.now()),
-                },
-                reply if self.pending_reads.pop_front() == Some(true) => {
-                    if let ClipboardReply::Text(text) = reply
-                        && !text.is_empty()
-                        && self.overlay.is_none()
-                    {
-                        self.editor.handle_input(&format!("{PASTE_START}{text}{PASTE_END}"));
-                    }
-                }
-                ClipboardReply::Image { data, mime_type } if self.qol.attachments => {
-                    let placeholder = self.attachments.add_image(data, &mime_type, None);
-                    self.editor.insert_text_at_cursor(&format!("{placeholder} "));
-                }
-                ClipboardReply::Image { data, mime_type } => {
-                    if let Some(path) = self.save_clipboard_image(&data, &mime_type) {
-                        self.editor.insert_text_at_cursor(&path);
-                    }
-                }
-                ClipboardReply::Text(text) if self.qol.attachments => {
-                    self.editor.handle_input(&format!("{PASTE_START}{text}{PASTE_END}"));
-                }
-                ClipboardReply::Text(text) => {
-                    if !text.is_empty() {
-                        self.editor.insert_text_at_cursor(&text);
-                    }
-                }
-                ClipboardReply::Error(e) if self.qol.attachments => self.show_status(&format!("Error: {e}")),
-                ClipboardReply::Error(_) => {}
-            }
+            self.handle_clipboard_reply(reply);
             self.update_editor_border();
-            changed = true;
         }
-        if self.chat.poll_images() {
-            changed = true;
+        changed
+    }
+
+    fn handle_clipboard_reply(&mut self, reply: ClipboardReply) {
+        match reply {
+            ClipboardReply::Copied(result) => self.handle_clipboard_copied(result),
+            reply if self.pending_reads.pop_front() == Some(true) => self.handle_pending_clipboard_read(reply),
+            ClipboardReply::Image { data, mime_type } => self.handle_clipboard_image(data, mime_type),
+            ClipboardReply::Text(text) => self.handle_clipboard_text(text),
+            ClipboardReply::Error(e) => {
+                if self.qol.attachments {
+                    self.show_status(&format!("Error: {e}"));
+                }
+            }
         }
+    }
+
+    fn handle_clipboard_copied(&mut self, result: Result<Option<String>, String>) {
+        match (self.pending_copies.pop_front().flatten(), result) {
+            (Some(done), Ok(osc52)) => {
+                self.terminal_writes.extend(osc52);
+                self.show_status(&done);
+            }
+            (Some(_), Err(error)) => self.show_status(&format!("Error: {error}")),
+            (None, Ok(osc52)) => {
+                self.terminal_writes.extend(osc52);
+                self.viewport.copied(Ok(()), self.now());
+            }
+            (None, Err(error)) => self.viewport.copied(Err(error), self.now()),
+        }
+    }
+
+    fn handle_pending_clipboard_read(&mut self, reply: ClipboardReply) {
+        if let ClipboardReply::Text(text) = reply
+            && !text.is_empty()
+            && self.overlay.is_none()
+        {
+            self.editor.handle_input(&format!("{PASTE_START}{text}{PASTE_END}"));
+        }
+    }
+
+    fn handle_clipboard_image(&mut self, data: String, mime_type: String) {
+        if self.qol.attachments {
+            let placeholder = self.attachments.add_image(data, &mime_type, None);
+            self.editor.insert_text_at_cursor(&format!("{placeholder} "));
+        } else if let Some(path) = self.save_clipboard_image(&data, &mime_type) {
+            self.editor.insert_text_at_cursor(&path);
+        }
+    }
+
+    fn handle_clipboard_text(&mut self, text: String) {
+        if self.qol.attachments {
+            self.editor.handle_input(&format!("{PASTE_START}{text}{PASTE_END}"));
+        } else if !text.is_empty() {
+            self.editor.insert_text_at_cursor(&text);
+        }
+    }
+
+    fn poll_git_sources(&mut self) -> bool {
+        let mut changed = false;
         if let Some(branch) = self
             .footer_branch
             .as_ref()
@@ -340,17 +382,21 @@ impl App {
                 changed = true;
             }
         }
+        changed
+    }
+
+    fn drain_side_writes(&mut self) -> bool {
         let writes = std::mem::take(
             &mut *self
                 .side_writes
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
-        if !writes.is_empty() {
-            self.terminal_writes.extend(writes);
-            changed = true;
+        if writes.is_empty() {
+            return false;
         }
-        changed
+        self.terminal_writes.extend(writes);
+        true
     }
 
     /// A clipboard image (base64) saved as `<tmp>/ultron-clipboard-<id>.<ext>`, the extension by its MIME type

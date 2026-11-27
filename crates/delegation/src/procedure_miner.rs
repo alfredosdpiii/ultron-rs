@@ -210,44 +210,8 @@ impl MinedProcedure {
         let id = value["id"].as_str()?.to_string();
         let signature = value["signature"].as_str()?.to_string();
         let state = ProcedureState::parse(value["state"].as_str().unwrap_or("candidate"));
-        let mut pattern = Vec::new();
-        for tok in value["pattern"].as_array()? {
-            if let Some(word) = tok["literal"].as_str() {
-                pattern.push(PromptToken::Literal(word.to_string()));
-            } else {
-                let slot = tok["slot"].as_str()?;
-                pattern.push(PromptToken::Slot {
-                    name: slot.to_string(),
-                    kind: SlotKind::parse(tok["kind"].as_str().unwrap_or("word")),
-                });
-            }
-        }
-        let mut steps = Vec::new();
-        for step in value["steps"].as_array()? {
-            let tool = step["tool"].as_str()?.to_string();
-            let mut args = BTreeMap::new();
-            for (k, raw) in step["args"].as_object()? {
-                let expr = if let Some(lit) = raw.get("literal") {
-                    ArgExpr::Literal(lit.clone())
-                } else if let Some(slot) = raw["slot"].as_str() {
-                    ArgExpr::Slot(slot.to_string())
-                } else if let Some(tpl) = raw.get("template").and_then(Value::as_object) {
-                    ArgExpr::Template {
-                        prefix: tpl.get("prefix").and_then(Value::as_str)?.to_string(),
-                        slot: tpl.get("slot").and_then(Value::as_str)?.to_string(),
-                        suffix: tpl.get("suffix").and_then(Value::as_str)?.to_string(),
-                    }
-                } else {
-                    let sref = raw.get("stepRef").and_then(Value::as_object)?;
-                    ArgExpr::StepRef {
-                        step: sref.get("step").and_then(Value::as_u64)? as usize,
-                        field: sref.get("field").and_then(Value::as_str)?.to_string(),
-                    }
-                };
-                args.insert(k.clone(), expr);
-            }
-            steps.push(StepTemplate { tool, args });
-        }
+        let pattern = parse_prompt_pattern(value["pattern"].as_array()?)?;
+        let steps = parse_step_templates(value["steps"].as_array()?)?;
         Some(MinedProcedure {
             id,
             signature,
@@ -265,6 +229,56 @@ impl MinedProcedure {
             updated_at: value["updatedAt"].as_u64().unwrap_or(0),
         })
     }
+}
+
+fn parse_prompt_pattern(items: &[Value]) -> Option<Vec<PromptToken>> {
+    let mut pattern = Vec::with_capacity(items.len());
+    for tok in items {
+        if let Some(word) = tok["literal"].as_str() {
+            pattern.push(PromptToken::Literal(word.to_string()));
+        } else {
+            let slot = tok["slot"].as_str()?;
+            pattern.push(PromptToken::Slot {
+                name: slot.to_string(),
+                kind: SlotKind::parse(tok["kind"].as_str().unwrap_or("word")),
+            });
+        }
+    }
+    Some(pattern)
+}
+
+fn parse_arg_expr(raw: &Value) -> Option<ArgExpr> {
+    if let Some(lit) = raw.get("literal") {
+        return Some(ArgExpr::Literal(lit.clone()));
+    }
+    if let Some(slot) = raw["slot"].as_str() {
+        return Some(ArgExpr::Slot(slot.to_string()));
+    }
+    if let Some(tpl) = raw.get("template").and_then(Value::as_object) {
+        return Some(ArgExpr::Template {
+            prefix: tpl.get("prefix").and_then(Value::as_str)?.to_string(),
+            slot: tpl.get("slot").and_then(Value::as_str)?.to_string(),
+            suffix: tpl.get("suffix").and_then(Value::as_str)?.to_string(),
+        });
+    }
+    let sref = raw.get("stepRef").and_then(Value::as_object)?;
+    Some(ArgExpr::StepRef {
+        step: sref.get("step").and_then(Value::as_u64)? as usize,
+        field: sref.get("field").and_then(Value::as_str)?.to_string(),
+    })
+}
+
+fn parse_step_templates(items: &[Value]) -> Option<Vec<StepTemplate>> {
+    let mut steps = Vec::with_capacity(items.len());
+    for step in items {
+        let tool = step["tool"].as_str()?.to_string();
+        let mut args = BTreeMap::new();
+        for (k, raw) in step["args"].as_object()? {
+            args.insert(k.clone(), parse_arg_expr(raw)?);
+        }
+        steps.push(StepTemplate { tool, args });
+    }
+    Some(steps)
 }
 
 /// A uniquely selected pre-planning procedure execution plan.
@@ -304,6 +318,55 @@ fn message_plain_text(message: &Value) -> String {
     out
 }
 
+fn push_if_valid_trace(traces: &mut Vec<Trace>, current: Option<Trace>) {
+    if let Some(trace) = current
+        && (MIN_STEPS..=MAX_STEPS).contains(&trace.steps.len())
+        && trace.steps.iter().all(|s| s.ok)
+    {
+        traces.push(trace);
+    }
+}
+
+fn record_assistant_message(trace: &mut Trace, msg: &Value, pending_calls: &mut HashMap<String, usize>) {
+    trace.requests += 1;
+    trace.tokens += msg["usage"]["totalTokens"].as_u64().unwrap_or(0);
+    for block in msg["content"].as_array().into_iter().flatten() {
+        if block["type"] != "toolCall" {
+            continue;
+        }
+        let Some(name) = block["name"].as_str() else {
+            continue;
+        };
+        let args = block["arguments"].as_object().cloned().unwrap_or_default();
+        let idx = trace.steps.len();
+        trace.steps.push(StepCall {
+            tool: name.to_string(),
+            args,
+            result: None,
+            ok: true,
+        });
+        if let Some(id) = block["id"].as_str() {
+            pending_calls.insert(id.to_string(), idx);
+        }
+    }
+}
+
+fn record_tool_result_message(trace: &mut Trace, msg: &Value, pending_calls: &HashMap<String, usize>) {
+    let Some(id) = msg["toolCallId"].as_str() else {
+        return;
+    };
+    let Some(&idx) = pending_calls.get(id) else {
+        return;
+    };
+    let is_err = msg["isError"].as_bool().unwrap_or(false);
+    let text = message_plain_text(msg);
+    let parsed = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text));
+    if let Some(step) = trace.steps.get_mut(idx) {
+        step.ok = !is_err;
+        step.result = Some(truncate_value(parsed));
+    }
+}
+
 /// Extracts completed root turn traces from session journal branch entries.
 pub fn extract_traces(entries: &[Value]) -> Vec<Trace> {
     let mut traces = Vec::new();
@@ -321,12 +384,7 @@ pub fn extract_traces(entries: &[Value]) -> Vec<Trace> {
                 pending_procedure_opening = true;
             }
             Some("user") => {
-                if let Some(trace) = current.take()
-                    && (MIN_STEPS..=MAX_STEPS).contains(&trace.steps.len())
-                    && trace.steps.iter().all(|s| s.ok)
-                {
-                    traces.push(trace);
-                }
+                push_if_valid_trace(&mut traces, current.take());
                 pending_calls.clear();
                 current = Some(Trace {
                     prompt: message_plain_text(msg).trim().to_string(),
@@ -337,58 +395,19 @@ pub fn extract_traces(entries: &[Value]) -> Vec<Trace> {
                 });
             }
             Some("assistant") => {
-                let Some(trace) = current.as_mut() else {
-                    continue;
-                };
-                trace.requests += 1;
-                trace.tokens += msg["usage"]["totalTokens"].as_u64().unwrap_or(0);
-                for block in msg["content"].as_array().into_iter().flatten() {
-                    if block["type"] != "toolCall" {
-                        continue;
-                    }
-                    let Some(name) = block["name"].as_str() else {
-                        continue;
-                    };
-                    let args = block["arguments"].as_object().cloned().unwrap_or_default();
-                    let idx = trace.steps.len();
-                    trace.steps.push(StepCall {
-                        tool: name.to_string(),
-                        args,
-                        result: None,
-                        ok: true,
-                    });
-                    if let Some(id) = block["id"].as_str() {
-                        pending_calls.insert(id.to_string(), idx);
-                    }
+                if let Some(trace) = current.as_mut() {
+                    record_assistant_message(trace, msg, &mut pending_calls);
                 }
             }
             Some("toolResult") => {
-                let Some(trace) = current.as_mut() else {
-                    continue;
-                };
-                let Some(id) = msg["toolCallId"].as_str() else {
-                    continue;
-                };
-                let Some(&idx) = pending_calls.get(id) else {
-                    continue;
-                };
-                let is_err = msg["isError"].as_bool().unwrap_or(false);
-                let text = message_plain_text(msg);
-                let parsed = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text));
-                if let Some(step) = trace.steps.get_mut(idx) {
-                    step.ok = !is_err;
-                    step.result = Some(truncate_value(parsed));
+                if let Some(trace) = current.as_mut() {
+                    record_tool_result_message(trace, msg, &pending_calls);
                 }
             }
             _ => {}
         }
     }
-    if let Some(trace) = current
-        && (MIN_STEPS..=MAX_STEPS).contains(&trace.steps.len())
-        && trace.steps.iter().all(|s| s.ok)
-    {
-        traces.push(trace);
-    }
+    push_if_valid_trace(&mut traces, current);
     let keep_from = traces.len().saturating_sub(MAX_RECENT_TRACES);
     traces.drain(..keep_from);
     traces
@@ -454,66 +473,67 @@ fn generalize_prompts(prompts: &[&str]) -> Option<(Vec<PromptToken>, Vec<SlotBin
     Some((pattern, bindings))
 }
 
-fn generalize_arg(
+fn generalize_arg_from_slots(
     step_idx: usize,
     key: &str,
+    first: &Value,
     examples: &[&Trace],
     bindings: &[BTreeMap<String, String>],
 ) -> Option<ArgExpr> {
-    let first = examples[0].steps[step_idx].args.get(key)?;
-    if examples
-        .iter()
-        .all(|ex| ex.steps[step_idx].args.get(key) == Some(first))
-    {
-        return Some(ArgExpr::Literal(first.clone()));
-    }
-
-    if let Some(slot_names) = bindings.first() {
-        for slot in slot_names.keys() {
-            let exact_match = examples.iter().enumerate().all(|(i, ex)| {
-                let Some(val) = ex.steps[step_idx].args.get(key).and_then(Value::as_str) else {
-                    return false;
-                };
-                bindings[i].get(slot).is_some_and(|bound| bound == val)
-            });
-            if exact_match {
-                return Some(ArgExpr::Slot(slot.clone()));
-            }
-        }
-        for slot in slot_names.keys() {
-            let Some(first_str) = first.as_str() else {
-                continue;
-            };
-            let Some(first_bound) = bindings[0].get(slot) else {
-                continue;
-            };
-            if first_bound.is_empty() {
-                continue;
-            }
-            let Some(pos) = first_str.find(first_bound.as_str()) else {
-                continue;
-            };
-            let prefix = &first_str[..pos];
-            let suffix = &first_str[pos + first_bound.len()..];
-            let tpl_match = examples.iter().enumerate().all(|(i, ex)| {
-                let Some(val) = ex.steps[step_idx].args.get(key).and_then(Value::as_str) else {
-                    return false;
-                };
-                let Some(bound) = bindings[i].get(slot) else {
-                    return false;
-                };
-                val == format!("{prefix}{bound}{suffix}")
-            });
-            if tpl_match {
-                return Some(ArgExpr::Template {
-                    prefix: prefix.to_string(),
-                    slot: slot.clone(),
-                    suffix: suffix.to_string(),
-                });
-            }
+    let slot_names = bindings.first()?;
+    for slot in slot_names.keys() {
+        let exact_match = examples.iter().enumerate().all(|(i, ex)| {
+            ex.steps[step_idx]
+                .args
+                .get(key)
+                .and_then(Value::as_str)
+                .is_some_and(|val| bindings[i].get(slot).is_some_and(|bound| bound == val))
+        });
+        if exact_match {
+            return Some(ArgExpr::Slot(slot.clone()));
         }
     }
+    generalize_arg_from_template(step_idx, key, first, examples, bindings, slot_names)
+}
 
+fn generalize_arg_from_template(
+    step_idx: usize,
+    key: &str,
+    first: &Value,
+    examples: &[&Trace],
+    bindings: &[BTreeMap<String, String>],
+    slot_names: &BTreeMap<String, String>,
+) -> Option<ArgExpr> {
+    let first_str = first.as_str()?;
+    for slot in slot_names.keys() {
+        let Some(first_bound) = bindings[0].get(slot).filter(|b| !b.is_empty()) else {
+            continue;
+        };
+        let Some(pos) = first_str.find(first_bound.as_str()) else {
+            continue;
+        };
+        let prefix = &first_str[..pos];
+        let suffix = &first_str[pos + first_bound.len()..];
+        let tpl_match = examples.iter().enumerate().all(|(i, ex)| {
+            let Some(val) = ex.steps[step_idx].args.get(key).and_then(Value::as_str) else {
+                return false;
+            };
+            bindings[i]
+                .get(slot)
+                .is_some_and(|bound| val == format!("{prefix}{bound}{suffix}"))
+        });
+        if tpl_match {
+            return Some(ArgExpr::Template {
+                prefix: prefix.to_string(),
+                slot: slot.clone(),
+                suffix: suffix.to_string(),
+            });
+        }
+    }
+    None
+}
+
+fn generalize_arg_from_prev_step(step_idx: usize, key: &str, examples: &[&Trace]) -> Option<ArgExpr> {
     for prev in 0..step_idx {
         let Some(first_obj) = examples[0].steps[prev].result.as_ref().and_then(Value::as_object) else {
             continue;
@@ -538,8 +558,24 @@ fn generalize_arg(
             }
         }
     }
-
     None
+}
+
+fn generalize_arg(
+    step_idx: usize,
+    key: &str,
+    examples: &[&Trace],
+    bindings: &[BTreeMap<String, String>],
+) -> Option<ArgExpr> {
+    let first = examples[0].steps[step_idx].args.get(key)?;
+    if examples
+        .iter()
+        .all(|ex| ex.steps[step_idx].args.get(key) == Some(first))
+    {
+        return Some(ArgExpr::Literal(first.clone()));
+    }
+    generalize_arg_from_slots(step_idx, key, first, examples, bindings)
+        .or_else(|| generalize_arg_from_prev_step(step_idx, key, examples))
 }
 
 /// Matches `prompt` against `pattern` requiring exact literal words and valid typed slots.
@@ -567,6 +603,27 @@ pub fn match_pattern(pattern: &[PromptToken], prompt: &str) -> Option<BTreeMap<S
     Some(bindings)
 }
 
+fn resolve_arg_expr(expr: &ArgExpr, idx: usize, bindings: &BTreeMap<String, String>, example: &Trace) -> Option<Value> {
+    match expr {
+        ArgExpr::Literal(v) => Some(v.clone()),
+        ArgExpr::Slot(slot) => bindings.get(slot).map(|v| Value::String(v.clone())),
+        ArgExpr::Template { prefix, slot, suffix } => bindings
+            .get(slot)
+            .map(|v| Value::String(format!("{prefix}{v}{suffix}"))),
+        ArgExpr::StepRef { step, field } => {
+            if *step >= idx {
+                return None;
+            }
+            example.steps[*step]
+                .result
+                .as_ref()
+                .and_then(Value::as_object)
+                .and_then(|obj| obj.get(field))
+                .cloned()
+        }
+    }
+}
+
 fn evaluate_steps_against(steps: &[StepTemplate], bindings: &BTreeMap<String, String>, example: &Trace) -> bool {
     if steps.len() != example.steps.len() {
         return false;
@@ -576,30 +633,8 @@ fn evaluate_steps_against(steps: &[StepTemplate], bindings: &BTreeMap<String, St
             return false;
         }
         for (key, expr) in &tpl.args {
-            let expected = match expr {
-                ArgExpr::Literal(v) => v.clone(),
-                ArgExpr::Slot(slot) => match bindings.get(slot) {
-                    Some(v) => Value::String(v.clone()),
-                    None => return false,
-                },
-                ArgExpr::Template { prefix, slot, suffix } => match bindings.get(slot) {
-                    Some(v) => Value::String(format!("{prefix}{v}{suffix}")),
-                    None => return false,
-                },
-                ArgExpr::StepRef { step, field } => {
-                    if *step >= idx {
-                        return false;
-                    }
-                    match example.steps[*step]
-                        .result
-                        .as_ref()
-                        .and_then(Value::as_object)
-                        .and_then(|obj| obj.get(field))
-                    {
-                        Some(v) => v.clone(),
-                        None => return false,
-                    }
-                }
+            let Some(expected) = resolve_arg_expr(expr, idx, bindings, example) else {
+                return false;
             };
             if actual.args.get(key) != Some(&expected) {
                 return false;
@@ -609,21 +644,22 @@ fn evaluate_steps_against(steps: &[StepTemplate], bindings: &BTreeMap<String, St
     true
 }
 
-fn generalize_group(signature: &str, examples: &[&Trace], now_ms: u64) -> Option<MinedProcedure> {
-    let prompts: Vec<&str> = examples.iter().map(|t| t.prompt.as_str()).collect();
-    let (pattern, bindings) = generalize_prompts(&prompts)?;
+fn build_step_templates(examples: &[&Trace], bindings: &[BTreeMap<String, String>]) -> Option<Vec<StepTemplate>> {
     let step_count = examples[0].steps.len();
     let mut templates = Vec::with_capacity(step_count);
     for step_idx in 0..step_count {
         let tool = examples[0].steps[step_idx].tool.clone();
         let mut args = BTreeMap::new();
         for key in examples[0].steps[step_idx].args.keys() {
-            let expr = generalize_arg(step_idx, key, examples, &bindings)?;
+            let expr = generalize_arg(step_idx, key, examples, bindings)?;
             args.insert(key.clone(), expr);
         }
         templates.push(StepTemplate { tool, args });
     }
+    Some(templates)
+}
 
+fn passes_leave_one_out(examples: &[&Trace]) -> bool {
     for held_out in 0..examples.len() {
         let train: Vec<&Trace> = examples
             .iter()
@@ -632,21 +668,28 @@ fn generalize_group(signature: &str, examples: &[&Trace], now_ms: u64) -> Option
             .map(|(_, t)| *t)
             .collect();
         let train_prompts: Vec<&str> = train.iter().map(|t| t.prompt.as_str()).collect();
-        let (train_pattern, train_bindings) = generalize_prompts(&train_prompts)?;
-        let mut train_steps = Vec::with_capacity(step_count);
-        for step_idx in 0..step_count {
-            let tool = train[0].steps[step_idx].tool.clone();
-            let mut args = BTreeMap::new();
-            for key in train[0].steps[step_idx].args.keys() {
-                let expr = generalize_arg(step_idx, key, &train, &train_bindings)?;
-                args.insert(key.clone(), expr);
-            }
-            train_steps.push(StepTemplate { tool, args });
-        }
-        let bound = match_pattern(&train_pattern, &examples[held_out].prompt)?;
+        let Some((train_pattern, train_bindings)) = generalize_prompts(&train_prompts) else {
+            return false;
+        };
+        let Some(train_steps) = build_step_templates(&train, &train_bindings) else {
+            return false;
+        };
+        let Some(bound) = match_pattern(&train_pattern, &examples[held_out].prompt) else {
+            return false;
+        };
         if !evaluate_steps_against(&train_steps, &bound, examples[held_out]) {
-            return None;
+            return false;
         }
+    }
+    true
+}
+
+fn generalize_group(signature: &str, examples: &[&Trace], now_ms: u64) -> Option<MinedProcedure> {
+    let prompts: Vec<&str> = examples.iter().map(|t| t.prompt.as_str()).collect();
+    let (pattern, bindings) = generalize_prompts(&prompts)?;
+    let templates = build_step_templates(examples, &bindings)?;
+    if !passes_leave_one_out(examples) {
+        return None;
     }
 
     let count = examples.len() as f64;

@@ -103,15 +103,32 @@ fn plain_inline(tokens: &[Token]) -> String {
     out
 }
 
+fn push_link(href: &str, tokens: &[Token], links: &mut Vec<(String, String)>) {
+    if href.is_empty() {
+        return;
+    }
+    let label = jsrt::string::flatten(&plain_inline(tokens));
+    links.push((
+        if label.is_empty() { href.to_string() } else { label },
+        href.to_string(),
+    ));
+}
+
+fn walk_table_links(header: &[Vec<Token>], rows: &[Vec<Vec<Token>>], links: &mut Vec<(String, String)>) {
+    for cell in header {
+        walk_links(cell, links);
+    }
+    for row in rows {
+        for cell in row {
+            walk_links(cell, links);
+        }
+    }
+}
+
 fn walk_links(tokens: &[Token], links: &mut Vec<(String, String)>) {
     for token in tokens {
         match token {
-            Token::Link { href, tokens, .. } => {
-                if !href.is_empty() {
-                    let label = jsrt::string::flatten(&plain_inline(tokens));
-                    links.push((if label.is_empty() { href.clone() } else { label }, href.clone()));
-                }
-            }
+            Token::Link { href, tokens, .. } => push_link(href, tokens, links),
             Token::Heading { tokens, .. }
             | Token::Paragraph { tokens }
             | Token::Blockquote { tokens }
@@ -126,16 +143,7 @@ fn walk_links(tokens: &[Token], links: &mut Vec<(String, String)>) {
                     walk_links(&item.tokens, links);
                 }
             }
-            Token::Table { header, rows, .. } => {
-                for cell in header {
-                    walk_links(cell, links);
-                }
-                for row in rows {
-                    for cell in row {
-                        walk_links(cell, links);
-                    }
-                }
-            }
+            Token::Table { header, rows, .. } => walk_table_links(header, rows, links),
             _ => {}
         }
     }
@@ -317,6 +325,55 @@ fn plain_block(label: &str, content: &str, entry: usize, language: Option<&str>)
     }
 }
 
+fn push_assistant_blocks(blocks: &mut Vec<CopyBlock>, message: &Value, index: usize) {
+    push_markdown_blocks(blocks, &assistant_visible(message), index);
+    for call in tool_calls(message) {
+        if let Some(command) = command_from_tool_call(call["name"].as_str().unwrap_or(""), &call["arguments"]) {
+            let label = match command.kind {
+                CommandKind::Bash => "bash command",
+                CommandKind::Eval => "eval code",
+                CommandKind::Rlm => "rlm code",
+            };
+            blocks.push(CopyBlock {
+                label: label.into(),
+                content: command.code,
+                entry: index,
+                kind: Some(BlockKind::Command),
+                language: Some(command.language),
+                href: None,
+            });
+        }
+    }
+}
+
+fn push_tool_result_block(blocks: &mut Vec<CopyBlock>, message: &Value, index: usize) {
+    let text = tool_result_text(message);
+    if !text.is_empty() {
+        let label = format!("{} result", message["toolName"].as_str().unwrap_or(""));
+        blocks.push(plain_block(&label, &text, index, None));
+    }
+}
+
+fn push_execution_blocks(
+    blocks: &mut Vec<CopyBlock>,
+    message: &Value,
+    index: usize,
+    label: &str,
+    code_key: &str,
+    language: &str,
+) {
+    blocks.push(plain_block(
+        label,
+        message[code_key].as_str().unwrap_or(""),
+        index,
+        Some(language),
+    ));
+    let output = message["output"].as_str().unwrap_or("");
+    if !output.trim().is_empty() {
+        blocks.push(plain_block("output", output, index, None));
+    }
+}
+
 /// `collectBlocks`: markdown code/quotes/links, commands and tool output of the entries `indices` of `entries`.
 pub fn collect_blocks(entries: &[TranscriptEntry], indices: &[usize]) -> Vec<CopyBlock> {
     let mut blocks = Vec::new();
@@ -328,58 +385,11 @@ pub fn collect_blocks(entries: &[TranscriptEntry], indices: &[usize]) -> Vec<Cop
                 &protocol::pi_message::content_text(&message["content"], "\n"),
                 index,
             ),
-            Some("assistant") => {
-                push_markdown_blocks(&mut blocks, &assistant_visible(message), index);
-                for call in tool_calls(message) {
-                    if let Some(command) =
-                        command_from_tool_call(call["name"].as_str().unwrap_or(""), &call["arguments"])
-                    {
-                        let label = match command.kind {
-                            CommandKind::Bash => "bash command",
-                            CommandKind::Eval => "eval code",
-                            CommandKind::Rlm => "rlm code",
-                        };
-                        blocks.push(CopyBlock {
-                            label: label.into(),
-                            content: command.code,
-                            entry: index,
-                            kind: Some(BlockKind::Command),
-                            language: Some(command.language),
-                            href: None,
-                        });
-                    }
-                }
-            }
-            Some("toolResult") => {
-                let text = tool_result_text(message);
-                if !text.is_empty() {
-                    let label = format!("{} result", message["toolName"].as_str().unwrap_or(""));
-                    blocks.push(plain_block(&label, &text, index, None));
-                }
-            }
-            Some("bashExecution") => {
-                blocks.push(plain_block(
-                    "command",
-                    message["command"].as_str().unwrap_or(""),
-                    index,
-                    Some("bash"),
-                ));
-                let output = message["output"].as_str().unwrap_or("");
-                if !output.trim().is_empty() {
-                    blocks.push(plain_block("output", output, index, None));
-                }
-            }
+            Some("assistant") => push_assistant_blocks(&mut blocks, message, index),
+            Some("toolResult") => push_tool_result_block(&mut blocks, message, index),
+            Some("bashExecution") => push_execution_blocks(&mut blocks, message, index, "command", "command", "bash"),
             Some("pythonExecution") => {
-                blocks.push(plain_block(
-                    "eval code",
-                    message["code"].as_str().unwrap_or(""),
-                    index,
-                    Some("python"),
-                ));
-                let output = message["output"].as_str().unwrap_or("");
-                if !output.trim().is_empty() {
-                    blocks.push(plain_block("output", output, index, None));
-                }
+                push_execution_blocks(&mut blocks, message, index, "eval code", "code", "python");
             }
             _ => {}
         }
@@ -387,63 +397,49 @@ pub fn collect_blocks(entries: &[TranscriptEntry], indices: &[usize]) -> Vec<Cop
     blocks
 }
 
+fn join_non_empty(a: &str, b: &str) -> String {
+    [a, b]
+        .iter()
+        .filter(|p| !p.trim().is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn non_empty_pair(text: String, label: String) -> Option<(String, String)> {
+    (!text.is_empty()).then_some((text, label))
+}
+
 /// `targetCopy`: the clipboard payload of a whole turn (opened by `entries[first]`), falling back to its blocks.
 pub fn target_copy(entries: &[TranscriptEntry], first: usize, blocks: &[CopyBlock]) -> (String, String) {
     let message = &entries[first].message;
-    let joined = |a: &str, b: &str| {
-        [a, b]
-            .iter()
-            .filter(|p| !p.trim().is_empty())
-            .copied()
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    match message["role"].as_str() {
-        Some("user") => {
-            return (
-                protocol::pi_message::content_text(&message["content"], "\n"),
-                "user message".into(),
-            );
-        }
-        Some("assistant") => {
-            let text = assistant_visible(message);
-            if !text.is_empty() {
-                return (text, "assistant message".into());
-            }
-        }
-        Some("toolResult") => {
-            let text = tool_result_text(message);
-            if !text.is_empty() {
-                return (text, format!("{} result", message["toolName"].as_str().unwrap_or("")));
-            }
-        }
-        Some("bashExecution") => {
-            let s = |k: &str| message[k].as_str().unwrap_or("").to_string();
-            return (joined(&s("command"), &s("output")), "bash execution".into());
-        }
-        Some("pythonExecution") => {
-            let s = |k: &str| message[k].as_str().unwrap_or("").to_string();
-            return (joined(&s("code"), &s("output")), "eval execution".into());
-        }
-        Some("compactionSummary") | Some("branchSummary") => {
-            return (message["summary"].as_str().unwrap_or("").to_string(), "summary".into());
-        }
-        Some("custom") | Some("hookMessage") => {
+    let s = |k: &str| message[k].as_str().unwrap_or("");
+    let direct = match message["role"].as_str() {
+        Some("user") => Some((
+            protocol::pi_message::content_text(&message["content"], "\n"),
+            "user message".into(),
+        )),
+        Some("assistant") => non_empty_pair(assistant_visible(message), "assistant message".into()),
+        Some("toolResult") => non_empty_pair(tool_result_text(message), format!("{} result", s("toolName"))),
+        Some("bashExecution") => Some((join_non_empty(s("command"), s("output")), "bash execution".into())),
+        Some("pythonExecution") => Some((join_non_empty(s("code"), s("output")), "eval execution".into())),
+        Some("compactionSummary" | "branchSummary") => Some((s("summary").to_string(), "summary".into())),
+        Some("custom" | "hookMessage") => {
             let content = protocol::pi_message::content_text(&message["content"], "\n");
-            if !content.trim().is_empty() {
-                return (content, "message".into());
-            }
+            (!content.trim().is_empty()).then(|| (content, "message".into()))
         }
-        _ => {}
-    }
-    (
-        blocks
-            .iter()
-            .map(|b| b.content.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n"),
-        "turn content".into(),
-    )
+        _ => None,
+    };
+    direct.unwrap_or_else(|| {
+        (
+            blocks
+                .iter()
+                .map(|b| b.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+            "turn content".into(),
+        )
+    })
 }
 
 /// First non-blank line, whitespace collapsed.

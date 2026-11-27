@@ -1205,7 +1205,7 @@ fn cli_rpc_compaction_branch_summary_and_run_compaction_retry() {
     let (target, _) = two_exchanges(&a);
     a.call(summarizing(&target, None)).unwrap().unwrap();
     let (_, states, result) = a.last_operation();
-    assert!(states.contains(&"summary.retry_wait".to_string()), "{states:?}");
+    assert!(states.iter().any(|i: &String| i == "summary.retry_wait"), "{states:?}");
     assert_eq!(
         (&result["kind"], &result["status"]),
         (&json!("navigation"), &json!("completed"))
@@ -1221,7 +1221,7 @@ fn cli_rpc_compaction_branch_summary_and_run_compaction_retry() {
     );
     a.prompt("first");
     let (operation, states, result) = a.last_operation();
-    assert!(states.contains(&"summary.retry_wait".to_string()), "{states:?}");
+    assert!(states.iter().any(|i: &String| i == "summary.retry_wait"), "{states:?}");
     assert_eq!(
         (&result["kind"], &result["status"]),
         (&json!("run"), &json!("completed"))
@@ -1273,7 +1273,7 @@ fn cli_rpc_compaction_summary_retry_needs_a_transient_error_and_retries_on() {
         assert!(a.call(session_core::core::Op::Compact { instructions: None }).is_err());
         assert_eq!(a.summaries(), 1);
         let (_, states, result) = a.last_operation();
-        assert!(!states.contains(&"summary.retry_wait".to_string()), "{states:?}");
+        assert!(!states.iter().any(|i: &String| i == "summary.retry_wait"), "{states:?}");
         assert_eq!(result["status"], "failed");
         assert!(a.events("retry_scheduled").is_empty());
     }
@@ -1325,7 +1325,7 @@ fn cli_rpc_compaction_summarizes_in_parts_when_the_model_refuses_the_history_as_
     assert!(!summaries[1].contains("<previous-summary>"));
     assert!(summaries[2].contains("<previous-summary>\\n## Goal\\nFirst part.\\n</previous-summary>"));
     let (_, states, result) = a.last_operation();
-    assert!(!states.contains(&"summary.retry_wait".to_string()), "{states:?}");
+    assert!(!states.iter().any(|i: &String| i == "summary.retry_wait"), "{states:?}");
     assert_eq!(
         (&result["kind"], &result["status"]),
         (&json!("compaction"), &json!("completed"))

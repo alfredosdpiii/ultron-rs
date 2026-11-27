@@ -216,20 +216,14 @@ pub fn select_cut(view: &ContextView, keep_recent_tokens: u64) -> Option<usize> 
         .then_some(cut)
 }
 
-fn is_candidate(contributions: &[Vec<Message>], index: usize) -> bool {
-    match contributions[index].first() {
-        Some(Message::Assistant(_)) => return true,
-        Some(Message::User(_)) => {}
-        _ => return false,
-    }
-    let mut calls: Vec<String> = Vec::new();
+fn preceding_tool_call_ids(contributions: &[Vec<Message>], index: usize) -> Vec<String> {
     for before in (0..index).rev() {
         let assistant = contributions[before].iter().rev().find_map(|message| match message {
             Message::Assistant(assistant) => Some(assistant),
             _ => None,
         });
         if let Some(assistant) = assistant {
-            calls = assistant
+            return assistant
                 .content
                 .iter()
                 .filter_map(|content| match content {
@@ -237,22 +231,32 @@ fn is_candidate(contributions: &[Vec<Message>], index: usize) -> bool {
                     _ => None,
                 })
                 .collect();
-            break;
         }
     }
-    if calls.is_empty() {
-        return true;
-    }
+    Vec::new()
+}
+
+fn has_following_tool_result(contributions: &[Vec<Message>], index: usize, calls: &[String]) -> bool {
     for (after, messages) in contributions.iter().enumerate().skip(index) {
         for (position, message) in messages.iter().enumerate() {
             match message {
-                Message::Assistant(_) if after > index || position > 0 => return true,
-                Message::ToolResult(result) if calls.contains(&result.tool_call_id) => return false,
+                Message::Assistant(_) if after > index || position > 0 => return false,
+                Message::ToolResult(result) if calls.contains(&result.tool_call_id) => return true,
                 _ => {}
             }
         }
     }
-    true
+    false
+}
+
+fn is_candidate(contributions: &[Vec<Message>], index: usize) -> bool {
+    match contributions[index].first() {
+        Some(Message::Assistant(_)) => return true,
+        Some(Message::User(_)) => {}
+        _ => return false,
+    }
+    let calls = preceding_tool_call_ids(contributions, index);
+    calls.is_empty() || !has_following_tool_result(contributions, index, &calls)
 }
 
 /// What a compaction cutting `view` at `cut` summarizes (`prepareCompaction`): the context before the cut (after the
@@ -443,12 +447,136 @@ fn summary_failure(message: &AssistantMessage, label: &str) -> String {
     }
 }
 
+struct SummaryRun {
+    texts: Vec<String>,
+    responses: Vec<(Value, String)>,
+    last: AssistantMessage,
+}
+
+fn run_summary_requests(
+    services: &Services,
+    runtime: &TaskRuntime,
+    model: &ai::Model,
+    request: &SummaryRequest,
+    requests: Vec<compaction::SummaryRequest>,
+) -> Result<SummaryRun> {
+    let mut texts = Vec::new();
+    let mut responses = Vec::new();
+    let mut last = None;
+    for summary_request in requests {
+        let mut stream_options = request.stream_options.clone();
+        stream_options.remove("deferred");
+        stream_options.insert("cacheRetention".into(), json!("none"));
+        stream_options.insert("maxTokens".into(), json!(summary_request.max_tokens));
+        let stream_request = StreamRequest {
+            options: stream_options,
+            session_id: summary_request.session_id.clone(),
+            reasoning: summary_request.reasoning.clone(),
+            conversation_id: Some(runtime.conversation_id()),
+            final_note: None,
+        };
+        let response = services.models.stream(
+            model,
+            &summary_request.context,
+            &stream_request,
+            runtime.signal(),
+            &mut |_| {},
+        )?;
+        runtime.signal().check()?;
+        let text = summary_text(&response);
+        responses.push((
+            to_value(&response.usage),
+            format!("{}/{}", response.provider, response.model),
+        ));
+        let failed = text.is_none();
+        texts.extend(text);
+        last = Some(response);
+        if failed {
+            break;
+        }
+    }
+    let Some(last) = last else {
+        return Err(HarnessError::msg("compaction made no summary request"));
+    };
+    Ok(SummaryRun { texts, responses, last })
+}
+
+fn schedule_compaction_retry(
+    live: &chord_delta::Draft,
+    task_id: TaskId,
+    until: u64,
+    message: &AssistantMessage,
+    request: &SummaryRequest,
+) -> Result<Option<NextState>> {
+    if let Some(index) = compaction_status_index(live, task_id)? {
+        let path = vec![
+            chord_delta::Seg::from("compactions"),
+            chord_delta::Seg::from(index),
+            chord_delta::Seg::from("retry"),
+        ];
+        d(live.set(
+            &path,
+            json!({ "at": until, "error": message.error_message.clone().unwrap_or_default() }),
+        ))?;
+    }
+    Ok(Some(NextState::Running {
+        checkpoint: to_value(&CompactionCheckpoint::Retry {
+            until,
+            request: request.clone(),
+        }),
+    }))
+}
+
+#[allow(clippy::too_many_arguments, reason = "compaction outcome commit")]
+fn commit_summary_outcome(
+    runtime: &TaskRuntime,
+    request: &SummaryRequest,
+    summary: Option<(String, Vec<String>, Vec<String>)>,
+    responses: &[(Value, String)],
+    retry: Option<u64>,
+    message: &AssistantMessage,
+    prefix_request: Option<usize>,
+    modes: super::inbox::QueueModes,
+) -> Result<()> {
+    let conversation_id = runtime.conversation_id();
+    let task_id = runtime.task_id();
+    runtime.commit(&runtime.ctx(), |tx, current| {
+        for (usage, key) in responses {
+            record_usage(tx, conversation_id, Bucket::Models, key, usage)?;
+        }
+        let live = live(tx, conversation_id)?;
+        if let Some((summary, read, modified)) = &summary {
+            let details = json!({ "readFiles": read, "modifiedFiles": modified });
+            return place_summary(
+                tx,
+                runtime,
+                current,
+                &live,
+                request.first_kept,
+                (summary, &details),
+                modes,
+            );
+        }
+        if let Some(until) = retry {
+            return schedule_compaction_retry(&live, task_id, until, message, request);
+        }
+        remove_compaction_status(&live, task_id)?;
+        let label = if prefix_request == Some(responses.len() - 1) {
+            "Turn prefix summarization"
+        } else {
+            "Summarization"
+        };
+        Ok(Some(NextState::Terminal {
+            outcome: fail(summary_failure(message, label), "model_error"),
+        }))
+    })
+}
+
 fn summarize_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> Result<()> {
     let CompactionCheckpoint::Summarize { request } = checkpoint_of(task)? else {
         return Err(HarnessError::msg("summarize phase without a summary request"));
     };
     let conversation_id = runtime.conversation_id();
-    let task_id = runtime.task_id();
     let Some(model) = services
         .models
         .get_model(&request.model.provider, &request.model.model_id)
@@ -468,114 +596,34 @@ fn summarize_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime
     let plan = summary_plan(&view, cut);
     let session_id = ensure_provider_session_id(runtime)?;
     let settings = (services.settings)();
-    let instructions = task.input["instructions"].as_str();
     let options = compaction::CompactOptions {
         model: &model,
-        custom_instructions: instructions,
+        custom_instructions: task.input["instructions"].as_str(),
         thinking_level: Some(request.thinking_level.as_str()),
         session_id: Some(session_id.as_str()),
         now_ms: runtime.now()? as i64,
     };
-    let reserve = services
-        .compaction_policy(runtime.conversation_id(), &settings)
-        .reserve_tokens;
-    let mut texts = Vec::new();
-    let mut responses = Vec::new();
-    let mut message = None;
+    let reserve = services.compaction_policy(conversation_id, &settings).reserve_tokens;
     let requests = super::child_summary::summary_requests(&plan, reserve, &options);
     let prefix_request = (plan.split && !plan.prefix.is_empty()).then(|| requests.len() - 1);
-    for summary_request in requests {
-        let mut stream_options = request.stream_options.clone();
-        stream_options.remove("deferred");
-        stream_options.insert("cacheRetention".into(), json!("none"));
-        stream_options.insert("maxTokens".into(), json!(summary_request.max_tokens));
-        let stream_request = StreamRequest {
-            options: stream_options,
-            session_id: summary_request.session_id.clone(),
-            reasoning: summary_request.reasoning.clone(),
-            conversation_id: Some(runtime.conversation_id()),
-            final_note: None,
-        };
-        let response = services.models.stream(
-            &model,
-            &summary_request.context,
-            &stream_request,
-            runtime.signal(),
-            &mut |_| {},
-        )?;
-        runtime.signal().check()?;
-        let text = summary_text(&response);
-        responses.push((
-            to_value(&response.usage),
-            format!("{}/{}", response.provider, response.model),
-        ));
-        let failed = text.is_none();
-        texts.extend(text);
-        message = Some(response);
-        if failed {
-            break;
-        }
-    }
-    let Some(message) = message else {
-        return Err(HarnessError::msg("compaction made no summary request"));
-    };
-    let summary = (texts.len() == responses.len()).then(|| super::child_summary::compose_summary(&plan, &texts));
-    let retry = match settings.retry.retry_delay(request.attempt, &message) {
-        Some(delay) => Some(runtime.now()? + delay),
-        None => None,
-    };
-    let modes = settings.queue_modes();
-    runtime.commit(&runtime.ctx(), |tx, current| {
-        for (usage, key) in &responses {
-            record_usage(tx, conversation_id, Bucket::Models, key, usage)?;
-        }
-        let live = live(tx, conversation_id)?;
-        if let Some((summary, read, modified)) = &summary {
-            let details = json!({ "readFiles": read, "modifiedFiles": modified });
-            return place_summary(
-                tx,
-                runtime,
-                current,
-                &live,
-                request.first_kept,
-                (summary, &details),
-                modes,
-            );
-        }
-        if let Some(until) = retry {
-            if let Some(index) = compaction_status_index(&live, task_id)? {
-                let path = vec![
-                    chord_delta::Seg::from("compactions"),
-                    chord_delta::Seg::from(index),
-                    chord_delta::Seg::from("retry"),
-                ];
-                d(live.set(
-                    &path,
-                    json!({ "at": until, "error": message.error_message.clone().unwrap_or_default() }),
-                ))?;
-            }
-            return Ok(Some(NextState::Running {
-                checkpoint: to_value(&CompactionCheckpoint::Retry {
-                    until,
-                    request: request.clone(),
-                }),
-            }));
-        }
-        remove_compaction_status(&live, task_id)?;
-        Ok(Some(NextState::Terminal {
-            outcome: fail(
-                summary_failure(
-                    &message,
-                    if prefix_request == Some(responses.len() - 1) {
-                        "Turn prefix summarization"
-                    } else {
-                        "Summarization"
-                    },
-                ),
-                "model_error",
-            ),
-        }))
-    })
+    let run = run_summary_requests(services, runtime, &model, &request, requests)?;
+    let summary =
+        (run.texts.len() == run.responses.len()).then(|| super::child_summary::compose_summary(&plan, &run.texts));
+    let retry = settings
+        .retry
+        .retry_delay(request.attempt, &run.last)
+        .map(|delay| runtime.now().map(|now| now + delay))
+        .transpose()?;
+    commit_summary_outcome(
+        runtime,
+        &request,
+        summary,
+        &run.responses,
+        retry,
+        &run.last,
+        prefix_request,
+        settings.queue_modes(),
+    )
 }
 
 fn retry_phase(_services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> Result<()> {

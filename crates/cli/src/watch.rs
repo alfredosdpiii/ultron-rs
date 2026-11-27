@@ -105,6 +105,37 @@ pub fn resolve_socket(
         })
 }
 
+fn watch_style(plain: bool, cwd: &str, var: &dyn Fn(&str) -> Option<String>) -> RlmStyle {
+    if plain {
+        RlmStyle::plain()
+    } else {
+        RlmStyle::themed(std::rc::Rc::new(watch_theme(cwd, var)))
+    }
+}
+
+fn write_once(
+    parsed: &WatchArgs,
+    keys: &tui::KeybindingsManager,
+    snapshot: &RlmSnapshot,
+    status: &Value,
+    style: &RlmStyle,
+    plain: bool,
+    out: &mut dyn std::io::Write,
+) -> Result<i32, String> {
+    let mut pane = RlmPane::new();
+    let width = parsed.width.map_or_else(terminal_width, |w| w as usize);
+    let lines = render_watch_frame(&mut pane, keys, snapshot, status, width, 40, style, false, 30);
+    let text = lines.join("\n");
+    let text = if plain {
+        tui::strip_terminal_sequences(&text)
+    } else {
+        text
+    };
+    out.write_all(format!("{text}\n").as_bytes())
+        .map_err(|e| e.to_string())?;
+    Ok(0)
+}
+
 /// `ultron watch ...`; returns the exit code.
 pub fn run(
     args: &[String],
@@ -128,25 +159,10 @@ pub fn run(
         Default::default(),
     );
     let plain = parsed.plain || !std::io::IsTerminal::is_terminal(&std::io::stdout());
-    let style = if plain {
-        RlmStyle::plain()
-    } else {
-        RlmStyle::themed(std::rc::Rc::new(watch_theme(cwd, var)))
-    };
+    let style = watch_style(plain, cwd, var);
     let (snapshot, status) = poll_snapshot(&mut client, &mut poller, &mut clock, jsrt::date::now_ms() as f64);
     if parsed.once {
-        let mut pane = RlmPane::new();
-        let width = parsed.width.map_or_else(terminal_width, |w| w as usize);
-        let lines = render_watch_frame(&mut pane, &keys, &snapshot, &status, width, 40, &style, false, 30);
-        let text = lines.join("\n");
-        let text = if plain {
-            tui::strip_terminal_sequences(&text)
-        } else {
-            text
-        };
-        out.write_all(format!("{text}\n").as_bytes())
-            .map_err(|e| e.to_string())?;
-        return Ok(0);
+        return write_once(&parsed, &keys, &snapshot, &status, &style, plain, out);
     }
     live(client, poller, clock, keys, style, snapshot, status)?;
     Ok(0)
@@ -300,59 +316,112 @@ pub fn render_watch_frame(
     lines
 }
 
-/// The live view: the alternate screen, a poll every 500 ms, the pane's keys; `q` or Ctrl+C quits.
-fn live(
-    mut client: ControlClient,
-    mut poller: RlmPoller,
-    mut clock: RlmClock,
+struct LiveState {
+    client: ControlClient,
+    poller: RlmPoller,
+    clock: RlmClock,
     keys: tui::KeybindingsManager,
     style: RlmStyle,
-    mut snapshot: RlmSnapshot,
-    mut status: Value,
+    snapshot: RlmSnapshot,
+    status: Value,
+    pane: RlmPane,
+}
+
+impl LiveState {
+    fn paint_frame(
+        &mut self,
+        terminal: &mut tui::Terminal<std::io::Stdout>,
+        screen: &mut tui::AltScreen,
+    ) -> Result<usize, String> {
+        let (columns, rows) = tui::size();
+        let (width, height) = (columns.max(20) as usize, rows.max(10) as usize);
+        let pane_height = 6usize.max(height.saturating_sub((height as f64 * 0.4).floor() as usize + 3));
+        let lines = render_watch_frame(
+            &mut self.pane,
+            &self.keys,
+            &self.snapshot,
+            &self.status,
+            width,
+            height,
+            &self.style,
+            true,
+            pane_height,
+        );
+        terminal
+            .write(&screen.paint(&lines, width, height))
+            .map_err(|e| e.to_string())?;
+        Ok(pane_height)
+    }
+
+    fn handle_recv(
+        &mut self,
+        recv: Result<String, std::sync::mpsc::RecvTimeoutError>,
+        pane_height: usize,
+        next_poll: &mut std::time::Instant,
+    ) -> bool {
+        match recv {
+            Ok(data) if data == "q" || data == "\u{3}" => true,
+            Ok(data) => {
+                self.pane.handle_input(&self.keys, &data, &self.snapshot, pane_height)
+                    == rlm_views::pane::PaneEvent::Close
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                (self.snapshot, self.status) = poll_snapshot(
+                    &mut self.client,
+                    &mut self.poller,
+                    &mut self.clock,
+                    jsrt::date::now_ms() as f64,
+                );
+                *next_poll = std::time::Instant::now() + POLL;
+                false
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => true,
+        }
+    }
+}
+
+fn live_loop(
+    terminal: &mut tui::Terminal<std::io::Stdout>,
+    screen: &mut tui::AltScreen,
+    input: &std::sync::mpsc::Receiver<String>,
+    state: &mut LiveState,
+) -> Result<(), String> {
+    terminal.write(&screen.enter()).map_err(|e| e.to_string())?;
+    let mut next_poll = std::time::Instant::now() + POLL;
+    loop {
+        let pane_height = state.paint_frame(terminal, screen)?;
+        let wait = next_poll.saturating_duration_since(std::time::Instant::now());
+        if state.handle_recv(input.recv_timeout(wait), pane_height, &mut next_poll) {
+            return Ok(());
+        }
+    }
+}
+
+/// The live view: the alternate screen, a poll every 500 ms, the pane's keys; `q` or Ctrl+C quits.
+fn live(
+    client: ControlClient,
+    poller: RlmPoller,
+    clock: RlmClock,
+    keys: tui::KeybindingsManager,
+    style: RlmStyle,
+    snapshot: RlmSnapshot,
+    status: Value,
 ) -> Result<(), String> {
     let mut terminal = tui::Terminal::new(std::io::stdout());
     terminal.start(true).map_err(|e| e.to_string())?;
     let input = tui::spawn_stdin_pump();
     let mut screen = tui::AltScreen::new();
-    let mut pane = RlmPane::new();
-    let result = (|| -> Result<(), String> {
-        terminal.write(&screen.enter()).map_err(|e| e.to_string())?;
-        let mut next_poll = std::time::Instant::now() + POLL;
-        loop {
-            let (columns, rows) = tui::size();
-            let (width, height) = (columns.max(20) as usize, rows.max(10) as usize);
-            let pane_height = 6usize.max(height.saturating_sub((height as f64 * 0.4).floor() as usize + 3));
-            let lines = render_watch_frame(
-                &mut pane,
-                &keys,
-                &snapshot,
-                &status,
-                width,
-                height,
-                &style,
-                true,
-                pane_height,
-            );
-            terminal
-                .write(&screen.paint(&lines, width, height))
-                .map_err(|e| e.to_string())?;
-            let wait = next_poll.saturating_duration_since(std::time::Instant::now());
-            match input.recv_timeout(wait) {
-                Ok(data) if data == "q" || data == "\u{3}" => return Ok(()),
-                Ok(data) => {
-                    if pane.handle_input(&keys, &data, &snapshot, pane_height) == rlm_views::pane::PaneEvent::Close {
-                        return Ok(());
-                    }
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    (snapshot, status) =
-                        poll_snapshot(&mut client, &mut poller, &mut clock, jsrt::date::now_ms() as f64);
-                    next_poll = std::time::Instant::now() + POLL;
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
-            }
-        }
-    })();
+    let mut state = LiveState {
+        client,
+        poller,
+        clock,
+        keys,
+        style,
+        snapshot,
+        status,
+        pane: RlmPane::new(),
+    };
+    let result = live_loop(&mut terminal, &mut screen, &input, &mut state);
     let _ = terminal.write(&screen.exit(&[], 1));
     let _ = terminal.stop();
     result

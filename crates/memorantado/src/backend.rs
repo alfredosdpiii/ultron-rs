@@ -120,36 +120,113 @@ fn tags_match(value: &Value) -> &'static str {
     }
 }
 
+fn valid_base_url(base: &url::Url) -> bool {
+    matches!(base.scheme(), "http" | "https")
+        && base.username().is_empty()
+        && base.password().is_none()
+        && base.query().is_none()
+        && base.fragment().is_none()
+}
+
+fn valid_scope_tags(scope: &str, tags: &Value) -> bool {
+    let valid_tag = |tag: &Value| {
+        tag.as_str()
+            .is_some_and(|text| !text.is_empty() && !text.contains(char::is_whitespace))
+    };
+    matches!(scope, "session" | "project" | "global")
+        && tags
+            .as_array()
+            .is_some_and(|list| !list.is_empty() && list.iter().all(valid_tag))
+}
+
+fn parse_scope_filters(scope_tags: &Map<String, Value>) -> Result<Map<String, Value>, MemoryError> {
+    let mut filters = Map::new();
+    for (scope, tags) in scope_tags {
+        if !valid_scope_tags(scope, tags) {
+            return Err(MemoryError::code(ErrorCode::UnsupportedScope));
+        }
+        filters.insert(scope.clone(), tags.clone());
+    }
+    Ok(filters)
+}
+
+fn map_transport_error(error: TransportError) -> String {
+    code(match error {
+        TransportError::Timeout => ErrorCode::Timeout,
+        TransportError::Aborted => ErrorCode::Aborted,
+        TransportError::TooLarge => ErrorCode::ResponseTooLarge,
+        TransportError::Failed => ErrorCode::HttpError,
+    })
+}
+
+fn parse_response(status: u16, body: &[u8], missing_ok: bool, signal: &Signal) -> Result<Option<Value>, String> {
+    if signal.is_aborted() {
+        return Err(code(ErrorCode::Aborted));
+    }
+    if missing_ok && status == 404 {
+        return Ok(None);
+    }
+    if !(200..300).contains(&status) {
+        return Err(code(ErrorCode::HttpError));
+    }
+    serde_json::from_slice(body)
+        .map(Some)
+        .map_err(|_| code(ErrorCode::InvalidResponse))
+}
+
+fn recall_body(request: &Value, include_episodes: bool) -> Value {
+    let mut body = json!({
+        "query": request["query"],
+        "tags": request["tags"],
+        "tagsMatch": tags_match(&request["tags_match"]),
+    });
+    if let Some(budget) = request["max_tokens"].as_u64() {
+        body["tokenBudget"] = budget.into();
+    }
+    if let Some(paths) = request["file_paths"].as_array().filter(|items| !items.is_empty()) {
+        body["filePaths"] = Value::Array(paths.clone());
+    }
+    if !include_episodes {
+        body["includeEpisodes"] = Value::Bool(false);
+    }
+    body
+}
+
+fn recall_memory_hit(hit: &Value) -> Option<Value> {
+    let memory = &hit["memory"];
+    memory.is_object().then(|| {
+        json!({
+            "id": memory["id"].as_u64().map(|id| id.to_string()),
+            "text": memory["content"], "tags": memory["tags"], "document_id": memory["key"],
+            "metadata": memory["metadata"], "type": "world",
+            "confirmedAt": memory["lastConfirmedAt"].as_str().or(memory["updatedAt"].as_str()).or(memory["createdAt"].as_str()),
+        })
+    })
+}
+
+fn recall_episode_hit(hit: &Value) -> Option<Value> {
+    let episode = &hit["episode"];
+    episode.is_object().then(|| {
+        json!({
+            "id": episode["id"].as_u64().map(|id| format!("episode-{id}")),
+            "text": episode["content"], "tags": episode["tags"], "document_id": null,
+            "metadata": episode["metadata"], "type": "experience", "confirmedAt": episode["createdAt"],
+        })
+    })
+}
+
 impl MemorantadoBackend {
     /// INVALID_CONFIG for a URL that is not plain http(s) or a blank project; UNSUPPORTED_SCOPE for bad scope tags.
     pub fn new(options: MemorantadoOptions) -> Result<Self, MemoryError> {
         let base = url::Url::parse(&options.base_url).map_err(|_| MemoryError::code(ErrorCode::InvalidConfig))?;
-        if !matches!(base.scheme(), "http" | "https")
-            || !base.username().is_empty()
-            || base.password().is_some()
-            || base.query().is_some()
-            || base.fragment().is_some()
+        if !valid_base_url(&base)
             || jsrt::string::trim(&options.project).is_empty()
             || options.timeout.is_zero()
             || options.max_response_bytes == 0
         {
             return Err(MemoryError::code(ErrorCode::InvalidConfig));
         }
-        let mut filters = Map::new();
-        for (scope, tags) in &options.scope_tags {
-            let valid = matches!(scope.as_str(), "session" | "project" | "global")
-                && tags.as_array().is_some_and(|tags| {
-                    !tags.is_empty()
-                        && tags.iter().all(|t| {
-                            t.as_str()
-                                .is_some_and(|t| !t.is_empty() && !t.contains(char::is_whitespace))
-                        })
-                });
-            if !valid {
-                return Err(MemoryError::code(ErrorCode::UnsupportedScope));
-            }
-            filters.insert(scope.clone(), tags.clone());
-        }
+        let filters = parse_scope_filters(&options.scope_tags)?;
         let transport = match options.transport {
             Some(transport) => transport,
             None => Arc::new(ReqwestTransport::new().map_err(|_| MemoryError::code(ErrorCode::InvalidConfig))?),
@@ -177,6 +254,52 @@ impl MemorantadoBackend {
         })
     }
 
+    fn check_outage(&self) -> Result<(), String> {
+        let outage = jsrt::sync::lock(&self.outage);
+        if outage.until.is_some_and(|until| Instant::now() < until) {
+            return Err(code(ErrorCode::HttpError));
+        }
+        Ok(())
+    }
+
+    fn record_outage<T>(&self, sent: &Result<T, TransportError>) {
+        let mut outage = jsrt::sync::lock(&self.outage);
+        match sent {
+            Err(TransportError::Failed | TransportError::Timeout) => {
+                outage.misses += 1;
+                if outage.misses >= OUTAGE_PAUSE_AFTER {
+                    outage.misses = 0;
+                    outage.until = Some(Instant::now() + OUTAGE_PAUSE);
+                }
+            }
+            _ => *outage = Outage::default(),
+        }
+    }
+
+    fn build_request(
+        &self,
+        method: &str,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<Value>,
+    ) -> Result<HttpRequest, String> {
+        let mut url = url::Url::parse(&format!("{}{path}", self.api)).map_err(|_| code(ErrorCode::InvalidConfig))?;
+        url.query_pairs_mut().append_pair("project", &self.project);
+        for (name, value) in query {
+            url.query_pairs_mut().append_pair(name, value);
+        }
+        let body = body.map(|mut body| {
+            body["project"] = self.project.clone().into();
+            body.to_string().into_bytes()
+        });
+        Ok(HttpRequest {
+            method: method.into(),
+            url: url.into(),
+            headers: vec![("content-type".into(), "application/json".into())],
+            body,
+        })
+    }
+
     /// One call: `<api><path>?project=<project>&<query>`, a JSON body (with `project`) for POST; `Ok(None)` for a
     /// 404 when `missing_ok`.
     pub(crate) fn call(
@@ -191,61 +314,12 @@ impl MemorantadoBackend {
         if signal.is_aborted() {
             return Err(code(ErrorCode::Aborted));
         }
-        {
-            let outage = jsrt::sync::lock(&self.outage);
-            if outage.until.is_some_and(|until| Instant::now() < until) {
-                return Err(code(ErrorCode::HttpError));
-            }
-        }
-        let mut url = url::Url::parse(&format!("{}{path}", self.api)).map_err(|_| code(ErrorCode::InvalidConfig))?;
-        url.query_pairs_mut().append_pair("project", &self.project);
-        for (name, value) in query {
-            url.query_pairs_mut().append_pair(name, value);
-        }
-        let body = body.map(|mut body| {
-            body["project"] = self.project.clone().into();
-            body.to_string().into_bytes()
-        });
-        let request = HttpRequest {
-            method: method.into(),
-            url: url.into(),
-            headers: vec![("content-type".into(), "application/json".into())],
-            body,
-        };
+        self.check_outage()?;
+        let request = self.build_request(method, path, query, body)?;
         let sent = self.transport.send(request, self.max_bytes, self.timeout, signal);
-        {
-            let mut outage = jsrt::sync::lock(&self.outage);
-            match &sent {
-                Err(TransportError::Failed | TransportError::Timeout) => {
-                    outage.misses += 1;
-                    if outage.misses >= OUTAGE_PAUSE_AFTER {
-                        outage.misses = 0;
-                        outage.until = Some(Instant::now() + OUTAGE_PAUSE);
-                    }
-                }
-                _ => *outage = Outage::default(),
-            }
-        }
-        let response = sent.map_err(|error| {
-            code(match error {
-                TransportError::Timeout => ErrorCode::Timeout,
-                TransportError::Aborted => ErrorCode::Aborted,
-                TransportError::TooLarge => ErrorCode::ResponseTooLarge,
-                TransportError::Failed => ErrorCode::HttpError,
-            })
-        })?;
-        if signal.is_aborted() {
-            return Err(code(ErrorCode::Aborted));
-        }
-        if missing_ok && response.status == 404 {
-            return Ok(None);
-        }
-        if !(200..300).contains(&response.status) {
-            return Err(code(ErrorCode::HttpError));
-        }
-        serde_json::from_slice(&response.body)
-            .map(Some)
-            .map_err(|_| code(ErrorCode::InvalidResponse))
+        self.record_outage(&sent);
+        let response = sent.map_err(map_transport_error)?;
+        parse_response(response.status, &response.body, missing_ok, signal)
     }
 
     fn post(&self, path: &str, body: Value, signal: &Signal) -> Result<Value, String> {
@@ -350,50 +424,34 @@ impl MemoryBackend for MemorantadoBackend {
     }
 
     fn recall(&self, request: &Value, signal: &Signal) -> Result<Value, String> {
-        let mut body = json!({
-            "query": request["query"],
-            "tags": request["tags"],
-            "tagsMatch": tags_match(&request["tags_match"]),
-        });
-        if let Some(budget) = request["max_tokens"].as_u64() {
-            body["tokenBudget"] = budget.into();
-        }
-        if let Some(paths) = request["file_paths"].as_array().filter(|items| !items.is_empty()) {
-            body["filePaths"] = Value::Array(paths.clone());
-        }
         let wanted = |kind: &str| {
             request["types"]
                 .as_array()
                 .is_none_or(|types| types.iter().any(|t| t == kind))
         };
-        if !wanted("experience") {
-            body["includeEpisodes"] = Value::Bool(false);
-        }
+        let body = recall_body(request, wanted("experience"));
         let answer = self.post("/retrieve-context", body, signal)?;
-        let mut results = Vec::new();
-        for hit in answer["memories"].as_array().into_iter().flatten() {
-            let memory = &hit["memory"];
-            if memory.is_object() && wanted("world") {
-                results.push(json!({
-                    "id": memory["id"].as_u64().map(|id| id.to_string()),
-                    "text": memory["content"], "tags": memory["tags"], "document_id": memory["key"],
-                    "metadata": memory["metadata"], "type": "world",
-                    "confirmedAt": memory["lastConfirmedAt"].as_str().or(memory["updatedAt"].as_str()).or(memory["createdAt"].as_str()),
-                }));
-            }
-        }
-        for hit in answer["episodes"].as_array().into_iter().flatten() {
-            let episode = &hit["episode"];
-            if episode.is_object() && wanted("experience") {
-                results.push(json!({
-                    "id": episode["id"].as_u64().map(|id| format!("episode-{id}")),
-                    "text": episode["content"], "tags": episode["tags"], "document_id": null,
-                    "metadata": episode["metadata"], "type": "experience", "confirmedAt": episode["createdAt"],
-                }));
-            }
-        }
         if !answer.is_object() {
             return Err(code(ErrorCode::InvalidResponse));
+        }
+        let mut results = Vec::new();
+        if wanted("world") {
+            results.extend(
+                answer["memories"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(recall_memory_hit),
+            );
+        }
+        if wanted("experience") {
+            results.extend(
+                answer["episodes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(recall_episode_hit),
+            );
         }
         Ok(json!({"results": results}))
     }

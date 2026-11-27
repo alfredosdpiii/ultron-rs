@@ -67,6 +67,12 @@ fn path_of(map: &Map<String, Value>, index: usize) -> Result<String, String> {
     }
 }
 
+fn check_operand(map: &Map<String, Value>, index: usize, kind: &str) -> Result<Value, String> {
+    map.get("value")
+        .cloned()
+        .ok_or_else(|| format!("brief.contract[{index}].value is required for {kind}"))
+}
+
 impl Check {
     /// One check as written; `index` names it in errors.
     pub fn parse(value: &Value, index: usize) -> Result<Check, String> {
@@ -74,38 +80,9 @@ impl Check {
             .as_object()
             .ok_or_else(|| format!("brief.contract[{index}] must be an object"))?;
         let kind = map.get("check").and_then(Value::as_str).unwrap_or_default();
-        let operand = || {
-            map.get("value")
-                .cloned()
-                .ok_or_else(|| format!("brief.contract[{index}].value is required for {kind}"))
-        };
         match kind {
-            "equals" => {
-                only(map, &["check", "path", "value"], "contract check")?;
-                Ok(Check::Equals {
-                    path: path_of(map, index)?,
-                    value: operand()?,
-                })
-            }
-            "contains" => {
-                only(map, &["check", "path", "value"], "contract check")?;
-                Ok(Check::Contains {
-                    path: path_of(map, index)?,
-                    value: operand()?,
-                })
-            }
-            "present" => {
-                only(map, &["check", "path"], "contract check")?;
-                Ok(Check::Present {
-                    path: path_of(map, index)?,
-                })
-            }
-            "nonempty" => {
-                only(map, &["check", "path"], "contract check")?;
-                Ok(Check::Nonempty {
-                    path: path_of(map, index)?,
-                })
-            }
+            "equals" | "contains" => parse_value_check(kind, map, index),
+            "present" | "nonempty" => parse_unary_check(kind, map, index),
             _ => Err(format!(
                 "brief.contract[{index}].check must be one of equals, present, nonempty, contains"
             )),
@@ -161,31 +138,59 @@ fn lookup<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
     })
 }
 
+fn parse_value_check(kind: &str, map: &Map<String, Value>, index: usize) -> Result<Check, String> {
+    only(map, &["check", "path", "value"], "contract check")?;
+    let path = path_of(map, index)?;
+    let value = check_operand(map, index, kind)?;
+    if kind == "equals" {
+        Ok(Check::Equals { path, value })
+    } else {
+        Ok(Check::Contains { path, value })
+    }
+}
+
+fn parse_unary_check(kind: &str, map: &Map<String, Value>, index: usize) -> Result<Check, String> {
+    only(map, &["check", "path"], "contract check")?;
+    let path = path_of(map, index)?;
+    if kind == "present" {
+        Ok(Check::Present { path })
+    } else {
+        Ok(Check::Nonempty { path })
+    }
+}
+
+fn validate_brief_hop(map: &Map<String, Value>, hop: Option<u32>) -> Result<(), String> {
+    if let (Some(claimed), Some(hop)) = (map.get("hop"), hop)
+        && !claimed.is_null()
+        && claimed.as_u64() != Some(u64::from(hop))
+    {
+        return Err(format!("brief.hop is {hop} here; it is set by the host"));
+    }
+    Ok(())
+}
+
+fn parse_brief_contract(map: &Map<String, Value>) -> Result<Vec<Check>, String> {
+    match map.get("contract") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(items)) if items.len() <= MAX_CHECKS => items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| Check::parse(item, index))
+            .collect(),
+        Some(_) => Err(format!(
+            "brief.contract must be an array of at most {MAX_CHECKS} checks"
+        )),
+    }
+}
+
 impl Brief {
     /// A brief from a request payload (`role`, `instruction`, `contract`, `hop`). `hop` is the host's: a payload
     /// that names another one is refused (`None`: validation only, before the hop is known).
     pub fn parse(value: &Value, hop: Option<u32>) -> Result<Brief, String> {
         let map = value.as_object().ok_or("brief must be an object")?;
         only(map, &["role", "instruction", "contract", "hop"], "brief")?;
-        if let (Some(claimed), Some(hop)) = (map.get("hop"), hop)
-            && !claimed.is_null()
-            && claimed.as_u64() != Some(u64::from(hop))
-        {
-            return Err(format!("brief.hop is {hop} here; it is set by the host"));
-        }
-        let contract = match map.get("contract") {
-            None | Some(Value::Null) => Vec::new(),
-            Some(Value::Array(items)) if items.len() <= MAX_CHECKS => items
-                .iter()
-                .enumerate()
-                .map(|(index, item)| Check::parse(item, index))
-                .collect::<Result<_, _>>()?,
-            Some(_) => {
-                return Err(format!(
-                    "brief.contract must be an array of at most {MAX_CHECKS} checks"
-                ));
-            }
-        };
+        validate_brief_hop(map, hop)?;
+        let contract = parse_brief_contract(map)?;
         Ok(Brief {
             role: text(map, "role")?,
             instruction: text(map, "instruction")?,

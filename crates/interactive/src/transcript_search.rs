@@ -130,6 +130,47 @@ pub fn normalize_query(query: &str) -> String {
         .join(" ")
 }
 
+fn advance_span_index(spans: &[Span], index: &mut usize, limit: usize) {
+    while *index < spans.len() && spans[*index].text_end <= limit {
+        *index += 1;
+    }
+}
+
+fn span_columns(span: &Span, start: usize, end: usize) -> (usize, usize) {
+    if span.linear {
+        (
+            span.start_col + start.max(span.text_start) - span.text_start,
+            span.start_col + end.min(span.text_end) - span.text_start,
+        )
+    } else {
+        (span.start_col, span.end_col)
+    }
+}
+
+fn collect_match_segments(spans: &[Span], start: usize, end: usize) -> Vec<SearchSegment> {
+    let mut segments: Vec<SearchSegment> = Vec::new();
+    for span in spans {
+        if span.text_start >= end {
+            break;
+        }
+        if span.text_end <= start {
+            continue;
+        }
+        let (start_col, end_col) = span_columns(span, start, end);
+        match segments.last_mut() {
+            Some(prev) if prev.row == span.row && start_col <= prev.end_col => {
+                prev.end_col = prev.end_col.max(end_col);
+            }
+            _ => segments.push(SearchSegment {
+                row: span.row,
+                start_col,
+                end_col,
+            }),
+        }
+    }
+    segments
+}
+
 fn find_matches(corpus: &Corpus, query: &str) -> Vec<SearchMatch> {
     if query.is_empty() {
         return Vec::new();
@@ -141,39 +182,9 @@ fn find_matches(corpus: &Corpus, query: &str) -> Vec<SearchMatch> {
     let mut span_index = 0;
     for found in re.find_iter(&corpus.text).flatten() {
         let (start, end) = (found.start(), found.end());
-        while span_index < corpus.spans.len() && corpus.spans[span_index].text_end <= start {
-            span_index += 1;
-        }
-        let mut segments: Vec<SearchSegment> = Vec::new();
-        for span in &corpus.spans[span_index..] {
-            if span.text_start >= end {
-                break;
-            }
-            if span.text_end <= start {
-                continue;
-            }
-            let (start_col, end_col) = if span.linear {
-                (
-                    span.start_col + start.max(span.text_start) - span.text_start,
-                    span.start_col + end.min(span.text_end) - span.text_start,
-                )
-            } else {
-                (span.start_col, span.end_col)
-            };
-            match segments.last_mut() {
-                Some(prev) if prev.row == span.row && start_col <= prev.end_col => {
-                    prev.end_col = prev.end_col.max(end_col);
-                }
-                _ => segments.push(SearchSegment {
-                    row: span.row,
-                    start_col,
-                    end_col,
-                }),
-            }
-        }
-        while span_index < corpus.spans.len() && corpus.spans[span_index].text_end <= end {
-            span_index += 1;
-        }
+        advance_span_index(&corpus.spans, &mut span_index, start);
+        let segments = collect_match_segments(&corpus.spans[span_index..], start, end);
+        advance_span_index(&corpus.spans, &mut span_index, end);
         if !segments.is_empty() {
             matches.push(SearchMatch { segments });
         }
@@ -390,10 +401,8 @@ impl SearchBar {
     }
 }
 
-impl Component for SearchBar {
-    fn render(&mut self, width: usize) -> Vec<String> {
-        let safe = width.max(1);
-        let inner = safe.saturating_sub(2);
+impl SearchBar {
+    fn render_input_line(&mut self, inner: usize) -> String {
         let query = self.input.value();
         let result = if query.is_empty() {
             String::new()
@@ -418,8 +427,10 @@ impl Component for SearchBar {
             .unwrap_or_default();
         let input_line = truncate_to_width(&rendered, input_width, "", false);
         let input_pad = " ".repeat(input_width.saturating_sub(visible_width(&input_line)));
-        let content = format!("{input_line}{input_pad}{result_text}");
+        format!("{input_line}{input_pad}{result_text}")
+    }
 
+    fn render_bottom_rule(&mut self, inner: usize) -> String {
         let mut prev = format!("↑ {}", self.previous_key);
         let mut next = format!("↓ {}", self.next_key);
         let mut sep = " · ";
@@ -432,38 +443,41 @@ impl Component for SearchBar {
             sep = " ";
             controls = visible_width(&prev) + visible_width(sep) + visible_width(&next);
         }
-        let show = controls <= available;
-        let buttons = if show {
-            format!(
-                "{}{sep}{}",
-                (self.button_style)(&prev, self.hovered == Some(-1)),
-                (self.button_style)(&next, self.hovered == Some(1))
-            )
-        } else {
-            String::new()
-        };
-        let gaps = if show { gap * 2 } else { 0 };
+        if controls > available {
+            self.buttons = None;
+            return format!("└{}┘", "─".repeat(inner));
+        }
+        let buttons = format!(
+            "{}{sep}{}",
+            (self.button_style)(&prev, self.hovered == Some(-1)),
+            (self.button_style)(&next, self.hovered == Some(1))
+        );
+        let gaps = gap * 2;
         let right_rule = usize::from(!buttons.is_empty() && inner > controls + gaps);
-        let left_rule = inner.saturating_sub(if show { controls } else { 0 } + gaps + right_rule);
-        self.buttons = show.then(|| {
-            let prev_start = 1 + left_rule + gap;
-            let prev_end = prev_start + visible_width(&prev);
-            let next_start = prev_end + visible_width(sep);
-            [(prev_start, prev_end), (next_start, next_start + visible_width(&next))]
-        });
+        let left_rule = inner.saturating_sub(controls + gaps + right_rule);
+        let prev_start = 1 + left_rule + gap;
+        let prev_end = prev_start + visible_width(&prev);
+        let next_start = prev_end + visible_width(sep);
+        self.buttons = Some([(prev_start, prev_end), (next_start, next_start + visible_width(&next))]);
+        let pad = if buttons.is_empty() { "" } else { " " };
+        format!(
+            "└{}{pad}{buttons}{pad}{}┘",
+            "─".repeat(left_rule),
+            "─".repeat(right_rule)
+        )
+    }
+}
+
+impl Component for SearchBar {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        let safe = width.max(1);
+        let inner = safe.saturating_sub(2);
+        let content = self.render_input_line(inner);
+        let bottom = self.render_bottom_rule(inner);
         if safe == 1 {
             return vec!["┌".into(), "│".into(), "└".into()];
         }
-        let pad = if buttons.is_empty() { "" } else { " " };
-        vec![
-            format!("┌{}┐", "─".repeat(inner)),
-            format!("│{content}│"),
-            format!(
-                "└{}{pad}{buttons}{pad}{}┘",
-                "─".repeat(left_rule),
-                "─".repeat(right_rule)
-            ),
-        ]
+        vec![format!("┌{}┐", "─".repeat(inner)), format!("│{content}│"), bottom]
     }
 }
 
@@ -546,58 +560,64 @@ impl TranscriptSearch {
         };
     }
 
-    pub fn handle_input(&mut self, data: &str) -> SearchOutcome {
-        if let Some(mouse) = parse_sgr_mouse(data) {
-            if let Some(wheel) = mouse.wheel {
-                return if self.body.scroll(wheel * 3) {
-                    SearchOutcome::Render
-                } else {
-                    SearchOutcome::None
-                };
-            }
-            let bar_row = mouse.row - self.body_rows as i64;
-            let direction = (bar_row >= 0 && mouse.col >= 0)
-                .then(|| self.bar.navigation_at(bar_row as usize, mouse.col as usize))
-                .flatten();
-            let hovered = self.bar.set_hovered(direction);
-            if mouse.left_click
-                && let Some(d) = direction
-            {
-                self.navigate(d);
-                return SearchOutcome::Render;
-            }
-            return if hovered {
+    fn try_handle_mouse(&mut self, data: &str) -> Option<SearchOutcome> {
+        let mouse = parse_sgr_mouse(data)?;
+        if let Some(wheel) = mouse.wheel {
+            return Some(if self.body.scroll(wheel * 3) {
                 SearchOutcome::Render
             } else {
                 SearchOutcome::None
-            };
+            });
         }
+        let bar_row = mouse.row - self.body_rows as i64;
+        let direction = (bar_row >= 0 && mouse.col >= 0)
+            .then(|| self.bar.navigation_at(bar_row as usize, mouse.col as usize))
+            .flatten();
+        let hovered = self.bar.set_hovered(direction);
+        if mouse.left_click
+            && let Some(d) = direction
+        {
+            self.navigate(d);
+            return Some(SearchOutcome::Render);
+        }
+        Some(if hovered {
+            SearchOutcome::Render
+        } else {
+            SearchOutcome::None
+        })
+    }
+
+    fn handle_search_keys(&mut self, data: &str) -> Option<SearchOutcome> {
         let k = &self.keys;
         if k.matches(data, "tui.altScreen.search") || k.matches(data, "tui.altScreen.searchClose") {
-            return SearchOutcome::Close;
+            return Some(SearchOutcome::Close);
         }
         if k.matches(data, "tui.altScreen.searchNext") {
             self.navigate(1);
-            return SearchOutcome::Render;
+            return Some(SearchOutcome::Render);
         }
         if k.matches(data, "tui.altScreen.searchPrevious") {
             self.navigate(-1);
-            return SearchOutcome::Render;
+            return Some(SearchOutcome::Render);
         }
-        let scrolled = if k.matches(data, "tui.altScreen.pageUp") {
-            Some(self.body.page(-1))
-        } else if k.matches(data, "tui.altScreen.pageDown") {
-            Some(self.body.page(1))
-        } else {
-            None
-        };
-        if let Some(moved) = scrolled {
-            return if moved {
+        if k.matches(data, "tui.altScreen.pageUp") {
+            return Some(if self.body.page(-1) {
                 SearchOutcome::Render
             } else {
                 SearchOutcome::None
-            };
+            });
         }
+        if k.matches(data, "tui.altScreen.pageDown") {
+            return Some(if self.body.page(1) {
+                SearchOutcome::Render
+            } else {
+                SearchOutcome::None
+            });
+        }
+        None
+    }
+
+    fn apply_query_edit(&mut self, data: &str) {
         if self.bar.handle_input(data) {
             let query = self.bar.query().to_string();
             let selected_row = self
@@ -610,6 +630,16 @@ impl TranscriptSearch {
             self.mode = SelectionMode::Query;
             self.bar.set_result(None, 0);
         }
+    }
+
+    pub fn handle_input(&mut self, data: &str) -> SearchOutcome {
+        if let Some(outcome) = self.try_handle_mouse(data) {
+            return outcome;
+        }
+        if let Some(outcome) = self.handle_search_keys(data) {
+            return outcome;
+        }
+        self.apply_query_edit(data);
         SearchOutcome::Render
     }
 
@@ -658,22 +688,28 @@ impl TranscriptSearch {
         }
     }
 
+    fn visible_match_ranges(&self, top: usize) -> Vec<Vec<(usize, usize, bool)>> {
+        let mut ranges: Vec<Vec<(usize, usize, bool)>> = vec![Vec::new(); self.body_rows];
+        if self.selected.is_none() {
+            return ranges;
+        }
+        for (i, m) in self.matches.iter().enumerate() {
+            for s in &m.segments {
+                if s.row >= top && s.row < top + self.body_rows {
+                    ranges[s.row - top].push((s.start_col, s.end_col, Some(i) == self.selected));
+                }
+            }
+        }
+        ranges
+    }
+
     /// Exactly `height` rows: the transcript window over the three-row search bar.
     pub fn render(&mut self, width: usize, height: usize) -> Vec<String> {
         self.body_rows = height.saturating_sub(3);
         self.body.set_geometry(self.rows.len(), self.body_rows);
         self.refresh();
         let top = self.body.offset;
-        let mut ranges: Vec<Vec<(usize, usize, bool)>> = vec![Vec::new(); self.body_rows];
-        if self.selected.is_some() {
-            for (i, m) in self.matches.iter().enumerate() {
-                for s in &m.segments {
-                    if s.row >= top && s.row < top + self.body_rows {
-                        ranges[s.row - top].push((s.start_col, s.end_col, Some(i) == self.selected));
-                    }
-                }
-            }
-        }
+        let ranges = self.visible_match_ranges(top);
         let mut out = Vec::with_capacity(height);
         for (i, row_ranges) in ranges.iter().enumerate() {
             let line = self

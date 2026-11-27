@@ -78,6 +78,74 @@ fn reader(
     })
 }
 
+fn spawn_command(command: &str, args: &[String], options: &RunOptions) -> Result<std::process::Child, RunResult> {
+    let mut child = Command::new(command);
+    child
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(cwd) = &options.cwd {
+        child.current_dir(cwd);
+    }
+    for (key, value) in [
+        ("GIT_PAGER", "cat"),
+        ("PAGER", "cat"),
+        ("GIT_TERMINAL_PROMPT", "0"),
+        ("GH_PROMPT_DISABLED", "1"),
+        ("GH_NO_UPDATE_NOTIFIER", "1"),
+        ("NO_COLOR", "1"),
+    ] {
+        child.env(key, value);
+    }
+    child.envs(&options.env);
+    child.spawn().map_err(|error| {
+        let not_found = error.kind() == std::io::ErrorKind::NotFound;
+        RunResult {
+            code: if not_found { 127 } else { 1 },
+            stdout: String::new(),
+            stderr: if not_found {
+                format!("{command}: spawn {command} ENOENT")
+            } else {
+                format!("{command}: {error}")
+            },
+        }
+    })
+}
+
+fn wait_for_streams(
+    child: &mut std::process::Child,
+    received: &mpsc::Receiver<Event>,
+    mut open: usize,
+    deadline: Instant,
+) -> bool {
+    let mut timed_out = false;
+    let mut killed = false;
+    while open > 0 {
+        let event = if killed {
+            received.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+        } else {
+            received.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        };
+        match event {
+            Ok(Event::Closed) => open -= 1,
+            Ok(Event::Overflow) => {
+                if !killed {
+                    let _ = child.kill();
+                    killed = true;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                timed_out = true;
+                let _ = child.kill();
+                killed = true;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    timed_out
+}
+
 impl Runner for ProcessRunner {
     fn run(&self, argv: &[String], options: &RunOptions) -> RunResult {
         let Some(command) = argv.first() else {
@@ -87,40 +155,9 @@ impl Runner for ProcessRunner {
                 stderr: "empty command".into(),
             };
         };
-        let mut child = Command::new(command);
-        child
-            .args(&argv[1..])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if let Some(cwd) = &options.cwd {
-            child.current_dir(cwd);
-        }
-        for (key, value) in [
-            ("GIT_PAGER", "cat"),
-            ("PAGER", "cat"),
-            ("GIT_TERMINAL_PROMPT", "0"),
-            ("GH_PROMPT_DISABLED", "1"),
-            ("GH_NO_UPDATE_NOTIFIER", "1"),
-            ("NO_COLOR", "1"),
-        ] {
-            child.env(key, value);
-        }
-        child.envs(&options.env);
-        let mut child = match child.spawn() {
+        let mut child = match spawn_command(command, &argv[1..], options) {
             Ok(child) => child,
-            Err(error) => {
-                let not_found = error.kind() == std::io::ErrorKind::NotFound;
-                return RunResult {
-                    code: if not_found { 127 } else { 1 },
-                    stdout: String::new(),
-                    stderr: if not_found {
-                        format!("{command}: spawn {command} ENOENT")
-                    } else {
-                        format!("{command}: {error}")
-                    },
-                };
-            }
+            Err(result) => return result,
         };
         if let Some(mut stdin) = child.stdin.take() {
             let input = options.input.clone().unwrap_or_default();
@@ -141,31 +178,8 @@ impl Runner for ProcessRunner {
         drop(events);
         let timeout_ms = options.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-        let mut open = usize::from(stdout.is_some()) + usize::from(stderr.is_some());
-        let mut timed_out = false;
-        let mut killed = false;
-        while open > 0 {
-            let event = if killed {
-                received.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected)
-            } else {
-                received.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            };
-            match event {
-                Ok(Event::Closed) => open -= 1,
-                Ok(Event::Overflow) => {
-                    if !killed {
-                        let _ = child.kill();
-                        killed = true;
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    timed_out = true;
-                    let _ = child.kill();
-                    killed = true;
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-        }
+        let open = usize::from(stdout.is_some()) + usize::from(stderr.is_some());
+        let timed_out = wait_for_streams(&mut child, &received, open, deadline);
         let status = child.wait().ok();
         let text = |handle: Option<std::thread::JoinHandle<Vec<u8>>>| {
             String::from_utf8_lossy(&handle.and_then(|h| h.join().ok()).unwrap_or_default()).into_owned()

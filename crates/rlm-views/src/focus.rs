@@ -135,23 +135,8 @@ pub struct FocusView {
     pub row_keys: Vec<String>,
 }
 
-/// Render the focus view into exactly `height` lines; the body scrolls to keep the selection and its details visible.
-pub fn render_focus_view(
-    snapshot: &RlmSnapshot,
-    state: &FocusState,
-    width: usize,
-    height: usize,
-    o: &FocusRenderOptions,
-) -> FocusView {
-    let style = &o.style;
-    let bound = width.max(1);
-    let spinner = spinner_glyph(o.spinner_frame);
-    let graph = build_rlm_graph(snapshot);
-    let rows = layout_graph(&graph, &state.collapse);
-    let selected = selected_row(state, &rows);
-    let selected_key = selected.map(|i| rows[i].node.key.clone());
-    let totals = graph_totals(&graph);
-    let status = if graph_active(&graph) {
+fn focus_status_label(graph: &super::graph::GraphNode, spinner: &str, style: &RlmStyle) -> String {
+    if graph_active(graph) {
         style.fg(Fg::Accent, &format!("{spinner} running"))
     } else if graph.status == super::graph::GraphStatus::Failed {
         style.fg(Fg::Error, "✗ failed")
@@ -159,7 +144,19 @@ pub fn render_focus_view(
         style.fg(Fg::Dim, "idle")
     } else {
         style.fg(Fg::Success, "✓ settled")
-    };
+    }
+}
+
+fn focus_header(
+    snapshot: &RlmSnapshot,
+    graph: &super::graph::GraphNode,
+    bound: usize,
+    spinner: &str,
+    o: &FocusRenderOptions,
+) -> Vec<String> {
+    let style = &o.style;
+    let totals = graph_totals(graph);
+    let status = focus_status_label(graph, spinner, style);
     let mut counts = format!("{} nodes", totals.nodes - 1);
     if totals.running > 0 {
         counts += &format!(" · {} active", totals.running);
@@ -178,38 +175,52 @@ pub fn render_focus_view(
     if let Some(h) = o.hints.as_deref().filter(|h| !h.is_empty()) {
         head.push(style.fg(Fg::Dim, h));
     }
-    head.extend(render_gauges(&budget_gauges(snapshot, &graph), bound, style, 2));
+    head.extend(render_gauges(&budget_gauges(snapshot, graph), bound, style, 2));
     if let Some(strip) = render_kernel_strip(snapshot, bound, style) {
         head.push(strip);
     }
     head.push(style.fg(Fg::Dim, &"─".repeat(bound)));
+    head
+}
 
-    let row_options = RowRenderOptions {
-        style: style.clone(),
-        now: snapshot.now,
-        spinner: spinner.to_string(),
-        selected_key,
-        gutter: true,
-    };
-    let mut body: Vec<String> = Vec::new();
+fn render_focus_body(
+    rows: &[GraphRow],
+    selected: Option<usize>,
+    state: &FocusState,
+    bound: usize,
+    row_options: &RowRenderOptions,
+    extra_details: Option<&HashMap<String, Vec<(String, String)>>>,
+) -> (Vec<String>, usize, usize) {
+    let mut body = Vec::new();
     let mut selected_line = 0;
     let mut selected_span = 1;
     for (index, row) in rows.iter().enumerate() {
         if Some(index) == selected {
             selected_line = body.len();
         }
-        body.push(render_graph_row(row, bound, &row_options));
+        body.push(render_graph_row(row, bound, row_options));
         if state.details.contains(&row.node.key) {
-            let extra = o.extra_details.and_then(|m| m.get(&row.node.key)).map(Vec::as_slice);
-            let details = render_details(row, extra, bound, &row_options, 10);
+            let extra = extra_details.and_then(|m| m.get(&row.node.key)).map(Vec::as_slice);
+            let details = render_details(row, extra, bound, row_options, 10);
             if Some(index) == selected {
                 selected_span = 1 + details.len();
             }
             body.extend(details);
         }
     }
-    let room = height.saturating_sub(head.len()).max(1);
-    let mut scroll = o.scroll.min(selected_line);
+    (body, selected_line, selected_span)
+}
+
+fn focus_window(
+    body: &[String],
+    initial_scroll: usize,
+    selected_line: usize,
+    selected_span: usize,
+    room: usize,
+    bound: usize,
+    style: &RlmStyle,
+) -> (Vec<String>, usize) {
+    let mut scroll = initial_scroll.min(selected_line);
     if selected_line + selected_span.min(room) > scroll + room {
         scroll = selected_line + selected_span.min(room) - room;
     }
@@ -229,6 +240,37 @@ pub fn render_focus_view(
             &truncate_to_width(&format!("  ↓ {hidden_below} more below"), bound, "…", false),
         );
     }
+    (visible, scroll)
+}
+
+/// Render the focus view into exactly `height` lines; the body scrolls to keep the selection and its details visible.
+pub fn render_focus_view(
+    snapshot: &RlmSnapshot,
+    state: &FocusState,
+    width: usize,
+    height: usize,
+    o: &FocusRenderOptions,
+) -> FocusView {
+    let style = &o.style;
+    let bound = width.max(1);
+    let spinner = spinner_glyph(o.spinner_frame);
+    let graph = build_rlm_graph(snapshot);
+    let rows = layout_graph(&graph, &state.collapse);
+    let selected = selected_row(state, &rows);
+    let selected_key = selected.map(|i| rows[i].node.key.clone());
+    let head = focus_header(snapshot, &graph, bound, spinner, o);
+
+    let row_options = RowRenderOptions {
+        style: style.clone(),
+        now: snapshot.now,
+        spinner: spinner.to_string(),
+        selected_key,
+        gutter: true,
+    };
+    let (body, selected_line, selected_span) =
+        render_focus_body(&rows, selected, state, bound, &row_options, o.extra_details);
+    let room = height.saturating_sub(head.len()).max(1);
+    let (visible, scroll) = focus_window(&body, o.scroll, selected_line, selected_span, room, bound, style);
     let mut lines: Vec<String> = head
         .into_iter()
         .chain(visible)

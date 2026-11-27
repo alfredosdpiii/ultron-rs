@@ -19,24 +19,27 @@ pub(crate) fn convert(schema: &Value, value: Value) -> Value {
     }
     match schema["type"].as_str() {
         Some("object") if schema["properties"].is_object() => from_object(schema, value),
-        Some("array") if schema["items"].is_object() => {
-            let items = match value {
-                Value::Array(items) => items,
-                other => vec![other],
-            };
-            Value::Array(items.into_iter().map(|item| convert(&schema["items"], item)).collect())
-        }
-        Some("string") => try_string(&value).unwrap_or(value),
-        Some("number") => try_number(&value).map_or(value, jsrt::json::number),
-        Some("integer") => try_number(&value).map_or(value, |n| jsrt::json::number(n.trunc())),
-        Some("boolean") => try_boolean(&value).map_or(value, Value::Bool),
-        Some("null") => {
-            if try_null(&value) {
-                Value::Null
-            } else {
-                value
-            }
-        }
+        Some("array") if schema["items"].is_object() => from_array(&schema["items"], value),
+        Some(kind) => from_primitive(kind, value),
+        None => value,
+    }
+}
+
+fn from_array(item_schema: &Value, value: Value) -> Value {
+    let items = match value {
+        Value::Array(items) => items,
+        other => vec![other],
+    };
+    Value::Array(items.into_iter().map(|item| convert(item_schema, item)).collect())
+}
+
+fn from_primitive(kind: &str, value: Value) -> Value {
+    match kind {
+        "string" => try_string(&value).unwrap_or(value),
+        "number" => try_number(&value).map_or(value, jsrt::json::number),
+        "integer" => try_number(&value).map_or(value, |n| jsrt::json::number(n.trunc())),
+        "boolean" => try_boolean(&value).map_or(value, Value::Bool),
+        "null" if try_null(&value) => Value::Null,
         _ => value,
     }
 }
@@ -142,27 +145,27 @@ fn try_number(value: &Value) -> Option<f64> {
     }
 }
 
+fn is_decimal_int(text: &str) -> bool {
+    let digits = text.strip_prefix('-').unwrap_or(text);
+    let all_digits = !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
+    all_digits && (digits == "0" || !digits.starts_with('0'))
+}
+
+fn big_int_digits(text: &str) -> Option<&str> {
+    if let Some(body) = text.strip_suffix('n') {
+        return is_decimal_int(body).then_some(body);
+    }
+    if let Some((whole, fraction)) = text.split_once('.') {
+        let valid_fraction = !fraction.is_empty() && fraction.bytes().all(|b| b.is_ascii_digit());
+        return (is_decimal_int(whole) && valid_fraction).then_some(whole);
+    }
+    is_decimal_int(text).then_some(text)
+}
+
 /// `TryBigInt` of a string that `+value` rejected: `-?(0|[1-9]\d*)n`, a decimal, or an integer.
 fn big_int(text: &str) -> Option<f64> {
-    let integer = |s: &str| {
-        let digits = s.strip_prefix('-').unwrap_or(s);
-        !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) && (digits == "0" || !digits.starts_with('0'))
-    };
-    let parse = |s: &str| s.parse::<f64>().ok();
-    if let Some(body) = text.strip_suffix('n')
-        && integer(body)
-    {
-        return parse(body);
-    }
-    if let Some((whole, fraction)) = text.split_once('.')
-        && integer(whole)
-        && !fraction.is_empty()
-        && fraction.bytes().all(|b| b.is_ascii_digit())
-    {
-        return parse(whole);
-    }
-    if integer(text) {
-        return parse(text);
+    if let Some(digits) = big_int_digits(text) {
+        return digits.parse::<f64>().ok();
     }
     match text.to_lowercase().as_str() {
         "false" => Some(0.0),
@@ -171,19 +174,28 @@ fn big_int(text: &str) -> Option<f64> {
     }
 }
 
+fn number_to_boolean(number: &serde_json::Number) -> Option<bool> {
+    match number.as_f64() {
+        Some(0.0) => Some(false),
+        Some(1.0) => Some(true),
+        _ => None,
+    }
+}
+
+fn string_to_boolean(text: &str) -> Option<bool> {
+    match text.to_lowercase().as_str() {
+        "false" | "0" => Some(false),
+        "true" | "1" => Some(true),
+        _ => None,
+    }
+}
+
 fn try_boolean(value: &Value) -> Option<bool> {
     match value {
         Value::Bool(b) => Some(*b),
-        Value::Number(n) if n.as_f64() == Some(0.0) => Some(false),
-        Value::Number(n) if n.as_f64() == Some(1.0) => Some(true),
+        Value::Number(number) => number_to_boolean(number),
         Value::Null => Some(false),
-        Value::String(text) => match text.to_lowercase().as_str() {
-            "false" => Some(false),
-            "true" => Some(true),
-            _ if text == "0" => Some(false),
-            _ if text == "1" => Some(true),
-            _ => None,
-        },
+        Value::String(text) => string_to_boolean(text),
         _ => None,
     }
 }
@@ -198,5 +210,50 @@ fn try_null(value: &Value) -> bool {
             lower == "undefined" || lower == "null" || text.is_empty() || text == "0"
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_big_int_formats() {
+        assert_eq!(big_int("42n"), Some(42.0));
+        assert_eq!(big_int("-0n"), Some(-0.0));
+        assert_eq!(big_int("01n"), None);
+        assert_eq!(big_int("12.34"), Some(12.0));
+        assert_eq!(big_int("01.2"), None);
+        assert_eq!(big_int("12."), None);
+        assert_eq!(big_int(".5"), None);
+        assert_eq!(big_int("TRUE"), Some(1.0));
+        assert_eq!(big_int("false"), Some(0.0));
+    }
+
+    #[test]
+    fn test_try_boolean_values() {
+        assert_eq!(try_boolean(&json!(0)), Some(false));
+        assert_eq!(try_boolean(&json!(1.0)), Some(true));
+        assert_eq!(try_boolean(&json!(2)), None);
+        assert_eq!(try_boolean(&json!("0")), Some(false));
+        assert_eq!(try_boolean(&json!("1")), Some(true));
+        assert_eq!(try_boolean(&json!("True")), Some(true));
+        assert_eq!(try_boolean(&json!("FALSE")), Some(false));
+        assert_eq!(try_boolean(&json!("yes")), None);
+        assert_eq!(try_boolean(&Value::Null), Some(false));
+    }
+
+    #[test]
+    fn test_convert_guards() {
+        let obj_no_props = json!({ "type": "object" });
+        assert_eq!(convert(&obj_no_props, json!({"a": "1"})), json!({"a": "1"}));
+
+        let arr_no_items = json!({ "type": "array" });
+        assert_eq!(convert(&arr_no_items, json!("x")), json!("x"));
+
+        let arr_with_items = json!({ "type": "array", "items": { "type": "number" } });
+        assert_eq!(convert(&arr_with_items, json!("42")), json!([42]));
+        assert_eq!(convert(&arr_with_items, json!(["1", "2"])), json!([1, 2]));
     }
 }

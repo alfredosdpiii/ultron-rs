@@ -104,60 +104,94 @@ fn joined(value: &Value) -> String {
     })
 }
 
-/// typebox's `en_US` locale.
-fn message(keyword: &str, params: &Value) -> String {
-    let text = |key: &str| match &params[key] {
+const STATIC_MESSAGES: &[(&str, &str)] = &[
+    ("additionalProperties", "must not have additional properties"),
+    ("anyOf", "must match a schema in anyOf"),
+    ("boolean", "schema is false"),
+    ("const", "must be equal to constant"),
+    ("contains", "must contain at least 1 valid item"),
+    ("enum", "must be equal to one of the allowed values"),
+    ("not", "must not be valid"),
+    ("oneOf", "must match exactly one schema in oneOf"),
+    ("uniqueItems", "must not have duplicate items"),
+];
+
+const LIMIT_MESSAGES: &[(&str, &str, &str)] = &[
+    ("maxItems", "not have more than", "items"),
+    ("maxLength", "not have more than", "characters"),
+    ("maxProperties", "not have more than", "properties"),
+    ("minItems", "not have fewer than", "items"),
+    ("minLength", "not have fewer than", "characters"),
+    ("minProperties", "not have fewer than", "properties"),
+];
+
+const PARAM_MESSAGES: &[(&str, &str, &str, &str)] = &[
+    ("format", "must match format \"", "format", "\""),
+    ("if", "must match \"", "failingKeyword", "\" schema"),
+    ("multipleOf", "must be multiple of ", "multipleOf", ""),
+    ("pattern", "must match pattern \"", "pattern", "\""),
+];
+
+fn param_text(params: &Value, key: &str) -> String {
+    match &params[key] {
         Value::String(text) => text.clone(),
         other => jsrt::value::string(Some(other)),
-    };
+    }
+}
+
+fn type_message(params: &Value) -> String {
+    match &params["type"] {
+        Value::String(name) => format!("must be {name}"),
+        names => format!(
+            "must be either {}",
+            names
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" or ")
+        ),
+    }
+}
+
+fn relational_message(keyword: &str, params: &Value) -> Option<String> {
     match keyword {
-        "additionalProperties" => "must not have additional properties".into(),
-        "anyOf" => "must match a schema in anyOf".into(),
-        "boolean" => "schema is false".into(),
-        "const" => "must be equal to constant".into(),
-        "contains" => "must contain at least 1 valid item".into(),
-        "dependencies" | "dependentRequired" => format!(
+        "dependencies" | "dependentRequired" => Some(format!(
             "must have properties {} when property {} is present",
             joined(&params["dependencies"]),
-            text("property")
-        ),
-        "enum" => "must be equal to one of the allowed values".into(),
-        "exclusiveMaximum" | "exclusiveMinimum" | "maximum" | "minimum" => {
-            format!("must be {} {}", text("comparison"), text("limit"))
-        }
-        "format" => format!("must match format \"{}\"", text("format")),
-        "if" => format!("must match \"{}\" schema", text("failingKeyword")),
-        "maxItems" => format!("must not have more than {} items", text("limit")),
-        "maxLength" => format!("must not have more than {} characters", text("limit")),
-        "maxProperties" => format!("must not have more than {} properties", text("limit")),
-        "minItems" => format!("must not have fewer than {} items", text("limit")),
-        "minLength" => format!("must not have fewer than {} characters", text("limit")),
-        "minProperties" => format!("must not have fewer than {} properties", text("limit")),
-        "multipleOf" => format!("must be multiple of {}", text("multipleOf")),
-        "not" => "must not be valid".into(),
-        "oneOf" => "must match exactly one schema in oneOf".into(),
-        "pattern" => format!("must match pattern \"{}\"", text("pattern")),
-        "propertyNames" => format!("property names {} are invalid", joined(&params["propertyNames"])),
-        "required" => format!(
+            param_text(params, "property")
+        )),
+        "exclusiveMaximum" | "exclusiveMinimum" | "maximum" | "minimum" => Some(format!(
+            "must be {} {}",
+            param_text(params, "comparison"),
+            param_text(params, "limit")
+        )),
+        "propertyNames" => Some(format!(
+            "property names {} are invalid",
+            joined(&params["propertyNames"])
+        )),
+        "required" => Some(format!(
             "must have required properties {}",
             joined(&params["requiredProperties"])
-        ),
-        "type" => match &params["type"] {
-            Value::String(name) => format!("must be {name}"),
-            names => format!(
-                "must be either {}",
-                names
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                    .collect::<Vec<_>>()
-                    .join(" or ")
-            ),
-        },
-        "uniqueItems" => "must not have duplicate items".into(),
-        _ => "an unknown validation error occurred".into(),
+        )),
+        "type" => Some(type_message(params)),
+        _ => None,
     }
+}
+
+/// typebox's `en_US` locale.
+fn message(keyword: &str, params: &Value) -> String {
+    if let Some((_, text)) = STATIC_MESSAGES.iter().find(|(k, _)| *k == keyword) {
+        return (*text).into();
+    }
+    if let Some((_, cmp, unit)) = LIMIT_MESSAGES.iter().find(|(k, _, _)| *k == keyword) {
+        return format!("must {cmp} {} {unit}", param_text(params, "limit"));
+    }
+    if let Some((_, prefix, key, suffix)) = PARAM_MESSAGES.iter().find(|(k, _, _, _)| *k == keyword) {
+        return format!("{prefix}{}{suffix}", param_text(params, key));
+    }
+    relational_message(keyword, params).unwrap_or_else(|| "an unknown validation error occurred".into())
 }
 
 /// JSON equality with JavaScript number semantics and unordered object keys (typebox `IsDeepEqual`).
@@ -190,50 +224,58 @@ fn type_matches(name: &str, value: &Value) -> bool {
     }
 }
 
+fn utf16_code_point(units: &[u16], index: usize) -> u32 {
+    let first = u32::from(units[index]);
+    if (0xD800..=0xDBFF).contains(&first) && index + 1 < units.len() {
+        let second = u32::from(units[index + 1]);
+        if (0xDC00..=0xDFFF).contains(&second) {
+            return 0x10000 + ((first - 0xD800) << 10) + (second - 0xDC00);
+        }
+    }
+    first
+}
+
+fn utf16_width(point: u32) -> usize {
+    if point > 0xFFFF { 2 } else { 1 }
+}
+
+fn is_grapheme_modifier(point: u32) -> bool {
+    (0x0300..=0x036F).contains(&point)
+        || (0x1AB0..=0x1AFF).contains(&point)
+        || (0x1DC0..=0x1DFF).contains(&point)
+        || (0xFE20..=0xFE2F).contains(&point)
+        || (0xFE00..=0xFE0F).contains(&point)
+}
+
+fn is_regional_indicator(point: u32) -> bool {
+    (0x1F1E6..=0x1F1FF).contains(&point)
+}
+
+fn skip_grapheme_modifiers(units: &[u16], mut index: usize) -> usize {
+    while index < units.len() {
+        let point = utf16_code_point(units, index);
+        if !is_grapheme_modifier(point) {
+            break;
+        }
+        index += utf16_width(point);
+    }
+    index
+}
+
 /// typebox's `GraphemeCount` (its own segmentation over UTF-16 code units).
 pub fn grapheme_count(text: &str) -> usize {
     let units: Vec<u16> = text.encode_utf16().collect();
-    let code_point = |index: usize| -> u32 {
-        let first = u32::from(units[index]);
-        if (0xD800..=0xDBFF).contains(&first) && index + 1 < units.len() {
-            let second = u32::from(units[index + 1]);
-            if (0xDC00..=0xDFFF).contains(&second) {
-                return 0x10000 + ((first - 0xD800) << 10) + (second - 0xDC00);
-            }
-        }
-        first
-    };
-    let width = |point: u32| if point > 0xFFFF { 2 } else { 1 };
-    let combining = |p: u32| {
-        (0x0300..=0x036F).contains(&p)
-            || (0x1AB0..=0x1AFF).contains(&p)
-            || (0x1DC0..=0x1DFF).contains(&p)
-            || (0xFE20..=0xFE2F).contains(&p)
-    };
-    let variation = |p: u32| (0xFE00..=0xFE0F).contains(&p);
-    let regional = |p: u32| (0x1F1E6..=0x1F1FF).contains(&p);
-    let modifiers = |mut index: usize| {
-        while index < units.len() {
-            let point = code_point(index);
-            if combining(point) || variation(point) {
-                index += width(point);
-            } else {
-                break;
-            }
-        }
-        index
-    };
     let mut count = 0;
     let mut index = 0;
     while index < units.len() {
-        let start = code_point(index);
-        let mut end = modifiers(index + width(start));
-        while end + 1 < units.len() && code_point(end) == 0x200D {
-            let next = code_point(end + 1);
-            end = modifiers(end + 1 + width(next));
+        let start = utf16_code_point(&units, index);
+        let mut end = skip_grapheme_modifiers(&units, index + utf16_width(start));
+        while end + 1 < units.len() && utf16_code_point(&units, end) == 0x200D {
+            let next = utf16_code_point(&units, end + 1);
+            end = skip_grapheme_modifiers(&units, end + 1 + utf16_width(next));
         }
-        if regional(start) && end < units.len() && regional(code_point(end)) {
-            end += width(code_point(end));
+        if is_regional_indicator(start) && end < units.len() && is_regional_indicator(utf16_code_point(&units, end)) {
+            end += utf16_width(utf16_code_point(&units, end));
         }
         index = end;
         count += 1;
@@ -266,37 +308,36 @@ fn declared(schema: &Map<String, Value>, key: &str) -> bool {
             .is_some_and(|patterns| patterns.keys().any(|pattern| regex_test(pattern, key)))
 }
 
-/// `ErrorSchema` / `CheckSchema`: every keyword is evaluated (typebox's bitwise `&`), in typebox's order.
-fn eval(schema: &Value, value: &Value, path: &str, context: &mut Context) -> bool {
-    if context.at_capacity() {
-        return false;
-    }
-    let schema = match schema {
-        Value::Bool(true) => return true,
-        Value::Bool(false) => return context.add("boolean", path, json!({})),
-        Value::Object(schema) => schema,
-        _ => return true,
+fn eval_type(schema: &Map<String, Value>, value: &Value, path: &str, context: &mut Context) -> bool {
+    let Some(types) = schema.get("type") else {
+        return true;
     };
-    let mut ok = true;
-    if let Some(types) = schema.get("type") {
-        let matches = match types {
-            Value::Array(names) => names
-                .iter()
-                .any(|name| name.as_str().is_some_and(|name| type_matches(name, value))),
-            Value::String(name) => type_matches(name, value),
-            _ => true,
-        };
-        if !matches {
-            ok &= context.add("type", path, json!({ "type": types }));
-        }
+    let matches = match types {
+        Value::Array(names) => names
+            .iter()
+            .any(|name| name.as_str().is_some_and(|name| type_matches(name, value))),
+        Value::String(name) => type_matches(name, value),
+        _ => true,
+    };
+    if matches {
+        true
+    } else {
+        context.add("type", path, json!({ "type": types }))
     }
+}
+
+fn eval_value_kind(schema: &Map<String, Value>, value: &Value, path: &str, context: &mut Context) -> bool {
     match value {
-        Value::Object(object) => ok &= eval_object(schema, object, path, context),
-        Value::Array(items) => ok &= eval_array(schema, items, path, context),
-        Value::String(text) => ok &= eval_string(schema, text, path, context),
-        Value::Number(number) => ok &= eval_number(schema, number.as_f64().unwrap_or(f64::NAN), path, context),
-        _ => {}
+        Value::Object(object) => eval_object(schema, object, path, context),
+        Value::Array(items) => eval_array(schema, items, path, context),
+        Value::String(text) => eval_string(schema, text, path, context),
+        Value::Number(number) => eval_number(schema, number.as_f64().unwrap_or(f64::NAN), path, context),
+        _ => true,
     }
+}
+
+fn eval_const_enum(schema: &Map<String, Value>, value: &Value, path: &str, context: &mut Context) -> bool {
+    let mut ok = true;
     if let Some(constant) = schema.get("const")
         && !json_equal(value, constant)
     {
@@ -307,6 +348,11 @@ fn eval(schema: &Value, value: &Value, path: &str, context: &mut Context) -> boo
     {
         ok &= context.add("enum", path, json!({ "allowedValues": options }));
     }
+    ok
+}
+
+fn eval_conditional_and_not(schema: &Map<String, Value>, value: &Value, path: &str, context: &mut Context) -> bool {
+    let mut ok = true;
     if let Some(condition) = schema.get("if") {
         let then = schema.get("then").unwrap_or(&Value::Bool(true));
         let otherwise = schema.get("else").unwrap_or(&Value::Bool(true));
@@ -323,167 +369,305 @@ fn eval(schema: &Value, value: &Value, path: &str, context: &mut Context) -> boo
     {
         ok &= context.add("not", path, json!({}));
     }
-    if let Some(options) = schema.get("allOf").and_then(Value::as_array) {
-        let mut failed = Vec::new();
-        for option in options {
-            let mut inner = context.nested();
-            if !eval(option, value, path, &mut inner) {
-                failed.push(inner);
-            }
-        }
-        if !failed.is_empty() {
-            for inner in failed {
-                context.absorb(inner);
-            }
-            ok = false;
-        }
-    }
-    if let Some(options) = schema.get("anyOf").and_then(Value::as_array) {
-        let mut failed = Vec::new();
-        let mut passed = 0;
-        for option in options {
-            let mut inner = context.nested();
-            if eval(option, value, path, &mut inner) {
-                passed += 1;
-            } else {
-                failed.push(inner);
-            }
-        }
-        if passed == 0 {
-            for inner in failed {
-                context.absorb(inner);
-            }
-            ok &= context.add("anyOf", path, json!({}));
+    ok
+}
+
+fn eval_all_of(schema: &Map<String, Value>, value: &Value, path: &str, context: &mut Context) -> bool {
+    let Some(options) = schema.get("allOf").and_then(Value::as_array) else {
+        return true;
+    };
+    let mut failed = Vec::new();
+    for option in options {
+        let mut inner = context.nested();
+        if !eval(option, value, path, &mut inner) {
+            failed.push(inner);
         }
     }
-    if let Some(options) = schema.get("oneOf").and_then(Value::as_array) {
-        let mut failed = Vec::new();
-        let mut passing = Vec::new();
-        for (index, option) in options.iter().enumerate() {
-            let mut inner = context.nested();
-            if eval(option, value, path, &mut inner) {
-                passing.push(index);
-            } else {
-                failed.push(inner);
-            }
+    if failed.is_empty() {
+        return true;
+    }
+    for inner in failed {
+        context.absorb(inner);
+    }
+    false
+}
+
+fn eval_any_of(schema: &Map<String, Value>, value: &Value, path: &str, context: &mut Context) -> bool {
+    let Some(options) = schema.get("anyOf").and_then(Value::as_array) else {
+        return true;
+    };
+    let mut failed = Vec::new();
+    let mut passed = 0;
+    for option in options {
+        let mut inner = context.nested();
+        if eval(option, value, path, &mut inner) {
+            passed += 1;
+        } else {
+            failed.push(inner);
         }
-        if passing.len() != 1 {
-            if passing.is_empty() {
-                for inner in failed {
-                    context.absorb(inner);
-                }
+    }
+    if passed > 0 {
+        return true;
+    }
+    for inner in failed {
+        context.absorb(inner);
+    }
+    context.add("anyOf", path, json!({}))
+}
+
+fn eval_one_of(schema: &Map<String, Value>, value: &Value, path: &str, context: &mut Context) -> bool {
+    let Some(options) = schema.get("oneOf").and_then(Value::as_array) else {
+        return true;
+    };
+    let mut failed = Vec::new();
+    let mut passing = Vec::new();
+    for (index, option) in options.iter().enumerate() {
+        let mut inner = context.nested();
+        if eval(option, value, path, &mut inner) {
+            passing.push(index);
+        } else {
+            failed.push(inner);
+        }
+    }
+    if passing.len() == 1 {
+        return true;
+    }
+    if passing.is_empty() {
+        for inner in failed {
+            context.absorb(inner);
+        }
+    }
+    context.add("oneOf", path, json!({ "passingSchemas": passing }))
+}
+
+/// `ErrorSchema` / `CheckSchema`: every keyword is evaluated (typebox's bitwise `&`), in typebox's order.
+fn eval(schema: &Value, value: &Value, path: &str, context: &mut Context) -> bool {
+    if context.at_capacity() {
+        return false;
+    }
+    let schema = match schema {
+        Value::Bool(true) => return true,
+        Value::Bool(false) => return context.add("boolean", path, json!({})),
+        Value::Object(schema) => schema,
+        _ => return true,
+    };
+    let mut ok = true;
+    ok &= eval_type(schema, value, path, context);
+    ok &= eval_value_kind(schema, value, path, context);
+    ok &= eval_const_enum(schema, value, path, context);
+    ok &= eval_conditional_and_not(schema, value, path, context);
+    ok &= eval_all_of(schema, value, path, context);
+    ok &= eval_any_of(schema, value, path, context);
+    ok &= eval_one_of(schema, value, path, context);
+    ok
+}
+
+fn eval_required(schema: &Map<String, Value>, object: &Map<String, Value>, path: &str, context: &mut Context) -> bool {
+    let Some(required) = schema.get("required").and_then(Value::as_array) else {
+        return true;
+    };
+    let missing: Vec<&Value> = required
+        .iter()
+        .filter(|key| key.as_str().is_some_and(|key| !object.contains_key(key)))
+        .collect();
+    if missing.is_empty() {
+        true
+    } else {
+        context.add("required", path, json!({ "requiredProperties": missing }))
+    }
+}
+
+fn eval_additional_properties(
+    schema: &Map<String, Value>,
+    object: &Map<String, Value>,
+    path: &str,
+    context: &mut Context,
+) -> bool {
+    let Some(additional) = schema.get("additionalProperties") else {
+        return true;
+    };
+    let mut rejected = Vec::new();
+    for (key, item) in object_entries(object) {
+        if !declared(schema, key) && !eval(additional, item, &format!("{path}/{key}"), context) {
+            rejected.push(key.clone());
+        }
+    }
+    if rejected.is_empty() {
+        true
+    } else {
+        context.add(
+            "additionalProperties",
+            path,
+            json!({ "additionalProperties": rejected }),
+        )
+    }
+}
+
+fn eval_dependency_array(
+    key: &str,
+    dependency: &Value,
+    keys: &[Value],
+    object: &Map<String, Value>,
+    path: &str,
+    context: &mut Context,
+) -> bool {
+    for needed in keys {
+        if !needed.as_str().is_some_and(|needed| object.contains_key(needed)) {
+            return context.add(
+                "dependencies",
+                path,
+                json!({ "property": key, "dependencies": dependency }),
+            );
+        }
+    }
+    true
+}
+
+fn eval_dependencies(
+    schema: &Map<String, Value>,
+    object: &Map<String, Value>,
+    path: &str,
+    context: &mut Context,
+) -> bool {
+    let Some(dependencies) = schema.get("dependencies").and_then(Value::as_object) else {
+        return true;
+    };
+    let mut every = true;
+    for (key, dependency) in dependencies {
+        if !object.contains_key(key) {
+            continue;
+        }
+        match dependency {
+            Value::Array(keys) => every &= eval_dependency_array(key, dependency, keys, object, path, context),
+            nested => every &= eval(nested, &Value::Object(object.clone()), path, context),
+        }
+    }
+    object.is_empty() || every
+}
+
+fn eval_dependent_required_entry(
+    key: &str,
+    keys: &Value,
+    object: &Map<String, Value>,
+    path: &str,
+    context: &mut Context,
+) -> bool {
+    let mut every = true;
+    for needed in keys.as_array().into_iter().flatten() {
+        if !needed.as_str().is_some_and(|needed| object.contains_key(needed)) {
+            every &= context.add(
+                "dependentRequired",
+                path,
+                json!({ "property": key, "dependencies": keys }),
+            );
+        }
+    }
+    every
+}
+
+fn eval_dependent_required(
+    schema: &Map<String, Value>,
+    object: &Map<String, Value>,
+    path: &str,
+    context: &mut Context,
+) -> bool {
+    let Some(dependencies) = schema.get("dependentRequired").and_then(Value::as_object) else {
+        return true;
+    };
+    let mut every = true;
+    for (key, keys) in dependencies {
+        if object.contains_key(key) {
+            every &= eval_dependent_required_entry(key, keys, object, path, context);
+        }
+    }
+    object.is_empty() || every
+}
+
+fn eval_dependent_schemas(
+    schema: &Map<String, Value>,
+    object: &Map<String, Value>,
+    path: &str,
+    context: &mut Context,
+) -> bool {
+    let Some(dependents) = schema.get("dependentSchemas").and_then(Value::as_object) else {
+        return true;
+    };
+    let mut every = true;
+    for (key, nested) in dependents {
+        if object.contains_key(key) {
+            every &= eval(nested, &Value::Object(object.clone()), path, context);
+        }
+    }
+    object.is_empty() || every
+}
+
+fn eval_pattern_properties(
+    schema: &Map<String, Value>,
+    object: &Map<String, Value>,
+    path: &str,
+    context: &mut Context,
+) -> bool {
+    let Some(patterns) = schema.get("patternProperties").and_then(Value::as_object) else {
+        return true;
+    };
+    let mut ok = true;
+    for (pattern, nested) in patterns {
+        for (key, item) in object_entries(object) {
+            if regex_test(pattern, key) {
+                ok &= eval(nested, item, &format!("{path}/{key}"), context);
             }
-            ok &= context.add("oneOf", path, json!({ "passingSchemas": passing }));
         }
     }
     ok
 }
 
-fn eval_object(schema: &Map<String, Value>, object: &Map<String, Value>, path: &str, context: &mut Context) -> bool {
+fn eval_properties(
+    schema: &Map<String, Value>,
+    object: &Map<String, Value>,
+    path: &str,
+    context: &mut Context,
+) -> bool {
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+        return true;
+    };
     let mut ok = true;
-    if let Some(required) = schema.get("required").and_then(Value::as_array) {
-        let missing: Vec<&Value> = required
-            .iter()
-            .filter(|key| key.as_str().is_some_and(|key| !object.contains_key(key)))
-            .collect();
-        if !missing.is_empty() {
-            ok &= context.add("required", path, json!({ "requiredProperties": missing }));
+    for (key, nested) in properties {
+        if let Some(item) = object.get(key) {
+            ok &= eval(nested, item, &format!("{path}/{key}"), context);
         }
     }
-    if let Some(additional) = schema.get("additionalProperties") {
-        let mut rejected = Vec::new();
-        for (key, item) in object_entries(object) {
-            if !declared(schema, key) && !eval(additional, item, &format!("{path}/{key}"), context) {
-                rejected.push(key.clone());
-            }
-        }
-        if !rejected.is_empty() {
-            ok &= context.add(
-                "additionalProperties",
-                path,
-                json!({ "additionalProperties": rejected }),
-            );
-        }
-    }
-    let nonempty = !object.is_empty();
-    if let Some(dependencies) = schema.get("dependencies").and_then(Value::as_object) {
-        let mut every = true;
-        for (key, dependency) in dependencies {
-            if !object.contains_key(key) {
-                continue;
-            }
-            match dependency {
-                Value::Array(keys) => {
-                    for needed in keys {
-                        if !needed.as_str().is_some_and(|needed| object.contains_key(needed)) {
-                            every &= context.add(
-                                "dependencies",
-                                path,
-                                json!({ "property": key, "dependencies": dependency }),
-                            );
-                            break;
-                        }
-                    }
-                }
-                nested => every &= eval(nested, &Value::Object(object.clone()), path, context),
-            }
-        }
-        ok &= !nonempty || every;
-    }
-    if let Some(dependencies) = schema.get("dependentRequired").and_then(Value::as_object) {
-        let mut every = true;
-        for (key, keys) in dependencies {
-            if !object.contains_key(key) {
-                continue;
-            }
-            for needed in keys.as_array().into_iter().flatten() {
-                if !needed.as_str().is_some_and(|needed| object.contains_key(needed)) {
-                    every &= context.add(
-                        "dependentRequired",
-                        path,
-                        json!({ "property": key, "dependencies": keys }),
-                    );
-                }
-            }
-        }
-        ok &= !nonempty || every;
-    }
-    if let Some(dependents) = schema.get("dependentSchemas").and_then(Value::as_object) {
-        let mut every = true;
-        for (key, nested) in dependents {
-            if object.contains_key(key) {
-                every &= eval(nested, &Value::Object(object.clone()), path, context);
-            }
-        }
-        ok &= !nonempty || every;
-    }
-    if let Some(patterns) = schema.get("patternProperties").and_then(Value::as_object) {
-        for (pattern, nested) in patterns {
-            for (key, item) in object_entries(object) {
-                if regex_test(pattern, key) {
-                    ok &= eval(nested, item, &format!("{path}/{key}"), context);
-                }
-            }
+    ok
+}
+
+fn eval_property_names(
+    schema: &Map<String, Value>,
+    object: &Map<String, Value>,
+    path: &str,
+    context: &mut Context,
+) -> bool {
+    let Some(names) = schema.get("propertyNames") else {
+        return true;
+    };
+    let mut rejected = Vec::new();
+    for (key, _) in object_entries(object) {
+        if !eval(names, &Value::String(key.clone()), &format!("{path}/{key}"), context) {
+            rejected.push(key.clone());
         }
     }
-    if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
-        for (key, nested) in properties {
-            if let Some(item) = object.get(key) {
-                ok &= eval(nested, item, &format!("{path}/{key}"), context);
-            }
-        }
+    if rejected.is_empty() {
+        true
+    } else {
+        context.add("propertyNames", path, json!({ "propertyNames": rejected }))
     }
-    if let Some(names) = schema.get("propertyNames") {
-        let mut rejected = Vec::new();
-        for (key, _) in object_entries(object) {
-            if !eval(names, &Value::String(key.clone()), &format!("{path}/{key}"), context) {
-                rejected.push(key.clone());
-            }
-        }
-        if !rejected.is_empty() {
-            ok &= context.add("propertyNames", path, json!({ "propertyNames": rejected }));
-        }
-    }
+}
+
+fn eval_property_count_bounds(
+    schema: &Map<String, Value>,
+    object: &Map<String, Value>,
+    path: &str,
+    context: &mut Context,
+) -> bool {
+    let mut ok = true;
     let count = object.len() as f64;
     if let Some(limit) = schema
         .get("minProperties")
@@ -500,49 +684,91 @@ fn eval_object(schema: &Map<String, Value>, object: &Map<String, Value>, path: &
     ok
 }
 
-fn eval_array(schema: &Map<String, Value>, items: &[Value], path: &str, context: &mut Context) -> bool {
+fn eval_object(schema: &Map<String, Value>, object: &Map<String, Value>, path: &str, context: &mut Context) -> bool {
     let mut ok = true;
-    let at = |index: usize| format!("{path}/{index}");
-    if let (Some(additional), Some(Value::Array(sized))) = (schema.get("additionalItems"), schema.get("items")) {
-        for (index, item) in items.iter().enumerate().skip(sized.len()) {
-            if !eval(additional, item, &at(index), context) {
-                ok = false;
-                break;
-            }
-        }
-    }
-    let contains = schema.get("contains");
-    let min_contains = schema.get("minContains").and_then(Value::as_f64);
-    let matching = || {
-        contains.map_or(0, |wanted| {
-            items
-                .iter()
-                .filter(|item| eval(wanted, item, path, &mut Context::checking()))
-                .count()
-        })
+    ok &= eval_required(schema, object, path, context);
+    ok &= eval_additional_properties(schema, object, path, context);
+    ok &= eval_dependencies(schema, object, path, context);
+    ok &= eval_dependent_required(schema, object, path, context);
+    ok &= eval_dependent_schemas(schema, object, path, context);
+    ok &= eval_pattern_properties(schema, object, path, context);
+    ok &= eval_properties(schema, object, path, context);
+    ok &= eval_property_names(schema, object, path, context);
+    ok &= eval_property_count_bounds(schema, object, path, context);
+    ok
+}
+
+fn item_path(path: &str, index: usize) -> String {
+    format!("{path}/{index}")
+}
+
+fn count_contains(contains: &Value, items: &[Value], path: &str) -> usize {
+    items
+        .iter()
+        .filter(|item| eval(contains, item, path, &mut Context::checking()))
+        .count()
+}
+
+fn eval_additional_items(schema: &Map<String, Value>, items: &[Value], path: &str, context: &mut Context) -> bool {
+    let (Some(additional), Some(Value::Array(sized))) = (schema.get("additionalItems"), schema.get("items")) else {
+        return true;
     };
-    if contains.is_some() && min_contains != Some(0.0) && matching() == 0 {
-        ok &= context.add("contains", path, json!({ "minContains": 1 }));
-    }
-    match schema.get("items") {
-        Some(Value::Array(sized)) => {
-            for (index, nested) in sized.iter().enumerate() {
-                if let Some(item) = items.get(index) {
-                    ok &= eval(nested, item, &at(index), context);
-                }
-            }
+    for (index, item) in items.iter().enumerate().skip(sized.len()) {
+        if !eval(additional, item, &item_path(path, index), context) {
+            return false;
         }
+    }
+    true
+}
+
+fn eval_contains_presence(schema: &Map<String, Value>, items: &[Value], path: &str, context: &mut Context) -> bool {
+    let Some(contains) = schema.get("contains") else {
+        return true;
+    };
+    if schema.get("minContains").and_then(Value::as_f64) == Some(0.0) {
+        return true;
+    }
+    if count_contains(contains, items, path) == 0 {
+        return context.add("contains", path, json!({ "minContains": 1 }));
+    }
+    true
+}
+
+fn eval_tuple_items(sized: &[Value], items: &[Value], path: &str, context: &mut Context) -> bool {
+    let mut ok = true;
+    for (index, nested) in sized.iter().enumerate() {
+        if let Some(item) = items.get(index) {
+            ok &= eval(nested, item, &item_path(path, index), context);
+        }
+    }
+    ok
+}
+
+fn eval_items(schema: &Map<String, Value>, items: &[Value], path: &str, context: &mut Context) -> bool {
+    match schema.get("items") {
+        Some(Value::Array(sized)) => eval_tuple_items(sized, items, path, context),
         Some(each) => {
             let offset = schema.get("prefixItems").and_then(Value::as_array).map_or(0, Vec::len);
+            let mut ok = true;
             for (index, item) in items.iter().enumerate().skip(offset) {
-                ok &= eval(each, item, &at(index), context);
+                ok &= eval(each, item, &item_path(path, index), context);
             }
+            ok
         }
-        None => {}
+        None => true,
     }
-    if let Some(limit) = schema.get("maxContains").and_then(Value::as_f64)
-        && contains.is_some()
-        && matching() as f64 > limit
+}
+
+fn eval_max_contains_and_max_items(
+    schema: &Map<String, Value>,
+    items: &[Value],
+    path: &str,
+    context: &mut Context,
+) -> bool {
+    let mut ok = true;
+    if let Some(contains) = schema.get("contains")
+        && let Some(limit) = schema.get("maxContains").and_then(Value::as_f64)
+        && count_contains(contains, items, path) as f64 > limit
     {
         let min = schema.get("minContains").cloned().unwrap_or(json!(1));
         ok &= context.add(
@@ -558,24 +784,45 @@ fn eval_array(schema: &Map<String, Value>, items: &[Value], path: &str, context:
     {
         ok &= context.add("maxItems", path, json!({ "limit": limit }));
     }
-    if let Some(limit) = min_contains
-        && contains.is_some()
-        && (matching() as f64) < limit
+    ok
+}
+
+fn eval_min_contains_and_min_items(
+    schema: &Map<String, Value>,
+    items: &[Value],
+    path: &str,
+    context: &mut Context,
+) -> bool {
+    let mut ok = true;
+    if let Some(contains) = schema.get("contains")
+        && let Some(limit) = schema.get("minContains").and_then(Value::as_f64)
+        && (count_contains(contains, items, path) as f64) < limit
     {
         ok &= context.add("contains", path, json!({ "minContains": schema["minContains"] }));
     }
+    let length = items.len() as f64;
     if let Some(limit) = schema
         .get("minItems")
         .filter(|l| l.as_f64().is_some_and(|l| length < l))
     {
         ok &= context.add("minItems", path, json!({ "limit": limit }));
     }
+    ok
+}
+
+fn eval_prefix_and_unique_items(
+    schema: &Map<String, Value>,
+    items: &[Value],
+    path: &str,
+    context: &mut Context,
+) -> bool {
+    let mut ok = true;
     if let Some(prefix) = schema.get("prefixItems").and_then(Value::as_array)
         && !items.is_empty()
     {
         for (index, nested) in prefix.iter().enumerate() {
             if let Some(item) = items.get(index) {
-                ok &= eval(nested, item, &at(index), context);
+                ok &= eval(nested, item, &item_path(path, index), context);
             }
         }
     }
@@ -587,6 +834,17 @@ fn eval_array(schema: &Map<String, Value>, items: &[Value], path: &str, context:
             ok &= context.add("uniqueItems", path, json!({ "duplicateItems": duplicates }));
         }
     }
+    ok
+}
+
+fn eval_array(schema: &Map<String, Value>, items: &[Value], path: &str, context: &mut Context) -> bool {
+    let mut ok = true;
+    ok &= eval_additional_items(schema, items, path, context);
+    ok &= eval_contains_presence(schema, items, path, context);
+    ok &= eval_items(schema, items, path, context);
+    ok &= eval_max_contains_and_max_items(schema, items, path, context);
+    ok &= eval_min_contains_and_min_items(schema, items, path, context);
+    ok &= eval_prefix_and_unique_items(schema, items, path, context);
     ok
 }
 
@@ -642,4 +900,74 @@ fn eval_number(schema: &Map<String, Value>, n: f64, path: &str, context: &mut Co
         ok &= context.add("multipleOf", path, json!({ "multipleOf": divisor }));
     }
     ok
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_if_then_else_absorption() {
+        let schema = json!({
+            "if": { "type": "number" },
+            "then": { "minimum": 10 },
+            "else": { "minLength": 3 }
+        });
+        let then_errs = errors(&schema, &json!(5));
+        assert_eq!(then_errs.len(), 1);
+        assert_eq!(then_errs[0].keyword, "if");
+        assert_eq!(then_errs[0].params, json!({ "failingKeyword": "then" }));
+
+        let else_errs = errors(&schema, &json!("ab"));
+        assert_eq!(else_errs.len(), 2);
+        assert_eq!(else_errs[0].keyword, "minLength");
+        assert_eq!(else_errs[1].keyword, "if");
+        assert_eq!(else_errs[1].params, json!({ "failingKeyword": "else" }));
+    }
+
+    #[test]
+    fn test_dependencies_vs_dependent_required() {
+        let deps_schema = json!({ "dependencies": { "a": ["b", "c"] } });
+        let dep_errs = errors(&deps_schema, &json!({ "a": 1 }));
+        assert_eq!(dep_errs.len(), 1);
+        assert_eq!(dep_errs[0].keyword, "dependencies");
+
+        let req_schema = json!({ "dependentRequired": { "a": ["b", "c"] } });
+        let req_errs = errors(&req_schema, &json!({ "a": 1 }));
+        assert_eq!(req_errs.len(), 2);
+        assert_eq!(req_errs[0].keyword, "dependentRequired");
+        assert_eq!(req_errs[1].keyword, "dependentRequired");
+    }
+
+    #[test]
+    fn test_array_contains_item_order() {
+        let schema = json!({
+            "contains": { "type": "number" },
+            "maxContains": 1,
+            "maxItems": 1,
+            "minItems": 4
+        });
+        let errs = errors(&schema, &json!([1, 2]));
+        let keywords: Vec<&str> = errs.iter().map(|e| e.keyword.as_str()).collect();
+        assert_eq!(keywords, vec!["contains", "maxItems", "minItems"]);
+    }
+
+    #[test]
+    fn test_grapheme_count_clusters() {
+        assert_eq!(grapheme_count("e\u{0301}"), 1);
+        assert_eq!(grapheme_count("\u{1F1FA}\u{1F1F8}"), 1);
+        assert_eq!(grapheme_count("\u{1F469}\u{200D}\u{1F52C}"), 1);
+    }
+
+    #[test]
+    fn test_message_formats() {
+        let msg = message("type", &json!({ "type": ["string", "number"] }));
+        assert_eq!(msg, "must be either string or number");
+        assert_eq!(
+            message("maxItems", &json!({ "limit": 3 })),
+            "must not have more than 3 items"
+        );
+        assert_eq!(message("unknown", &json!({})), "an unknown validation error occurred");
+    }
 }

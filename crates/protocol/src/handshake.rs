@@ -46,9 +46,7 @@ pub fn client_hello() -> Vec<u8> {
     .expect("a hello frame encodes")
 }
 
-/// Wait on `read` for the server's answer to a client hello already sent: its hello for `server_id`.
-pub fn read_hello(read: &mut dyn Read, server_id: &str) -> Result<Connected, HelloError> {
-    let mut decoder = ServerMessageDecoder::new(MAX_SERVER_FRAME_LENGTH).unwrap_or_default();
+fn read_first_batch(read: &mut dyn Read, decoder: &mut ServerMessageDecoder) -> Result<Vec<ServerMessage>, HelloError> {
     let mut buffer = vec![0u8; 64 * 1024];
     let mut queued = Vec::new();
     while queued.is_empty() {
@@ -65,14 +63,26 @@ pub fn read_hello(read: &mut dyn Read, server_id: &str) -> Result<Connected, Hel
         }
         queued = decoder.push(&buffer[..n]).map_err(|e| HelloError::Invalid(e.0))?;
     }
-    match queued.remove(0) {
+    Ok(queued)
+}
+
+fn verify_server_hello(first: ServerMessage, server_id: &str) -> Result<(), HelloError> {
+    match first {
         ServerMessage::HelloError { error } => Err(HelloError::Rejected(error)),
-        ServerMessage::Hello { server_id: id, .. } if id == server_id => Ok(Connected { decoder, queued }),
+        ServerMessage::Hello { server_id: id, .. } if id == server_id => Ok(()),
         ServerMessage::Hello { server_id: id, .. } => Err(HelloError::Invalid(format!(
             "Connected server {id:?} does not match {server_id:?}"
         ))),
         _ => Err(HelloError::Invalid("Expected server hello as first message".into())),
     }
+}
+
+/// Wait on `read` for the server's answer to a client hello already sent: its hello for `server_id`.
+pub fn read_hello(read: &mut dyn Read, server_id: &str) -> Result<Connected, HelloError> {
+    let mut decoder = ServerMessageDecoder::new(MAX_SERVER_FRAME_LENGTH).unwrap_or_default();
+    let mut queued = read_first_batch(read, &mut decoder)?;
+    verify_server_hello(queued.remove(0), server_id)?;
+    Ok(Connected { decoder, queued })
 }
 
 pub fn hello<S: Read + Write>(stream: &mut S, server_id: &str) -> Result<Connected, HelloError> {

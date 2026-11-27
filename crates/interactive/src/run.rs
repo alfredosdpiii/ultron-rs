@@ -226,6 +226,48 @@ pub fn paint_loop(
     paint_loop_with(app, events, out, size, pending, &mut KeyboardProtocol::new())
 }
 
+struct PaintState {
+    split: bool,
+    gated: bool,
+    screen: AltScreen,
+    viewport: ViewportRenderer,
+    gate: RenderGate,
+    mouse: Option<&'static str>,
+    release: String,
+    last_size: (u16, u16),
+    dirty: bool,
+    debug: Option<Arc<tui::RenderDebug>>,
+}
+
+impl PaintState {
+    fn new(app: &App) -> Self {
+        let split = app.qol().viewport_split;
+        let mouse = app.mouse_tracking().filter(|_| !split);
+        let release = if mouse.is_some() {
+            AltScreen::release_mouse()
+        } else {
+            String::new()
+        };
+        Self {
+            split,
+            gated: app.qol().render_gate,
+            screen: AltScreen::new(),
+            viewport: ViewportRenderer::new(),
+            gate: RenderGate::new(),
+            mouse,
+            release,
+            last_size: (0, 0),
+            dirty: true,
+            debug: app.render_debug(),
+        }
+    }
+
+    fn enter(&mut self, app: &mut App) -> String {
+        app.reset_viewport();
+        self.screen.enter_with_mouse(self.mouse.unwrap_or(""))
+    }
+}
+
 /// [`paint_loop`] reading the keyboard protocol replies of `keyboard` (queried at terminal start) out of the input:
 /// they set the app's Kitty state or the modifyOtherKeys fallback and never reach the components; leaving the
 /// terminal for an external editor or a suspend pops the protocol and queries it again on return.
@@ -245,203 +287,254 @@ pub fn paint_loop_with(
         out(data)
     };
     let out: &mut dyn FnMut(&str) -> std::io::Result<()> = &mut logged;
-    let split = app.qol().viewport_split;
-    let gated = app.qol().render_gate;
-    let mut screen = AltScreen::new();
-    let mut viewport = ViewportRenderer::new();
-    let mut gate = RenderGate::new();
-    let mouse = app.mouse_tracking().filter(|_| !split);
-    let enter = |screen: &mut AltScreen, app: &mut App| {
-        app.reset_viewport();
-        screen.enter_with_mouse(mouse.unwrap_or(""))
-    };
-    let release = if mouse.is_some() {
-        AltScreen::release_mouse()
-    } else {
-        String::new()
-    };
-    if !split {
-        out(&enter(&mut screen, app))?;
+    let mut state = PaintState::new(app);
+    if !state.split {
+        let bytes = state.enter(app);
+        out(&bytes)?;
     }
-    let mut last_size = (0, 0);
-    let mut dirty = true;
     loop {
-        let (cols, rows) = size();
-        if (cols, rows) != last_size {
-            last_size = (cols, rows);
-            dirty = true;
-        }
-        if app.poll_services() {
-            dirty = true;
-        }
-        if app.poll_autocomplete() {
-            dirty = true;
-        }
-        if let Some((command, content)) = app.take_edit_request() {
-            let gate = app.input_gate();
-            gate.store(true, Ordering::SeqCst);
-            if !release.is_empty() {
-                out(&release)?;
-            }
-            out(leave_bytes(app, split))?;
-            leave_keyboard(app, keyboard, out)?;
-            let raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
-            if raw {
-                let _ = crossterm::terminal::disable_raw_mode();
-            }
-            let edited = edit_externally(&command, &content);
-            if raw {
-                let _ = crossterm::terminal::enable_raw_mode();
-            }
-            out("\x1b[?2004h")?;
-            out(keyboard.query())?;
-            gate.store(false, Ordering::SeqCst);
-            app.finish_edit(edited);
-            app.reset_display = true;
-        }
-        if app.take_suspend_request() && app.can_suspend() {
-            let gate = app.input_gate();
-            gate.store(true, Ordering::SeqCst);
-            if !release.is_empty() {
-                out(&release)?;
-            }
-            out(leave_bytes(app, split))?;
-            leave_keyboard(app, keyboard, out)?;
-            let raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
-            if raw {
-                let _ = crossterm::terminal::disable_raw_mode();
-            }
-            app.suspend();
-            if raw {
-                let _ = crossterm::terminal::enable_raw_mode();
-            }
-            out("\x1b[?2004h")?;
-            out(keyboard.query())?;
-            gate.store(false, Ordering::SeqCst);
-            app.reset_display = true;
-        }
-        if app.poll_rlm() {
-            dirty = true;
-        }
-        if let Some(fragment) = keyboard.poll(Instant::now()) {
-            app.handle_input(&fragment);
-            dirty = true;
-        }
-        if !split && app.poll_viewport(Instant::now()) {
-            dirty = true;
-        }
-        if app.take_reset_display() {
-            let images = if split { viewport.delete_images() } else { String::new() };
-            out(&format!("{images}\x1b[2J\x1b[3J\x1b[H"))?;
-            screen = AltScreen::new();
-            viewport = ViewportRenderer::new();
-            if !split {
-                out(&enter(&mut screen, app))?;
-            }
-            dirty = true;
-        }
-        let mut deferred = None;
-        if dirty {
-            let paint = !gated || {
-                gate.request();
-                match gate.poll(Instant::now(), pending.map(|p| p())) {
-                    GateDecision::Render => true,
-                    GateDecision::Wait(d) => {
-                        deferred = Some(d);
-                        false
-                    }
-                    GateDecision::Idle => false,
-                }
-            };
-            if paint {
-                let started = Instant::now();
-                for write in app.terminal_writes.drain(..) {
-                    out(&write)?;
-                }
-                screen.show_hardware_cursor = app.show_hardware_cursor;
-                screen.image_protocol = app.image_protocol;
-                screen.wezterm = app.wezterm;
-                viewport.show_hardware_cursor = app.show_hardware_cursor;
-                viewport.clear_on_shrink = app.clear_on_shrink;
-                viewport.termux = app.termux();
-                viewport.trace = debug.as_ref().is_some_and(|d| d.traces_renders());
-                if split {
-                    let plan = app.frame_plan(cols as usize, rows as usize);
-                    out(&viewport.render(&plan, cols as usize, rows as usize).bytes)?;
-                    if let Some(debug) = &debug {
-                        let (redraws, dumps) = viewport.take_traces();
-                        for entry in redraws {
-                            debug.redraw(&entry);
-                        }
-                        for dump in dumps {
-                            debug.dump(&dump.text());
-                        }
-                    }
-                } else {
-                    let frame = app.render(cols as usize, rows as usize);
-                    out(&screen.paint(&frame, cols as usize, rows as usize))?;
-                }
-                dirty = false;
-                gate.rendered(started.elapsed());
-            }
-        }
+        poll_loop_sources(app, &mut state, keyboard, size);
+        handle_external_actions(app, &mut state, keyboard, out)?;
+        let deferred = maybe_paint_frame(app, &mut state, pending, out)?;
         if app.exit {
             break;
         }
-        let mut wait = if app.fire_autocomplete_pending() {
-            DEBOUNCE
-        } else if app.animating() {
-            ANIMATION
-        } else {
-            IDLE
-        };
-        if let Some(d) = deferred {
-            wait = wait.min(d);
-        }
-        if let Some(at) = app.viewport_deadline().filter(|_| !split) {
-            wait = wait.min(at.saturating_duration_since(Instant::now()));
-        }
-        if let Some(at) = keyboard.flush_deadline() {
-            wait = wait.min(at.saturating_duration_since(Instant::now()));
-        }
-        match events.recv_timeout(wait) {
-            Ok(event) => {
-                handle(app, event, keyboard, out)?;
-                while let Ok(event) = events.try_recv() {
-                    handle(app, event, keyboard, out)?;
-                }
-                dirty = true;
-            }
-            Err(RecvTimeoutError::Timeout) => {
-                if app.fire_autocomplete() {
-                    dirty = true;
-                }
-                if app.animating() {
-                    app.tick();
-                    dirty = true;
-                }
-            }
-            Err(RecvTimeoutError::Disconnected) => app.exit = true,
+        let wait = compute_wait(app, &state, keyboard, deferred);
+        if poll_events(app, events, keyboard, out, wait)? {
+            state.dirty = true;
         }
     }
-    let width = last_size.0 as usize;
-    app.stop_terminal_notifications();
-    if split {
-        for write in app.terminal_writes.drain(..) {
-            out(&write)?;
-        }
-        let plan = app.exit_plan(width);
-        out(&viewport.render(&plan, width, last_size.1 as usize).bytes)?;
-        return out("\r\n\x1b[?25h");
+    finish_paint_loop(app, &mut state, out)
+}
+
+fn poll_loop_sources(
+    app: &mut App,
+    state: &mut PaintState,
+    keyboard: &mut KeyboardProtocol,
+    size: &dyn Fn() -> (u16, u16),
+) {
+    let (cols, rows) = size();
+    if (cols, rows) != state.last_size {
+        state.last_size = (cols, rows);
+        state.dirty = true;
     }
+    state.dirty |= app.poll_services();
+    state.dirty |= app.poll_autocomplete();
+    state.dirty |= app.poll_rlm();
+    if let Some(fragment) = keyboard.poll(Instant::now()) {
+        app.handle_input(&fragment);
+        state.dirty = true;
+    }
+    if !state.split && app.poll_viewport(Instant::now()) {
+        state.dirty = true;
+    }
+}
+
+fn with_terminal_suspended<T>(
+    app: &mut App,
+    state: &PaintState,
+    keyboard: &mut KeyboardProtocol,
+    out: &mut dyn FnMut(&str) -> std::io::Result<()>,
+    action: impl FnOnce(&mut App) -> T,
+) -> std::io::Result<T> {
+    let gate = app.input_gate();
+    gate.store(true, Ordering::SeqCst);
+    if !state.release.is_empty() {
+        out(&state.release)?;
+    }
+    out(leave_bytes(app, state.split))?;
+    leave_keyboard(app, keyboard, out)?;
+    let raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+    if raw {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
+    let result = action(app);
+    if raw {
+        let _ = crossterm::terminal::enable_raw_mode();
+    }
+    out("\x1b[?2004h")?;
+    out(keyboard.query())?;
+    gate.store(false, Ordering::SeqCst);
+    app.reset_display = true;
+    Ok(result)
+}
+
+fn handle_external_actions(
+    app: &mut App,
+    state: &mut PaintState,
+    keyboard: &mut KeyboardProtocol,
+    out: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    if let Some((command, content)) = app.take_edit_request() {
+        let edited = with_terminal_suspended(app, state, keyboard, out, |_| edit_externally(&command, &content))?;
+        app.finish_edit(edited);
+    }
+    if app.take_suspend_request() && app.can_suspend() {
+        with_terminal_suspended(app, state, keyboard, out, |app| {
+            app.suspend();
+        })?;
+    }
+    if app.take_reset_display() {
+        reset_display(app, state, out)?;
+    }
+    Ok(())
+}
+
+fn reset_display(
+    app: &mut App,
+    state: &mut PaintState,
+    out: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let images = if state.split {
+        state.viewport.delete_images()
+    } else {
+        String::new()
+    };
+    out(&format!("{images}\x1b[2J\x1b[3J\x1b[H"))?;
+    state.screen = AltScreen::new();
+    state.viewport = ViewportRenderer::new();
+    if !state.split {
+        let bytes = state.enter(app);
+        out(&bytes)?;
+    }
+    state.dirty = true;
+    Ok(())
+}
+
+fn maybe_paint_frame(
+    app: &mut App,
+    state: &mut PaintState,
+    pending: Option<&dyn Fn() -> usize>,
+    out: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> std::io::Result<Option<Duration>> {
+    if !state.dirty {
+        return Ok(None);
+    }
+    if state.gated {
+        state.gate.request();
+        match state.gate.poll(Instant::now(), pending.map(|p| p())) {
+            GateDecision::Render => {}
+            GateDecision::Wait(d) => return Ok(Some(d)),
+            GateDecision::Idle => return Ok(None),
+        }
+    }
+    let started = Instant::now();
+    paint_frame(app, state, out)?;
+    state.dirty = false;
+    state.gate.rendered(started.elapsed());
+    Ok(None)
+}
+
+fn paint_frame(
+    app: &mut App,
+    state: &mut PaintState,
+    out: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     for write in app.terminal_writes.drain(..) {
         out(&write)?;
     }
-    let document = app.exit_document(width);
-    if !release.is_empty() {
-        out(&release)?;
+    let (cols, rows) = (state.last_size.0 as usize, state.last_size.1 as usize);
+    state.screen.show_hardware_cursor = app.show_hardware_cursor;
+    state.screen.image_protocol = app.image_protocol;
+    state.screen.wezterm = app.wezterm;
+    state.viewport.show_hardware_cursor = app.show_hardware_cursor;
+    state.viewport.clear_on_shrink = app.clear_on_shrink;
+    state.viewport.termux = app.termux();
+    state.viewport.trace = state.debug.as_ref().is_some_and(|d| d.traces_renders());
+    if state.split {
+        let plan = app.frame_plan(cols, rows);
+        out(&state.viewport.render(&plan, cols, rows).bytes)?;
+        flush_viewport_traces(&mut state.viewport, state.debug.as_deref());
+    } else {
+        let frame = app.render(cols, rows);
+        out(&state.screen.paint(&frame, cols, rows))?;
     }
-    out(&screen.exit(&document, width))
+    Ok(())
+}
+
+fn flush_viewport_traces(viewport: &mut ViewportRenderer, debug: Option<&tui::RenderDebug>) {
+    let Some(debug) = debug else {
+        return;
+    };
+    let (redraws, dumps) = viewport.take_traces();
+    for entry in redraws {
+        debug.redraw(&entry);
+    }
+    for dump in dumps {
+        debug.dump(&dump.text());
+    }
+}
+
+fn compute_wait(app: &App, state: &PaintState, keyboard: &KeyboardProtocol, deferred: Option<Duration>) -> Duration {
+    let mut wait = if app.fire_autocomplete_pending() {
+        DEBOUNCE
+    } else if app.animating() {
+        ANIMATION
+    } else {
+        IDLE
+    };
+    if let Some(d) = deferred {
+        wait = wait.min(d);
+    }
+    if let Some(at) = app.viewport_deadline().filter(|_| !state.split) {
+        wait = wait.min(at.saturating_duration_since(Instant::now()));
+    }
+    if let Some(at) = keyboard.flush_deadline() {
+        wait = wait.min(at.saturating_duration_since(Instant::now()));
+    }
+    wait
+}
+
+fn poll_events(
+    app: &mut App,
+    events: &Receiver<UiEvent>,
+    keyboard: &mut KeyboardProtocol,
+    out: &mut dyn FnMut(&str) -> std::io::Result<()>,
+    wait: Duration,
+) -> std::io::Result<bool> {
+    match events.recv_timeout(wait) {
+        Ok(event) => {
+            handle(app, event, keyboard, out)?;
+            while let Ok(event) = events.try_recv() {
+                handle(app, event, keyboard, out)?;
+            }
+            Ok(true)
+        }
+        Err(RecvTimeoutError::Timeout) => {
+            let mut dirty = app.fire_autocomplete();
+            if app.animating() {
+                app.tick();
+                dirty = true;
+            }
+            Ok(dirty)
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            app.exit = true;
+            Ok(false)
+        }
+    }
+}
+
+fn finish_paint_loop(
+    app: &mut App,
+    state: &mut PaintState,
+    out: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let width = state.last_size.0 as usize;
+    app.stop_terminal_notifications();
+    for write in app.terminal_writes.drain(..) {
+        out(&write)?;
+    }
+    if state.split {
+        let plan = app.exit_plan(width);
+        out(&state.viewport.render(&plan, width, state.last_size.1 as usize).bytes)?;
+        return out("\r\n\x1b[?25h");
+    }
+    let document = app.exit_document(width);
+    if !state.release.is_empty() {
+        out(&state.release)?;
+    }
+    out(&state.screen.exit(&document, width))
 }
 
 /// What leaving the TUI for a while (Ctrl+G, Ctrl+Z) writes: bracketed paste and the hidden cursor off, and on the

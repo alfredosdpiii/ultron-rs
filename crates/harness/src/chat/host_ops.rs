@@ -242,6 +242,48 @@ impl HostOps {
         }
     }
 
+    fn wait_task_with_timeout(&self, id: TaskId, timeout: Option<Instant>, signal: &Cancel) -> bool {
+        let (done, expired) = (Cancel::new(), Cancel::new());
+        let limit = timeout.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+        let timer = limit.map(|limit| {
+            let (done, expired) = (done.clone(), expired.clone());
+            std::thread::spawn(move || {
+                if done.wait_timeout(limit).is_none() {
+                    expired.cancel(HarnessError::msg("timeout"));
+                }
+            })
+        });
+        let linked = Cancel::any(&[signal, &expired]);
+        let waited = self.chat.wait_for_task(id, &Ctx::with_signal(linked.signal()));
+        done.abort();
+        if let Some(timer) = timer {
+            let _ = timer.join();
+        }
+        waited.is_ok()
+    }
+
+    fn collect_one(&self, id: TaskId, timeout: Option<Instant>, signal: &Cancel) -> Result<Option<Value>, String> {
+        loop {
+            let record = self.record(id)?;
+            if child_done(&record) {
+                return Ok(child_report(&record));
+            }
+            if record.state.status() != TaskStatus::Terminal
+                && !is_keep(&record)
+                && self.wait_task_with_timeout(id, timeout, signal)
+            {
+                continue;
+            }
+            if let Some(reason) = signal.reason() {
+                return Err(reason.message());
+            }
+            if timeout.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Err(format!("Timed out waiting for subagent {}", child_id(id)));
+            }
+            signal.wait_timeout(POLL);
+        }
+    }
+
     /// Wait for every selected child to have an answer, then return the results.
     fn collect(&self, payload: &Map<String, Value>, call: &CellCall, signal: &Cancel) -> OpResult {
         let ids = self.selected(payload, call)?;
@@ -252,41 +294,7 @@ impl HostOps {
             .map(|ms| Instant::now() + Duration::from_millis(ms as u64));
         let mut results = Vec::new();
         for id in ids {
-            loop {
-                let record = self.record(id)?;
-                if child_done(&record) {
-                    results.extend(child_report(&record));
-                    break;
-                }
-                if record.state.status() != TaskStatus::Terminal && !is_keep(&record) {
-                    let (done, expired) = (Cancel::new(), Cancel::new());
-                    let limit = timeout.map(|deadline| deadline.saturating_duration_since(Instant::now()));
-                    let timer = limit.map(|limit| {
-                        let (done, expired) = (done.clone(), expired.clone());
-                        std::thread::spawn(move || {
-                            if done.wait_timeout(limit).is_none() {
-                                expired.cancel(HarnessError::msg("timeout"));
-                            }
-                        })
-                    });
-                    let linked = Cancel::any(&[signal, &expired]);
-                    let waited = self.chat.wait_for_task(id, &Ctx::with_signal(linked.signal()));
-                    done.abort();
-                    if let Some(timer) = timer {
-                        let _ = timer.join();
-                    }
-                    if waited.is_ok() {
-                        continue;
-                    }
-                }
-                if let Some(reason) = signal.reason() {
-                    return Err(reason.message());
-                }
-                if timeout.is_some_and(|deadline| Instant::now() >= deadline) {
-                    return Err(format!("Timed out waiting for subagent {}", child_id(id)));
-                }
-                signal.wait_timeout(POLL);
-            }
+            results.extend(self.collect_one(id, timeout, signal)?);
         }
         Ok(json!({ "results": results }))
     }
@@ -337,53 +345,27 @@ impl HostOps {
         Ok(json!({ "cancelled": result == crate::scheduler::AbortResult::Marked }))
     }
 
-    /// Ask a persistent child a follow-up question: an input submission to its conversation, answered there; the
-    /// caller's context grows only by the question and the answer. The wait is bounded by `timeout_ms` (default
-    /// [`ASK_TIMEOUT`]); when it runs out the answer is `status: "timeout"` and the question stays queued in the
-    /// child, which keeps working on it.
-    fn ask(&self, payload: &Map<String, Value>, signal: &Cancel) -> OpResult {
-        let id = parse_child(payload.get("child").ok_or("rlm.ask needs a child")?)?;
-        let question = payload
-            .get("question")
-            .and_then(Value::as_str)
-            .filter(|question| !question.trim().is_empty())
-            .ok_or("rlm.ask question must be a non-empty string")?;
-        let record = self.record(id)?;
-        if !is_keep(&record) {
-            return Err(format!(
-                "Subagent {} is not persistent; spawn it with keep=True to ask it follow-ups",
-                child_id(id)
-            ));
-        }
-        let conversation = loop {
+    fn wait_for_child_conversation(&self, id: TaskId, signal: &Cancel) -> Result<durable::ConversationId, String> {
+        loop {
             let record = self.record(id)?;
             if record.state.status() == TaskStatus::Terminal {
                 return Err(format!("Subagent {} has ended", child_id(id)));
             }
             if let Some(conversation) = child_conversation(&record) {
-                break conversation;
+                return Ok(conversation);
             }
             if let Some(reason) = signal.reason() {
                 return Err(reason.message());
             }
             signal.wait_timeout(POLL);
-        };
-        let request = payload.get("request_id").and_then(Value::as_str);
-        let mut draft = SubmissionDraft::input(question).when_busy(WhenBusy::FollowUp);
-        if let Some(request) = request {
-            draft = draft.request_id(request);
         }
-        let handle = self
-            .chat
-            .conversation(conversation)
-            .map_err(error)?
-            .ok_or_else(|| format!("Subagent {} has no conversation", child_id(id)))?;
-        let limit = payload
-            .get("timeout_ms")
-            .and_then(Value::as_f64)
-            .filter(|ms| *ms > 0.0)
-            .map_or(ASK_TIMEOUT, |ms| Duration::from_millis(ms as u64));
-        let submission = handle.submit(draft).map_err(error)?;
+    }
+
+    fn wait_ask_submission(
+        submission: &super::Submission,
+        limit: Duration,
+        signal: &Cancel,
+    ) -> Result<Option<durable::SubmissionRecord>, String> {
         let (done, expired) = (Cancel::new(), Cancel::new());
         let timer = {
             let (done, expired) = (done.clone(), expired.clone());
@@ -398,40 +380,36 @@ impl HostOps {
         done.abort();
         let _ = timer.join();
         if waited.is_err() && signal.reason().is_none() && expired.reason().is_some() {
-            return Ok(json!({
-                "id": child_id(id),
-                "status": "timeout",
-                "error": format!(
-                    "No answer from subagent {} within {} s; it is still working on the question. Carry on and \
-                     rlm.ask it again later (a new question queues behind this one), or stop it with \
-                     `await rlm.delete_subagent(\"{}\")`.",
-                    child_id(id),
-                    limit.as_secs_f64().round(),
-                    child_id(id)
-                ),
-            }));
+            return Ok(None);
         }
-        let settled = waited.map_err(error)?;
+        waited.map(Some).map_err(error)
+    }
+
+    fn read_answer_text(&self, answer: durable::EntryId) -> Result<String, String> {
+        let message = self
+            .chat
+            .commit(|tx| {
+                let entry = tx.entry(answer)?;
+                Ok(entry
+                    .and_then(|entry| entry.model)
+                    .and_then(|model| model.into_iter().next()))
+            })
+            .map_err(error)?;
+        Ok(message.map_or_default(|message| {
+            message["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|block| block["text"].as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }))
+    }
+
+    fn format_ask_result(&self, id: TaskId, settled: durable::SubmissionRecord) -> OpResult {
         match (settled.status, settled.answer) {
             (SubmissionStatus::Done, Some(answer)) => {
-                let text = self
-                    .chat
-                    .commit(|tx| {
-                        let entry = tx.entry(answer)?;
-                        Ok(entry
-                            .and_then(|entry| entry.model)
-                            .and_then(|model| model.into_iter().next()))
-                    })
-                    .map_err(error)?
-                    .map_or_default(|message| {
-                        message["content"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|block| block["text"].as_str().map(str::to_owned))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    });
+                let text = self.read_answer_text(answer)?;
                 Ok(json!({ "id": child_id(id), "status": "succeeded", "value": text }))
             }
             _ => Ok(json!({
@@ -440,6 +418,50 @@ impl HostOps {
                 "error": settled.detail.or(settled.reason.map(Value::String)).unwrap_or(Value::Null),
             })),
         }
+    }
+
+    fn parse_ask_payload(payload: &Map<String, Value>) -> Result<(TaskId, SubmissionDraft, Duration), String> {
+        let id = parse_child(payload.get("child").ok_or("rlm.ask needs a child")?)?;
+        let question = payload
+            .get("question")
+            .and_then(Value::as_str)
+            .filter(|question| !question.trim().is_empty())
+            .ok_or("rlm.ask question must be a non-empty string")?;
+        let mut draft = SubmissionDraft::input(question).when_busy(WhenBusy::FollowUp);
+        if let Some(request) = payload.get("request_id").and_then(Value::as_str) {
+            draft = draft.request_id(request);
+        }
+        let limit = payload
+            .get("timeout_ms")
+            .and_then(Value::as_f64)
+            .filter(|ms| *ms > 0.0)
+            .map_or(ASK_TIMEOUT, |ms| Duration::from_millis(ms as u64));
+        Ok((id, draft, limit))
+    }
+
+    /// Ask a persistent child a follow-up question: an input submission to its conversation, answered there; the
+    /// caller's context grows only by the question and the answer. The wait is bounded by `timeout_ms` (default
+    /// [`ASK_TIMEOUT`]); when it runs out the answer is `status: "timeout"` and the question stays queued in the
+    /// child, which keeps working on it.
+    fn ask(&self, payload: &Map<String, Value>, signal: &Cancel) -> OpResult {
+        let (id, draft, limit) = Self::parse_ask_payload(payload)?;
+        if !is_keep(&self.record(id)?) {
+            return Err(format!(
+                "Subagent {} is not persistent; spawn it with keep=True to ask it follow-ups",
+                child_id(id)
+            ));
+        }
+        let conversation = self.wait_for_child_conversation(id, signal)?;
+        let handle = self
+            .chat
+            .conversation(conversation)
+            .map_err(error)?
+            .ok_or_else(|| format!("Subagent {} has no conversation", child_id(id)))?;
+        let submission = handle.submit(draft).map_err(error)?;
+        let Some(settled) = Self::wait_ask_submission(&submission, limit, signal)? else {
+            return Ok(ask_timeout_response(id, limit));
+        };
+        self.format_ask_result(id, settled)
     }
 }
 
@@ -468,6 +490,21 @@ impl HostOps {
         };
         super::swarm::serve(&self.chat, kind, payload, &caller)
     }
+}
+
+fn ask_timeout_response(id: TaskId, limit: Duration) -> Value {
+    json!({
+        "id": child_id(id),
+        "status": "timeout",
+        "error": format!(
+            "No answer from subagent {} within {} s; it is still working on the question. Carry on and \
+             rlm.ask it again later (a new question queues behind this one), or stop it with \
+             `await rlm.delete_subagent(\"{}\")`.",
+            child_id(id),
+            limit.as_secs_f64().round(),
+            child_id(id)
+        ),
+    })
 }
 
 fn is_keep(record: &TaskRecord) -> bool {

@@ -94,6 +94,29 @@ pub fn rename_legacy(write: &mut Value) {
     }
 }
 
+fn validate_op(kind: &str, op: &str, valid: &[&str]) -> Result<(), String> {
+    if valid.contains(&op) {
+        Ok(())
+    } else {
+        Err(format!("Invalid JSONL {kind} operation: {op}"))
+    }
+}
+
+fn validate_write_kind(map: &Map<String, Value>) -> Result<(), String> {
+    let op = jsrt::value::string(map.get("op"));
+    match map.get("kind").and_then(Value::as_str) {
+        Some("entry") if safe_integer_at_least(map.get("timestamp"), 0) => Ok(()),
+        Some("entry") => Err("Invalid JSONL entry timestamp".into()),
+        Some("usage") => Ok(()),
+        Some("value") => validate_op("value", &op, &["set", "delete"]),
+        Some("list") => validate_op("list", &op, &["append", "delete"]),
+        _ => Err(format!(
+            "Invalid JSONL write kind: {}",
+            jsrt::value::string(map.get("kind"))
+        )),
+    }
+}
+
 fn parse_committed_write(mut value: Value) -> Result<Value, String> {
     rename_legacy(&mut value);
     let Some(map) = value.as_object() else {
@@ -102,23 +125,7 @@ fn parse_committed_write(mut value: Value) -> Result<Value, String> {
     if !safe_integer_at_least(map.get("seq"), 1) {
         return Err("Invalid JSONL write seq".into());
     }
-    let op = jsrt::value::string(map.get("op"));
-    match map.get("kind").and_then(Value::as_str) {
-        Some("entry") => {
-            if !safe_integer_at_least(map.get("timestamp"), 0) {
-                return Err("Invalid JSONL entry timestamp".into());
-            }
-        }
-        Some("usage") => {}
-        Some("value") if op == "set" || op == "delete" => {}
-        Some("value") => return Err(format!("Invalid JSONL value operation: {op}")),
-        Some("list") if op == "append" || op == "delete" => {}
-        Some("list") => return Err(format!("Invalid JSONL list operation: {op}")),
-        _ => {
-            let kind = jsrt::value::string(map.get("kind"));
-            return Err(format!("Invalid JSONL write kind: {kind}"));
-        }
-    }
+    validate_write_kind(map)?;
     Ok(value)
 }
 

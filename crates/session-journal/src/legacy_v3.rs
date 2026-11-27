@@ -157,25 +157,68 @@ pub fn compaction_summary_message(summary: &Value, tokens_before: &Value, timest
     json!({"role": "compactionSummary", "summary": summary, "tokensBefore": tokens_before, "timestamp": timestamp})
 }
 
+fn parse_v3_header(path: &Path, first: Option<&str>) -> Result<Map<String, Value>, String> {
+    let Some(first) = first.filter(|l| !l.is_empty()) else {
+        return Err(format!("Invalid JSONL storage {}: missing header", path.display()));
+    };
+    match codec::parse_header(first) {
+        Ok(ParsedHeader::V3(h)) => Ok(h),
+        Ok(ParsedHeader::V4(_)) => Err(format!(
+            "Invalid legacy v3 JSONL storage {}: expected format 3 header",
+            path.display()
+        )),
+        Err(_) => Err(format!("Invalid JSONL storage {}: invalid header", path.display())),
+    }
+}
+
+fn index_v3_record(
+    line: &str,
+    entries: &[Indexed],
+    by_id: &HashMap<String, usize>,
+    next_seq: &mut i64,
+    clock: &mut dyn Clock,
+) -> Result<Indexed, String> {
+    let line_number = entries.len() + 2;
+    let record = parse_record(line)?;
+    let id = record.get("id").and_then(Value::as_str).unwrap_or("null").to_string();
+    if by_id.contains_key(&id) {
+        return Err(format!("Duplicate legacy v3 entry id: {id}"));
+    }
+    let parent_id = record.get("parentId").and_then(Value::as_str).map(str::to_string);
+    let mapped_parent = match &parent_id {
+        None => Some(None),
+        Some(parent) => by_id.get(parent).map(|&i| entries[i].mapped_id.clone()),
+    };
+    let Some(mapped_parent) = mapped_parent else {
+        return Err(format!(
+            "Legacy v3 entry {id} has a missing or forward parent at line {line_number}: {}",
+            parent_id.as_deref().unwrap_or("null")
+        ));
+    };
+    let kind = record["type"].as_str().unwrap_or("").to_string();
+    let mut indexed = Indexed {
+        id,
+        parent_id,
+        mapped_id: mapped_parent,
+        kind,
+        seq: 0,
+        record,
+    };
+    if indexed.retained() {
+        indexed.mapped_id = Some(clock.uuidv7(timestamp_ms(&indexed.record).unwrap_or(0)));
+        indexed.seq = *next_seq;
+        *next_seq += 1;
+    }
+    Ok(indexed)
+}
+
 impl LegacyV3Source {
     /// `LegacyV3Source.read`: scan complete records (an unterminated final line is ignored).
     pub fn read(path: &Path, clock: &mut dyn Clock) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to open legacy v3 source {}: {e}", path.display()))?;
         let lines = crate::io::complete_lines(&text);
-        let Some(first) = lines.first().filter(|l| !l.is_empty()) else {
-            return Err(format!("Invalid JSONL storage {}: missing header", path.display()));
-        };
-        let header = match codec::parse_header(first) {
-            Ok(ParsedHeader::V3(h)) => h,
-            Ok(ParsedHeader::V4(_)) => {
-                return Err(format!(
-                    "Invalid legacy v3 JSONL storage {}: expected format 3 header",
-                    path.display()
-                ));
-            }
-            Err(_) => return Err(format!("Invalid JSONL storage {}: invalid header", path.display())),
-        };
+        let header = parse_v3_header(path, lines.first().copied())?;
         let mut entries: Vec<Indexed> = Vec::new();
         let mut by_id: HashMap<String, usize> = HashMap::new();
         let mut next_seq = 1;
@@ -183,47 +226,16 @@ impl LegacyV3Source {
         let mut name: Option<Value> = None;
         let mut final_id: Option<String> = None;
         for line in &lines[1..] {
-            let line_number = entries.len() + 2;
-            let record = parse_record(line)?;
-            let id = record.get("id").and_then(Value::as_str).unwrap_or("null").to_string();
-            if by_id.contains_key(&id) {
-                return Err(format!("Duplicate legacy v3 entry id: {id}"));
+            let indexed = index_v3_record(line, &entries, &by_id, &mut next_seq, clock)?;
+            if indexed.kind == "session_info" {
+                name = indexed.record.get("name").cloned();
             }
-            let parent_id = record.get("parentId").and_then(Value::as_str).map(str::to_string);
-            let mapped_parent = match &parent_id {
-                None => Some(None),
-                Some(parent) => by_id.get(parent).map(|&i| entries[i].mapped_id.clone()),
-            };
-            let Some(mapped_parent) = mapped_parent else {
-                return Err(format!(
-                    "Legacy v3 entry {id} has a missing or forward parent at line {line_number}: {}",
-                    parent_id.as_deref().unwrap_or("null")
-                ));
-            };
-            let kind = record["type"].as_str().unwrap_or("").to_string();
-            let mut indexed = Indexed {
-                id: id.clone(),
-                parent_id,
-                mapped_id: mapped_parent,
-                kind: kind.clone(),
-                seq: 0,
-                record: Value::Null,
-            };
-            if indexed.retained() {
-                indexed.mapped_id = Some(clock.uuidv7(timestamp_ms(&record).unwrap_or(0)));
-                indexed.seq = next_seq;
-                next_seq += 1;
-            }
-            if kind == "session_info" {
-                name = record.get("name").cloned();
-            }
-            if let Some(usage) = legacy_usage(&record) {
+            if let Some(usage) = legacy_usage(&indexed.record) {
                 imported_usage = add_usage(&imported_usage, usage);
             }
-            indexed.record = record;
-            by_id.insert(id.clone(), entries.len());
+            final_id = Some(indexed.id.clone());
+            by_id.insert(indexed.id.clone(), entries.len());
             entries.push(indexed);
-            final_id = Some(id);
         }
         let mut source = LegacyV3Source {
             header: normalize_header(&header),
@@ -443,10 +455,7 @@ impl LegacyV3Source {
         Ok(Value::Object(out))
     }
 
-    /// `writes(context, isEntrySelected)`: the normalized entries (optionally only selected new ids), then the
-    /// derived current values.
-    pub fn writes(&self, selected: Option<&dyn Fn(&str) -> bool>) -> Result<Vec<Value>, String> {
-        let is_selected = |id: &str| selected.is_none_or(|f| f(id));
+    fn required_tail_indices(&self, is_selected: &dyn Fn(&str) -> bool) -> Result<HashSet<usize>, String> {
         let mut required = HashSet::new();
         for entry in self.entries.iter().filter(|e| e.kind == "compaction") {
             if !is_selected(entry.mapped_id.as_deref().unwrap_or("")) {
@@ -459,6 +468,27 @@ impl LegacyV3Source {
                 }
             }
         }
+        Ok(required)
+    }
+
+    fn compaction_tail(&self, entry: &Indexed, tail_messages: &HashMap<usize, Value>) -> Result<Vec<Value>, String> {
+        if entry.kind != "compaction" {
+            return Ok(Vec::new());
+        }
+        let mut tail: Vec<Value> = self
+            .retained_tail(entry)?
+            .into_iter()
+            .filter_map(|ancestor| tail_messages.get(&ancestor).cloned())
+            .collect();
+        tail.reverse();
+        Ok(tail)
+    }
+
+    /// `writes(context, isEntrySelected)`: the normalized entries (optionally only selected new ids), then the
+    /// derived current values.
+    pub fn writes(&self, selected: Option<&dyn Fn(&str) -> bool>) -> Result<Vec<Value>, String> {
+        let is_selected = |id: &str| selected.is_none_or(|f| f(id));
+        let required = self.required_tail_indices(&is_selected)?;
         let mut tail_messages: HashMap<usize, Value> = HashMap::new();
         let mut out = Vec::new();
         for (index, entry) in self.entries.iter().enumerate() {
@@ -470,15 +500,7 @@ impl LegacyV3Source {
             if !entry.retained() || !is_selected(entry.mapped_id.as_deref().unwrap_or("")) {
                 continue;
             }
-            let mut tail = Vec::new();
-            if entry.kind == "compaction" {
-                for ancestor in self.retained_tail(entry)? {
-                    if let Some(message) = tail_messages.get(&ancestor) {
-                        tail.push(message.clone());
-                    }
-                }
-                tail.reverse();
-            }
+            let tail = self.compaction_tail(entry, &tail_messages)?;
             out.push(self.normalize_entry(entry, tail)?);
         }
         out.extend(self.values.iter().cloned());

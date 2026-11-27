@@ -151,6 +151,46 @@ fn text_field<'a>(request: &'a Request<'_>, key: &str) -> Result<Option<&'a str>
     }
 }
 
+struct GenerateParams<'a> {
+    prompt: &'a str,
+    count: usize,
+    hook: Option<ImagesPayloadHook>,
+    out: Option<PathBuf>,
+}
+
+fn parse_count(payload: &serde_json::Map<String, Value>) -> Result<usize, String> {
+    let count = match payload.get("n") {
+        None | Some(Value::Null) => 1,
+        Some(value) => value
+            .as_u64()
+            .filter(|n| (1..=MAX_IMAGES).contains(n))
+            .ok_or_else(|| format!("images.generate n must be an integer from 1 to {MAX_IMAGES}"))?,
+    };
+    Ok(count as usize)
+}
+
+fn size_hook(request: &Request<'_>) -> Result<Option<ImagesPayloadHook>, String> {
+    let Some(size) = text_field(request, "size")? else {
+        return Ok(None);
+    };
+    let config = image_config(size)?;
+    Ok(Some(Arc::new(move |params: &Value, _: &ImagesModel| {
+        let mut params = params.clone();
+        params["image_config"] = config.clone();
+        Some(params)
+    })))
+}
+
+fn write_images(paths: &[PathBuf], images: &[(String, Vec<u8>)]) -> Result<(), String> {
+    for (path, (_, bytes)) in paths.iter().zip(images) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("images.generate: {}: {e}", parent.display()))?;
+        }
+        std::fs::write(path, bytes).map_err(|e| format!("images.generate: {}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
 impl ImagesModule {
     fn models(&self) -> Value {
         Value::Array(
@@ -161,32 +201,24 @@ impl ImagesModule {
         )
     }
 
-    fn generate(&self, request: &Request<'_>) -> Result<Value, String> {
-        kernel::ops::fields(request.kind, request.payload)?;
+    fn parse_generate_params<'a>(&self, request: &'a Request<'_>) -> Result<GenerateParams<'a>, String> {
         let prompt = text_field(request, "prompt")?.ok_or("images.generate prompt must be a non-empty string")?;
-        let count = match request.payload.get("n") {
-            None | Some(Value::Null) => 1,
-            Some(value) => value
-                .as_u64()
-                .filter(|n| (1..=MAX_IMAGES).contains(n))
-                .ok_or(format!("images.generate n must be an integer from 1 to {MAX_IMAGES}"))?,
-        } as usize;
+        let count = parse_count(request.payload)?;
+        let hook = size_hook(request)?;
+        let out = text_field(request, "out")?.map(|out| self.config.cwd.join(out));
+        Ok(GenerateParams {
+            prompt,
+            count,
+            hook,
+            out,
+        })
+    }
+
+    fn resolve_generate_model(&self, request: &Request<'_>) -> Result<(ImagesModel, String), String> {
         let name = text_field(request, "model")?
             .or(self.config.default_model.as_deref())
             .unwrap_or(DEFAULT_IMAGE_MODEL);
         let catalog = resolve_model(name)?;
-        let hook: Option<ImagesPayloadHook> = match text_field(request, "size")? {
-            Some(size) => {
-                let config = image_config(size)?;
-                Some(Arc::new(move |params: &Value, _: &ImagesModel| {
-                    let mut params = params.clone();
-                    params["image_config"] = config.clone();
-                    Some(params)
-                }))
-            }
-            None => None,
-        };
-        let out = text_field(request, "out")?.map(|out| self.config.cwd.join(out));
         let api_key = (self.config.api_key)(&catalog.provider)?.ok_or_else(|| {
             format!(
                 "No API key for {} image models: set OPENROUTER_API_KEY or log in with /login",
@@ -197,15 +229,24 @@ impl ImagesModule {
         if let Some(base_url) = &self.config.base_url {
             model.base_url = base_url.clone();
         }
-        let images = self.request_images(&model, prompt, count, api_key, hook, request.signal)?;
+        Ok((model, api_key))
+    }
+
+    fn generate(&self, request: &Request<'_>) -> Result<Value, String> {
+        kernel::ops::fields(request.kind, request.payload)?;
+        let params = self.parse_generate_params(request)?;
+        let (model, api_key) = self.resolve_generate_model(request)?;
+        let images = self.request_images(
+            &model,
+            params.prompt,
+            params.count,
+            api_key,
+            params.hook,
+            request.signal,
+        )?;
         let mimes: Vec<&str> = images.iter().map(|(mime, _)| mime.as_str()).collect();
-        let paths = output_paths(out.as_deref(), &self.config.out_dir, &mimes);
-        for (path, (_, bytes)) in paths.iter().zip(&images) {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| format!("images.generate: {}: {e}", parent.display()))?;
-            }
-            std::fs::write(path, bytes).map_err(|e| format!("images.generate: {}: {e}", path.display()))?;
-        }
+        let paths = output_paths(params.out.as_deref(), &self.config.out_dir, &mimes);
+        write_images(&paths, &images)?;
         let paths: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
         Ok(json!({ "paths": paths, "model": model_name(&model) }))
     }

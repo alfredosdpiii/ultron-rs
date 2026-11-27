@@ -253,18 +253,7 @@ struct FdEntry {
     is_dir: bool,
 }
 
-/// `walkDirectoryWithFd`: `fd` over `base_dir` (hidden files, symlinks followed, `.git` excluded).
-fn walk_with_fd(
-    base_dir: &Path,
-    fd: &Path,
-    query: &str,
-    max_results: usize,
-    max_depth: Option<usize>,
-    signal: &AbortSignal,
-) -> Vec<FdEntry> {
-    if signal.is_aborted() {
-        return Vec::new();
-    }
+fn build_fd_command(base_dir: &Path, fd: &Path, query: &str, max_results: usize, max_depth: Option<usize>) -> Command {
     let mut cmd = Command::new(fd);
     cmd.arg("--base-directory")
         .arg(base_dir)
@@ -280,6 +269,38 @@ fn walk_with_fd(
     if !query.is_empty() {
         cmd.arg(build_fd_path_query(query));
     }
+    cmd
+}
+
+fn parse_fd_line(line: &str) -> Option<FdEntry> {
+    if line.is_empty() {
+        return None;
+    }
+    let is_dir = line.ends_with('/');
+    let path_without_slash = line.strip_suffix('/').unwrap_or(line);
+    if path_without_slash == ".git" || path_without_slash.starts_with(".git/") || path_without_slash.contains("/.git/")
+    {
+        return None;
+    }
+    Some(FdEntry {
+        path: line.into(),
+        is_dir,
+    })
+}
+
+/// `walkDirectoryWithFd`: `fd` over `base_dir` (hidden files, symlinks followed, `.git` excluded).
+fn walk_with_fd(
+    base_dir: &Path,
+    fd: &Path,
+    query: &str,
+    max_results: usize,
+    max_depth: Option<usize>,
+    signal: &AbortSignal,
+) -> Vec<FdEntry> {
+    if signal.is_aborted() {
+        return Vec::new();
+    }
+    let mut cmd = build_fd_command(base_dir, fd, query, max_results, max_depth);
     let Ok(running) = signals::child::start(
         cmd.stdout(Stdio::piped()).stderr(Stdio::null()),
         None,
@@ -307,18 +328,7 @@ fn walk_with_fd(
     stdout
         .trim_matches(string::is_space)
         .split('\n')
-        .filter(|l| !l.is_empty())
-        .filter_map(|line| {
-            let is_dir = line.ends_with('/');
-            let p = line.strip_suffix('/').unwrap_or(line);
-            if p == ".git" || p.starts_with(".git/") || p.contains("/.git/") {
-                return None;
-            }
-            Some(FdEntry {
-                path: line.into(),
-                is_dir,
-            })
-        })
+        .filter_map(parse_fd_line)
         .collect()
 }
 
@@ -350,6 +360,88 @@ pub struct CombinedAutocompleteProvider {
     pub fd_path: Option<PathBuf>,
 }
 
+fn slash_command_item(cmd: &SlashCommand) -> AutocompleteItem {
+    let desc = cmd.description.clone().unwrap_or_default();
+    let full = match &cmd.argument_hint {
+        Some(hint) if !hint.is_empty() && !desc.is_empty() => format!("{hint} — {desc}"),
+        Some(hint) if !hint.is_empty() => hint.clone(),
+        _ => desc,
+    };
+    AutocompleteItem {
+        value: cmd.name.clone(),
+        label: cmd.name.clone(),
+        description: (!full.is_empty()).then_some(full),
+    }
+}
+
+fn item_value(item: &AutocompleteItem) -> String {
+    item.value.clone()
+}
+
+fn item_strip_skill(item: &AutocompleteItem) -> String {
+    item.value.strip_prefix("skill:").unwrap_or(&item.value).to_string()
+}
+
+fn entry_is_dir(entry: &std::fs::DirEntry, search_dir: &Path, name: &str) -> bool {
+    if entry.file_type().is_ok_and(|t| t.is_dir()) {
+        return true;
+    }
+    entry.file_type().is_ok_and(|t| t.is_symlink())
+        && std::fs::metadata(search_dir.join(name)).is_ok_and(|m| m.is_dir())
+}
+
+fn format_slash_relative(raw: &str, name: &str) -> String {
+    if let Some(home_rel) = raw.strip_prefix("~/") {
+        let dir = dirname(home_rel);
+        return if dir == "." {
+            format!("~/{name}")
+        } else {
+            format!("~/{}", jsrt::path::join(&[&dir, name]))
+        };
+    }
+    if raw.starts_with('/') {
+        let dir = dirname(raw);
+        return if dir == "/" {
+            format!("/{name}")
+        } else {
+            format!("{dir}/{name}")
+        };
+    }
+    let joined = jsrt::path::join(&[&dirname(raw), name]);
+    if raw.starts_with("./") && !joined.starts_with("./") {
+        format!("./{joined}")
+    } else {
+        joined
+    }
+}
+
+fn format_relative_path(raw: &str, name: &str) -> String {
+    if raw.ends_with('/') {
+        format!("{raw}{name}")
+    } else if raw.contains('/') || raw.contains('\\') {
+        format_slash_relative(raw, name)
+    } else if raw.starts_with('~') {
+        format!("~/{name}")
+    } else {
+        name.to_string()
+    }
+}
+
+fn build_file_item(raw: &str, name: String, is_dir: bool, is_at: bool, is_quoted: bool) -> AutocompleteItem {
+    let relative = format_relative_path(raw, &name).replace('\\', "/");
+    let path_value = if is_dir { format!("{relative}/") } else { relative };
+    AutocompleteItem {
+        value: build_completion_value(&path_value, is_at, is_quoted),
+        label: if is_dir { format!("{name}/") } else { name },
+        description: None,
+    }
+}
+
+fn cmp_file_items(a: &AutocompleteItem, b: &AutocompleteItem) -> std::cmp::Ordering {
+    let (ad, bd) = (a.label.ends_with('/'), b.label.ends_with('/'));
+    bd.cmp(&ad).then_with(|| locale_compare(&a.label, &b.label))
+}
+
 impl CombinedAutocompleteProvider {
     pub fn new(commands: Vec<SlashCommand>, base_path: impl Into<PathBuf>, fd_path: Option<PathBuf>) -> Self {
         CombinedAutocompleteProvider {
@@ -359,35 +451,25 @@ impl CombinedAutocompleteProvider {
         }
     }
 
-    fn slash_suggestions(&self, text: &str) -> Option<AutocompleteSuggestions> {
-        let Some(space) = text.find(' ') else {
-            let prefix = &text[1..];
-            let items: Vec<AutocompleteItem> = self
-                .commands
-                .iter()
-                .map(|c| {
-                    let desc = c.description.clone().unwrap_or_default();
-                    let full = match &c.argument_hint {
-                        Some(h) if !h.is_empty() && !desc.is_empty() => format!("{h} — {desc}"),
-                        Some(h) if !h.is_empty() => h.clone(),
-                        _ => desc,
-                    };
-                    AutocompleteItem {
-                        value: c.name.clone(),
-                        label: c.name.clone(),
-                        description: (!full.is_empty()).then_some(full),
-                    }
-                })
-                .collect();
-            let filtered = fuzzy_filter(&items, prefix, |i| match i.value.strip_prefix("skill:") {
-                Some(rest) if !prefix.starts_with("skill:") => rest.to_string(),
-                _ => i.value.clone(),
-            });
-            return (!filtered.is_empty()).then(|| AutocompleteSuggestions {
-                items: filtered,
-                prefix: text.to_string(),
-            });
+    fn slash_command_names(&self, text: &str) -> Option<AutocompleteSuggestions> {
+        let prefix = &text[1..];
+        let items: Vec<AutocompleteItem> = self.commands.iter().map(slash_command_item).collect();
+        let key_fn = if prefix.starts_with("skill:") {
+            item_value
+        } else {
+            item_strip_skill
         };
+        let filtered = fuzzy_filter(&items, prefix, key_fn);
+        if filtered.is_empty() {
+            return None;
+        }
+        Some(AutocompleteSuggestions {
+            items: filtered,
+            prefix: text.to_string(),
+        })
+    }
+
+    fn slash_command_args(&self, text: &str, space: usize) -> Option<AutocompleteSuggestions> {
         let (name, argument) = (&text[1..space], &text[space + 1..]);
         let complete = self
             .commands
@@ -400,6 +482,13 @@ impl CombinedAutocompleteProvider {
             items,
             prefix: argument.to_string(),
         })
+    }
+
+    fn slash_suggestions(&self, text: &str) -> Option<AutocompleteSuggestions> {
+        match text.find(' ') {
+            None => self.slash_command_names(text),
+            Some(space) => self.slash_command_args(text, space),
+        }
     }
 
     fn extract_at_prefix<'a>(&self, text: &'a str) -> Option<&'a str> {
@@ -433,6 +522,21 @@ impl CombinedAutocompleteProvider {
         }
     }
 
+    fn resolve_file_search(&self, raw: &str, expanded: &str) -> (PathBuf, String) {
+        let is_root = matches!(raw, "" | "./" | "../" | "~" | "~/" | "/");
+        if is_root || raw.ends_with('/') {
+            return (self.resolve_dir(raw, expanded), String::new());
+        }
+        let dir = dirname(expanded);
+        let file = basename(expanded).to_string();
+        let search_dir = if raw.starts_with('~') || expanded.starts_with('/') {
+            PathBuf::from(dir)
+        } else {
+            PathBuf::from(jsrt::path::join(&[&self.base_path.display().to_string(), &dir]))
+        };
+        (search_dir, file)
+    }
+
     /// `getFileSuggestions`: entries of the prefix's directory that start with its last segment.
     fn file_suggestions(&self, prefix: &str) -> Vec<AutocompleteItem> {
         let (raw, is_at, is_quoted) = parse_path_prefix(prefix);
@@ -441,19 +545,7 @@ impl CombinedAutocompleteProvider {
         } else {
             raw.to_string()
         };
-        let is_root = matches!(raw, "" | "./" | "../" | "~" | "~/" | "/");
-        let (search_dir, search_prefix) = if is_root || raw.ends_with('/') {
-            (self.resolve_dir(raw, &expanded), String::new())
-        } else {
-            let dir = dirname(&expanded);
-            let file = basename(&expanded).to_string();
-            let search_dir = if raw.starts_with('~') || expanded.starts_with('/') {
-                PathBuf::from(dir)
-            } else {
-                PathBuf::from(jsrt::path::join(&[&self.base_path.display().to_string(), &dir]))
-            };
-            (search_dir, file)
-        };
+        let (search_dir, search_prefix) = self.resolve_file_search(raw, &expanded);
         let Ok(entries) = std::fs::read_dir(&search_dir) else {
             return Vec::new();
         };
@@ -466,52 +558,10 @@ impl CombinedAutocompleteProvider {
             if !name.to_lowercase().starts_with(&lower_prefix) {
                 continue;
             }
-            let mut is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
-            if !is_dir && entry.file_type().is_ok_and(|t| t.is_symlink()) {
-                is_dir = std::fs::metadata(search_dir.join(&name)).is_ok_and(|m| m.is_dir());
-            }
-            let relative = if raw.ends_with('/') {
-                format!("{raw}{name}")
-            } else if raw.contains('/') || raw.contains('\\') {
-                if let Some(home_rel) = raw.strip_prefix("~/") {
-                    let dir = dirname(home_rel);
-                    if dir == "." {
-                        format!("~/{name}")
-                    } else {
-                        format!("~/{}", jsrt::path::join(&[&dir, &name]))
-                    }
-                } else if raw.starts_with('/') {
-                    let dir = dirname(raw);
-                    if dir == "/" {
-                        format!("/{name}")
-                    } else {
-                        format!("{dir}/{name}")
-                    }
-                } else {
-                    let joined = jsrt::path::join(&[&dirname(raw), &name]);
-                    if raw.starts_with("./") && !joined.starts_with("./") {
-                        format!("./{joined}")
-                    } else {
-                        joined
-                    }
-                }
-            } else if raw.starts_with('~') {
-                format!("~/{name}")
-            } else {
-                name.clone()
-            };
-            let relative = relative.replace('\\', "/");
-            let path_value = if is_dir { format!("{relative}/") } else { relative };
-            out.push(AutocompleteItem {
-                value: build_completion_value(&path_value, is_at, is_quoted),
-                label: if is_dir { format!("{name}/") } else { name },
-                description: None,
-            });
+            let is_dir = entry_is_dir(&entry, &search_dir, &name);
+            out.push(build_file_item(raw, name, is_dir, is_at, is_quoted));
         }
-        out.sort_by(|a, b| {
-            let (ad, bd) = (a.label.ends_with('/'), b.label.ends_with('/'));
-            bd.cmp(&ad).then_with(|| locale_compare(&a.label, &b.label))
-        });
+        out.sort_by(cmp_file_items);
         out
     }
 }
@@ -535,6 +585,61 @@ fn resolve_scoped_query(base_path: &Path, raw: &str) -> Option<(PathBuf, String,
         .then_some((base_dir, query, display_base))
 }
 
+fn merge_fd_entries(entries: &mut Vec<FdEntry>, extra: Vec<FdEntry>) {
+    for e in extra {
+        if !entries.iter().any(|s| s.path == e.path) {
+            entries.push(e);
+        }
+    }
+}
+
+fn score_fd_entry(entry: &FdEntry, query: &str) -> u32 {
+    if query.is_empty() {
+        1
+    } else {
+        score_entry(&entry.path, query, entry.is_dir)
+    }
+}
+
+fn path_depth(path: &str) -> usize {
+    path.split('/').filter(|s| !s.is_empty()).count()
+}
+
+fn cmp_scored_entries((sa, a): &(u32, FdEntry), (sb, b): &(u32, FdEntry)) -> std::cmp::Ordering {
+    sb.cmp(sa)
+        .then_with(|| path_depth(&a.path).cmp(&path_depth(&b.path)))
+        .then_with(|| utf16::len(&a.path).cmp(&utf16::len(&b.path)))
+        .then_with(|| locale_compare(&a.path, &b.path))
+}
+
+fn build_fuzzy_item(entry: FdEntry, scoped_base: Option<&str>, is_quoted: bool) -> AutocompleteItem {
+    let without_slash = if entry.is_dir {
+        &entry.path[..entry.path.len() - 1]
+    } else {
+        &entry.path[..]
+    };
+    let display = match scoped_base {
+        Some("/") => format!("/{without_slash}"),
+        Some(base) => format!("{base}{without_slash}"),
+        None => without_slash.to_string(),
+    };
+    let name = basename(without_slash);
+    let completion = if entry.is_dir {
+        format!("{display}/")
+    } else {
+        display.clone()
+    };
+    AutocompleteItem {
+        value: build_completion_value(&completion, true, is_quoted),
+        label: if entry.is_dir {
+            format!("{name}/")
+        } else {
+            name.to_string()
+        },
+        description: Some(display),
+    }
+}
+
 /// `getFuzzyFileSuggestions`: depth-1 then recursive `fd` results, scored, best 20.
 fn fuzzy_file_suggestions(
     base_path: &Path,
@@ -556,56 +661,20 @@ fn fuzzy_file_suggestions(
     if signal.is_aborted() {
         return Vec::new();
     }
-    for e in recursive {
-        if !entries.iter().any(|s| s.path == e.path) {
-            entries.push(e);
-        }
-    }
+    merge_fd_entries(&mut entries, recursive);
     let mut scored: Vec<(u32, FdEntry)> = entries
         .into_iter()
-        .map(|e| {
-            let score = if fd_query.is_empty() {
-                1
-            } else {
-                score_entry(&e.path, &fd_query, e.is_dir)
-            };
-            (score, e)
+        .filter_map(|e| {
+            let score = score_fd_entry(&e, &fd_query);
+            (score > 0).then_some((score, e))
         })
-        .filter(|(s, _)| *s > 0)
         .collect();
-    let depth = |p: &str| p.split('/').filter(|s| !s.is_empty()).count();
-    scored.sort_by(|(sa, a), (sb, b)| {
-        sb.cmp(sa)
-            .then_with(|| depth(&a.path).cmp(&depth(&b.path)))
-            .then_with(|| utf16::len(&a.path).cmp(&utf16::len(&b.path)))
-            .then_with(|| locale_compare(&a.path, &b.path))
-    });
+    scored.sort_by(cmp_scored_entries);
+    let scoped_base = scoped.as_ref().map(|(_, _, b)| b.as_str());
     scored
         .into_iter()
         .take(20)
-        .map(|(_, e)| {
-            let without_slash = if e.is_dir {
-                &e.path[..e.path.len() - 1]
-            } else {
-                &e.path[..]
-            };
-            let display = match &scoped {
-                Some((_, _, base)) if base == "/" => format!("/{without_slash}"),
-                Some((_, _, base)) => format!("{base}{without_slash}"),
-                None => without_slash.to_string(),
-            };
-            let name = basename(without_slash);
-            let completion = if e.is_dir {
-                format!("{display}/")
-            } else {
-                display.clone()
-            };
-            AutocompleteItem {
-                value: build_completion_value(&completion, true, is_quoted),
-                label: if e.is_dir { format!("{name}/") } else { name.to_string() },
-                description: Some(display),
-            }
-        })
+        .map(|(_, e)| build_fuzzy_item(e, scoped_base, is_quoted))
         .collect()
 }
 
@@ -657,6 +726,42 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
     }
 }
 
+fn trim_closing_quote<'a>(after: &'a str, prefix: &str, value: &str) -> &'a str {
+    let quoted = prefix.starts_with('"') || prefix.starts_with("@\"");
+    match after.strip_prefix('"') {
+        Some(rest) if quoted && value.ends_with('"') => rest,
+        _ => after,
+    }
+}
+
+fn completion_cursor_offset(value: &str, is_dir: bool) -> usize {
+    if is_dir && value.ends_with('"') {
+        value.len() - 1
+    } else {
+        value.len()
+    }
+}
+
+fn format_completion_line(before: &str, after: &str, prefix: &str, item: &AutocompleteItem) -> (String, usize) {
+    let value = item.value.as_str();
+    let after = trim_closing_quote(after, prefix, value);
+    let is_dir = item.label.ends_with('/');
+    let offset = completion_cursor_offset(value, is_dir);
+    let is_slash_command =
+        prefix.starts_with('/') && before.trim_matches(string::is_space).is_empty() && !prefix[1..].contains('/');
+    if is_slash_command {
+        return (format!("{before}/{value} {after}"), before.len() + value.len() + 2);
+    }
+    if prefix.starts_with('@') {
+        let suffix = if is_dir { "" } else { " " };
+        return (
+            format!("{before}{value}{suffix}{after}"),
+            before.len() + offset + suffix.len(),
+        );
+    }
+    (format!("{before}{value}{after}"), before.len() + offset)
+}
+
 /// `CombinedAutocompleteProvider.applyCompletion`: replace `prefix` before the cursor with the item.
 pub fn apply_completion(
     lines: &[String],
@@ -668,31 +773,7 @@ pub fn apply_completion(
     let current = lines.get(line).map_or("", String::as_str);
     let before = &current[..col.saturating_sub(prefix.len())];
     let after = &current[col..];
-    let quoted = prefix.starts_with('"') || prefix.starts_with("@\"");
-    let value = item.value.as_str();
-    let after = match after.strip_prefix('"') {
-        Some(rest) if quoted && value.ends_with('"') => rest,
-        _ => after,
-    };
-    let is_dir = item.label.ends_with('/');
-    let offset = if is_dir && value.ends_with('"') {
-        value.len() - 1
-    } else {
-        value.len()
-    };
-    let is_slash_command =
-        prefix.starts_with('/') && before.trim_matches(string::is_space).is_empty() && !prefix[1..].contains('/');
-    let (new_line, cursor_col) = if is_slash_command {
-        (format!("{before}/{value} {after}"), before.len() + value.len() + 2)
-    } else if prefix.starts_with('@') {
-        let suffix = if is_dir { "" } else { " " };
-        (
-            format!("{before}{value}{suffix}{after}"),
-            before.len() + offset + suffix.len(),
-        )
-    } else {
-        (format!("{before}{value}{after}"), before.len() + offset)
-    };
+    let (new_line, cursor_col) = format_completion_line(before, after, prefix, item);
     let mut new_lines = lines.to_vec();
     if let Some(l) = new_lines.get_mut(line) {
         *l = new_line;

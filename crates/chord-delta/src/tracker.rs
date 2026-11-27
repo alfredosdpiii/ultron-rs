@@ -268,39 +268,8 @@ impl Node {
     /// One step down a path, creating the overlay of a base container on first use.
     fn child(&mut self, segment: &Seg) -> Option<Place<'_>> {
         match self {
-            Node::Object(node) => {
-                let key = segment_key(segment);
-                if node.deletes.contains(key.as_str()) {
-                    return None;
-                }
-                if node.writes.contains_key(key.as_str()) {
-                    return node.writes.get_mut(key.as_str()).map(Place::Placed);
-                }
-                let base = node.base.get(key.as_str()).filter(|value| is_container(value))?;
-                let child = node
-                    .children
-                    .entry(key)
-                    .or_insert_with(|| Node::new(base).expect("container"));
-                Some(Place::Node(child))
-            }
-            Node::Array(node) => {
-                let Seg::Index(position) = segment else { return None };
-                match node.elements.get_mut(*position)? {
-                    Element::Inserted(value) => Some(Place::Placed(value)),
-                    Element::Base(index) => {
-                        let index = *index;
-                        if node.overrides.contains_key(&index) {
-                            return node.overrides.get_mut(&index).map(Place::Placed);
-                        }
-                        let base = node.base.get(index).filter(|value| is_container(value))?;
-                        let child = node
-                            .children
-                            .entry(index)
-                            .or_insert_with(|| Node::new(base).expect("container"));
-                        Some(Place::Node(child))
-                    }
-                }
-            }
+            Node::Object(node) => node.child(segment),
+            Node::Array(node) => node.child(segment),
         }
     }
 
@@ -362,6 +331,22 @@ fn read_value(value: &Value, path: &[Seg]) -> Option<Value> {
 }
 
 impl ObjectNode {
+    fn child(&mut self, segment: &Seg) -> Option<Place<'_>> {
+        let key = segment_key(segment);
+        if self.deletes.contains(key.as_str()) {
+            return None;
+        }
+        if self.writes.contains_key(key.as_str()) {
+            return self.writes.get_mut(key.as_str()).map(Place::Placed);
+        }
+        let base = self.base.get(key.as_str()).filter(|value| is_container(value))?;
+        let child = self
+            .children
+            .entry(key)
+            .or_insert_with(|| Node::new(base).expect("container"));
+        Some(Place::Node(child))
+    }
+
     fn set(&mut self, key: String, value: Value) -> bool {
         let was_deleted = self.deletes.contains(key.as_str());
         let current = self.writes.get(key.as_str()).or_else(|| self.base.get(key.as_str()));
@@ -425,6 +410,25 @@ impl ObjectNode {
 }
 
 impl ArrayNode {
+    fn child(&mut self, segment: &Seg) -> Option<Place<'_>> {
+        let Seg::Index(position) = segment else { return None };
+        match self.elements.get_mut(*position)? {
+            Element::Inserted(value) => Some(Place::Placed(value)),
+            Element::Base(index) => {
+                let index = *index;
+                if self.overrides.contains_key(&index) {
+                    return self.overrides.get_mut(&index).map(Place::Placed);
+                }
+                let base = self.base.get(index).filter(|value| is_container(value))?;
+                let child = self
+                    .children
+                    .entry(index)
+                    .or_insert_with(|| Node::new(base).expect("container"));
+                Some(Place::Node(child))
+            }
+        }
+    }
+
     fn element_value(&self, position: usize) -> Value {
         match &self.elements[position] {
             Element::Inserted(value) => value.clone(),
@@ -484,41 +488,49 @@ impl ArrayNode {
             .position(|element| matches!(element, Element::Base(base) if *base == index))
     }
 
+    fn emit_removals(&self, path: &[Seg], ops: &mut Vec<Op>) {
+        let mut retained = vec![false; self.base.len()];
+        for element in &self.elements {
+            if let Element::Base(index) = element {
+                retained[*index] = true;
+            }
+        }
+        let mut end = self.base.len();
+        while end > 0 {
+            if retained[end - 1] {
+                end -= 1;
+                continue;
+            }
+            let mut start = end - 1;
+            while start > 0 && !retained[start - 1] {
+                start -= 1;
+            }
+            ops.push(Op::Splice(path.to_vec(), start, end - start, Vec::new()));
+            end = start;
+        }
+    }
+
+    fn emit_insertions(&self, path: &[Seg], ops: &mut Vec<Op>) {
+        let mut position = 0;
+        while position < self.elements.len() {
+            if matches!(self.elements[position], Element::Base(_)) {
+                position += 1;
+                continue;
+            }
+            let start = position;
+            let mut items = Vec::new();
+            while let Some(Element::Inserted(value)) = self.elements.get(position) {
+                items.push(value.clone());
+                position += 1;
+            }
+            ops.push(Op::Splice(path.to_vec(), start, 0, items));
+        }
+    }
+
     fn emit(&self, path: &[Seg], ops: &mut Vec<Op>) {
         if self.structural {
-            let mut retained = vec![false; self.base.len()];
-            for element in &self.elements {
-                if let Element::Base(index) = element {
-                    retained[*index] = true;
-                }
-            }
-            let mut end = self.base.len();
-            while end > 0 {
-                if retained[end - 1] {
-                    end -= 1;
-                    continue;
-                }
-                let mut start = end - 1;
-                while start > 0 && !retained[start - 1] {
-                    start -= 1;
-                }
-                ops.push(Op::Splice(path.to_vec(), start, end - start, Vec::new()));
-                end = start;
-            }
-            let mut position = 0;
-            while position < self.elements.len() {
-                if matches!(self.elements[position], Element::Base(_)) {
-                    position += 1;
-                    continue;
-                }
-                let start = position;
-                let mut items = Vec::new();
-                while let Some(Element::Inserted(value)) = self.elements.get(position) {
-                    items.push(value.clone());
-                    position += 1;
-                }
-                ops.push(Op::Splice(path.to_vec(), start, 0, items));
-            }
+            self.emit_removals(path, ops);
+            self.emit_insertions(path, ops);
         }
         for (index, value) in &self.overrides {
             if let Some(position) = self.position_of(*index) {
@@ -673,14 +685,9 @@ fn is_reserved(segment: &Seg) -> bool {
     matches!(segment, Seg::Key(key) if RESERVED_SEGMENTS.contains(&key.as_str()))
 }
 
-/// Upstream `emitOperations`: dirty overlays shallowest first, in first-dirty order; a reserved key folds the
-/// containing overlay into one set; an oversized batch becomes one root replacement.
-fn emit_operations(root: &Node) -> Vec<Op> {
-    let mut emissions = Vec::new();
-    collect(root, Vec::new(), &mut emissions);
-    emissions.sort_by_key(|emission| emission.dirty);
+fn collect_folds(emissions: &mut [Emission<'_>]) -> Vec<Path> {
     let mut folds: Vec<Path> = Vec::new();
-    for emission in &mut emissions {
+    for emission in emissions {
         let reserved_mutation = matches!(emission.node, Node::Object(object) if object.has_reserved_mutation());
         if reserved_mutation {
             emission.fold = true;
@@ -695,7 +702,11 @@ fn emit_operations(root: &Node) -> Vec<Op> {
             }
         }
     }
-    for fold in &folds {
+    folds
+}
+
+fn apply_folds<'a>(root: &'a Node, emissions: &mut Vec<Emission<'a>>, folds: &[Path]) {
+    for fold in folds {
         match emissions.iter_mut().find(|emission| emission.path == *fold) {
             Some(emission) => emission.fold = true,
             None => emissions.push(Emission {
@@ -706,6 +717,25 @@ fn emit_operations(root: &Node) -> Vec<Op> {
             }),
         }
     }
+}
+
+fn emit_folded(path: &Path, node: &Node, ops: &mut Vec<Op>) {
+    let value = node.materialize();
+    ops.push(if path.is_empty() {
+        Op::Replace(value)
+    } else {
+        Op::Set(path.clone(), value)
+    });
+}
+
+/// Upstream `emitOperations`: dirty overlays shallowest first, in first-dirty order; a reserved key folds the
+/// containing overlay into one set; an oversized batch becomes one root replacement.
+fn emit_operations(root: &Node) -> Vec<Op> {
+    let mut emissions = Vec::new();
+    collect(root, Vec::new(), &mut emissions);
+    emissions.sort_by_key(|emission| emission.dirty);
+    let folds = collect_folds(&mut emissions);
+    apply_folds(root, &mut emissions, &folds);
     emissions.sort_by_key(|emission| emission.path.len());
     let mut ops = Vec::new();
     let mut folded: Vec<&Path> = Vec::new();
@@ -718,12 +748,7 @@ fn emit_operations(root: &Node) -> Vec<Op> {
             continue;
         }
         if emission.fold {
-            let value = emission.node.materialize();
-            ops.push(if path.is_empty() {
-                Op::Replace(value)
-            } else {
-                Op::Set(path.clone(), value)
-            });
+            emit_folded(path, emission.node, &mut ops);
             folded.push(path);
             continue;
         }

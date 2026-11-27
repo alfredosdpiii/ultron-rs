@@ -233,26 +233,32 @@ pub struct CatalogRefresh {
     pub error: Option<String>,
 }
 
-/// `withRemoteCatalog.refreshModels` with the network allowed: revalidate or fetch `provider`'s catalog.
-pub async fn refresh_remote_catalog(
+fn is_catalog_fresh(stored: Option<&Value>, now_ms: i64) -> bool {
+    let number = |key: &str| stored.and_then(|s| s.get(key)).and_then(Value::as_f64);
+    matches!(
+        (number("checkedAt"), number("lastModified")),
+        (Some(checked), Some(_)) if (now_ms as f64) - checked < REMOTE_CATALOG_REFRESH_INTERVAL_MS as f64
+    )
+}
+
+fn encode_provider_segment(provider: &str) -> String {
+    provider
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')' => {
+                (b as char).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
+}
+
+fn build_catalog_request(
     provider: &str,
     stored: Option<&Value>,
     catalog_base_url: &str,
-    force: bool,
     user_agent: &str,
-    now: &(dyn Fn() -> i64 + Sync),
-    transport: &dyn Transport,
-) -> CatalogRefresh {
-    if provider == crate::claude_code::PROVIDER {
-        return CatalogRefresh::default();
-    }
-    let number = |key: &str| stored.and_then(|s| s.get(key)).and_then(Value::as_f64);
-    if !force
-        && let (Some(checked), Some(_)) = (number("checkedAt"), number("lastModified"))
-        && (now() as f64) - checked < REMOTE_CATALOG_REFRESH_INTERVAL_MS as f64
-    {
-        return CatalogRefresh::default();
-    }
+) -> HttpRequest {
     let validator = stored
         .filter(|s| !entry_models(s).is_empty())
         .and_then(|s| s.get("etag"))
@@ -263,40 +269,31 @@ pub async fn refresh_remote_catalog(
     if let Some(etag) = validator {
         headers.insert("if-none-match".into(), etag.to_string());
     }
-    let encoded: String = provider
-        .bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')' => {
-                (b as char).to_string()
-            }
-            other => format!("%{other:02X}"),
-        })
-        .collect();
+    let encoded = encode_provider_segment(provider);
     let url = reqwest::Url::parse(catalog_base_url)
         .and_then(|base| base.join(&format!("/api/models/providers/{encoded}")))
         .map_or_default(|u| u.to_string());
-    let request = HttpRequest {
+    HttpRequest {
         method: "GET".into(),
         url,
         headers,
         body: String::new(),
-    };
-    let response = match fetch_with_retry(transport, request, Some(REMOTE_CATALOG_ATTEMPT_TIMEOUT)).await {
-        Ok(response) => response,
-        Err(error) => {
-            return CatalogRefresh {
-                persist: None,
-                error: Some(error),
-            };
-        }
-    };
-    let checked_at = json!(now());
-    let base = || -> Map<String, Value> {
-        stored
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_else(|| Map::from_iter([("models".to_string(), json!([]))]))
-    };
+    }
+}
+
+fn base_catalog_entry(stored: Option<&Value>) -> Map<String, Value> {
+    stored
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_else(|| Map::from_iter([("models".to_string(), json!([]))]))
+}
+
+fn handle_catalog_response(
+    provider: &str,
+    stored: Option<&Value>,
+    response: Fetched,
+    checked_at: Value,
+) -> CatalogRefresh {
     if response.status == 304
         && let Some(stored) = stored.and_then(Value::as_object)
     {
@@ -308,7 +305,7 @@ pub async fn refresh_remote_catalog(
         };
     }
     if response.status == 404 || response.status == 501 {
-        let mut entry = base();
+        let mut entry = base_catalog_entry(stored);
         entry.insert("checkedAt".into(), checked_at);
         entry.insert("lastModified".into(), json!(0));
         entry.shift_remove("etag");
@@ -318,7 +315,7 @@ pub async fn refresh_remote_catalog(
         };
     }
     if !(200..300).contains(&response.status) {
-        let mut entry = base();
+        let mut entry = base_catalog_entry(stored);
         entry.insert("checkedAt".into(), checked_at);
         return CatalogRefresh {
             persist: Some(Value::Object(entry)),
@@ -328,6 +325,10 @@ pub async fn refresh_remote_catalog(
             )),
         };
     }
+    parse_catalog_entry(provider, &response, checked_at)
+}
+
+fn parse_catalog_entry(provider: &str, response: &Fetched, checked_at: Value) -> CatalogRefresh {
     let models = match serde_json::from_str::<Value>(&response.text)
         .map_err(|e| e.to_string())
         .and_then(|body| parse_catalog(provider, &body))
@@ -355,6 +356,35 @@ pub async fn refresh_remote_catalog(
         persist: Some(Value::Object(entry)),
         error: None,
     }
+}
+
+/// `withRemoteCatalog.refreshModels` with the network allowed: revalidate or fetch `provider`'s catalog.
+pub async fn refresh_remote_catalog(
+    provider: &str,
+    stored: Option<&Value>,
+    catalog_base_url: &str,
+    force: bool,
+    user_agent: &str,
+    now: &(dyn Fn() -> i64 + Sync),
+    transport: &dyn Transport,
+) -> CatalogRefresh {
+    if provider == crate::claude_code::PROVIDER {
+        return CatalogRefresh::default();
+    }
+    if !force && is_catalog_fresh(stored, now()) {
+        return CatalogRefresh::default();
+    }
+    let request = build_catalog_request(provider, stored, catalog_base_url, user_agent);
+    let response = match fetch_with_retry(transport, request, Some(REMOTE_CATALOG_ATTEMPT_TIMEOUT)).await {
+        Ok(response) => response,
+        Err(error) => {
+            return CatalogRefresh {
+                persist: None,
+                error: Some(error),
+            };
+        }
+    };
+    handle_catalog_response(provider, stored, response, json!(now()))
 }
 
 /// `parseCatalog`: an array, `{ models: [...] }`, or an id-keyed object; entries with an `id`, as `provider`'s.

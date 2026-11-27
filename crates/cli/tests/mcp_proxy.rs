@@ -54,7 +54,8 @@ fn cli_mcp_proxy_list_and_login_go_through_the_run_proxy() {
     assert_ne!(login.status.code(), Some(0), "{login:?}");
     let seen = proxy.drain();
     assert!(
-        seen.contains(&"GET http://mcp.invalid/.well-known/oauth-protected-resource/mcp HTTP/1.1".to_string()),
+        seen.iter()
+            .any(|i| i == "GET http://mcp.invalid/.well-known/oauth-protected-resource/mcp HTTP/1.1"),
         "{seen:?}"
     );
     assert!(!base.join("bin/opened.log").exists());
@@ -90,7 +91,8 @@ fn cli_mcp_proxy_all_proxy_is_not_an_undici_variable() {
     assert_ne!(login.status.code(), Some(0), "{login:?}");
     let seen = server.drain();
     assert!(
-        seen.contains(&"GET /.well-known/oauth-protected-resource/mcp HTTP/1.1".to_string()),
+        seen.iter()
+            .any(|i: &String| i == "GET /.well-known/oauth-protected-resource/mcp HTTP/1.1"),
         "{seen:?}"
     );
     assert_eq!(proxy.drain(), Vec::<String>::new());

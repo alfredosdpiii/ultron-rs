@@ -154,23 +154,38 @@ fn custom_message(entry: &Value) -> Value {
     ])
 }
 
+fn message_entry(entry: &Value) -> Vec<Value> {
+    let Some(message) = entry.get("message") else {
+        return Vec::new();
+    };
+    let role = message.get("role").and_then(Value::as_str);
+    let empty_content = js::nullish(message.get("content"));
+    match role {
+        Some("system") if empty_content => vec![with_field(message, "content", Some("".into()))],
+        Some("user" | "assistant" | "toolResult") if empty_content => {
+            vec![with_field(message, "content", Some(Value::Array(Vec::new())))]
+        }
+        _ => vec![message.clone()],
+    }
+}
+
+fn compaction_messages(entry: &Value) -> Vec<Value> {
+    let summary = object(vec![
+        ("role", Some("compactionSummary".into())),
+        ("summary", entry.get("summary").cloned()),
+        ("tokensBefore", entry.get("tokensBefore").cloned()),
+        ("timestamp", Some(js::date_json(entry.get("timestamp")))),
+    ]);
+    match entry.get("systemMessage") {
+        Some(system) if jsrt::value::truthy(Some(system)) => vec![system.clone(), summary],
+        _ => vec![summary],
+    }
+}
+
 /// `sessionEntryToContextMessages`: the messages one entry contributes to model context.
 pub fn entry_messages(entry: &Value) -> Vec<Value> {
     match entry_type(entry) {
-        Some("message") => {
-            let Some(message) = entry.get("message") else {
-                return Vec::new();
-            };
-            let role = message.get("role").and_then(Value::as_str);
-            let empty_content = js::nullish(message.get("content"));
-            match role {
-                Some("system") if empty_content => vec![with_field(message, "content", Some("".into()))],
-                Some("user" | "assistant" | "toolResult") if empty_content => {
-                    vec![with_field(message, "content", Some(Value::Array(Vec::new())))]
-                }
-                _ => vec![message.clone()],
-            }
-        }
+        Some("message") => message_entry(entry),
         Some("custom_message") => vec![custom_message(entry)],
         Some("branch_summary") if jsrt::value::truthy(entry.get("summary")) => vec![object(vec![
             ("role", Some("branchSummary".into())),
@@ -178,18 +193,7 @@ pub fn entry_messages(entry: &Value) -> Vec<Value> {
             ("fromId", entry.get("fromId").cloned()),
             ("timestamp", Some(js::date_json(entry.get("timestamp")))),
         ])],
-        Some("compaction") => {
-            let summary = object(vec![
-                ("role", Some("compactionSummary".into())),
-                ("summary", entry.get("summary").cloned()),
-                ("tokensBefore", entry.get("tokensBefore").cloned()),
-                ("timestamp", Some(js::date_json(entry.get("timestamp")))),
-            ]);
-            match entry.get("systemMessage") {
-                Some(system) if jsrt::value::truthy(Some(system)) => vec![system.clone(), summary],
-                _ => vec![summary],
-            }
-        }
+        Some("compaction") => compaction_messages(entry),
         _ => Vec::new(),
     }
 }
@@ -356,6 +360,34 @@ pub fn current_tools(messages: &[Value]) -> Vec<Value> {
     tools.into_values().cloned().collect()
 }
 
+fn apply_section_patch(sections: &mut IndexMap<String, Value>, patch: &Map<String, Value>) {
+    for (name, value) in jsrt::json::object_entries(patch) {
+        if value.is_null() {
+            sections.shift_remove(name);
+        } else {
+            sections.insert(name.clone(), value.clone());
+        }
+    }
+}
+
+fn apply_system_message(
+    message: &Value,
+    content: &mut Vec<String>,
+    sections: &mut IndexMap<String, Value>,
+    timestamp: &mut Option<Value>,
+) {
+    if timestamp.is_none() && !js::nullish(message.get("timestamp")) {
+        *timestamp = message.get("timestamp").cloned();
+    }
+    let text = content_text(message.get("content"));
+    if !text.is_empty() {
+        content.push(text);
+    }
+    if let Some(Value::Object(patch)) = message.get("sections") {
+        apply_section_patch(sections, patch);
+    }
+}
+
 /// `getCurrentSystemMessage`: every system message replayed into one (content appended,
 /// sections patched by name, tools resolved). `None` when there is no system state.
 pub fn current_system_message(messages: &[Value]) -> Option<Value> {
@@ -363,22 +395,7 @@ pub fn current_system_message(messages: &[Value]) -> Option<Value> {
     let mut sections: IndexMap<String, Value> = IndexMap::new();
     let mut timestamp: Option<Value> = None;
     for message in system_messages(messages) {
-        if timestamp.is_none() && !js::nullish(message.get("timestamp")) {
-            timestamp = message.get("timestamp").cloned();
-        }
-        let text = content_text(message.get("content"));
-        if !text.is_empty() {
-            content.push(text);
-        }
-        if let Some(Value::Object(patch)) = message.get("sections") {
-            for (name, value) in jsrt::json::object_entries(patch) {
-                if value.is_null() {
-                    sections.shift_remove(name);
-                } else {
-                    sections.insert(name.clone(), value.clone());
-                }
-            }
-        }
+        apply_system_message(message, &mut content, &mut sections, &mut timestamp);
     }
     let tools = current_tools(messages);
     if timestamp.is_none() && tools.is_empty() {

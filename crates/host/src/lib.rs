@@ -504,33 +504,7 @@ impl Host {
         signal: &Signal,
     ) -> Result<Value, String> {
         if kind == "files.before_write" {
-            let writes = match payload.get("writes") {
-                Some(Value::Array(writes)) if (1..=64).contains(&writes.len()) => writes,
-                _ => return Err("files.before_write needs 1 to 64 writes".into()),
-            };
-            let mut proposed = Vec::new();
-            for write in writes {
-                match (write.get("path"), write.get("content")) {
-                    (Some(Value::String(path)), Some(Value::String(content)))
-                        if !path.is_empty() && !path.contains('\0') =>
-                    {
-                        proposed.push((path.as_str(), content.as_str()));
-                    }
-                    _ => return Err("files.before_write writes need a path and text content".into()),
-                }
-            }
-            let results: Vec<Value> = proposed
-                .into_iter()
-                .map(|(path, content)| {
-                    let result = self.guard.before_write(lane, path, content);
-                    if result["blocked"] != true {
-                        let path = file_hooks::resolve_lexical(&self.cwd, path);
-                        self.shared.writes.record(lane, &path, content);
-                    }
-                    result
-                })
-                .collect();
-            return Ok(json!({ "results": results }));
+            return self.handle_before_write(lane, &payload);
         }
         if matches!(kind, "bash" | "shell.run")
             && let Some(Value::String(command)) = payload.get("command")
@@ -540,19 +514,54 @@ impl Host {
         }
         let requested = payload.get("command").and_then(Value::as_str).map(str::to_string);
         let mut result = self.dispatch_shell(lane, kind, payload, signal)?;
-        if matches!(
+        self.annotate_shell_result(kind, requested, &mut result);
+        Ok(result)
+    }
+
+    fn handle_before_write(&self, lane: &str, payload: &Map<String, Value>) -> Result<Value, String> {
+        let writes = match payload.get("writes") {
+            Some(Value::Array(writes)) if (1..=64).contains(&writes.len()) => writes,
+            _ => return Err("files.before_write needs 1 to 64 writes".into()),
+        };
+        let mut proposed = Vec::new();
+        for write in writes {
+            match (write.get("path"), write.get("content")) {
+                (Some(Value::String(path)), Some(Value::String(content)))
+                    if !path.is_empty() && !path.contains('\0') =>
+                {
+                    proposed.push((path.as_str(), content.as_str()));
+                }
+                _ => return Err("files.before_write writes need a path and text content".into()),
+            }
+        }
+        let results: Vec<Value> = proposed
+            .into_iter()
+            .map(|(path, content)| {
+                let result = self.guard.before_write(lane, path, content);
+                if result["blocked"] != true {
+                    let path = file_hooks::resolve_lexical(&self.cwd, path);
+                    self.shared.writes.record(lane, &path, content);
+                }
+                result
+            })
+            .collect();
+        Ok(json!({ "results": results }))
+    }
+
+    fn annotate_shell_result(&self, kind: &str, requested: Option<String>, result: &mut Value) {
+        if !matches!(
             kind,
             "bash" | "shell.run" | "shell.result" | "shell.get" | "shell.cancel"
         ) {
-            let command = requested.unwrap_or_else(|| result["command"].as_str().unwrap_or_default().to_string());
-            let policy = self
-                .launcher
-                .as_deref()
-                .filter(|launcher| launcher.mechanism().is_some())
-                .map(|launcher| &launcher.policy);
-            bash_notes::annotate(&mut result, &command, policy);
+            return;
         }
-        Ok(result)
+        let command = requested.unwrap_or_else(|| result["command"].as_str().unwrap_or_default().to_string());
+        let policy = self
+            .launcher
+            .as_deref()
+            .filter(|launcher| launcher.mechanism().is_some())
+            .map(|launcher| &launcher.policy);
+        bash_notes::annotate(result, &command, policy);
     }
 
     fn dispatch_shell(
@@ -563,59 +572,81 @@ impl Host {
         signal: &Signal,
     ) -> Result<Value, String> {
         match kind {
-            "bash" if payload.contains_key("yield_after") => self.shell_bash(lane, &payload, signal),
-            "bash" => self.blocking_bash(&payload, signal, &mut |_| {}),
-            "shell.run" => {
-                kernel::ops::fields(kind, &payload)?;
-                let command = command_of(&payload)?;
-                let timeout = timeout_of(payload.get("timeout"))?;
-                let yield_after = wait_seconds(payload.get("yield_after"), "yield_after")?.unwrap_or(0.0);
-                let job = self.start_job(lane, command, timeout)?;
-                wait(&job, Some(yield_after), signal);
-                Ok(snapshot(&job))
-            }
-            "shell.result" => {
-                kernel::ops::fields(kind, &payload)?;
-                let job = self.find_job(lane, payload.get("id"))?;
-                if sync::lock(&job.record).status == journal::Status::Running {
-                    wait(&job, wait_seconds(payload.get("wait"), "wait")?, signal);
-                }
-                Ok(snapshot(&job))
-            }
-            "shell.get" => {
-                kernel::ops::fields(kind, &payload)?;
-                let job = self.find_job(lane, payload.get("id"))?;
-                Ok(snapshot(&job))
-            }
+            "bash" => self.dispatch_bash(lane, &payload, signal),
+            "shell.run" => self.shell_run(lane, kind, &payload, signal),
+            "shell.result" => self.shell_result(lane, kind, &payload, signal),
+            "shell.get" | "shell.cancel" | "shell.read" => self.shell_job_action(lane, kind, &payload),
+            "shell.list" => self.shell_list(lane, kind, &payload),
+            other => Err(unknown_kind(other)),
+        }
+    }
+
+    fn dispatch_bash(&self, lane: &str, payload: &Map<String, Value>, signal: &Signal) -> Result<Value, String> {
+        if payload.contains_key("yield_after") {
+            self.shell_bash(lane, payload, signal)
+        } else {
+            self.blocking_bash(payload, signal, &mut |_| {})
+        }
+    }
+
+    fn shell_run(
+        &self,
+        lane: &str,
+        kind: &str,
+        payload: &Map<String, Value>,
+        signal: &Signal,
+    ) -> Result<Value, String> {
+        kernel::ops::fields(kind, payload)?;
+        let command = command_of(payload)?;
+        let timeout = timeout_of(payload.get("timeout"))?;
+        let yield_after = wait_seconds(payload.get("yield_after"), "yield_after")?.unwrap_or(0.0);
+        let job = self.start_job(lane, command, timeout)?;
+        wait(&job, Some(yield_after), signal);
+        Ok(snapshot(&job))
+    }
+
+    fn shell_result(
+        &self,
+        lane: &str,
+        kind: &str,
+        payload: &Map<String, Value>,
+        signal: &Signal,
+    ) -> Result<Value, String> {
+        kernel::ops::fields(kind, payload)?;
+        let job = self.find_job(lane, payload.get("id"))?;
+        if sync::lock(&job.record).status == journal::Status::Running {
+            wait(&job, wait_seconds(payload.get("wait"), "wait")?, signal);
+        }
+        Ok(snapshot(&job))
+    }
+
+    fn shell_job_action(&self, lane: &str, kind: &str, payload: &Map<String, Value>) -> Result<Value, String> {
+        kernel::ops::fields(kind, payload)?;
+        let job = self.find_job(lane, payload.get("id"))?;
+        match kind {
+            "shell.get" => Ok(snapshot(&job)),
             "shell.cancel" => {
-                kernel::ops::fields(kind, &payload)?;
-                let job = self.find_job(lane, payload.get("id"))?;
                 cancel(&job, StopReason::Cancelled, &self.shared);
                 Ok(snapshot(&job))
             }
-            "shell.read" => {
-                kernel::ops::fields(kind, &payload)?;
-                let job = self.find_job(lane, payload.get("id"))?;
-                read_output(&job, payload.get("cursor"), payload.get("max_bytes"))
-            }
-            "shell.list" => {
-                kernel::ops::fields(kind, &payload)?;
-                let jobs = sync::lock(&self.shared.jobs).clone();
-                Ok(Value::Array(
-                    jobs.iter()
-                        .rev()
-                        .filter(|job| visible(job, lane))
-                        .map(|job| {
-                            let mut snapshot = snapshot(job);
-                            snapshot["text"] = Value::Null;
-                            snapshot
-                        })
-                        .collect(),
-                ))
-            }
-            other if other.starts_with("shell.") => Err(kernel::ops::not_wired(other)),
-            other => Err(not_available(other)),
+            _ => read_output(&job, payload.get("cursor"), payload.get("max_bytes")),
         }
+    }
+
+    fn shell_list(&self, lane: &str, kind: &str, payload: &Map<String, Value>) -> Result<Value, String> {
+        kernel::ops::fields(kind, payload)?;
+        let jobs = sync::lock(&self.shared.jobs).clone();
+        Ok(Value::Array(
+            jobs.iter()
+                .rev()
+                .filter(|job| visible(job, lane))
+                .map(|job| {
+                    let mut snapshot = snapshot(job);
+                    snapshot["text"] = Value::Null;
+                    snapshot
+                })
+                .collect(),
+        ))
     }
 
     /// A user's own command (RPC `bash`, the TUI's `!`; AgentSession `executeBash`): the shell guard, then the
@@ -640,26 +671,8 @@ impl Host {
         let command = command_of(payload)?;
         let timeout = timeout_of(payload.get("timeout"))?;
         let deadline = timeout.map(|seconds| Instant::now() + Duration::from_secs_f64(seconds));
-        let mut chunks: std::collections::VecDeque<String> = Default::default();
-        let mut kept_units = 0usize;
-        let mut total_bytes = 0usize;
-        let mut spill: Option<(PathBuf, File)> = None;
-        let open_spill =
-            |spill: &mut Option<(PathBuf, File)>, chunks: &std::collections::VecDeque<String>| -> Result<(), String> {
-                if spill.is_none() {
-                    let path = self
-                        .spill_dir
-                        .join(format!("pi-bash-{}.log", jsrt::random::random_hex(8)));
-                    let mut file = File::create(&path).map_err(|error| error.to_string())?;
-                    for chunk in chunks {
-                        let _ = file.write_all(chunk.as_bytes());
-                    }
-                    *spill = Some((path, file));
-                }
-                Ok(())
-            };
         let shell = self.shell()?;
-        let mut failure = None;
+        let mut buffer = BashOutputBuffer::new(&self.spill_dir);
         let exit = run_shell(
             &shell,
             &command,
@@ -671,45 +684,103 @@ impl Host {
             self.launcher.as_deref(),
             deadline,
             signal,
-            |text, raw| {
-                if raw > 0 || !text.is_empty() {
-                    on_chunk(text);
-                }
-                total_bytes += raw;
-                if total_bytes > DEFAULT_MAX_BYTES
-                    && let Err(error) = open_spill(&mut spill, &chunks)
-                {
-                    failure = Some(error);
-                }
-                if let Some((_, file)) = spill.as_mut() {
-                    let _ = file.write_all(text.as_bytes());
-                }
-                chunks.push_back(text.to_owned());
-                kept_units += text.encode_utf16().count();
-                while kept_units > DEFAULT_MAX_BYTES * 2 && chunks.len() > 1 {
-                    if let Some(removed) = chunks.pop_front() {
-                        kept_units -= removed.encode_utf16().count();
-                    }
-                }
-            },
+            |text, raw| buffer.push(text, raw, on_chunk),
         )?;
-        if let Some(error) = failure {
-            return Err(error);
-        }
-        let full: String = chunks.iter().map(String::as_str).collect();
-        let truncated = truncate_tail(&full);
-        if truncated.is_some() {
-            open_spill(&mut spill, &chunks)?;
-        }
+        let (output, truncated, full_output_path) = buffer.finish()?;
         let stopped = exit.timed_out || signal.is_aborted();
         Ok(json!({
-            "output": truncated.clone().unwrap_or(full),
+            "output": output,
             "exit_code": if stopped { None } else { exit.code },
             "cancelled": stopped && !exit.timed_out,
             "timed_out": exit.timed_out,
-            "truncated": truncated.is_some(),
-            "full_output_path": spill.map(|(path, _)| path.to_string_lossy().into_owned()),
+            "truncated": truncated,
+            "full_output_path": full_output_path,
         }))
+    }
+}
+
+fn unknown_kind(other: &str) -> String {
+    if other.starts_with("shell.") {
+        kernel::ops::not_wired(other)
+    } else {
+        not_available(other)
+    }
+}
+
+struct BashOutputBuffer<'a> {
+    spill_dir: &'a Path,
+    chunks: std::collections::VecDeque<String>,
+    kept_units: usize,
+    total_bytes: usize,
+    spill: Option<(PathBuf, File)>,
+    failure: Option<String>,
+}
+
+impl<'a> BashOutputBuffer<'a> {
+    fn new(spill_dir: &'a Path) -> Self {
+        Self {
+            spill_dir,
+            chunks: Default::default(),
+            kept_units: 0,
+            total_bytes: 0,
+            spill: None,
+            failure: None,
+        }
+    }
+
+    fn open_spill(&mut self) -> Result<(), String> {
+        if self.spill.is_none() {
+            let path = self
+                .spill_dir
+                .join(format!("pi-bash-{}.log", jsrt::random::random_hex(8)));
+            let mut file = File::create(&path).map_err(|error| error.to_string())?;
+            for chunk in &self.chunks {
+                let _ = file.write_all(chunk.as_bytes());
+            }
+            self.spill = Some((path, file));
+        }
+        Ok(())
+    }
+
+    fn push(&mut self, text: &str, raw: usize, on_chunk: &mut dyn FnMut(&str)) {
+        if raw > 0 || !text.is_empty() {
+            on_chunk(text);
+        }
+        self.total_bytes += raw;
+        if self.total_bytes > DEFAULT_MAX_BYTES
+            && let Err(error) = self.open_spill()
+        {
+            self.failure = Some(error);
+        }
+        if let Some((_, file)) = self.spill.as_mut() {
+            let _ = file.write_all(text.as_bytes());
+        }
+        self.chunks.push_back(text.to_owned());
+        self.kept_units += text.encode_utf16().count();
+        self.trim_chunks();
+    }
+
+    fn trim_chunks(&mut self) {
+        while self.kept_units > DEFAULT_MAX_BYTES * 2 && self.chunks.len() > 1 {
+            if let Some(removed) = self.chunks.pop_front() {
+                self.kept_units -= removed.encode_utf16().count();
+            }
+        }
+    }
+
+    fn finish(mut self) -> Result<(String, bool, Option<String>), String> {
+        if let Some(error) = self.failure {
+            return Err(error);
+        }
+        let full: String = self.chunks.iter().map(String::as_str).collect();
+        let truncated = truncate_tail(&full);
+        if truncated.is_some() {
+            self.open_spill()?;
+        }
+        let is_truncated = truncated.is_some();
+        let output = truncated.unwrap_or(full);
+        let full_output_path = self.spill.map(|(path, _)| path.to_string_lossy().into_owned());
+        Ok((output, is_truncated, full_output_path))
     }
 }
 

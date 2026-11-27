@@ -88,6 +88,31 @@ struct RunRounds {
     wait_nudged: bool,
 }
 
+impl RunRounds {
+    fn advance(&mut self, tool_calls: usize, running: u64) {
+        self.rounds = if tool_calls == 0 {
+            0
+        } else if self.was_running && running == 0 {
+            1
+        } else {
+            self.rounds + 1
+        };
+        if running == 0 {
+            self.wait_nudged = false;
+        }
+        self.waiting = if running > 0 && tool_calls > 0 {
+            self.waiting + 1
+        } else {
+            0
+        };
+        self.was_running = running > 0;
+    }
+
+    fn should_wait_nudge(&self, running: u64, wait_rounds: u64) -> bool {
+        running > 0 && !self.wait_nudged && wait_rounds > 0 && self.waiting >= wait_rounds
+    }
+}
+
 /// `ToolRoundNudger`: [`ToolRoundNudger::turn_ended`] answers the steer to send, if any.
 pub struct ToolRoundNudger {
     threshold: u64,
@@ -127,24 +152,9 @@ impl ToolRoundNudger {
             return None;
         }
         let state = self.runs.entry(run.to_string()).or_default();
-        state.rounds = if tool_calls == 0 {
-            0
-        } else if state.was_running && running == 0 {
-            1
-        } else {
-            state.rounds + 1
-        };
-        if running == 0 {
-            state.wait_nudged = false;
-        }
-        state.waiting = if running > 0 && tool_calls > 0 {
-            state.waiting + 1
-        } else {
-            0
-        };
-        state.was_running = running > 0;
+        state.advance(tool_calls, running);
         let brake = state.rounds == self.threshold || state.rounds == self.threshold * 2;
-        let wait = running > 0 && !state.wait_nudged && self.wait_rounds > 0 && state.waiting >= self.wait_rounds;
+        let wait = state.should_wait_nudge(running, self.wait_rounds);
         if running > 0 && (brake || wait) {
             state.wait_nudged = true;
             return Some(wait_nudge_message(running, self.async_events, self.next_call));

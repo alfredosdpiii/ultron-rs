@@ -159,111 +159,177 @@ pub fn home_resume_argv(home: Option<&str>, session_id: &str) -> Vec<String> {
     argv
 }
 
-fn home_inner(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
-    let (mut new, mut list, mut make_home, mut session) = (false, false, false, None::<String>);
-    let mut selector: Option<Vec<String>> = None;
-    let mut rest = Vec::new();
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--new" => new = true,
-            "--list" => list = true,
-            "--home" => make_home = true,
-            "--session" => {
-                i += 1;
-                session = Some(args.get(i).cloned().ok_or(HOME_USAGE)?);
-            }
-            flag @ ("-c" | "--continue" | "-r" | "--resume") => {
-                if selector.is_some() {
-                    return Err(HOME_USAGE.into());
-                }
-                selector = Some(vec![flag.to_string()]);
-            }
-            flag @ ("--fork" | "--session-id") => {
-                i += 1;
-                let value = args.get(i).cloned().ok_or(HOME_USAGE)?;
-                if selector.is_some() {
-                    return Err(HOME_USAGE.into());
-                }
-                selector = Some(vec![flag.to_string(), value]);
-            }
-            _ => rest.push(args[i].clone()),
-        }
-        i += 1;
-    }
-    if (new && session.is_some())
-        || (make_home && session.is_none())
-        || (list && (new || session.is_some()))
-        || (selector.is_some() && (new || list || session.is_some()))
-    {
+#[derive(Default)]
+struct HomeArgs {
+    new: bool,
+    list: bool,
+    make_home: bool,
+    session: Option<String>,
+    selector: Option<Vec<String>>,
+    rest: Vec<String>,
+}
+
+fn set_home_selector(slot: &mut Option<Vec<String>>, value: Vec<String>) -> Result<(), String> {
+    if slot.is_some() {
         return Err(HOME_USAGE.into());
     }
-    let instance = crate::instance(env, true);
-    instance.prepare().map_err(|e| e.to_string())?;
-    let _ = HOME_INSTANCE.set(instance.dir.clone());
-    let session_dir = crate::session::session_directory_of(None, env, &instance);
-    let mut sessions = daemon::catalog::list(&session_dir);
-    let home = home_session(&instance.dir).filter(|id| sessions.iter().any(|m| &m.id == id));
-    if list {
+    *slot = Some(value);
+    Ok(())
+}
+
+fn consume_selector_flag(args: &[String], i: &mut usize, slot: &mut Option<Vec<String>>) -> Result<bool, String> {
+    match args[*i].as_str() {
+        flag @ ("-c" | "--continue" | "-r" | "--resume") => {
+            set_home_selector(slot, vec![flag.to_string()])?;
+            Ok(true)
+        }
+        flag @ ("--fork" | "--session-id") => {
+            *i += 1;
+            let value = args.get(*i).cloned().ok_or(HOME_USAGE)?;
+            set_home_selector(slot, vec![flag.to_string(), value])?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn consume_home_flag(args: &[String], i: &mut usize, parsed: &mut HomeArgs) -> Result<(), String> {
+    if consume_selector_flag(args, i, &mut parsed.selector)? {
+        return Ok(());
+    }
+    match args[*i].as_str() {
+        "--new" => parsed.new = true,
+        "--list" => parsed.list = true,
+        "--home" => parsed.make_home = true,
+        "--session" => {
+            *i += 1;
+            parsed.session = Some(args.get(*i).cloned().ok_or(HOME_USAGE)?);
+        }
+        _ => parsed.rest.push(args[*i].clone()),
+    }
+    Ok(())
+}
+
+fn validate_home_args(parsed: &HomeArgs) -> Result<(), String> {
+    let has_session = parsed.session.is_some();
+    if parsed.make_home && !has_session {
+        return Err(HOME_USAGE.into());
+    }
+    let modes = usize::from(parsed.new)
+        + usize::from(parsed.list)
+        + usize::from(has_session)
+        + usize::from(parsed.selector.is_some());
+    if modes > 1 {
+        return Err(HOME_USAGE.into());
+    }
+    Ok(())
+}
+
+fn parse_home_args(args: &[String]) -> Result<HomeArgs, String> {
+    let mut parsed = HomeArgs::default();
+    let mut i = 0;
+    while i < args.len() {
+        consume_home_flag(args, &mut i, &mut parsed)?;
+        i += 1;
+    }
+    validate_home_args(&parsed)?;
+    Ok(parsed)
+}
+
+fn list_home_sessions(
+    mut sessions: Vec<daemon::catalog::Meta>,
+    home: Option<&str>,
+    out: &mut dyn Write,
+) -> Result<i32, String> {
+    sessions.sort_by(|a, b| b.modified_at.total_cmp(&a.modified_at));
+    writeln!(out, "ID\tNAME\tLAST ACTIVITY\tHOME").map_err(|e| e.to_string())?;
+    for meta in &sessions {
+        let name = daemon::catalog::details(meta).name.unwrap_or_else(|| "-".into());
+        let at = jsrt::date::iso_string(meta.modified_at as i64);
+        let mark = if home == Some(meta.id.as_str()) { "*" } else { "" };
+        writeln!(out, "{}\t{name}\t{at}\t{mark}", meta.id).map_err(|e| e.to_string())?;
+    }
+    Ok(0)
+}
+
+fn resolve_continue_selector(
+    mut selector: Vec<String>,
+    instance_dir: &std::path::Path,
+    session_dir: &std::path::Path,
+    mut sessions: Vec<daemon::catalog::Meta>,
+) -> Vec<String> {
+    if selector[0] == "-c" || selector[0] == "--continue" {
+        let dream = daemon::dream::session_id(instance_dir, session_dir);
+        sessions.retain(|m| Some(&m.id) != dream.as_ref());
         sessions.sort_by(|a, b| b.modified_at.total_cmp(&a.modified_at));
-        writeln!(out, "ID\tNAME\tLAST ACTIVITY\tHOME").map_err(|e| e.to_string())?;
-        for meta in &sessions {
-            let name = daemon::catalog::details(meta).name.unwrap_or_else(|| "-".into());
-            let at = jsrt::date::iso_string(meta.modified_at as i64);
-            let mark = if home.as_deref() == Some(meta.id.as_str()) {
-                "*"
-            } else {
-                ""
-            };
-            writeln!(out, "{}\t{name}\t{at}\t{mark}", meta.id).map_err(|e| e.to_string())?;
-        }
-        return Ok(0);
-    }
-    if let Some(mut selector) = selector {
-        if selector[0] == "-c" || selector[0] == "--continue" {
-            let dream = daemon::dream::session_id(&instance.dir, &session_dir);
-            sessions.retain(|m| Some(&m.id) != dream.as_ref());
-            sessions.sort_by(|a, b| b.modified_at.total_cmp(&a.modified_at));
-            selector = match sessions.first() {
-                Some(latest) => vec!["--session-id".to_string(), latest.id.clone()],
-                None => Vec::new(),
-            };
-        }
-        resume_through_home(&instance.dir);
-        selector.extend(caller_args(&rest, &env.cwd, &env.home));
-        let at_home = Env {
-            cwd: env.home.clone(),
-            ..env.clone()
+        selector = match sessions.first() {
+            Some(latest) => vec!["--session-id".to_string(), latest.id.clone()],
+            None => Vec::new(),
         };
-        return run(&selector, &at_home, out, err);
     }
-    let id = match session {
-        Some(id) => {
-            if !sessions.iter().any(|m| m.id == id) {
-                return Err(format!("Unknown session: {id}"));
-            }
-            if make_home {
-                set_home(&instance.dir, &id)?;
-            }
-            id
+    selector
+}
+
+fn resolve_home_session_id(
+    parsed: &HomeArgs,
+    home: Option<String>,
+    sessions: &[daemon::catalog::Meta],
+    instance_dir: &std::path::Path,
+) -> Result<String, String> {
+    if let Some(id) = &parsed.session {
+        if !sessions.iter().any(|m| m.id == *id) {
+            return Err(format!("Unknown session: {id}"));
         }
-        None => match home.filter(|_| !new) {
-            Some(id) => id,
-            None => {
-                let id = jsrt::random::uuid_v4();
-                set_home(&instance.dir, &id)?;
-                id
-            }
-        },
-    };
-    resume_through_home(&instance.dir);
-    let mut client_args = vec!["--session-id".to_string(), id];
-    client_args.extend(caller_args(&rest, &env.cwd, &env.home));
+        if parsed.make_home {
+            set_home(instance_dir, id)?;
+        }
+        return Ok(id.clone());
+    }
+    match home.filter(|_| !parsed.new) {
+        Some(id) => Ok(id),
+        None => {
+            let id = jsrt::random::uuid_v4();
+            set_home(instance_dir, &id)?;
+            Ok(id)
+        }
+    }
+}
+
+fn run_at_home(
+    mut args: Vec<String>,
+    rest: &[String],
+    instance_dir: &std::path::Path,
+    env: &Env,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, String> {
+    resume_through_home(instance_dir);
+    args.extend(caller_args(rest, &env.cwd, &env.home));
     let at_home = Env {
         cwd: env.home.clone(),
         ..env.clone()
     };
-    run(&client_args, &at_home, out, err)
+    run(&args, &at_home, out, err)
+}
+
+fn home_inner(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
+    let parsed = parse_home_args(args)?;
+    let instance = crate::instance(env, true);
+    instance.prepare().map_err(|e| e.to_string())?;
+    let _ = HOME_INSTANCE.set(instance.dir.clone());
+    let session_dir = crate::session::session_directory_of(None, env, &instance);
+    let sessions = daemon::catalog::list(&session_dir);
+    let home = home_session(&instance.dir).filter(|id| sessions.iter().any(|m| &m.id == id));
+    if parsed.list {
+        return list_home_sessions(sessions, home.as_deref(), out);
+    }
+    if let Some(selector) = parsed.selector {
+        let selector = resolve_continue_selector(selector, &instance.dir, &session_dir, sessions);
+        return run_at_home(selector, &parsed.rest, &instance.dir, env, out, err);
+    }
+    let id = resolve_home_session_id(&parsed, home, &sessions, &instance.dir)?;
+    let client_args = vec!["--session-id".to_string(), id];
+    run_at_home(client_args, &parsed.rest, &instance.dir, env, out, err)
 }
 
 /// Flags whose value is the next argument (so an `@...` value is not a file argument).
@@ -294,11 +360,26 @@ const VALUE_FLAGS: [&str; 24] = [
     "--tui-mode",
 ];
 
+fn resolve_at_arg(arg: &str, cwd: &std::path::Path, home: &std::path::Path) -> String {
+    match arg.strip_prefix('@') {
+        Some(path) => format!("@{}", crate::file_args::resolve_read_path(path, cwd, home).display()),
+        None => arg.to_string(),
+    }
+}
+
+fn resolve_append_prompt(value: &str, cwd: &std::path::Path) -> String {
+    let path = cwd.join(value);
+    if !value.is_empty() && path.exists() {
+        path.display().to_string()
+    } else {
+        value.to_string()
+    }
+}
+
 /// `args` with what names a file of the caller's directory `cwd` made absolute, for a run in another directory:
 /// `@file` arguments, `--skill <path>`, and an `--append-system-prompt` value that is a file there (else its text,
 /// unchanged).
 pub fn caller_args(args: &[String], cwd: &std::path::Path, home: &std::path::Path) -> Vec<String> {
-    let file = |arg: &str| format!("@{}", crate::file_args::resolve_read_path(arg, cwd, home).display());
     let mut out = Vec::with_capacity(args.len());
     let mut i = 0;
     while i < args.len() {
@@ -306,20 +387,11 @@ pub fn caller_args(args: &[String], cwd: &std::path::Path, home: &std::path::Pat
         match (arg, args.get(i + 1)) {
             ("--", _) => {
                 out.push(arg.to_string());
-                out.extend(args[i + 1..].iter().map(|a| match a.strip_prefix('@') {
-                    Some(path) => file(path),
-                    None => a.clone(),
-                }));
+                out.extend(args[i + 1..].iter().map(|a| resolve_at_arg(a, cwd, home)));
                 break;
             }
             ("--append-system-prompt", Some(value)) => {
-                let path = cwd.join(value);
-                out.push(arg.to_string());
-                out.push(if !value.is_empty() && path.exists() {
-                    path.display().to_string()
-                } else {
-                    value.clone()
-                });
+                out.extend([arg.to_string(), resolve_append_prompt(value, cwd)]);
                 i += 1;
             }
             ("--skill", Some(value)) => {
@@ -331,10 +403,7 @@ pub fn caller_args(args: &[String], cwd: &std::path::Path, home: &std::path::Pat
                 out.extend([arg.to_string(), value.clone()]);
                 i += 1;
             }
-            _ => out.push(match arg.strip_prefix('@') {
-                Some(path) => file(path),
-                None => arg.to_string(),
-            }),
+            _ => out.push(resolve_at_arg(arg, cwd, home)),
         }
         i += 1;
     }

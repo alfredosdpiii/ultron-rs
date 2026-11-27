@@ -222,6 +222,38 @@ impl fmt::Display for Table {
     }
 }
 
+fn write_table_id(write: &StorageWrite) -> Option<(Table, u64)> {
+    match write {
+        StorageWrite::Conversation { value } => Some((Table::Conversation, value.id.0)),
+        StorageWrite::Entry { value } => Some((Table::Entry, value.id.0)),
+        StorageWrite::Task { value } => Some((Table::Task, value.id.0)),
+        StorageWrite::Submission { value } => Some((Table::Submission, value.id.0)),
+        StorageWrite::DocumentCreate { record, .. } | StorageWrite::DocumentCopy { record, .. } => {
+            Some((Table::Document, record.id.0))
+        }
+        StorageWrite::DocumentChange { .. } | StorageWrite::DocumentRetire { .. } => None,
+    }
+}
+
+fn check_id_claim(id: u64, table: Table, existing: Option<Table>, earlier: Option<Table>) -> Result<()> {
+    if matches!(table, Table::Conversation | Table::Entry | Table::Document) {
+        if let Some(existing) = existing {
+            return failed(format!("ID {id} already belongs to {existing}"));
+        }
+        if earlier.is_some() {
+            return failed(format!("ID {id} is written more than once"));
+        }
+        return Ok(());
+    }
+    if let Some(existing) = existing.filter(|existing| *existing != table) {
+        return failed(format!("ID {id} already belongs to {existing}"));
+    }
+    if earlier.is_some_and(|earlier| earlier != table) {
+        return failed(format!("ID {id} is written as two record types"));
+    }
+    Ok(())
+}
+
 /// Conversations, entries and documents are created once; tasks and submissions are replaced whole, but never
 /// change table. `existing` looks up the table already owning an ID.
 pub(crate) fn check_global_ids(
@@ -230,33 +262,12 @@ pub(crate) fn check_global_ids(
 ) -> Result<()> {
     let mut claimed: HashMap<u64, Table> = HashMap::new();
     for write in writes {
-        let (table, id) = match write {
-            StorageWrite::Conversation { value } => (Table::Conversation, value.id.0),
-            StorageWrite::Entry { value } => (Table::Entry, value.id.0),
-            StorageWrite::Task { value } => (Table::Task, value.id.0),
-            StorageWrite::Submission { value } => (Table::Submission, value.id.0),
-            StorageWrite::DocumentCreate { record, .. } | StorageWrite::DocumentCopy { record, .. } => {
-                (Table::Document, record.id.0)
-            }
-            StorageWrite::DocumentChange { .. } | StorageWrite::DocumentRetire { .. } => continue,
+        let Some((table, id)) = write_table_id(write) else {
+            continue;
         };
-        let existing = existing(id)?;
+        let existing_table = existing(id)?;
         let earlier = claimed.get(&id).copied();
-        if matches!(table, Table::Conversation | Table::Entry | Table::Document) {
-            if let Some(existing) = existing {
-                return failed(format!("ID {id} already belongs to {existing}"));
-            }
-            if earlier.is_some() {
-                return failed(format!("ID {id} is written more than once"));
-            }
-        } else {
-            if let Some(existing) = existing.filter(|existing| *existing != table) {
-                return failed(format!("ID {id} already belongs to {existing}"));
-            }
-            if earlier.is_some_and(|earlier| earlier != table) {
-                return failed(format!("ID {id} is written as two record types"));
-            }
-        }
+        check_id_claim(id, table, existing_table, earlier)?;
         claimed.insert(id, table);
     }
     Ok(())
@@ -271,14 +282,70 @@ pub(crate) struct DocumentAction {
     pub retire: bool,
 }
 
+impl DocumentAction {
+    fn has_content_command(&self) -> bool {
+        self.create.is_some() || self.content.is_some() || self.copy.is_some()
+    }
+
+    fn record_create(&mut self, id: u64, record: &DocumentCreate, content: &DocumentContent) -> Result<()> {
+        if self.has_content_command() {
+            return failed(format!("Document {id} has more than one content command"));
+        }
+        self.create = Some(record.clone());
+        self.content = Some(content.clone());
+        Ok(())
+    }
+
+    fn record_copy(&mut self, id: u64, record: &DocumentCreate, source: DocumentCopySource) -> Result<()> {
+        if self.has_content_command() {
+            return failed(format!("Document {id} has more than one content command"));
+        }
+        self.create = Some(record.clone());
+        self.copy = Some(source);
+        Ok(())
+    }
+
+    fn record_change(&mut self, id: u64, content: &DocumentContent) -> Result<()> {
+        if self.content.is_some() || self.copy.is_some() {
+            return failed(format!("Document {id} has more than one content command"));
+        }
+        self.content = Some(content.clone());
+        Ok(())
+    }
+
+    fn record_retire(&mut self, id: u64) -> Result<()> {
+        if self.retire {
+            return failed(format!("Document {id} is retired more than once"));
+        }
+        self.retire = true;
+        Ok(())
+    }
+
+    fn apply_write(&mut self, id: u64, write: &StorageWrite) -> Result<()> {
+        match write {
+            StorageWrite::DocumentCreate { record, content } => self.record_create(id, record, content),
+            StorageWrite::DocumentCopy { record, source } => self.record_copy(id, record, *source),
+            StorageWrite::DocumentChange { content, .. } => self.record_change(id, content),
+            StorageWrite::DocumentRetire { .. } => self.record_retire(id),
+            _ => unreachable!("filtered above"),
+        }
+    }
+}
+
+pub(crate) fn document_write_id(write: &StorageWrite) -> Option<u64> {
+    match write {
+        StorageWrite::DocumentCreate { record, .. } | StorageWrite::DocumentCopy { record, .. } => Some(record.id.0),
+        StorageWrite::DocumentChange { id, .. } | StorageWrite::DocumentRetire { id } => Some(id.0),
+        _ => None,
+    }
+}
+
 /// Group document writes by incarnation, in first-write order.
 pub(crate) fn document_actions(writes: &[StorageWrite]) -> Result<Vec<(u64, DocumentAction)>> {
     let mut actions: Vec<(u64, DocumentAction)> = Vec::new();
     for write in writes {
-        let id = match write {
-            StorageWrite::DocumentCreate { record, .. } | StorageWrite::DocumentCopy { record, .. } => record.id.0,
-            StorageWrite::DocumentChange { id, .. } | StorageWrite::DocumentRetire { id } => id.0,
-            _ => continue,
+        let Some(id) = document_write_id(write) else {
+            continue;
         };
         let index = match actions.iter().position(|(existing, _)| *existing == id) {
             Some(index) => index,
@@ -287,37 +354,7 @@ pub(crate) fn document_actions(writes: &[StorageWrite]) -> Result<Vec<(u64, Docu
                 actions.len() - 1
             }
         };
-        let action = &mut actions[index].1;
-        let more_than_one = || failed(format!("Document {id} has more than one content command"));
-        match write {
-            StorageWrite::DocumentCreate { record, content } => {
-                if action.create.is_some() || action.content.is_some() || action.copy.is_some() {
-                    return more_than_one();
-                }
-                action.create = Some(record.clone());
-                action.content = Some(content.clone());
-            }
-            StorageWrite::DocumentCopy { record, source } => {
-                if action.create.is_some() || action.content.is_some() || action.copy.is_some() {
-                    return more_than_one();
-                }
-                action.create = Some(record.clone());
-                action.copy = Some(*source);
-            }
-            StorageWrite::DocumentChange { content, .. } => {
-                if action.content.is_some() || action.copy.is_some() {
-                    return more_than_one();
-                }
-                action.content = Some(content.clone());
-            }
-            StorageWrite::DocumentRetire { .. } => {
-                if action.retire {
-                    return failed(format!("Document {id} is retired more than once"));
-                }
-                action.retire = true;
-            }
-            _ => unreachable!("filtered above"),
-        }
+        actions[index].1.apply_write(id, write)?;
     }
     Ok(actions)
 }

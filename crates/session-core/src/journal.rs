@@ -106,30 +106,34 @@ impl RunJournal {
             }
             AgentEvent::MessageEnd {
                 message: Message::Assistant(message),
-            } => {
-                if let Ok(value) = serde_json::to_value(message) {
-                    let count = !self.ledger_counts_turns;
-                    self.apply(session, |run, s| {
-                        if count {
-                            run.record_turn(s, &value)?;
-                        }
-                        run.commit_assistant(s, value.clone()).map(|_| ())
-                    });
-                }
-            }
+            } => self.commit_assistant_event(session, message),
             AgentEvent::ToolExecutionStart { tool_call_id, args, .. } => {
                 self.apply(session, |run, s| run.tool_started(s, tool_call_id, args.clone()));
             }
             AgentEvent::MessageEnd {
                 message: Message::ToolResult(result),
-            } => {
-                if let Ok(value) = serde_json::to_value(result) {
-                    self.apply(session, |run, s| {
-                        run.tool_finished(s, &result.tool_call_id, value.clone())
-                    });
-                }
-            }
+            } => self.commit_tool_result_event(session, result),
             _ => {}
+        }
+    }
+
+    fn commit_assistant_event(&mut self, session: &mut Session, message: &ai::AssistantMessage) {
+        if let Ok(value) = serde_json::to_value(message) {
+            let count = !self.ledger_counts_turns;
+            self.apply(session, |run, s| {
+                if count {
+                    run.record_turn(s, &value)?;
+                }
+                run.commit_assistant(s, value.clone()).map(|_| ())
+            });
+        }
+    }
+
+    fn commit_tool_result_event(&mut self, session: &mut Session, result: &ai::ToolResultMessage) {
+        if let Ok(value) = serde_json::to_value(result) {
+            self.apply(session, |run, s| {
+                run.tool_finished(s, &result.tool_call_id, value.clone())
+            });
         }
     }
 

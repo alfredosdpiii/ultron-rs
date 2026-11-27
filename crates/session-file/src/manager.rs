@@ -171,6 +171,29 @@ fn file_timestamp(iso: &str) -> String {
 }
 
 impl SessionManager {
+    fn ensure_session_dir(&self) -> io::Result<()> {
+        if self.persist && !self.session_dir.is_empty() && !Path::new(&self.session_dir).exists() {
+            fs::create_dir_all(&self.session_dir)?;
+        }
+        Ok(())
+    }
+
+    fn init_session(
+        &mut self,
+        session_file: Option<&str>,
+        options: Option<NewSessionOptions>,
+        preloaded: Option<Vec<Value>>,
+    ) -> Result<(), Error> {
+        match (session_file, preloaded) {
+            (Some(file), preloaded) => self.set_session_file_with(file, preloaded)?,
+            (None, Some(entries)) if !entries.is_empty() => self.load_entries(entries, options)?,
+            _ => {
+                self.new_session(options)?;
+            }
+        }
+        Ok(())
+    }
+
     fn construct(
         env: Box<dyn Env>,
         cwd: &str,
@@ -194,16 +217,8 @@ impl SessionManager {
             labels: IndexMap::new(),
             leaf_id: None,
         };
-        if persist && !manager.session_dir.is_empty() && !Path::new(&manager.session_dir).exists() {
-            fs::create_dir_all(&manager.session_dir)?;
-        }
-        match (session_file, preloaded) {
-            (Some(file), preloaded) => manager.set_session_file_with(file, preloaded)?,
-            (None, Some(entries)) if !entries.is_empty() => manager.load_entries(entries, options)?,
-            _ => {
-                manager.new_session(options)?;
-            }
-        }
+        manager.ensure_session_dir()?;
+        manager.init_session(session_file, options, preloaded)?;
         Ok(manager)
     }
 
@@ -264,6 +279,30 @@ impl SessionManager {
         Self::construct(env, cwd, "", None, false, options, entries)
     }
 
+    fn load_fork_source(env: &dyn Env, source: &str) -> Result<Vec<Value>, Error> {
+        let entries = load_entries_from_file(env, source)?;
+        if entries.is_empty() {
+            return invalid(format!(
+                "Cannot fork: source session file is empty or invalid: {source}"
+            ));
+        }
+        if !entries.iter().any(|e| entry_type(e) == Some("session")) {
+            return invalid(format!("Cannot fork: source session has no header: {source}"));
+        }
+        Ok(entries)
+    }
+
+    fn resolve_session_id(env: &mut dyn Env, options: Option<NewSessionOptions>) -> Result<String, Error> {
+        let options = options.unwrap_or_default();
+        if let Some(id) = &options.id {
+            assert_valid_session_id(id)?;
+        }
+        Ok(match options.id {
+            Some(id) => id,
+            None => env.session_id(),
+        })
+    }
+
     /// `forkFrom`: copies another session's entries into a new session for `target_cwd`.
     pub fn fork_from(
         mut env: Box<dyn Env>,
@@ -274,28 +313,13 @@ impl SessionManager {
     ) -> Result<Self, Error> {
         let source = resolve_path(&*env, source_path);
         let target = resolve_path(&*env, target_cwd);
-        let entries = load_entries_from_file(&*env, &source)?;
-        if entries.is_empty() {
-            return invalid(format!(
-                "Cannot fork: source session file is empty or invalid: {source}"
-            ));
-        }
-        if !entries.iter().any(|e| entry_type(e) == Some("session")) {
-            return invalid(format!("Cannot fork: source session has no header: {source}"));
-        }
+        let entries = Self::load_fork_source(&*env, &source)?;
         let dir = match session_dir.filter(|d| !d.is_empty()) {
             Some(dir) => normalize_path(&*env, dir),
             None => file::default_session_dir(&*env, &target, &env.agent_dir())?,
         };
         fs::create_dir_all(&dir)?;
-        let options = options.unwrap_or_default();
-        if let Some(id) = &options.id {
-            assert_valid_session_id(id)?;
-        }
-        let id = match options.id {
-            Some(id) => id,
-            None => env.session_id(),
-        };
+        let id = Self::resolve_session_id(env.as_mut(), options)?;
         let timestamp = jsrt::date::iso_string(env.now_ms());
         let path = join(&[&dir, &format!("{}_{id}.jsonl", file_timestamp(&timestamp))]);
         let header = json!({
@@ -306,6 +330,17 @@ impl SessionManager {
         let body: Vec<&Value> = entries.iter().filter(|e| entry_type(e) != Some("session")).collect();
         append_line(&path, &body)?;
         Self::construct(env, &target, &dir, Some(&path), true, None, None)
+    }
+
+    fn init_empty_session_file(&mut self, path: String) -> Result<(), Error> {
+        if fs::metadata(&path)?.len() > 0 {
+            return invalid(format!("Session file is not a valid ultron session: {path}"));
+        }
+        self.new_session(None)?;
+        self.session_file = Some(path);
+        self.rewrite_file()?;
+        self.flushed = true;
+        Ok(())
     }
 
     fn set_session_file_with(&mut self, session_file: &str, preloaded: Option<Vec<Value>>) -> Result<(), Error> {
@@ -321,14 +356,7 @@ impl SessionManager {
             None => load_entries_from_file(&*self.env, &path)?,
         };
         if entries.is_empty() {
-            if fs::metadata(&path)?.len() > 0 {
-                return invalid(format!("Session file is not a valid ultron session: {path}"));
-            }
-            self.new_session(None)?;
-            self.session_file = Some(path);
-            self.rewrite_file()?;
-            self.flushed = true;
-            return Ok(());
+            return self.init_empty_session_file(path);
         }
         self.load_entries(entries, None)?;
         self.flushed = true;

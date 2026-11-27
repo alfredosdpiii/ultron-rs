@@ -169,55 +169,98 @@ fn is_container(value: &Value) -> bool {
     value.is_array() || value.is_object()
 }
 
+fn parse_op_tuple(value: &Value) -> Result<(&str, &[Value])> {
+    let op = match value {
+        Value::Array(op) if !op.is_empty() => op.as_slice(),
+        _ => return invalid("op is not a tuple"),
+    };
+    let verb = match &op[0] {
+        Value::String(verb) => verb.as_str(),
+        other => {
+            return Err(DeltaError::Invalid(format!(
+                "unknown op verb: {}",
+                jsrt::value::string(Some(other))
+            )));
+        }
+    };
+    Ok((verb, op))
+}
+
+fn parse_replace_op(op: &[Value]) -> Result<Op> {
+    if op.len() == 2 {
+        Ok(Op::Replace(op[1].clone()))
+    } else {
+        invalid("r arity")
+    }
+}
+
+fn parse_set_op(op: &[Value]) -> Result<Op> {
+    if op.len() == 3 {
+        Ok(Op::Set(parse_path(&op[1], true)?, op[2].clone()))
+    } else {
+        invalid("s arity")
+    }
+}
+
+fn parse_delete_op(op: &[Value]) -> Result<Op> {
+    if op.len() == 2 {
+        Ok(Op::Delete(parse_path(&op[1], true)?))
+    } else {
+        invalid("d arity")
+    }
+}
+
+fn parse_append_op(op: &[Value]) -> Result<Op> {
+    match (op.len(), op.get(2)) {
+        (3, Some(Value::String(text))) => Ok(Op::Append(parse_path(&op[1], true)?, text.clone())),
+        _ => invalid("a shape"),
+    }
+}
+
+fn parse_trim_op(op: &[Value]) -> Result<Op> {
+    match (op.len(), op.get(2).and_then(non_negative_int)) {
+        (3, Some(count)) => Ok(Op::Trim(parse_path(&op[1], true)?, count)),
+        _ => invalid("t shape"),
+    }
+}
+
+fn parse_splice_op(op: &[Value]) -> Result<Op> {
+    if op.len() != 5 {
+        return invalid("p arity");
+    }
+    let path = parse_path(&op[1], false)?;
+    let Some(index) = non_negative_int(&op[2]) else {
+        return invalid("p index");
+    };
+    let Some(remove) = non_negative_int(&op[3]) else {
+        return invalid("p remove");
+    };
+    let Value::Array(items) = &op[4] else {
+        return invalid("p items");
+    };
+    Ok(Op::Splice(path, index, remove, items.clone()))
+}
+
+fn parse_move_op(op: &[Value]) -> Result<Op> {
+    if op.len() == 3 {
+        Ok(Op::Move(parse_path(&op[1], false)?, parse_permutation(&op[2])?))
+    } else {
+        invalid("m arity")
+    }
+}
+
 impl Op {
     /// Parse and validate a decoded op tuple (upstream `assertValidOp`).
     pub fn from_json(value: &Value) -> Result<Op> {
-        let op = match value {
-            Value::Array(op) if !op.is_empty() => op,
-            _ => return invalid("op is not a tuple"),
-        };
-        let verb = match &op[0] {
-            Value::String(verb) => verb.as_str(),
-            other => {
-                return Err(DeltaError::Invalid(format!(
-                    "unknown op verb: {}",
-                    jsrt::value::string(Some(other))
-                )));
-            }
-        };
+        let (verb, op) = parse_op_tuple(value)?;
         match verb {
-            "r" if op.len() == 2 => Ok(Op::Replace(op[1].clone())),
-            "r" => invalid("r arity"),
-            "s" if op.len() == 3 => Ok(Op::Set(parse_path(&op[1], true)?, op[2].clone())),
-            "s" => invalid("s arity"),
-            "d" if op.len() == 2 => Ok(Op::Delete(parse_path(&op[1], true)?)),
-            "d" => invalid("d arity"),
-            "a" => match (op.len(), op.get(2)) {
-                (3, Some(Value::String(text))) => Ok(Op::Append(parse_path(&op[1], true)?, text.clone())),
-                _ => invalid("a shape"),
-            },
-            "t" => match (op.len(), op.get(2).and_then(non_negative_int)) {
-                (3, Some(count)) => Ok(Op::Trim(parse_path(&op[1], true)?, count)),
-                _ => invalid("t shape"),
-            },
-            "p" => {
-                if op.len() != 5 {
-                    return invalid("p arity");
-                }
-                let path = parse_path(&op[1], false)?;
-                let Some(index) = non_negative_int(&op[2]) else {
-                    return invalid("p index");
-                };
-                let Some(remove) = non_negative_int(&op[3]) else {
-                    return invalid("p remove");
-                };
-                let Value::Array(items) = &op[4] else {
-                    return invalid("p items");
-                };
-                Ok(Op::Splice(path, index, remove, items.clone()))
-            }
-            "m" if op.len() == 3 => Ok(Op::Move(parse_path(&op[1], false)?, parse_permutation(&op[2])?)),
-            "m" => invalid("m arity"),
+            "r" => parse_replace_op(op),
+            "s" => parse_set_op(op),
+            "d" => parse_delete_op(op),
+            "a" => parse_append_op(op),
+            "t" => parse_trim_op(op),
+            "p" => parse_splice_op(op),
+            "m" => parse_move_op(op),
             other => Err(DeltaError::Invalid(format!("unknown op verb: {other}"))),
         }
     }
@@ -304,6 +347,25 @@ pub fn apply_immutable_batches<'a>(root: &Value, batches: impl IntoIterator<Item
     Ok(result)
 }
 
+fn is_array_own_index(items: &[Value], key: &str) -> bool {
+    key.parse::<usize>()
+        .is_ok_and(|i| i < items.len() && i.to_string() == key)
+}
+
+fn copy_walk_step<'a>(node: &'a Value, seg: &Seg) -> Result<Option<&'a Value>> {
+    match (node, seg) {
+        (Value::Array(items), Seg::Index(index)) => Ok(items.get(*index)),
+        (Value::Array(items), Seg::Key(key)) => {
+            if key == "length" || is_array_own_index(items, key) {
+                return Err(DeltaError::UnsafePath(key.clone()));
+            }
+            Ok(None)
+        }
+        (Value::Object(map), seg) => Ok(map.get(seg.key().as_ref())),
+        _ => Ok(None),
+    }
+}
+
 /// Upstream's copy-on-write walk checks the path in a different order than the applier, so a few malformed paths
 /// fail with a different error there. Mirror it to report the same error.
 fn check_copy_walk(root: &Value, path: &[Seg]) -> Result<()> {
@@ -312,21 +374,7 @@ fn check_copy_walk(root: &Value, path: &[Seg]) -> Result<()> {
     }
     let mut node = root;
     for seg in path {
-        let child = match (node, seg) {
-            (Value::Array(items), Seg::Index(index)) => items.get(*index),
-            (Value::Array(items), Seg::Key(key)) => {
-                let own_index = key
-                    .parse::<usize>()
-                    .is_ok_and(|i| i < items.len() && i.to_string() == *key);
-                if key == "length" || own_index {
-                    return Err(DeltaError::UnsafePath(key.clone()));
-                }
-                None
-            }
-            (Value::Object(map), seg) => map.get(seg.key().as_ref()),
-            _ => None,
-        };
-        match child {
+        match copy_walk_step(node, seg)? {
             Some(child) if is_container(child) => node = child,
             _ => return Err(path_error(path)),
         }
@@ -359,83 +407,97 @@ enum Leaf {
     Trim(usize),
 }
 
-fn apply_op(root: &mut Value, op: Op) -> Result<()> {
-    let (path, leaf) = match op {
-        Op::Replace(value) => {
-            *root = value;
-            return Ok(());
-        }
-        Op::Splice(path, index, remove, items) => {
-            let Value::Array(target) = resolve_mut(root, &path)? else {
-                return Err(path_error(&path));
-            };
-            let start = index.min(target.len());
-            let end = start + remove.min(target.len() - start);
-            target.splice(start..end, items);
-            return Ok(());
-        }
-        Op::Move(path, permutation) => {
-            let target = match resolve_mut(root, &path)? {
-                Value::Array(target) if target.len() == permutation.len() => target,
-                _ => return Err(path_error(&path)),
-            };
-            let mut previous: Vec<Option<Value>> = target.drain(..).map(Some).collect();
-            target.extend(permutation.iter().map(|&i| previous[i].take().unwrap_or(Value::Null)));
-            return Ok(());
-        }
-        Op::Set(path, value) => (path, Leaf::Set(value)),
-        Op::Delete(path) => (path, Leaf::Delete),
-        Op::Append(path, text) => (path, Leaf::Append(text)),
-        Op::Trim(path, count) => (path, Leaf::Trim(count)),
+fn apply_splice(root: &mut Value, path: &[Seg], index: usize, remove: usize, items: Vec<Value>) -> Result<()> {
+    let Value::Array(target) = resolve_mut(root, path)? else {
+        return Err(path_error(path));
     };
-    let Some((key, parent_path)) = path.split_last() else {
-        return Err(path_error(&path));
+    let start = index.min(target.len());
+    let end = start + remove.min(target.len() - start);
+    target.splice(start..end, items);
+    Ok(())
+}
+
+fn apply_move(root: &mut Value, path: &[Seg], permutation: &[usize]) -> Result<()> {
+    let target = match resolve_mut(root, path)? {
+        Value::Array(target) if target.len() == permutation.len() => target,
+        _ => return Err(path_error(path)),
     };
-    let slot = match resolve_mut(root, parent_path)? {
-        Value::Array(items) => {
-            let index = match key {
-                Seg::Index(index) => *index,
-                Seg::Key(key) => return Err(DeltaError::UnsafePath(key.clone())),
-            };
-            if index > items.len() {
-                return Err(DeltaError::UnsafePath(index.to_string()));
-            }
-            match leaf {
-                Leaf::Set(value) if index == items.len() => {
-                    items.push(value);
-                    return Ok(());
-                }
-                Leaf::Delete if index < items.len() => {
-                    items.remove(index);
-                    return Ok(());
-                }
-                Leaf::Delete => return Err(path_error(&path)),
-                leaf => (items.get_mut(index), leaf),
-            }
-        }
-        Value::Object(map) => {
-            let key = key.key();
-            match leaf {
-                Leaf::Set(value) => {
-                    map.insert(key.into_owned(), value);
-                    return Ok(());
-                }
-                Leaf::Delete => {
-                    map.shift_remove(key.as_ref());
-                    return Ok(());
-                }
-                leaf => (map.get_mut(key.as_ref()), leaf),
-            }
-        }
-        _ => return Err(path_error(parent_path)),
-    };
-    match slot {
+    let mut previous: Vec<Option<Value>> = target.drain(..).map(Some).collect();
+    target.extend(permutation.iter().map(|&i| previous[i].take().unwrap_or(Value::Null)));
+    Ok(())
+}
+
+fn apply_leaf_slot(slot: Option<&mut Value>, path: &[Seg], leaf: Leaf) -> Result<()> {
+    match (slot, leaf) {
         (Some(slot), Leaf::Set(value)) => *slot = value,
         (Some(Value::String(current)), Leaf::Append(text)) => current.push_str(&text),
-        (Some(Value::String(current)), Leaf::Trim(count)) => trim_utf16(current, count, &path)?,
-        _ => return Err(path_error(&path)),
+        (Some(Value::String(current)), Leaf::Trim(count)) => trim_utf16(current, count, path)?,
+        _ => return Err(path_error(path)),
     }
     Ok(())
+}
+
+fn apply_array_leaf(items: &mut Vec<Value>, key: &Seg, path: &[Seg], leaf: Leaf) -> Result<()> {
+    let index = match key {
+        Seg::Index(index) => *index,
+        Seg::Key(key) => return Err(DeltaError::UnsafePath(key.clone())),
+    };
+    if index > items.len() {
+        return Err(DeltaError::UnsafePath(index.to_string()));
+    }
+    match leaf {
+        Leaf::Set(value) if index == items.len() => {
+            items.push(value);
+            Ok(())
+        }
+        Leaf::Delete if index < items.len() => {
+            items.remove(index);
+            Ok(())
+        }
+        Leaf::Delete => Err(path_error(path)),
+        leaf => apply_leaf_slot(items.get_mut(index), path, leaf),
+    }
+}
+
+fn apply_object_leaf(map: &mut serde_json::Map<String, Value>, key: &Seg, path: &[Seg], leaf: Leaf) -> Result<()> {
+    let key = key.key();
+    match leaf {
+        Leaf::Set(value) => {
+            map.insert(key.into_owned(), value);
+            Ok(())
+        }
+        Leaf::Delete => {
+            map.shift_remove(key.as_ref());
+            Ok(())
+        }
+        leaf => apply_leaf_slot(map.get_mut(key.as_ref()), path, leaf),
+    }
+}
+
+fn apply_leaf(root: &mut Value, path: &[Seg], leaf: Leaf) -> Result<()> {
+    let Some((key, parent_path)) = path.split_last() else {
+        return Err(path_error(path));
+    };
+    match resolve_mut(root, parent_path)? {
+        Value::Array(items) => apply_array_leaf(items, key, path, leaf),
+        Value::Object(map) => apply_object_leaf(map, key, path, leaf),
+        _ => Err(path_error(parent_path)),
+    }
+}
+
+fn apply_op(root: &mut Value, op: Op) -> Result<()> {
+    match op {
+        Op::Replace(value) => {
+            *root = value;
+            Ok(())
+        }
+        Op::Splice(path, index, remove, items) => apply_splice(root, &path, index, remove, items),
+        Op::Move(path, permutation) => apply_move(root, &path, &permutation),
+        Op::Set(path, value) => apply_leaf(root, &path, Leaf::Set(value)),
+        Op::Delete(path) => apply_leaf(root, &path, Leaf::Delete),
+        Op::Append(path, text) => apply_leaf(root, &path, Leaf::Append(text)),
+        Op::Trim(path, count) => apply_leaf(root, &path, Leaf::Trim(count)),
+    }
 }
 
 /// Remove `count` UTF-16 code units from the front of `text`.
@@ -502,74 +564,102 @@ impl Encoder {
     }
 }
 
-/// Validate a wire tuple: ids and short forms are legal here (upstream `assertValidWireOp`).
-pub fn validate_wire_op(value: &Value) -> Result<()> {
-    let op = match value {
-        Value::Array(op) if !op.is_empty() => op,
-        _ => return invalid("op is not a tuple"),
-    };
-    let reference = |r: &Value| -> Result<()> {
-        if r.is_number() {
-            return non_negative_int(r)
-                .map(|_| ())
-                .ok_or_else(|| DeltaError::Invalid("bad path id".to_owned()));
-        }
-        parse_path(r, false).map(|_| ())
-    };
-    let count = |v: &Value, message: &str| non_negative_int(v).map(|_| ()).map_or_else(|| invalid(message), Ok);
-    let verb = match &op[0] {
-        Value::String(verb) => verb.as_str(),
-        other => {
-            return Err(DeltaError::Invalid(format!(
-                "unknown op verb: {}",
-                jsrt::value::string(Some(other))
-            )));
-        }
-    };
+fn validate_wire_ref(r: &Value) -> Result<()> {
+    if r.is_number() {
+        return non_negative_int(r)
+            .map(|_| ())
+            .ok_or_else(|| DeltaError::Invalid("bad path id".to_owned()));
+    }
+    parse_path(r, false).map(|_| ())
+}
+
+fn validate_wire_count(v: &Value, message: &str) -> Result<()> {
+    non_negative_int(v).map(|_| ()).map_or_else(|| invalid(message), Ok)
+}
+
+fn validate_wire_ref_if(op: &[Value], full_len: usize) -> Result<()> {
+    if op.len() == full_len {
+        validate_wire_ref(&op[1])?;
+    }
+    Ok(())
+}
+
+fn validate_wire_basic(verb: &str, op: &[Value]) -> Result<()> {
     match (verb, op.len()) {
         ("r", 2) | ("s", 2) | ("d", 1) => Ok(()),
+        ("s", 3) | ("d", 2) => validate_wire_ref(&op[1]),
         ("r", _) => invalid("r arity"),
-        ("s", 3) | ("d", 2) => reference(&op[1]),
         ("s", _) => invalid("s arity"),
-        ("d", _) => invalid("d arity"),
-        ("a", 2 | 3) => {
-            if op.len() == 3 {
-                reference(&op[1])?;
-            }
-            if op[op.len() - 1].is_string() {
-                Ok(())
-            } else {
-                invalid("a value")
-            }
-        }
-        ("a", _) => invalid("a arity"),
-        ("t", 2 | 3) => {
-            if op.len() == 3 {
-                reference(&op[1])?;
-            }
-            count(&op[op.len() - 1], "t count")
-        }
-        ("t", _) => invalid("t arity"),
-        ("p", 4 | 5) => {
-            let rest = &op[op.len() - 3..];
-            if op.len() == 5 {
-                reference(&op[1])?;
-            }
-            count(&rest[0], "p index")?;
-            count(&rest[1], "p remove")?;
-            if rest[2].is_array() { Ok(()) } else { invalid("p items") }
-        }
-        ("p", _) => invalid("p arity"),
-        ("m", 2 | 3) => {
-            if op.len() == 3 {
-                reference(&op[1])?;
-            }
-            parse_permutation(&op[op.len() - 1]).map(|_| ())
-        }
-        ("m", _) => invalid("m arity"),
-        ("#", 3) if non_negative_int(&op[1]).is_some() && op[2].is_array() => parse_path(&op[2], false).map(|_| ()),
-        ("#", _) => invalid("# shape"),
-        (other, _) => Err(DeltaError::Invalid(format!("unknown op verb: {other}"))),
+        _ => invalid("d arity"),
+    }
+}
+
+fn validate_wire_append(op: &[Value]) -> Result<()> {
+    if !matches!(op.len(), 2 | 3) {
+        return invalid("a arity");
+    }
+    validate_wire_ref_if(op, 3)?;
+    if op[op.len() - 1].is_string() {
+        Ok(())
+    } else {
+        invalid("a value")
+    }
+}
+
+fn validate_wire_trim(op: &[Value]) -> Result<()> {
+    if !matches!(op.len(), 2 | 3) {
+        return invalid("t arity");
+    }
+    validate_wire_ref_if(op, 3)?;
+    validate_wire_count(&op[op.len() - 1], "t count")
+}
+
+fn validate_wire_splice(op: &[Value]) -> Result<()> {
+    if !matches!(op.len(), 4 | 5) {
+        return invalid("p arity");
+    }
+    let rest = &op[op.len() - 3..];
+    validate_wire_ref_if(op, 5)?;
+    validate_wire_count(&rest[0], "p index")?;
+    validate_wire_count(&rest[1], "p remove")?;
+    if rest[2].is_array() { Ok(()) } else { invalid("p items") }
+}
+
+fn validate_wire_move(op: &[Value]) -> Result<()> {
+    if !matches!(op.len(), 2 | 3) {
+        return invalid("m arity");
+    }
+    validate_wire_ref_if(op, 3)?;
+    parse_permutation(&op[op.len() - 1]).map(|_| ())
+}
+
+fn validate_wire_intern(op: &[Value]) -> Result<()> {
+    if op.len() == 3 && non_negative_int(&op[1]).is_some() && op[2].is_array() {
+        parse_path(&op[2], false).map(|_| ())
+    } else {
+        invalid("# shape")
+    }
+}
+
+/// Validate a wire tuple: ids and short forms are legal here (upstream `assertValidWireOp`).
+pub fn validate_wire_op(value: &Value) -> Result<()> {
+    let (verb, op) = parse_op_tuple(value)?;
+    match verb {
+        "r" | "s" | "d" => validate_wire_basic(verb, op),
+        "a" => validate_wire_append(op),
+        "t" => validate_wire_trim(op),
+        "p" => validate_wire_splice(op),
+        "m" => validate_wire_move(op),
+        "#" => validate_wire_intern(op),
+        other => Err(DeltaError::Invalid(format!("unknown op verb: {other}"))),
+    }
+}
+
+fn is_short_wire_op(verb: &str, len: usize) -> bool {
+    match verb {
+        "d" => len == 1,
+        "p" => len == 4,
+        _ => len == 2,
     }
 }
 
@@ -580,49 +670,61 @@ pub struct Decoder {
 }
 
 impl Decoder {
+    fn resolve_wire_path(&self, raw: &Value) -> Result<Path> {
+        match non_negative_int(raw) {
+            Some(id) => self
+                .paths
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| DeltaError::Path(id.to_string())),
+            None => parse_path(raw, false),
+        }
+    }
+
+    fn decode_path_and_tail<'a>(
+        &self,
+        verb: &str,
+        op: &'a [Value],
+        previous: &mut Option<Path>,
+    ) -> Result<(Path, &'a [Value])> {
+        if is_short_wire_op(verb, op.len()) {
+            return Ok((previous.clone().ok_or_else(|| path_error(&[]))?, &op[1..]));
+        }
+        let path = self.resolve_wire_path(&op[1])?;
+        *previous = Some(path.clone());
+        Ok((path, &op[2..]))
+    }
+
+    fn decode_op(&mut self, value: &Value, previous: &mut Option<Path>) -> Result<Option<Op>> {
+        validate_wire_op(value)?;
+        let op = value.as_array().map_or_default(Vec::as_slice);
+        let verb = op[0].as_str().unwrap_or_default();
+        if verb == "#" {
+            let id = non_negative_int(&op[1]).unwrap_or(usize::MAX);
+            self.paths.insert(id, parse_path(&op[2], false)?);
+            return Ok(None);
+        }
+        if verb == "r" {
+            self.paths.clear();
+            *previous = None;
+            return Ok(Some(Op::Replace(op[1].clone())));
+        }
+        let (path, tail) = self.decode_path_and_tail(verb, op, previous)?;
+        if path.is_empty() && verb != "p" && verb != "m" {
+            return Err(path_error(&path));
+        }
+        let mut tuple = vec![op[0].clone(), path_json(&path)];
+        tuple.extend_from_slice(tail);
+        Ok(Some(Op::from_json(&Value::Array(tuple))?))
+    }
+
     pub fn decode(&mut self, wire: &[Value]) -> Result<Vec<Op>> {
         let mut previous: Option<Path> = None;
         let mut out = Vec::new();
         for value in wire {
-            validate_wire_op(value)?;
-            let op = value.as_array().map_or_default(Vec::as_slice);
-            let verb = op[0].as_str().unwrap_or_default();
-            if verb == "#" {
-                let id = non_negative_int(&op[1]).unwrap_or(usize::MAX);
-                self.paths.insert(id, parse_path(&op[2], false)?);
-                continue;
+            if let Some(op) = self.decode_op(value, &mut previous)? {
+                out.push(op);
             }
-            if verb == "r" {
-                out.push(Op::Replace(op[1].clone()));
-                self.paths.clear();
-                previous = None;
-                continue;
-            }
-            let short = match verb {
-                "d" => op.len() == 1,
-                "p" => op.len() == 4,
-                _ => op.len() == 2,
-            };
-            let (path, tail) = if short {
-                (previous.clone().ok_or_else(|| path_error(&[]))?, &op[1..])
-            } else {
-                let path = match non_negative_int(&op[1]) {
-                    Some(id) => self
-                        .paths
-                        .get(&id)
-                        .cloned()
-                        .ok_or_else(|| DeltaError::Path(id.to_string()))?,
-                    None => parse_path(&op[1], false)?,
-                };
-                previous = Some(path.clone());
-                (path, &op[2..])
-            };
-            if path.is_empty() && verb != "p" && verb != "m" {
-                return Err(path_error(&path));
-            }
-            let mut tuple = vec![op[0].clone(), path_json(&path)];
-            tuple.extend_from_slice(tail);
-            out.push(Op::from_json(&Value::Array(tuple))?);
         }
         Ok(out)
     }

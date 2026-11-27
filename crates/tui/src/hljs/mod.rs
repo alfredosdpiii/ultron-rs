@@ -13,6 +13,9 @@
 //! `endSameAsBegin`; relevance is not computed (it never reaches the output).
 
 pub mod python;
+mod regex;
+
+pub use regex::js_regex;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -89,125 +92,6 @@ pub struct Grammar {
     pub keywords: Vec<KeywordTable>,
     pub root: usize,
     pub case_insensitive: bool,
-}
-
-const JS_SPACE: &str =
-    r"\t\n\x0B\x0C\r \u{a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}";
-const WORD: &str = "0-9A-Za-z_";
-const LINE_TERMINATORS: &str = r"\n\r\u{2028}\u{2029}";
-
-/// Translate a JavaScript regex source compiled with the `m` flag (and `i` when `case_insensitive`) to an
-/// equivalent fancy-regex pattern.
-pub fn js_regex(src: &str, case_insensitive: bool) -> String {
-    let word_b = format!("(?:(?<=[{WORD}])(?![{WORD}])|(?<![{WORD}])(?=[{WORD}]))");
-    let not_word_b = format!("(?:(?<=[{WORD}])(?=[{WORD}])|(?<![{WORD}])(?![{WORD}]))");
-    let mut out = String::from(if case_insensitive { "(?i)" } else { "" });
-    let chars: Vec<char> = src.chars().collect();
-    let mut i = 0;
-    let mut in_class = false;
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '\\' && i + 1 < chars.len() {
-            let n = chars[i + 1];
-            i += 2;
-            let piece = match (n, in_class) {
-                ('w', false) => format!("[{WORD}]"),
-                ('w', true) => WORD.to_string(),
-                ('W', false) => format!("[^{WORD}]"),
-                ('W', true) => format!("[^{WORD}]"),
-                ('d', false) => "[0-9]".into(),
-                ('d', true) => "0-9".into(),
-                ('D', _) => "[^0-9]".into(),
-                ('s', false) => format!("[{JS_SPACE}]"),
-                ('s', true) => JS_SPACE.to_string(),
-                ('S', _) => format!("[^{JS_SPACE}]"),
-                ('b', false) => word_b.clone(),
-                ('b', true) => r"\x08".into(),
-                ('B', false) => not_word_b.clone(),
-                ('u', _) if i + 4 <= chars.len() && chars[i..i + 4].iter().all(char::is_ascii_hexdigit) => {
-                    let hex: String = chars[i..i + 4].iter().collect();
-                    i += 4;
-                    format!(r"\u{{{hex}}}")
-                }
-                ('/', _) => "/".into(),
-                (n, _) if n.is_ascii_alphanumeric() => format!("\\{n}"),
-                (n, _) => fancy_regex::escape(&n.to_string()).into_owned(),
-            };
-            out.push_str(&piece);
-            continue;
-        }
-        i += 1;
-        if in_class {
-            match c {
-                ']' => {
-                    in_class = false;
-                    out.push(']');
-                }
-                '[' => out.push_str(r"\["),
-                '&' | '~' => {
-                    out.push('\\');
-                    out.push(c);
-                }
-                _ => out.push(c),
-            }
-            continue;
-        }
-        match c {
-            '[' => {
-                in_class = true;
-                out.push('[');
-                if chars.get(i) == Some(&'^') {
-                    out.push('^');
-                    i += 1;
-                }
-                if chars.get(i) == Some(&']') {
-                    i += 1;
-                    in_class = false;
-                    if out.ends_with("[^") {
-                        out.truncate(out.len() - 2);
-                        out.push_str("(?s:.)");
-                    } else {
-                        out.truncate(out.len() - 1);
-                        out.push_str("(?!)");
-                    }
-                }
-            }
-            '.' => out.push_str(&format!("[^{LINE_TERMINATORS}]")),
-            '^' => out.push_str(r"(?:\A|(?<=\n)|(?<=\r)|(?<=\u{2028})|(?<=\u{2029}))"),
-            '$' => out.push_str(&format!(r"(?=[{LINE_TERMINATORS}]|\z)")),
-            '{' => {
-                let rest: String = chars[i..].iter().collect();
-                let quantifier = rest.find('}').is_some_and(|close| {
-                    let body = &rest[..close];
-                    let mut parts = body.splitn(2, ',');
-                    let first = parts.next().unwrap_or("");
-                    !first.is_empty()
-                        && first.chars().all(|c| c.is_ascii_digit())
-                        && parts.next().is_none_or(|s| s.chars().all(|c| c.is_ascii_digit()))
-                });
-                if quantifier {
-                    out.push('{');
-                } else {
-                    out.push_str(r"\{");
-                }
-            }
-            '}' => {
-                if out.ends_with(|c: char| c.is_ascii_digit() || c == ',') && quantifier_open(&out) {
-                    out.push('}');
-                } else {
-                    out.push_str(r"\}");
-                }
-            }
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-/// Whether the translated pattern ends inside an open `{n,m` quantifier.
-fn quantifier_open(out: &str) -> bool {
-    let tail = out.trim_end_matches(|c: char| c.is_ascii_digit() || c == ',');
-    tail.ends_with('{') && !tail.ends_with(r"\{")
 }
 
 fn lang_re(src: &str, ci: bool) -> Regex {
@@ -322,19 +206,26 @@ impl Compiler<'_> {
         vec![obj]
     }
 
-    /// `compileMode`.
-    fn compile(&mut self, obj: Obj, parent: Option<usize>) -> usize {
-        if let Some(&c) = self.memo.get(&obj) {
-            return c;
+    fn build_keyword_map(classes: Vec<(&'static str, Vec<&'static str>)>, ci: bool) -> HashMap<String, &'static str> {
+        let mut map = HashMap::new();
+        for (class, words) in classes {
+            for w in words {
+                let word = w.split('|').next().unwrap_or("");
+                let word = if ci { word.to_lowercase() } else { word.to_string() };
+                map.insert(word, class);
+            }
         }
-        let ci = self.g.case_insensitive;
-        let def = self.def_of(obj);
-        let cid = self.modes.len();
-        self.modes.push(None);
-        self.memo.insert(obj, cid);
+        map
+    }
 
-        let mut begin = def.begin.map(str::to_string);
-        let mut before_dot = false;
+    fn build_keywords(
+        &mut self,
+        def: &Def,
+        parent: Option<usize>,
+        begin: &mut Option<String>,
+        before_dot: &mut bool,
+    ) -> (Option<HashMap<String, &'static str>>, Option<Regex>) {
+        let ci = self.g.case_insensitive;
         let mut keyword_words: Option<Vec<(&'static str, Vec<&'static str>)>> = None;
         let mut keyword_pattern: Option<&'static str> = None;
         if let Some(t) = def.keywords {
@@ -344,71 +235,59 @@ impl Compiler<'_> {
         if parent.is_some()
             && let Some(bk) = def.begin_keywords
         {
-            begin = Some(format!(
+            *begin = Some(format!(
                 r"\b({})(?!\.)(?=\b|\s)",
                 bk.split(' ').collect::<Vec<_>>().join("|")
             ));
-            before_dot = true;
+            *before_dot = true;
             if keyword_words.is_none() {
                 keyword_words = Some(vec![("keyword", bk.split(' ').collect())]);
             }
         }
-        let keywords = keyword_words.map(|classes| {
-            let mut map = HashMap::new();
-            for (class, words) in classes {
-                for w in words {
-                    let word = w.split('|').next().unwrap_or("");
-                    let word = if ci { word.to_lowercase() } else { word.to_string() };
-                    map.insert(word, class);
-                }
-            }
-            map
-        });
+        let keywords = keyword_words.map(|classes| Self::build_keyword_map(classes, ci));
         let keyword_re = keywords
             .as_ref()
             .map(|_| lang_re(keyword_pattern.unwrap_or(r"\w+"), ci));
+        (keywords, keyword_re)
+    }
 
-        let ends_with_parent = def.ends_with_parent.unwrap_or(false);
-        let mut end_re = None;
-        let mut terminator_end = String::new();
-        if let Some(p) = parent {
-            if begin.is_none() {
-                begin = Some(r"\B|\b".into());
-            }
-            let end = def
-                .end
-                .map(str::to_string)
-                .or_else(|| (!ends_with_parent).then(|| r"\B|\b".to_string()));
-            end_re = end.as_deref().map(|e| lang_re(e, ci));
-            terminator_end = end.clone().unwrap_or_default();
-            let parent_end = &self.modes[p].as_ref().expect("parent compiled first").terminator_end;
-            if ends_with_parent && !parent_end.is_empty() {
-                if end.is_some() {
-                    terminator_end.push('|');
-                }
-                terminator_end.push_str(parent_end);
-            }
+    fn build_end_rules(
+        &self,
+        def: &Def,
+        parent: Option<usize>,
+        begin: &mut Option<String>,
+        ends_with_parent: bool,
+    ) -> (Option<Regex>, String) {
+        let ci = self.g.case_insensitive;
+        let Some(p) = parent else {
+            return (None, String::new());
+        };
+        if begin.is_none() {
+            *begin = Some(r"\B|\b".into());
         }
-        self.modes[cid] = Some(CMode {
-            class_name: def.class_name.filter(|c| !c.is_empty()),
-            begin: begin.unwrap_or_default(),
-            end_re,
-            terminator_end,
-            keywords,
-            keyword_re,
-            before_dot,
-            ends_with_parent,
-            ends_parent: def.ends_parent.unwrap_or(false),
-            exclude_begin: def.exclude_begin.unwrap_or(false),
-            exclude_end: def.exclude_end.unwrap_or(false),
-            return_begin: def.return_begin.unwrap_or(false),
-            return_end: def.return_end.unwrap_or(false),
-            skip: def.skip.unwrap_or(false),
-            starts: None,
-            rules: Vec::new(),
-            begin_count: 0,
-        });
+        let end = def
+            .end
+            .map(str::to_string)
+            .or_else(|| (!ends_with_parent).then(|| r"\B|\b".to_string()));
+        let end_re = end.as_deref().map(|e| lang_re(e, ci));
+        let mut terminator_end = end.clone().unwrap_or_default();
+        let parent_end = &self.modes[p].as_ref().expect("parent compiled first").terminator_end;
+        if ends_with_parent && !parent_end.is_empty() {
+            if end.is_some() {
+                terminator_end.push('|');
+            }
+            terminator_end.push_str(parent_end);
+        }
+        (end_re, terminator_end)
+    }
 
+    fn compile_children_and_starts(
+        &mut self,
+        obj: Obj,
+        def: &Def,
+        parent: Option<usize>,
+        cid: usize,
+    ) -> (Vec<usize>, Option<usize>) {
         let mut children = Vec::new();
         for c in def.contains.clone().unwrap_or_default() {
             let o = match c {
@@ -426,9 +305,13 @@ impl Compiler<'_> {
             };
             self.compile(o, parent)
         });
+        (child_ids, starts)
+    }
 
+    fn build_mode_rules(&self, child_ids: &[usize], terminator_end: &str, illegal: Option<&str>) -> (Vec<Rule>, usize) {
+        let ci = self.g.case_insensitive;
         let mut rules = Vec::new();
-        for &child in &child_ids {
+        for &child in child_ids {
             let src = self.modes[child].as_ref().expect("compiled").begin.clone();
             rules.push(Rule {
                 re: lang_re(&src, ci),
@@ -436,19 +319,59 @@ impl Compiler<'_> {
             });
         }
         let begin_count = rules.len();
-        let m = self.modes[cid].as_mut().expect("this mode");
-        if !m.terminator_end.is_empty() {
+        if !terminator_end.is_empty() {
             rules.push(Rule {
-                re: lang_re(&m.terminator_end, ci),
+                re: lang_re(terminator_end, ci),
                 kind: RuleKind::End,
             });
         }
-        if let Some(illegal) = def.illegal {
+        if let Some(illegal) = illegal {
             rules.push(Rule {
                 re: lang_re(illegal, ci),
                 kind: RuleKind::Illegal,
             });
         }
+        (rules, begin_count)
+    }
+
+    /// `compileMode`.
+    fn compile(&mut self, obj: Obj, parent: Option<usize>) -> usize {
+        if let Some(&c) = self.memo.get(&obj) {
+            return c;
+        }
+        let def = self.def_of(obj);
+        let cid = self.modes.len();
+        self.modes.push(None);
+        self.memo.insert(obj, cid);
+
+        let mut begin = def.begin.map(str::to_string);
+        let mut before_dot = false;
+        let (keywords, keyword_re) = self.build_keywords(&def, parent, &mut begin, &mut before_dot);
+        let ends_with_parent = def.ends_with_parent.unwrap_or(false);
+        let (end_re, terminator_end) = self.build_end_rules(&def, parent, &mut begin, ends_with_parent);
+        self.modes[cid] = Some(CMode {
+            class_name: def.class_name.filter(|c| !c.is_empty()),
+            begin: begin.unwrap_or_default(),
+            end_re,
+            terminator_end: terminator_end.clone(),
+            keywords,
+            keyword_re,
+            before_dot,
+            ends_with_parent,
+            ends_parent: def.ends_parent.unwrap_or(false),
+            exclude_begin: def.exclude_begin.unwrap_or(false),
+            exclude_end: def.exclude_end.unwrap_or(false),
+            return_begin: def.return_begin.unwrap_or(false),
+            return_end: def.return_end.unwrap_or(false),
+            skip: def.skip.unwrap_or(false),
+            starts: None,
+            rules: Vec::new(),
+            begin_count: 0,
+        });
+
+        let (child_ids, starts) = self.compile_children_and_starts(obj, &def, parent, cid);
+        let (rules, begin_count) = self.build_mode_rules(&child_ids, &terminator_end, def.illegal);
+        let m = self.modes[cid].as_mut().expect("this mode");
         m.rules = rules;
         m.begin_count = begin_count;
         m.starts = starts;

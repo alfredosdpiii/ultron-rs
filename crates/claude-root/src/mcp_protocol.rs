@@ -98,140 +98,150 @@ struct Server<H: McpHandlers + 'static> {
 }
 
 impl<H: McpHandlers + 'static> Server<H> {
-    /// A synchronous request's result, or its JSON-RPC error.
-    fn request(&self, method: &str, params: &Map<String, Value>) -> Result<Value, (i64, String)> {
+    fn handle_initialize(&self, params: &Map<String, Value>) -> Value {
         let handlers = &self.handlers;
-        match method {
-            "initialize" => {
-                let requested = params.get("protocolVersion").and_then(Value::as_str);
-                let protocol = requested
-                    .filter(|v| SUPPORTED_PROTOCOL_VERSIONS.contains(v))
-                    .unwrap_or(SUPPORTED_PROTOCOL_VERSIONS[0]);
-                let info = record(params.get("clientInfo"));
-                let mut client = Map::new();
-                for key in ["name", "version"] {
-                    if let Some(Value::String(text)) = info.get(key) {
-                        client.insert(key.into(), text.clone().into());
-                    }
-                }
-                *self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = client;
-                let mut capabilities = Map::new();
-                capabilities.insert("tools".into(), json!({"listChanged": false}));
-                if handlers.prompts().is_some() {
-                    capabilities.insert("prompts".into(), json!({"listChanged": false}));
-                }
-                if handlers.resources().is_some() {
-                    capabilities.insert("resources".into(), json!({"listChanged": false, "subscribe": false}));
-                }
-                let mut result = Map::new();
-                result.insert("protocolVersion".into(), protocol.into());
-                result.insert("capabilities".into(), Value::Object(capabilities));
-                result.insert(
-                    "serverInfo".into(),
-                    json!({"name": handlers.name(), "version": handlers.version()}),
-                );
-                if let Some(text) = handlers.instructions().filter(|t| !t.is_empty()) {
-                    result.insert("instructions".into(), text.into());
-                }
-                Ok(Value::Object(result))
+        let requested = params.get("protocolVersion").and_then(Value::as_str);
+        let protocol = requested
+            .filter(|v| SUPPORTED_PROTOCOL_VERSIONS.contains(v))
+            .unwrap_or(SUPPORTED_PROTOCOL_VERSIONS[0]);
+        let info = record(params.get("clientInfo"));
+        let mut client = Map::new();
+        for key in ["name", "version"] {
+            if let Some(Value::String(text)) = info.get(key) {
+                client.insert(key.into(), text.clone().into());
             }
-            "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({"tools": handlers.tools()})),
-            "prompts/list" => Ok(
-                json!({"prompts": handlers.prompts().unwrap_or_default().iter().map(|p| {
+        }
+        *self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = client;
+        let mut capabilities = Map::new();
+        capabilities.insert("tools".into(), json!({"listChanged": false}));
+        if handlers.prompts().is_some() {
+            capabilities.insert("prompts".into(), json!({"listChanged": false}));
+        }
+        if handlers.resources().is_some() {
+            capabilities.insert("resources".into(), json!({"listChanged": false, "subscribe": false}));
+        }
+        let mut result = Map::new();
+        result.insert("protocolVersion".into(), protocol.into());
+        result.insert("capabilities".into(), Value::Object(capabilities));
+        result.insert(
+            "serverInfo".into(),
+            json!({"name": handlers.name(), "version": handlers.version()}),
+        );
+        if let Some(text) = handlers.instructions().filter(|t| !t.is_empty()) {
+            result.insert("instructions".into(), text.into());
+        }
+        Value::Object(result)
+    }
+
+    fn handle_prompts_list(&self) -> Value {
+        let items: Vec<Value> = self
+            .handlers
+            .prompts()
+            .unwrap_or_default()
+            .iter()
+            .map(|p| {
                 let mut item = Map::new();
                 item.insert("name".into(), p.name.clone().into());
-                if let Some(title) = &p.title { item.insert("title".into(), title.clone().into()); }
+                if let Some(title) = &p.title {
+                    item.insert("title".into(), title.clone().into());
+                }
                 item.insert("description".into(), p.description.clone().into());
                 item.insert("arguments".into(), json!([]));
                 Value::Object(item)
-            }).collect::<Vec<_>>()}),
-            ),
-            "prompts/get" => {
-                let prompts = handlers.prompts().unwrap_or_default();
-                let prompt = prompts
-                    .iter()
-                    .find(|p| params.get("name") == Some(&Value::String(p.name.clone())))
-                    .ok_or_else(|| {
-                        (
-                            INVALID_PARAMS,
-                            format!("Unknown prompt: {}", jsrt::value::string(params.get("name"))),
-                        )
-                    })?;
-                Ok(json!({
-                    "description": prompt.description,
-                    "messages": [{"role": "user", "content": {"type": "text", "text": prompt.text}}],
-                }))
-            }
-            "resources/list" => Ok(
-                json!({"resources": handlers.resources().unwrap_or_default().iter().map(|r| {
+            })
+            .collect();
+        json!({"prompts": items})
+    }
+
+    fn handle_prompts_get(&self, params: &Map<String, Value>) -> Result<Value, (i64, String)> {
+        let prompts = self.handlers.prompts().unwrap_or_default();
+        let prompt = prompts
+            .iter()
+            .find(|p| params.get("name") == Some(&Value::String(p.name.clone())))
+            .ok_or_else(|| {
+                (
+                    INVALID_PARAMS,
+                    format!("Unknown prompt: {}", jsrt::value::string(params.get("name"))),
+                )
+            })?;
+        Ok(json!({
+            "description": prompt.description,
+            "messages": [{"role": "user", "content": {"type": "text", "text": prompt.text}}],
+        }))
+    }
+
+    fn handle_resources_list(&self) -> Value {
+        let items: Vec<Value> = self
+            .handlers
+            .resources()
+            .unwrap_or_default()
+            .iter()
+            .map(|r| {
                 let mut item = Map::new();
                 item.insert("uri".into(), r.uri.clone().into());
                 item.insert("name".into(), r.name.clone().into());
-                if let Some(title) = &r.title { item.insert("title".into(), title.clone().into()); }
+                if let Some(title) = &r.title {
+                    item.insert("title".into(), title.clone().into());
+                }
                 item.insert("description".into(), r.description.clone().into());
                 item.insert("mimeType".into(), r.mime_type.clone().into());
                 Value::Object(item)
-            }).collect::<Vec<_>>()}),
-            ),
+            })
+            .collect();
+        json!({"resources": items})
+    }
+
+    fn handle_resources_read(&self, params: &Map<String, Value>) -> Result<Value, (i64, String)> {
+        let resources = self.handlers.resources().unwrap_or_default();
+        let resource = resources
+            .iter()
+            .find(|r| params.get("uri") == Some(&Value::String(r.uri.clone())))
+            .ok_or_else(|| {
+                (
+                    INVALID_PARAMS,
+                    format!("Unknown resource: {}", jsrt::value::string(params.get("uri"))),
+                )
+            })?;
+        Ok(json!({"contents": [{"uri": resource.uri, "mimeType": resource.mime_type, "text": resource.text}]}))
+    }
+
+    /// A synchronous request's result, or its JSON-RPC error.
+    fn request(&self, method: &str, params: &Map<String, Value>) -> Result<Value, (i64, String)> {
+        match method {
+            "initialize" => Ok(self.handle_initialize(params)),
+            "ping" => Ok(json!({})),
+            "tools/list" => Ok(json!({"tools": self.handlers.tools()})),
+            "prompts/list" => Ok(self.handle_prompts_list()),
+            "prompts/get" => self.handle_prompts_get(params),
+            "resources/list" => Ok(self.handle_resources_list()),
             "resources/templates/list" => Ok(json!({"resourceTemplates": []})),
-            "resources/read" => {
-                let resources = handlers.resources().unwrap_or_default();
-                let resource = resources
-                    .iter()
-                    .find(|r| params.get("uri") == Some(&Value::String(r.uri.clone())))
-                    .ok_or_else(|| {
-                        (
-                            INVALID_PARAMS,
-                            format!("Unknown resource: {}", jsrt::value::string(params.get("uri"))),
-                        )
-                    })?;
-                Ok(json!({"contents": [{"uri": resource.uri, "mimeType": resource.mime_type, "text": resource.text}]}))
-            }
+            "resources/read" => self.handle_resources_read(params),
             other => Err((METHOD_NOT_FOUND, format!("Method not found: {other}"))),
         }
     }
 
-    fn on_message(self: &Arc<Self>, message: Map<String, Value>) {
-        let id = message.get("id").cloned().filter(|id| !id.is_null());
-        let Some(Value::String(method)) = message.get("method") else {
-            if let Some(id) = id
-                && !message.contains_key("result")
-                && !message.contains_key("error")
-            {
-                fail(&self.out, id, INVALID_REQUEST, "Invalid request");
-            }
-            return;
-        };
-        let params = record(message.get("params"));
-        let Some(id) = id else {
-            if method == "notifications/cancelled" {
-                if let Some(request_id) = params.get("requestId").filter(|v| v.is_string() || v.is_number())
-                    && let Some(signal) = self
-                        .running
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .get(&request_id.to_string())
-                {
-                    signal.abort();
-                }
-            } else if method == "notifications/initialized" {
-                let client = self
-                    .client
+    fn handle_notification(&self, method: &str, params: &Map<String, Value>) {
+        if method == "notifications/cancelled" {
+            if let Some(request_id) = params.get("requestId").filter(|v| v.is_string() || v.is_number())
+                && let Some(signal) = self
+                    .running
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone();
-                self.handlers.on_initialized(&client);
+                    .get(&request_id.to_string())
+            {
+                signal.abort();
             }
-            return;
-        };
-        if method != "tools/call" {
-            match self.request(method, &params) {
-                Ok(result) => reply(&self.out, id, result),
-                Err((code, text)) => fail(&self.out, id, code, &text),
-            }
-            return;
+        } else if method == "notifications/initialized" {
+            let client = self
+                .client
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            self.handlers.on_initialized(&client);
         }
+    }
+
+    fn handle_tool_call(self: &Arc<Self>, id: Value, params: Map<String, Value>) {
         let Some(Value::String(name)) = params.get("name") else {
             fail(&self.out, id, INVALID_PARAMS, "tools/call needs a tool name");
             return;
@@ -266,6 +276,32 @@ impl<H: McpHandlers + 'static> Server<H> {
                 Err(_) => fail(&server.out, id, INTERNAL_ERROR, "tool call failed"),
             }
         });
+    }
+
+    fn on_message(self: &Arc<Self>, message: Map<String, Value>) {
+        let id = message.get("id").cloned().filter(|id| !id.is_null());
+        let Some(Value::String(method)) = message.get("method") else {
+            if let Some(id) = id
+                && !message.contains_key("result")
+                && !message.contains_key("error")
+            {
+                fail(&self.out, id, INVALID_REQUEST, "Invalid request");
+            }
+            return;
+        };
+        let params = record(message.get("params"));
+        let Some(id) = id else {
+            self.handle_notification(method, &params);
+            return;
+        };
+        if method == "tools/call" {
+            self.handle_tool_call(id, params);
+            return;
+        }
+        match self.request(method, &params) {
+            Ok(result) => reply(&self.out, id, result),
+            Err((code, text)) => fail(&self.out, id, code, &text),
+        }
     }
 }
 

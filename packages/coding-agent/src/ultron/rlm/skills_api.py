@@ -1,5 +1,14 @@
 """Skill catalog client. Selection is explainable and version-pinned; skills never grant capabilities."""
 
+import hashlib as _hashlib
+import importlib.abc as _abc
+import importlib.util as _util
+import json as _json
+import os as _os
+import re as _re
+import sys as _sys
+import types as _types
+
 
 class Skills:
     """Skill catalog and code skills.
@@ -221,15 +230,6 @@ def _plan_source(plan):
 
 # `code_skills` package: active code skills, importable in every kernel.
 
-import importlib.abc as _abc
-import importlib.util as _util
-import hashlib as _hashlib
-import json as _json
-import os as _os
-import re as _re
-import sys as _sys
-import types as _types
-
 CODE_SKILLS_PACKAGE = 'code_skills'
 _NAME = _re.compile(r'^[a-z][a-z0-9_]{0,63}$')
 
@@ -237,6 +237,20 @@ _NAME = _re.compile(r'^[a-z][a-z0-9_]{0,63}$')
 def _skills_dir():
     value = _os.environ.get('ULTRON_CODE_SKILLS_DIR', '').strip()
     return value or None
+
+
+def _find_active_record(history):
+    if not isinstance(history, dict):
+        return None
+    active = history.get('active')
+    if not isinstance(active, int):
+        return None
+    for item in history.get('versions', []):
+        if isinstance(item, dict) and item.get('version') == active:
+            if item.get('state') != 'active':
+                return None
+            return active, item
+    return None
 
 
 def _active_entry(name):
@@ -250,12 +264,10 @@ def _active_entry(name):
             history = _json.load(handle)
     except (OSError, ValueError):
         return None
-    active = history.get('active') if isinstance(history, dict) else None
-    if not isinstance(active, int):
+    found = _find_active_record(history)
+    if found is None:
         return None
-    record = next((item for item in history.get('versions', []) if isinstance(item, dict) and item.get('version') == active), None)
-    if record is None or record.get('state') != 'active':
-        return None
+    active, record = found
     path = _os.path.join(base, '.versions', str(active), 'skill.py')
     try:
         with open(path, 'rb') as handle:

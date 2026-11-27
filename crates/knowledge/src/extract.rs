@@ -260,50 +260,62 @@ impl Extractor {
     }
 }
 
+fn blank_line_comment(bytes: &[u8], index: &mut usize, out: &mut Vec<u8>) {
+    while *index < bytes.len() && bytes[*index] != b'\n' {
+        out.push(b' ');
+        *index += 1;
+    }
+}
+
+fn blank_block_comment(bytes: &[u8], index: &mut usize, out: &mut Vec<u8>) {
+    out.extend_from_slice(b"  ");
+    *index += 2;
+    while *index < bytes.len() && !bytes[*index..].starts_with(b"*/") {
+        out.push(if bytes[*index] == b'\n' { b'\n' } else { b' ' });
+        *index += 1;
+    }
+    if *index < bytes.len() {
+        out.extend_from_slice(b"  ");
+        *index += 2;
+    }
+}
+
+fn blank_single_quoted(bytes: &[u8], index: &mut usize, out: &mut Vec<u8>) {
+    out.push(b' ');
+    *index += 1;
+    while *index < bytes.len() {
+        if bytes[*index] == b'\'' {
+            if bytes.get(*index + 1) == Some(&b'\'') {
+                out.extend_from_slice(b"  ");
+                *index += 2;
+                continue;
+            }
+            out.push(b' ');
+            *index += 1;
+            break;
+        }
+        out.push(if bytes[*index] == b'\n' { b'\n' } else { b' ' });
+        *index += 1;
+    }
+}
+
 /// The text with comments and single-quoted literals blanked (newlines kept, so offsets keep their lines).
 /// Dollar-quoted bodies stay: they are PL/pgSQL, where `RAISE EXCEPTION` and the guarded statements live.
 fn sql_code(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let rest = &bytes[i..];
+    let mut index = 0;
+    while index < bytes.len() {
+        let rest = &bytes[index..];
         if rest.starts_with(b"--") {
-            while i < bytes.len() && bytes[i] != b'\n' {
-                out.push(b' ');
-                i += 1;
-            }
+            blank_line_comment(bytes, &mut index, &mut out);
         } else if rest.starts_with(b"/*") {
-            out.extend_from_slice(b"  ");
-            i += 2;
-            while i < bytes.len() && !bytes[i..].starts_with(b"*/") {
-                out.push(if bytes[i] == b'\n' { b'\n' } else { b' ' });
-                i += 1;
-            }
-            if i < bytes.len() {
-                out.extend_from_slice(b"  ");
-                i += 2;
-            }
-        } else if bytes[i] == b'\'' {
-            out.push(b' ');
-            i += 1;
-            while i < bytes.len() {
-                if bytes[i] == b'\'' {
-                    if bytes.get(i + 1) == Some(&b'\'') {
-                        out.extend_from_slice(b"  ");
-                        i += 2;
-                        continue;
-                    }
-                    out.push(b' ');
-                    i += 1;
-                    break;
-                }
-                out.push(if bytes[i] == b'\n' { b'\n' } else { b' ' });
-                i += 1;
-            }
+            blank_block_comment(bytes, &mut index, &mut out);
+        } else if bytes[index] == b'\'' {
+            blank_single_quoted(bytes, &mut index, &mut out);
         } else {
-            out.push(bytes[i]);
-            i += 1;
+            out.push(bytes[index]);
+            index += 1;
         }
     }
     String::from_utf8(out).unwrap_or_default()
@@ -486,56 +498,60 @@ fn callee_name<'a>(callee: &Node, source: &'a [u8], member: &str, property: &str
     plain_name(text_of(callee, source))
 }
 
-fn typescript_node(node: &Node, source: &[u8], kinds: &mut Kinds, graph: &mut Graph) {
-    let line = line_of(node);
+fn typescript_decorator(node: &Node, source: &[u8], line: i64, kinds: &mut Kinds) {
+    let Some(expression) = node.named_child(0) else {
+        return;
+    };
+    let callee = if expression.kind() == "call_expression" {
+        expression.child_by_field_name("function")
+    } else {
+        Some(expression)
+    };
+    if let Some(name) = callee.and_then(|callee| callee_name(&callee, source, "member_expression", "property")) {
+        kinds.add(format!("ts:decorator:{name}"), line);
+    }
+}
+
+fn typescript_call(
+    node: &Node,
+    source: &[u8],
+    field: &str,
+    prefix: &str,
+    line: i64,
+    kinds: &mut Kinds,
+    graph: &mut Graph,
+) {
+    if let Some(callee) = node.child_by_field_name(field)
+        && let Some(name) = callee_name(&callee, source, "member_expression", "property")
+    {
+        kinds.add(format!("{prefix}:{name}"), line);
+        graph.call(name, receiver_of(&callee, source, "member_expression", "object"), line);
+    }
+}
+
+fn is_external_ts_import(node: &Node, module: &str) -> bool {
+    node.kind() == "import_statement" && !module.is_empty() && !module.starts_with('.') && !module.starts_with('/')
+}
+
+fn typescript_import_export(node: &Node, source: &[u8], line: i64, kinds: &mut Kinds, graph: &mut Graph) {
+    let Some(source_node) = node.child_by_field_name("source") else {
+        return;
+    };
+    let module = text_of(&source_node, source).trim_matches(|c| c == '"' || c == '\'' || c == '`');
+    if is_external_ts_import(node, module) {
+        kinds.add(format!("ts:import:{module}"), line);
+    }
+    let names = typescript_imported(node, source);
+    if names.is_empty() {
+        graph.import(module, None, line);
+    }
+    for name in names {
+        graph.import(module, Some(&name), line);
+    }
+}
+
+fn typescript_symbol(node: &Node, source: &[u8], graph: &mut Graph) {
     match node.kind() {
-        "decorator" => {
-            let Some(expression) = node.named_child(0) else { return };
-            let callee = if expression.kind() == "call_expression" {
-                expression.child_by_field_name("function")
-            } else {
-                Some(expression)
-            };
-            if let Some(name) = callee.and_then(|callee| callee_name(&callee, source, "member_expression", "property"))
-            {
-                kinds.add(format!("ts:decorator:{name}"), line);
-            }
-        }
-        "call_expression" => {
-            if let Some(callee) = node.child_by_field_name("function")
-                && let Some(name) = callee_name(&callee, source, "member_expression", "property")
-            {
-                kinds.add(format!("ts:call:{name}"), line);
-                graph.call(name, receiver_of(&callee, source, "member_expression", "object"), line);
-            }
-        }
-        "new_expression" => {
-            if let Some(callee) = node.child_by_field_name("constructor")
-                && let Some(name) = callee_name(&callee, source, "member_expression", "property")
-            {
-                kinds.add(format!("ts:new:{name}"), line);
-                graph.call(name, receiver_of(&callee, source, "member_expression", "object"), line);
-            }
-        }
-        "import_statement" | "export_statement" => {
-            if let Some(source_node) = node.child_by_field_name("source") {
-                let module = text_of(&source_node, source).trim_matches(|c| c == '"' || c == '\'' || c == '`');
-                if node.kind() == "import_statement"
-                    && !module.is_empty()
-                    && !module.starts_with('.')
-                    && !module.starts_with('/')
-                {
-                    kinds.add(format!("ts:import:{module}"), line);
-                }
-                let names = typescript_imported(node, source);
-                if names.is_empty() {
-                    graph.import(module, None, line);
-                }
-                for name in names {
-                    graph.import(module, Some(&name), line);
-                }
-            }
-        }
         "function_declaration" | "generator_function_declaration" => symbol(node, source, "function", graph),
         "class_declaration" | "abstract_class_declaration" => symbol(node, source, "class", graph),
         "method_definition" => symbol(node, source, "method", graph),
@@ -551,118 +567,148 @@ fn typescript_node(node: &Node, source: &[u8], kinds: &mut Kinds, graph: &mut Gr
     }
 }
 
+fn typescript_node(node: &Node, source: &[u8], kinds: &mut Kinds, graph: &mut Graph) {
+    let line = line_of(node);
+    match node.kind() {
+        "decorator" => typescript_decorator(node, source, line, kinds),
+        "call_expression" => typescript_call(node, source, "function", "ts:call", line, kinds, graph),
+        "new_expression" => typescript_call(node, source, "constructor", "ts:new", line, kinds, graph),
+        "import_statement" | "export_statement" => typescript_import_export(node, source, line, kinds, graph),
+        _ => typescript_symbol(node, source, graph),
+    }
+}
+
+fn visit_ts_import_node(current: &Node, source: &[u8], names: &mut Vec<String>) -> bool {
+    match current.kind() {
+        "import_specifier" | "export_specifier" => {
+            if let Some(name) = current
+                .child_by_field_name("name")
+                .and_then(|name| plain_name(text_of(&name, source)))
+            {
+                names.push(name.to_string());
+            }
+            false
+        }
+        "namespace_import" | "namespace_export" => {
+            names.push("*".into());
+            false
+        }
+        "import_clause" => {
+            let mut cursor = current.walk();
+            if current
+                .named_children(&mut cursor)
+                .any(|child| child.kind() == "identifier")
+            {
+                names.push("default".into());
+            }
+            true
+        }
+        "string" => false,
+        _ => true,
+    }
+}
+
+fn has_wildcard_export(node: &Node) -> bool {
+    let mut cursor = node.walk();
+    node.kind() == "export_statement" && node.children(&mut cursor).any(|child| child.kind() == "*")
+}
+
 /// The names an import or re-export brings in: `{ A, B as C }` gives A and B, a default import `default`, a
 /// namespace import `*`; a side-effect import none.
 fn typescript_imported(node: &Node, source: &[u8]) -> Vec<String> {
     let mut names = Vec::new();
     let mut stack = vec![*node];
     while let Some(current) = stack.pop() {
-        match current.kind() {
-            "import_specifier" | "export_specifier" => {
-                if let Some(name) = current
-                    .child_by_field_name("name")
-                    .and_then(|name| plain_name(text_of(&name, source)))
-                {
-                    names.push(name.to_string());
-                }
-                continue;
-            }
-            "namespace_import" | "namespace_export" => {
-                names.push("*".into());
-                continue;
-            }
-            "import_clause" => {
-                let mut cursor = current.walk();
-                if current
-                    .named_children(&mut cursor)
-                    .any(|child| child.kind() == "identifier")
-                {
-                    names.push("default".into());
-                }
-            }
-            "string" => continue,
-            _ => {}
+        if !visit_ts_import_node(&current, source, &mut names) {
+            continue;
         }
         let mut cursor = current.walk();
         let children: Vec<Node> = current.named_children(&mut cursor).collect();
         stack.extend(children.into_iter().rev());
     }
-    if node.kind() == "export_statement" && names.is_empty() {
-        let mut cursor = node.walk();
-        if node.children(&mut cursor).any(|child| child.kind() == "*") {
-            names.push("*".into());
-        }
+    if names.is_empty() && has_wildcard_export(node) {
+        names.push("*".into());
     }
     names
+}
+
+fn python_decorator(node: &Node, source: &[u8], line: i64, kinds: &mut Kinds) {
+    let Some(expression) = node.named_child(0) else {
+        return;
+    };
+    let callee = if expression.kind() == "call" {
+        expression.child_by_field_name("function")
+    } else {
+        Some(expression)
+    };
+    if let Some(name) = callee.and_then(|callee| callee_name(&callee, source, "attribute", "attribute")) {
+        kinds.add(format!("py:decorator:{name}"), line);
+    }
+}
+
+fn python_call(node: &Node, source: &[u8], line: i64, kinds: &mut Kinds, graph: &mut Graph) {
+    if let Some(callee) = node.child_by_field_name("function")
+        && let Some(name) = callee_name(&callee, source, "attribute", "attribute")
+    {
+        kinds.add(format!("py:call:{name}"), line);
+        graph.call(name, receiver_of(&callee, source, "attribute", "object"), line);
+    }
+}
+
+fn python_import_name<'a>(node: &Node, source: &'a [u8]) -> Option<&'a str> {
+    let name = if node.kind() == "aliased_import" {
+        node.child_by_field_name("name").map(|inner| text_of(&inner, source))
+    } else {
+        Some(text_of(node, source))
+    };
+    name.filter(|text| !text.is_empty())
+}
+
+fn python_import(node: &Node, source: &[u8], line: i64, kinds: &mut Kinds, graph: &mut Graph) {
+    let mut cursor = node.walk();
+    for name in node.children_by_field_name("name", &mut cursor) {
+        if let Some(module) = python_import_name(&name, source) {
+            kinds.add(format!("py:import:{module}"), line);
+            graph.import(module, None, line);
+        }
+    }
+}
+
+fn python_import_from(node: &Node, source: &[u8], line: i64, kinds: &mut Kinds, graph: &mut Graph) {
+    let Some(module_node) = node.child_by_field_name("module_name") else {
+        return;
+    };
+    let module = text_of(&module_node, source);
+    if !module.is_empty() && !module.starts_with('.') {
+        kinds.add(format!("py:import:{module}"), line);
+    }
+    let mut cursor = node.walk();
+    let mut names: Vec<&str> = node
+        .children_by_field_name("name", &mut cursor)
+        .filter_map(|name| python_import_name(&name, source))
+        .collect();
+    let mut cursor = node.walk();
+    if node
+        .children(&mut cursor)
+        .any(|child| child.kind() == "wildcard_import")
+    {
+        names.push("*");
+    }
+    if names.is_empty() {
+        graph.import(module, None, line);
+    }
+    for name in names {
+        graph.import(module, Some(name), line);
+    }
 }
 
 fn python_node(node: &Node, source: &[u8], kinds: &mut Kinds, graph: &mut Graph) {
     let line = line_of(node);
     match node.kind() {
-        "decorator" => {
-            let Some(expression) = node.named_child(0) else { return };
-            let callee = if expression.kind() == "call" {
-                expression.child_by_field_name("function")
-            } else {
-                Some(expression)
-            };
-            if let Some(name) = callee.and_then(|callee| callee_name(&callee, source, "attribute", "attribute")) {
-                kinds.add(format!("py:decorator:{name}"), line);
-            }
-        }
-        "call" => {
-            if let Some(callee) = node.child_by_field_name("function")
-                && let Some(name) = callee_name(&callee, source, "attribute", "attribute")
-            {
-                kinds.add(format!("py:call:{name}"), line);
-                graph.call(name, receiver_of(&callee, source, "attribute", "object"), line);
-            }
-        }
-        "import_statement" => {
-            let mut cursor = node.walk();
-            for name in node.children_by_field_name("name", &mut cursor) {
-                let module = if name.kind() == "aliased_import" {
-                    name.child_by_field_name("name").map(|inner| text_of(&inner, source))
-                } else {
-                    Some(text_of(&name, source))
-                };
-                if let Some(module) = module.filter(|module| !module.is_empty()) {
-                    kinds.add(format!("py:import:{module}"), line);
-                    graph.import(module, None, line);
-                }
-            }
-        }
-        "import_from_statement" => {
-            if let Some(module) = node.child_by_field_name("module_name") {
-                let module = text_of(&module, source);
-                if !module.is_empty() && !module.starts_with('.') {
-                    kinds.add(format!("py:import:{module}"), line);
-                }
-                let mut cursor = node.walk();
-                let mut names = Vec::new();
-                for name in node.children_by_field_name("name", &mut cursor) {
-                    let name = if name.kind() == "aliased_import" {
-                        name.child_by_field_name("name").map(|inner| text_of(&inner, source))
-                    } else {
-                        Some(text_of(&name, source))
-                    };
-                    names.extend(name.filter(|name| !name.is_empty()));
-                }
-                let mut cursor = node.walk();
-                if node
-                    .children(&mut cursor)
-                    .any(|child| child.kind() == "wildcard_import")
-                {
-                    names.push("*");
-                }
-                if names.is_empty() {
-                    graph.import(module, None, line);
-                }
-                for name in names {
-                    graph.import(module, Some(name), line);
-                }
-            }
-        }
+        "decorator" => python_decorator(node, source, line, kinds),
+        "call" => python_call(node, source, line, kinds, graph),
+        "import_statement" => python_import(node, source, line, kinds, graph),
+        "import_from_statement" => python_import_from(node, source, line, kinds, graph),
         "function_definition" => symbol(node, source, "function", graph),
         "class_definition" => symbol(node, source, "class", graph),
         _ => {}

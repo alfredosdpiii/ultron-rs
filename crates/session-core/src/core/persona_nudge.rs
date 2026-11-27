@@ -110,6 +110,22 @@ impl Core {
         let pending =
             !sync::lock(&self.queues).items.is_empty() || !self.deferred.is_empty() || !self.after_run.is_empty();
         let limits = self.persona_limits();
+        let next = self.evaluate_keep_going(aborted, failed, pending, limits);
+        if self.apply_keep_going_next(next, limits, aborted, failed, pending) {
+            return;
+        }
+        let candidate = !aborted
+            && !failed
+            && !pending
+            && resources::persona::should_nudge(&self.persona.text, self.persona.tool_calls);
+        let persona = candidate && self.persona_effective();
+        if let Some(n) = self.persona.run_ended(persona, aborted, failed, pending) {
+            let message = resources::persona::nudge_message(n, jsrt::date::now_ms());
+            let _ = self.prompt_with(message, None, true);
+        }
+    }
+
+    fn evaluate_keep_going(&mut self, aborted: bool, failed: bool, pending: bool, limits: Limits) -> Next {
         let before = self.persona_session.clone();
         let next = keep_going::after_run(
             &mut self.persona_session,
@@ -126,11 +142,22 @@ impl Core {
         if self.persona_session != before {
             self.persona_save();
         }
+        next
+    }
+
+    fn apply_keep_going_next(
+        &mut self,
+        next: Next,
+        limits: Limits,
+        aborted: bool,
+        failed: bool,
+        pending: bool,
+    ) -> bool {
         match next {
-            Next::Persona => {}
+            Next::Persona => false,
             Next::Stop => {
                 self.persona.run_ended(false, aborted, failed, pending);
-                return;
+                true
             }
             Next::Continue { .. } | Next::Final { .. } => {
                 if matches!(next, Next::Final { .. }) {
@@ -139,19 +166,9 @@ impl Core {
                 if let Some(message) = keep_going::nudge_message(&next, limits, jsrt::date::now_ms()) {
                     let _ = self.prompt_with(message, None, true);
                 }
-                return;
+                true
             }
         }
-        let candidate = !aborted
-            && !failed
-            && !pending
-            && resources::persona::should_nudge(&self.persona.text, self.persona.tool_calls);
-        let persona = candidate && self.persona_effective();
-        let Some(n) = self.persona.run_ended(persona, aborted, failed, pending) else {
-            return;
-        };
-        let message = resources::persona::nudge_message(n, jsrt::date::now_ms());
-        let _ = self.prompt_with(message, None, true);
     }
 
     /// What clients are shown for a message of the run: a nudge or fired schedule run's prompt (which reaches the

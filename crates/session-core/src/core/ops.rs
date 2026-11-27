@@ -2,50 +2,16 @@
 
 use super::*;
 
+type SyncOpHandler = fn(&mut Core, Op) -> Result<OpResult, Op>;
+
 impl Core {
     pub(super) fn op(&mut self, op: Op, reply: Reply) {
         match op {
-            Op::Prompt { message, images, queue } => {
-                let (message, notice) = self.user_text(&message);
-                let result = if self.run.is_some() {
-                    match queue {
-                        Some(kind) => self.enqueue(kind, message, images, None).map(drop),
-                        None => Err("Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.".into()),
-                    }
-                } else {
-                    self.prompt(message, images, None).map_err(|(error, _)| error)
-                };
-                reply(result.map(|()| notice.map(|notice| json!({"keepGoing": notice}))));
-            }
-            Op::PromptAndWait { message, images } => {
-                let (message, _) = self.user_text(&message);
-                if self.run.is_some() {
-                    return reply(Err("Agent is already processing".into()));
-                }
-                if let Err((error, reply)) = self.prompt(message, images, Some(reply)) {
-                    reply(Err(error));
-                }
-            }
+            Op::Prompt { message, images, queue } => self.op_prompt(&message, images, queue, reply),
+            Op::PromptAndWait { message, images } => self.op_prompt_and_wait(&message, images, reply),
             bash @ Op::Bash { .. } => self.bash(bash, reply),
             Op::AppendCustom { custom_type, data } => self.append_custom(custom_type, data, reply),
-            Op::BugSummary { hint } => {
-                let summarizer = self.summarizer();
-                let messages = view::messages(&self.pi());
-                let retry = self.summary_retry();
-                let signal = AbortSignal::new();
-                static SUMMARIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                let number = SUMMARIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                self.bug_summary = Some((number, signal.clone()));
-                let tx = self.tx.clone();
-                std::thread::spawn(move || {
-                    reply(
-                        summarizer
-                            .bug_report(&messages, hint.as_deref(), retry, &signal)
-                            .map(|text| Some(json!(text))),
-                    );
-                    let _ = tx.send(Input::BugSummaryEnded(number));
-                });
-            }
+            Op::BugSummary { hint } => self.op_bug_summary(hint, reply),
             compact @ Op::Compact { .. } if self.run.is_some() => {
                 self.abort();
                 self.after_run.push(Input::Op(compact, reply));
@@ -59,6 +25,51 @@ impl Core {
                 reply(result);
             }
         }
+    }
+
+    fn op_prompt(&mut self, message: &str, images: Vec<Value>, queue: Option<QueueKind>, reply: Reply) {
+        let (message, notice) = self.user_text(message);
+        let result = if self.run.is_some() {
+            match queue {
+                Some(kind) => self.enqueue(kind, message, images, None).map(drop),
+                None => Err(
+                    "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message."
+                        .into(),
+                ),
+            }
+        } else {
+            self.prompt(message, images, None).map_err(|(error, _)| error)
+        };
+        reply(result.map(|()| notice.map(|notice| json!({"keepGoing": notice}))));
+    }
+
+    fn op_prompt_and_wait(&mut self, message: &str, images: Vec<Value>, reply: Reply) {
+        let (message, _) = self.user_text(message);
+        if self.run.is_some() {
+            return reply(Err("Agent is already processing".into()));
+        }
+        if let Err((error, reply)) = self.prompt(message, images, Some(reply)) {
+            reply(Err(error));
+        }
+    }
+
+    fn op_bug_summary(&mut self, hint: Option<String>, reply: Reply) {
+        let summarizer = self.summarizer();
+        let messages = view::messages(&self.pi());
+        let retry = self.summary_retry();
+        let signal = AbortSignal::new();
+        static SUMMARIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let number = SUMMARIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.bug_summary = Some((number, signal.clone()));
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            reply(
+                summarizer
+                    .bug_report(&messages, hint.as_deref(), retry, &signal)
+                    .map(|text| Some(json!(text))),
+            );
+            let _ = tx.send(Input::BugSummaryEnded(number));
+        });
     }
 
     /// A prompt's or queued message's text as the session takes it: `/review` expanded (agent-controller-provider.ts
@@ -80,19 +91,32 @@ impl Core {
         resources::prompt_templates::expand_prompt_template(&message, &self.lane.stack.prompt_templates())
     }
 
-    fn sync_op(&mut self, op: Op) -> OpResult {
+    fn sync_op(&mut self, mut op: Op) -> OpResult {
         if matches!(op, Op::Describe) {
             self.lane.stack.stats.flush();
         }
-        match op {
-            Op::Prompt { .. }
-            | Op::PromptAndWait { .. }
-            | Op::Bash { .. }
-            | Op::BugSummary { .. }
-            | Op::AppendCustom { .. }
-            | Op::Recover => {
-                unreachable!("answered in op")
+        const HANDLERS: &[SyncOpHandler] = &[
+            Core::sync_queue_and_run_op,
+            Core::sync_model_and_thinking_op,
+            Core::sync_config_and_abort_op,
+            Core::sync_view_op,
+            Core::sync_session_tree_op,
+            Core::sync_navigation_and_files_op,
+            Core::sync_agent_and_conversation_op,
+            Core::sync_control_and_inspect_op,
+            Core::sync_schedule_and_persona_op,
+        ];
+        for handler in HANDLERS {
+            match handler(self, op) {
+                Ok(result) => return result,
+                Err(unhandled) => op = unhandled,
             }
+        }
+        unreachable!("answered in op")
+    }
+
+    fn sync_queue_and_run_op(&mut self, op: Op) -> Result<OpResult, Op> {
+        Ok(match op {
             Op::Enqueue {
                 kind,
                 message,
@@ -102,89 +126,33 @@ impl Core {
                 let (message, _) = self.user_text(&message);
                 self.enqueue(kind, message, images, entry_id).map(|id| Some(json!(id)))
             }
-            Op::CancelQueued { entry_id } => {
-                let found = sync::lock(&self.queues).items.iter().any(|q| q.entry_id == entry_id);
-                if found {
-                    self.remove_queued(&[entry_id])?;
-                }
-                Ok(Some(json!(found)))
-            }
+            Op::CancelQueued { entry_id } => self.cancel_queued_op(entry_id),
             Op::ClearQueue => Ok(Some(self.clear_queue())),
             Op::Abort => {
                 self.abort();
                 Ok(None)
             }
             Op::State => Ok(Some(self.state())),
-            Op::AvailableModels => {
-                self.models = lane::available_models(&self.env);
-                Ok(Some(Value::Array(
-                    self.models
-                        .iter()
-                        .filter_map(|m| serde_json::to_value(m).ok())
-                        .collect(),
-                )))
-            }
-            Op::SetModel { provider, model_id } => {
-                let find = |models: &[Model]| {
-                    models
-                        .iter()
-                        .find(|m| m.provider == provider && m.id == model_id)
-                        .cloned()
-                };
-                let model = match find(&self.models) {
-                    Some(model) => model,
-                    None => {
-                        self.models = lane::available_models(&self.env);
-                        find(&self.models).ok_or_else(|| format!("Model not found: {provider}/{model_id}"))?
-                    }
-                };
-                self.model = model;
-                self.model_unavailable = false;
-                self.lane.stack.set_root_model(&self.model);
-                self.store_lane_config()?;
-                serde_json::to_value(&self.model).map(Some).map_err(|e| e.to_string())
-            }
-            Op::CycleModel => {
-                if self.models.len() < 2 {
-                    return Ok(Some(Value::Null));
-                }
-                let index = self
-                    .models
-                    .iter()
-                    .position(|m| m.provider == self.model.provider && m.id == self.model.id);
-                self.model = self.models[index.map_or(0, |i| (i + 1) % self.models.len())].clone();
-                self.model_unavailable = false;
-                self.lane.stack.set_root_model(&self.model);
-                self.store_lane_config()?;
-                Ok(Some(json!({
-                    "model": serde_json::to_value(&self.model).map_err(|e| e.to_string())?,
-                    "thinkingLevel": self.thinking,
-                    "isScoped": false,
-                })))
-            }
+            Op::SetQueueMode { kind, mode } => self.set_queue_mode_op(kind, &mode),
+            Op::Compact { instructions } => self.compact(instructions.as_deref()).map(Some),
+            other => return Err(other),
+        })
+    }
+
+    fn sync_model_and_thinking_op(&mut self, op: Op) -> Result<OpResult, Op> {
+        Ok(match op {
+            Op::AvailableModels => self.available_models_op(),
+            Op::SetModel { provider, model_id } => self.set_model_op(&provider, &model_id),
+            Op::CycleModel => self.cycle_model_op(),
             Op::ThinkingLevels => Ok(Some(json!(self.thinking_levels()))),
             Op::SetThinking { level } => self.set_thinking(&level).map(|()| None),
-            Op::CycleThinking => {
-                let levels = self.thinking_levels();
-                if levels.len() < 2 {
-                    return Ok(Some(Value::Null));
-                }
-                let index = levels.iter().position(|l| *l == self.thinking);
-                let next = levels[index.map_or(0, |i| (i + 1) % levels.len())].clone();
-                self.set_thinking(&next)?;
-                Ok(Some(json!(next)))
-            }
-            Op::SetQueueMode { kind, mode } => {
-                let mut queues = sync::lock(&self.queues);
-                let all = mode == config::keys::QUEUE_ALL;
-                match kind {
-                    QueueKind::Steer => queues.steering_all = all,
-                    QueueKind::FollowUp => queues.follow_up_all = all,
-                    QueueKind::NextRun => return Err("kind must be steer or followUp".into()),
-                }
-                Ok(None)
-            }
-            Op::Compact { instructions } => self.compact(instructions.as_deref()).map(Some),
+            Op::CycleThinking => self.cycle_thinking_op(),
+            other => return Err(other),
+        })
+    }
+
+    fn sync_config_and_abort_op(&mut self, op: Op) -> Result<OpResult, Op> {
+        Ok(match op {
             Op::SetAutoCompaction(enabled) => {
                 self.auto_compaction = enabled;
                 Ok(None)
@@ -196,48 +164,17 @@ impl Core {
                     .store(enabled, std::sync::atomic::Ordering::SeqCst);
                 Ok(None)
             }
-            Op::SetTerminalTheme { theme } => {
-                if theme != "light" && theme != "dark" {
-                    return Err(format!("theme must be light or dark, not {theme:?}"));
-                }
-                *self
-                    .runtime
-                    .config
-                    .terminal_theme
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(theme);
-                Ok(None)
-            }
-            Op::AbortRetry => {
-                if self
-                    .run
-                    .as_ref()
-                    .and_then(|run| run.journal.run())
-                    .is_some_and(|journal| journal.retry_waiting().is_some())
-                {
-                    self.abort();
-                }
-                Ok(None)
-            }
-            Op::AbortBash => {
-                if let Some(signal) = &self.bash {
-                    signal.abort("abort_bash");
-                }
-                Ok(None)
-            }
-            Op::AbortBugSummary => {
-                if let Some((_, signal)) = self.bug_summary.take() {
-                    signal.abort();
-                }
-                Ok(None)
-            }
-            Op::ShareContext => {
-                let tool = agent::AgentTool::tool(&*self.lane.tool);
-                Ok(Some(json!({
-                    "systemPrompt": self.runtime.system.current(),
-                    "tools": [{"name": tool.name, "description": tool.description, "parameters": tool.parameters}],
-                })))
-            }
+            Op::SetTerminalTheme { theme } => self.set_terminal_theme_op(theme),
+            Op::AbortRetry => self.abort_retry_op(),
+            Op::AbortBash => self.abort_bash_op(),
+            Op::AbortBugSummary => self.abort_bug_summary_op(),
+            other => return Err(other),
+        })
+    }
+
+    fn sync_view_op(&mut self, op: Op) -> Result<OpResult, Op> {
+        Ok(match op {
+            Op::ShareContext => self.share_context_op(),
             Op::Stats => Ok(Some(view::stats(
                 &self.pi(),
                 Some(&self.session_file()),
@@ -245,65 +182,29 @@ impl Core {
                 self.model.context_window,
             ))),
             Op::ForkMessages => Ok(Some(Value::Array(view::fork_messages(&self.pi())))),
-            Op::Entries { since } => {
-                let pi = self.pi();
-                let mut entries = view::entries(&pi);
-                if let Some(since) = since {
-                    let index = entries
-                        .iter()
-                        .position(|e| e["id"] == since.as_str())
-                        .ok_or_else(|| format!("Entry not found: {since}"))?;
-                    entries.drain(..=index);
-                }
-                Ok(Some(
-                    json!({"entries": entries, "leafId": pi.leaf_id().cloned().unwrap_or(Value::Null)}),
-                ))
-            }
+            Op::Entries { since } => self.entries_op(since),
             Op::Tree => Ok(Some(self.labeled_tree())),
             Op::LastAssistantText => Ok(Some(json!(view::last_assistant_text(&self.pi())))),
-            Op::SetName { name } => {
-                names::set_user_name(&mut lock_session(&self.session), Some(&name))?;
-                self.name_changed();
-                self.session_info_changed();
-                Ok(None)
-            }
             Op::Messages => Ok(Some(Value::Array(view::messages(&self.pi())))),
+            other => return Err(other),
+        })
+    }
+
+    fn sync_session_tree_op(&mut self, op: Op) -> Result<OpResult, Op> {
+        Ok(match op {
+            Op::SetName { name } => self.set_name_op(&name),
             Op::LaneSnapshot => Ok(Some(self.snapshot())),
-            Op::ForkSource { entry_id } => {
-                self.idle()?;
-                let pi = self.pi();
-                let entry = pi
-                    .entry(&entry_id)
-                    .filter(|e| e["type"] == "message" && e["message"]["role"] == "user")
-                    .ok_or_else(|| format!("Entry is not a user message: {entry_id}"))?;
-                Ok(Some(json!(message_text(&entry["message"]))))
-            }
-            Op::CloneSource => {
-                self.idle()?;
-                let leaf = self.pi().leaf_id().cloned().filter(|l| !l.is_null());
-                leaf.map(Some)
-                    .ok_or_else(|| "Cannot clone session: no current entry selected".to_string())
-            }
-            Op::Forked { target } => {
-                let metadata = session_journal::catalog::read_metadata(Path::new(&target))
-                    .ok_or_else(|| format!("Not a session file: {target}"))?;
-                let mut session = self.repo.open(&metadata)?;
-                session.commit(&[Write::set(
-                    SESSION_START.0,
-                    SESSION_START.1,
-                    json!({"previousSessionFile": self.session_file()}),
-                )])?;
-                Ok(None)
-            }
-            Op::Describe => Ok(Some(json!({
-                "sessionId": lock_session(&self.session).id(),
-                "sessionFile": self.session_file(),
-                "name": lock_session(&self.session).name(),
-                "messages": view::messages(&self.pi()),
-                "entries": lock_session(&self.session).branch_entries(MAIN_LANE).unwrap_or_default(),
-                "model": serde_json::to_value(&self.model).unwrap_or(Value::Null),
-                "thinkingLevel": self.thinking,
-            }))),
+            Op::ForkSource { entry_id } => self.fork_source_op(&entry_id),
+            Op::CloneSource => self.clone_source_op(),
+            Op::Forked { target } => self.record_forked_op(&target),
+            Op::Describe => Ok(Some(self.describe_op())),
+            Op::ListSessions => Ok(Some(self.list_sessions_op())),
+            other => return Err(other),
+        })
+    }
+
+    fn sync_navigation_and_files_op(&mut self, op: Op) -> Result<OpResult, Op> {
+        Ok(match op {
             Op::Navigate {
                 target_id,
                 summarize,
@@ -314,12 +215,13 @@ impl Core {
                 .map(Some),
             Op::SetLabel { entry_id, label } => self.set_label(&entry_id, label.as_deref()).map(|()| None),
             Op::Checkpoints => Ok(Some(self.list_checkpoints())),
-            Op::ScheduleFire { id, due } => self.schedule_fire(&id, due),
-            Op::ScheduleCancel { id } => self.schedule_cancel(&id),
-            Op::Persona { args } => self.persona_command("persona", &args).map(Some),
-            Op::KeepGoing { args } => self.persona_command("keepgoing", &args).map(Some),
-            Op::ContinueFrom { session } => self.continue_from(&session).map(Some),
             Op::RestoreFiles { entry_id, checkpoint } => self.restore_files(entry_id, checkpoint).map(Some),
+            other => return Err(other),
+        })
+    }
+
+    fn sync_agent_and_conversation_op(&mut self, op: Op) -> Result<OpResult, Op> {
+        Ok(match op {
             Op::Agents => self.lane.stack.delegation.subagent_views(MAIN_LANE).map(Some),
             Op::KillAgent { id } => self
                 .lane
@@ -333,35 +235,244 @@ impl Core {
             Op::StartConversation { message } => self.start_conversation(&message).map(Some),
             Op::ConversationInput { id, message } => self.conversation_input(id, &message).map(|()| None),
             Op::Conversations { id } => self.conversations(id).map(Some),
+            other => return Err(other),
+        })
+    }
+
+    fn sync_control_and_inspect_op(&mut self, op: Op) -> Result<OpResult, Op> {
+        Ok(match op {
             Op::AsyncPending => Ok(Some(self.async_pending())),
             Op::Commands => Ok(Some(Value::Array(self.lane.stack.commands()))),
-            Op::Inspect { request, .. } if request == "async.pending" => Ok(Some(self.async_pending())),
-            Op::Inspect { request, .. } if request == "rlm.detached" => Ok(Some(
-                json!({ "cells": self.lane.stack.lanes.detached_cells(MAIN_LANE) }),
-            )),
-            Op::Inspect { request, .. } if request == "rlm.pool" => Ok(Some(self.lane.stack.pool_stats())),
-            Op::Inspect { request, payload } => {
-                let runtime = self.lane.stack.cell_handler(MAIN_LANE, None);
-                crate::inspect::inspect(Some(&*runtime), &request, payload, &kernel::Signal::new()).map(Some)
-            }
+            Op::Inspect { request, payload } => self.inspect_op(&request, payload),
             Op::Goal { args } => self.lane.stack.goal.command(&args).map(|text| Some(json!(text))),
             Op::Observer { args } => self.observer_command(&args).map(|text| Some(json!(text))),
-            Op::ListSessions => {
-                let listed =
-                    names::list_sessions(Path::new(self.repo.root()), &lock_session(&self.session).metadata().cwd);
-                Ok(Some(Value::Array(
-                    listed
-                        .into_iter()
-                        .map(|s| {
-                            json!({"path": s.metadata.path.display().to_string(), "id": s.metadata.id, "name": s.name,
-                                "modified": s.metadata.modified_at as i64, "messageCount": s.message_count,
-                                "firstMessage": s.first_message, "allMessagesText": s.all_messages_text,
-                                "cwd": s.metadata.cwd})
-                        })
-                        .collect(),
-                )))
+            other => return Err(other),
+        })
+    }
+
+    fn sync_schedule_and_persona_op(&mut self, op: Op) -> Result<OpResult, Op> {
+        Ok(match op {
+            Op::ScheduleFire { id, due } => self.schedule_fire(&id, due),
+            Op::ScheduleCancel { id } => self.schedule_cancel(&id),
+            Op::Persona { args } => self.persona_command("persona", &args).map(Some),
+            Op::KeepGoing { args } => self.persona_command("keepgoing", &args).map(Some),
+            Op::ContinueFrom { session } => self.continue_from(&session).map(Some),
+            other => return Err(other),
+        })
+    }
+
+    fn cancel_queued_op(&mut self, entry_id: String) -> OpResult {
+        let found = sync::lock(&self.queues).items.iter().any(|q| q.entry_id == entry_id);
+        if found {
+            self.remove_queued(&[entry_id])?;
+        }
+        Ok(Some(json!(found)))
+    }
+
+    fn set_queue_mode_op(&mut self, kind: QueueKind, mode: &str) -> OpResult {
+        let mut queues = sync::lock(&self.queues);
+        let all = mode == config::keys::QUEUE_ALL;
+        match kind {
+            QueueKind::Steer => queues.steering_all = all,
+            QueueKind::FollowUp => queues.follow_up_all = all,
+            QueueKind::NextRun => return Err("kind must be steer or followUp".into()),
+        }
+        Ok(None)
+    }
+
+    fn available_models_op(&mut self) -> OpResult {
+        self.models = lane::available_models(&self.env);
+        Ok(Some(Value::Array(
+            self.models
+                .iter()
+                .filter_map(|m| serde_json::to_value(m).ok())
+                .collect(),
+        )))
+    }
+
+    fn set_model_op(&mut self, provider: &str, model_id: &str) -> OpResult {
+        let find = |models: &[Model]| {
+            models
+                .iter()
+                .find(|m| m.provider == provider && m.id == model_id)
+                .cloned()
+        };
+        let model = match find(&self.models) {
+            Some(model) => model,
+            None => {
+                self.models = lane::available_models(&self.env);
+                find(&self.models).ok_or_else(|| format!("Model not found: {provider}/{model_id}"))?
+            }
+        };
+        self.model = model;
+        self.model_unavailable = false;
+        self.lane.stack.set_root_model(&self.model);
+        self.store_lane_config()?;
+        serde_json::to_value(&self.model).map(Some).map_err(|e| e.to_string())
+    }
+
+    fn cycle_model_op(&mut self) -> OpResult {
+        if self.models.len() < 2 {
+            return Ok(Some(Value::Null));
+        }
+        let index = self
+            .models
+            .iter()
+            .position(|m| m.provider == self.model.provider && m.id == self.model.id);
+        self.model = self.models[index.map_or(0, |i| (i + 1) % self.models.len())].clone();
+        self.model_unavailable = false;
+        self.lane.stack.set_root_model(&self.model);
+        self.store_lane_config()?;
+        Ok(Some(json!({
+            "model": serde_json::to_value(&self.model).map_err(|e| e.to_string())?,
+            "thinkingLevel": self.thinking,
+            "isScoped": false,
+        })))
+    }
+
+    fn cycle_thinking_op(&mut self) -> OpResult {
+        let levels = self.thinking_levels();
+        if levels.len() < 2 {
+            return Ok(Some(Value::Null));
+        }
+        let index = levels.iter().position(|l| *l == self.thinking);
+        let next = levels[index.map_or(0, |i| (i + 1) % levels.len())].clone();
+        self.set_thinking(&next)?;
+        Ok(Some(json!(next)))
+    }
+
+    fn set_terminal_theme_op(&mut self, theme: String) -> OpResult {
+        if theme != "light" && theme != "dark" {
+            return Err(format!("theme must be light or dark, not {theme:?}"));
+        }
+        *sync::lock(&self.runtime.config.terminal_theme) = Some(theme);
+        Ok(None)
+    }
+
+    fn abort_retry_op(&mut self) -> OpResult {
+        if self
+            .run
+            .as_ref()
+            .and_then(|run| run.journal.run())
+            .is_some_and(|journal| journal.retry_waiting().is_some())
+        {
+            self.abort();
+        }
+        Ok(None)
+    }
+
+    fn abort_bash_op(&mut self) -> OpResult {
+        if let Some(signal) = &self.bash {
+            signal.abort("abort_bash");
+        }
+        Ok(None)
+    }
+
+    fn abort_bug_summary_op(&mut self) -> OpResult {
+        if let Some((_, signal)) = self.bug_summary.take() {
+            signal.abort();
+        }
+        Ok(None)
+    }
+
+    fn share_context_op(&self) -> OpResult {
+        let tool = agent::AgentTool::tool(&*self.lane.tool);
+        Ok(Some(json!({
+            "systemPrompt": self.runtime.system.current(),
+            "tools": [{"name": tool.name, "description": tool.description, "parameters": tool.parameters}],
+        })))
+    }
+
+    fn entries_op(&self, since: Option<String>) -> OpResult {
+        let pi = self.pi();
+        let mut entries = view::entries(&pi);
+        if let Some(since) = since {
+            let index = entries
+                .iter()
+                .position(|e| e["id"] == since.as_str())
+                .ok_or_else(|| format!("Entry not found: {since}"))?;
+            entries.drain(..=index);
+        }
+        Ok(Some(
+            json!({"entries": entries, "leafId": pi.leaf_id().cloned().unwrap_or(Value::Null)}),
+        ))
+    }
+
+    fn set_name_op(&mut self, name: &str) -> OpResult {
+        names::set_user_name(&mut lock_session(&self.session), Some(name))?;
+        self.name_changed();
+        self.session_info_changed();
+        Ok(None)
+    }
+
+    fn fork_source_op(&self, entry_id: &str) -> OpResult {
+        self.idle()?;
+        let pi = self.pi();
+        let entry = pi
+            .entry(entry_id)
+            .filter(|e| e["type"] == "message" && e["message"]["role"] == "user")
+            .ok_or_else(|| format!("Entry is not a user message: {entry_id}"))?;
+        Ok(Some(json!(message_text(&entry["message"]))))
+    }
+
+    fn clone_source_op(&self) -> OpResult {
+        self.idle()?;
+        let leaf = self.pi().leaf_id().cloned().filter(|l| !l.is_null());
+        leaf.map(Some)
+            .ok_or_else(|| "Cannot clone session: no current entry selected".to_string())
+    }
+
+    fn record_forked_op(&self, target: &str) -> OpResult {
+        let metadata = session_journal::catalog::read_metadata(Path::new(target))
+            .ok_or_else(|| format!("Not a session file: {target}"))?;
+        let mut session = self.repo.open(&metadata)?;
+        session.commit(&[Write::set(
+            SESSION_START.0,
+            SESSION_START.1,
+            json!({"previousSessionFile": self.session_file()}),
+        )])?;
+        Ok(None)
+    }
+
+    fn describe_op(&self) -> Value {
+        json!({
+            "sessionId": lock_session(&self.session).id(),
+            "sessionFile": self.session_file(),
+            "name": lock_session(&self.session).name(),
+            "messages": view::messages(&self.pi()),
+            "entries": lock_session(&self.session).branch_entries(MAIN_LANE).unwrap_or_default(),
+            "model": serde_json::to_value(&self.model).unwrap_or(Value::Null),
+            "thinkingLevel": self.thinking,
+        })
+    }
+
+    fn inspect_op(&mut self, request: &str, payload: Value) -> OpResult {
+        match request {
+            "async.pending" => Ok(Some(self.async_pending())),
+            "rlm.detached" => Ok(Some(
+                json!({ "cells": self.lane.stack.lanes.detached_cells(MAIN_LANE) }),
+            )),
+            "rlm.pool" => Ok(Some(self.lane.stack.pool_stats())),
+            _ => {
+                let runtime = self.lane.stack.cell_handler(MAIN_LANE, None);
+                crate::inspect::inspect(Some(&*runtime), request, payload, &kernel::Signal::new()).map(Some)
             }
         }
+    }
+
+    fn list_sessions_op(&self) -> Value {
+        let listed = names::list_sessions(Path::new(self.repo.root()), &lock_session(&self.session).metadata().cwd);
+        Value::Array(
+            listed
+                .into_iter()
+                .map(|s| {
+                    json!({"path": s.metadata.path.display().to_string(), "id": s.metadata.id, "name": s.name,
+                        "modified": s.metadata.modified_at as i64, "messageCount": s.message_count,
+                        "firstMessage": s.first_message, "allMessagesText": s.all_messages_text,
+                        "cwd": s.metadata.cwd})
+                })
+                .collect(),
+        )
     }
 
     fn thinking_levels(&self) -> Vec<String> {

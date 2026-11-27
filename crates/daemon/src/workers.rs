@@ -2,309 +2,31 @@
 //! It launches a worker per session, adopts orphans through discovery, applies attachment demand, routes service
 //! operations and their updates through the coordinator, and stops, releases or forgets workers.
 
+mod events;
+mod types;
+
+pub use types::{
+    AttachmentDemand, CANCELLED_CODE, CANCELLED_MESSAGE, DemandError, DemandLedger, HEARTBEAT_ENV, MAX_RESTARTS,
+    RESTART_BASE, RESTART_MAX_DELAY, RESTART_STABLE, Terminated, WorkerModel, restart_delay,
+};
+
 use crate::catalog::Meta;
 use crate::chord::{Publish, ServiceError, ServiceResult, subscribe_id, unsubscribe_id};
-use crate::coord_client::{CoordinatorConnection, Event};
+use crate::coord_client::CoordinatorConnection;
 use crate::process::{self, Role};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
+use types::{heartbeat_period, startup_timeout};
 
-const WORKER_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
-/// What each megabyte of the session file adds to [`WORKER_STARTUP_TIMEOUT`]: opening replays the whole journal (a
-/// 98 MB one took about 15 s on an idle disk, and every restart timed out on a busy one).
-const WORKER_STARTUP_PER_MB: Duration = Duration::from_millis(250);
-
-/// How long a worker for the session at `path` may take to start.
-fn startup_timeout(path: &std::path::Path) -> Duration {
-    let megabytes = std::fs::metadata(path).map_or(0, |m| m.len()) / 1_000_000;
-    let extra = WORKER_STARTUP_PER_MB.saturating_mul(u32::try_from(megabytes).unwrap_or(u32::MAX));
-    WORKER_STARTUP_TIMEOUT.saturating_add(extra)
-}
-
-/// The error code and message of a call its client cancelled (packages/server server.ts `handleRequest`).
-pub const CANCELLED_CODE: &str = "cancelled";
-pub const CANCELLED_MESSAGE: &str = "RPC request cancelled";
 const WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(10_000);
 const WORKER_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(5_000);
 const WORKER_DEMAND_TIMEOUT: Duration = Duration::from_millis(5_000);
-
-/// The server's heartbeat to its workers (`ULTRON_WORKER_HEARTBEAT_MS`); a worker silent for
-/// [`HEARTBEAT_MISSES`] periods is hung and is killed (and restarted when it had work).
-pub const HEARTBEAT_ENV: &str = "ULTRON_WORKER_HEARTBEAT_MS";
-const DEFAULT_HEARTBEAT: Duration = Duration::from_millis(5_000);
 const HEARTBEAT_MISSES: u32 = 6;
-/// Restarts of a crashed worker back off from [`RESTART_BASE`] doubling to [`RESTART_MAX_DELAY`]; after
-/// [`MAX_RESTARTS`] crashes without [`RESTART_STABLE`] of uptime in between, the session is left for the user.
-pub const RESTART_BASE: Duration = Duration::from_millis(250);
-pub const RESTART_MAX_DELAY: Duration = Duration::from_secs(8);
-pub const MAX_RESTARTS: u32 = 5;
-pub const RESTART_STABLE: Duration = Duration::from_secs(60);
 /// What a retiring worker answers a demand (crate::lifecycle `set_demand`).
 const RETIRING_REJECTION: &str = "Session worker is retiring";
-
-/// The delay before restart `attempt` (1-based).
-pub fn restart_delay(attempt: u32) -> Duration {
-    let factor = 1u32 << attempt.saturating_sub(1).min(16);
-    (RESTART_BASE * factor).min(RESTART_MAX_DELAY)
-}
-
-fn heartbeat_period() -> Duration {
-    std::env::var(HEARTBEAT_ENV)
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|ms| *ms > 0)
-        .map_or(DEFAULT_HEARTBEAT, Duration::from_millis)
-}
-
-/// What new workers are started with (the server's model selection).
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct WorkerModel {
-    pub provider: Option<String>,
-    pub model: Option<String>,
-    pub api_key: Option<String>,
-    pub thinking: Option<String>,
-    pub extension_mode: Option<String>,
-    /// Sessions are not named (`--no-session` runs, whose session is removed when they end).
-    pub no_naming: bool,
-    /// `--models`: the scoped model patterns a new session's model is chosen from (else `enabledModels`).
-    pub models: Option<Vec<String>>,
-    /// `--system-prompt`, `--no-skills`, `--no-context-files`.
-    pub session: session_core::session_flags::SessionFlags,
-    /// Environment the workers start with on top of this process's: what the CLI set for its run (`--offline`'s
-    /// `PI_OFFLINE`, the `httpProxy` setting's `HTTP_PROXY`/`HTTPS_PROXY`), as TypeScript sets `process.env`.
-    pub env: Vec<(String, String)>,
-    /// `--approve` (`Some(true)`) / `--no-approve` (`Some(false)`): the run's project trust override, which the
-    /// workers read from [`config::trust::TRUST_OVERRIDE_ENV`].
-    pub project_trust: Option<bool>,
-}
-
-impl WorkerModel {
-    /// A client's own session options (`ultron durable --model ...`), as its `attach` request carries them to a
-    /// server whose workers start on other options; `None` when it sets none.
-    pub fn session_options(&self) -> Option<Value> {
-        let mut options = json!({});
-        if let Some(model) = &self.model {
-            options["model"] = json!(model);
-            if let Some(provider) = &self.provider {
-                options["provider"] = json!(provider);
-            }
-        }
-        if let Some(key) = &self.api_key {
-            options["apiKey"] = json!(key);
-        }
-        if let Some(thinking) = &self.thinking {
-            options["thinking"] = json!(thinking);
-        }
-        if let Some(models) = &self.models {
-            options["models"] = json!(models);
-        }
-        if self.no_naming {
-            options["noNaming"] = json!(true);
-        }
-        if let Some(trusted) = self.project_trust {
-            options["projectTrust"] = json!(trusted);
-        }
-        self.session.write_worker_options(&mut options);
-        options.as_object().is_some_and(|o| !o.is_empty()).then_some(options)
-    }
-
-    /// These options with a client's session options (see [`WorkerModel::session_options`]) over them.
-    pub fn with_session_options(&self, options: &Value) -> WorkerModel {
-        let text = |key: &str| options[key].as_str().map(str::to_string);
-        let mut model = self.clone();
-        if options.get("model").is_some() {
-            model.provider = text("provider");
-            model.model = text("model");
-        }
-        if let Some(key) = text("apiKey") {
-            model.api_key = Some(key);
-        }
-        if let Some(thinking) = text("thinking") {
-            model.thinking = Some(thinking);
-        }
-        if let Some(models) = options["models"].as_array() {
-            model.models = Some(models.iter().filter_map(Value::as_str).map(str::to_string).collect());
-        }
-        model.no_naming |= options["noNaming"] == true;
-        if let Some(trusted) = options["projectTrust"].as_bool() {
-            model.project_trust = Some(trusted);
-        }
-        let flags = session_core::session_flags::SessionFlags::from_worker_options(options);
-        if flags.system_prompt.is_some() {
-            model.session.system_prompt = flags.system_prompt;
-        }
-        if flags.append_system_prompt.is_some() {
-            model.session.append_system_prompt = flags.append_system_prompt;
-        }
-        model.session.no_skills |= flags.no_skills;
-        model.session.no_context_files |= flags.no_context_files;
-        if !flags.skill_paths.is_empty() {
-            model.session.skill_paths = flags.skill_paths;
-        }
-        model
-    }
-}
-
-type TerminationListener = Box<dyn FnOnce(Option<String>) + Send>;
-
-/// Resolves once with `None` for an expected stop or the unexpected termination's message.
-#[derive(Default)]
-pub struct Terminated {
-    state: Mutex<Option<Option<String>>>,
-    listeners: Mutex<Vec<TerminationListener>>,
-    changed: Condvar,
-}
-
-impl Terminated {
-    fn resolve(&self, error: Option<String>) {
-        {
-            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.is_some() {
-                return;
-            }
-            *state = Some(error.clone());
-        }
-        self.changed.notify_all();
-        let listeners = std::mem::take(&mut *self.listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        for listener in listeners {
-            listener(error.clone());
-        }
-    }
-
-    /// Run `listener` once it resolves (now, if it already has).
-    pub fn on_resolve(&self, listener: Box<dyn FnOnce(Option<String>) + Send>) {
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        match state {
-            Some(error) => listener(error),
-            None => self
-                .listeners
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(listener),
-        }
-    }
-
-    pub fn is_resolved(&self) -> bool {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_some()
-    }
-
-    fn wait(&self, timeout: Duration) -> bool {
-        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (state, _) = self
-            .changed
-            .wait_timeout_while(state, timeout, |s| s.is_none())
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.is_some()
-    }
-}
-
-/// Why a demand update did not settle as applied.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DemandError {
-    /// The worker did not answer in time: it may hold the demand or not.
-    TimedOut,
-    /// Not sent, refused, or the worker went away: it does not hold the demand.
-    Failed(String),
-}
-
-impl std::fmt::Display for DemandError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DemandError::TimedOut => f.write_str("Session worker demand update timed out"),
-            DemandError::Failed(message) => f.write_str(message),
-        }
-    }
-}
-
-/// One attachment's demand as the server holds it for a worker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AttachmentDemand {
-    /// Attached (or its attach under way): requests on it are routed and it keeps the worker alive.
-    Attached,
-    /// Released here, but the worker has not confirmed the detach: it may still hold the demand (and so never retire),
-    /// so the detach is sent again until the worker applies it, refuses it or goes away.
-    Withdrawing,
-}
-
-/// The attachments a server demands of one worker, and the detaches it still owes the worker.
-#[derive(Debug, Default)]
-pub struct DemandLedger {
-    attachments: HashMap<String, AttachmentDemand>,
-}
-
-impl DemandLedger {
-    /// An attach of `attachment` is about to be sent.
-    pub fn attach(&mut self, attachment: &str) {
-        self.attachments
-            .insert(attachment.to_string(), AttachmentDemand::Attached);
-    }
-
-    pub fn state(&self, attachment: &str) -> Option<AttachmentDemand> {
-        self.attachments.get(attachment).copied()
-    }
-
-    pub fn is_attached(&self, attachment: &str) -> bool {
-        self.state(attachment) == Some(AttachmentDemand::Attached)
-    }
-
-    /// Any client is attached (a crashed worker with one is restarted).
-    pub fn any_attached(&self) -> bool {
-        self.attachments.values().any(|d| *d == AttachmentDemand::Attached)
-    }
-
-    /// Release `attachment`: whether the worker must be told (it holds, or may hold, the demand).
-    pub fn withdraw(&mut self, attachment: &str) -> bool {
-        match self.attachments.get_mut(attachment) {
-            Some(demand) => {
-                *demand = AttachmentDemand::Withdrawing;
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// The outcome of the attach (`attached`) or detach of `attachment`. A timed-out attach is withdrawn (the worker
-    /// may hold it); a failed one is dropped. A detach settles when the worker applied or refused it or went away; one
-    /// that timed out stays owed ([`DemandLedger::owed`]).
-    pub fn settle(&mut self, attachment: &str, attached: bool, outcome: &Result<(), DemandError>) {
-        let Some(demand) = self.attachments.get_mut(attachment) else {
-            return;
-        };
-        match (attached, *demand, outcome) {
-            (true, AttachmentDemand::Attached, Ok(())) => {}
-            (true, AttachmentDemand::Attached, Err(DemandError::TimedOut)) => *demand = AttachmentDemand::Withdrawing,
-            (true, AttachmentDemand::Attached, Err(DemandError::Failed(_))) => {
-                self.attachments.remove(attachment);
-            }
-            (false, AttachmentDemand::Withdrawing, Ok(()) | Err(DemandError::Failed(_))) => {
-                self.attachments.remove(attachment);
-            }
-            _ => {}
-        }
-    }
-
-    /// The detaches the worker has not confirmed: sent again with each heartbeat.
-    pub fn owed(&self) -> Vec<String> {
-        let mut owed: Vec<String> = self
-            .attachments
-            .iter()
-            .filter(|(_, d)| **d == AttachmentDemand::Withdrawing)
-            .map(|(a, _)| a.clone())
-            .collect();
-        owed.sort();
-        owed
-    }
-}
 
 struct Worker {
     peer: String,
@@ -530,6 +252,41 @@ impl Manager {
             && (worker.busy || worker.demand.any_attached())
     }
 
+    fn run_restart_attempt(this: std::sync::Weak<Manager>, meta: Meta, attempt: u32) {
+        std::thread::sleep(restart_delay(attempt));
+        let Some(this) = this.upgrade() else { return };
+        let launched = {
+            let inner = this.lock();
+            if inner.detached || inner.shutting_down || inner.releasing {
+                None
+            } else if inner.by_session.contains_key(&meta.path) || inner.pending.contains_key(&meta.path) {
+                Some(Ok(()))
+            } else {
+                drop(inner);
+                Some(this.launch(&meta).map(drop))
+            }
+        };
+        match launched {
+            Some(Err(error)) => {
+                if let Some(restart) = this.lock().restarts.get_mut(&meta.path) {
+                    restart.pending = false;
+                }
+                let reason = format!("Session worker {} failed to restart: {}", meta.id, error.message);
+                this.schedule_restart(meta, Duration::ZERO, &reason);
+            }
+            Some(Ok(())) => {
+                if let Some(restart) = this.lock().restarts.get_mut(&meta.path) {
+                    restart.pending = false;
+                }
+                this.log("[ultron server info]", &format!("Session worker {} restarted", meta.id));
+            }
+            None => {
+                this.lock().restarts.remove(&meta.path);
+            }
+        }
+        this.changed.notify_all();
+    }
+
     /// Restart `meta`'s worker after a backoff, retrying launch failures; gives up after [`MAX_RESTARTS`].
     fn schedule_restart(&self, meta: Meta, uptime: Duration, reason: &str) {
         let attempt = {
@@ -566,40 +323,7 @@ impl Manager {
             ),
         );
         let this = self.me.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(restart_delay(attempt));
-            let Some(this) = this.upgrade() else { return };
-            let launched = {
-                let inner = this.lock();
-                if inner.detached || inner.shutting_down || inner.releasing {
-                    None
-                } else if inner.by_session.contains_key(&meta.path) || inner.pending.contains_key(&meta.path) {
-                    Some(Ok(()))
-                } else {
-                    drop(inner);
-                    Some(this.launch(&meta).map(drop))
-                }
-            };
-            match launched {
-                Some(Err(error)) => {
-                    if let Some(restart) = this.lock().restarts.get_mut(&meta.path) {
-                        restart.pending = false;
-                    }
-                    let reason = format!("Session worker {} failed to restart: {}", meta.id, error.message);
-                    this.schedule_restart(meta, Duration::ZERO, &reason);
-                }
-                Some(Ok(())) => {
-                    if let Some(restart) = this.lock().restarts.get_mut(&meta.path) {
-                        restart.pending = false;
-                    }
-                    this.log("[ultron server info]", &format!("Session worker {} restarted", meta.id));
-                }
-                None => {
-                    this.lock().restarts.remove(&meta.path);
-                }
-            }
-            this.changed.notify_all();
-        });
+        std::thread::spawn(move || Self::run_restart_attempt(this, meta, attempt));
     }
 
     fn coordinator(&self) -> &Arc<CoordinatorConnection> {
@@ -774,16 +498,12 @@ impl Manager {
         }
     }
 
-    fn worker_options(&self, meta: &Meta) -> Value {
-        let mut options = json!({"sessionDir": self.session_dir.display().to_string(), "metadata": meta.to_json(), "pluginManifestPaths": []});
-        let model = &self.model_for(&meta.path);
-        if model.provider.is_some() || model.model.is_some() {
-            if let Some(provider) = &model.provider {
-                options["provider"] = json!(provider);
-            }
-            if let Some(id) = &model.model {
-                options["model"] = json!(id);
-            }
+    fn write_model_options(model: &WorkerModel, options: &mut Value) {
+        if let Some(provider) = &model.provider {
+            options["provider"] = json!(provider);
+        }
+        if let Some(id) = &model.model {
+            options["model"] = json!(id);
         }
         if let Some(thinking) = &model.thinking {
             options["thinking"] = json!(thinking);
@@ -797,7 +517,12 @@ impl Manager {
         if let Some(models) = &model.models {
             options["models"] = json!(models);
         }
-        model.session.write_worker_options(&mut options);
+        model.session.write_worker_options(options);
+    }
+
+    fn worker_options(&self, meta: &Meta) -> Value {
+        let mut options = json!({"sessionDir": self.session_dir.display().to_string(), "metadata": meta.to_json(), "pluginManifestPaths": []});
+        Self::write_model_options(&self.model_for(&meta.path), &mut options);
         if let Some(defaults) = self.settings_defaults.get() {
             options["settingsDefaults"] = defaults.clone();
         }
@@ -1009,6 +734,30 @@ impl Manager {
         }
     }
 
+    fn wrap_operation_done(
+        this: Option<std::sync::Weak<Manager>>,
+        sub_key: Option<String>,
+        unsubscribe: Option<String>,
+        done: Done,
+    ) -> Done {
+        Box::new(move |result: ServiceResult| {
+            if let Some(this) = this.and_then(|w| w.upgrade()) {
+                let mut inner = this.lock();
+                if result.is_err()
+                    && let Some(key) = &sub_key
+                {
+                    inner.subscriptions.remove(key);
+                }
+                if result.is_ok()
+                    && let Some(key) = &unsubscribe
+                {
+                    inner.subscriptions.remove(key);
+                }
+            }
+            done(result);
+        })
+    }
+
     /// Route one service operation on an attachment; `done` runs with its result (on the coordinator reader).
     /// Returns the operation's request id once it was sent ([`Manager::cancel_operation`] cancels it).
     pub fn invoke(
@@ -1047,30 +796,11 @@ impl Manager {
         }
         let unsubscribe = unsubscribe_id(&call).map(|id| scoped(&scope, &id));
         let request = jsrt::random::uuid_v4();
-        let (sub_key, inner_scope) = (subscription.map(|id| scoped(&scope, &id)), scope.clone());
-        let manager_done: Done = Box::new(move |result: ServiceResult| done(result));
-        let wrapped: Done = {
-            let this = self.self_arc();
-            Box::new(move |result: ServiceResult| {
-                if let Some(this) = this.and_then(|w| w.upgrade()) {
-                    let mut inner = this.lock();
-                    if result.is_err()
-                        && let Some(key) = &sub_key
-                    {
-                        inner.subscriptions.remove(key);
-                    }
-                    if result.is_ok()
-                        && let Some(key) = &unsubscribe
-                    {
-                        inner.subscriptions.remove(key);
-                    }
-                }
-                manager_done(result);
-            })
-        };
+        let sub_key = subscription.map(|id| scoped(&scope, &id));
+        let wrapped = Self::wrap_operation_done(self.self_arc(), sub_key, unsubscribe, done);
         inner
             .operations
-            .insert(request.clone(), (handle.peer.clone(), inner_scope, wrapped));
+            .insert(request.clone(), (handle.peer.clone(), scope.clone(), wrapped));
         drop(inner);
         let sent = self.send(
             &handle.peer,
@@ -1346,34 +1076,60 @@ impl Manager {
         Some(worker)
     }
 
-    fn child_exited(&self, path: &PathBuf, peer: &str, status: Option<std::process::ExitStatus>) {
-        let describe = status.map_or("unknown".to_string(), |s| {
+    fn describe_exit(status: Option<std::process::ExitStatus>) -> String {
+        status.map_or("unknown".to_string(), |s| {
             use std::os::unix::process::ExitStatusExt;
             match (s.code(), s.signal()) {
                 (Some(code), _) => code.to_string(),
                 (None, Some(signal)) => format!("signal {signal}"),
                 _ => "unknown".into(),
             }
-        });
+        })
+    }
+
+    fn handle_pending_exit(&self, path: &PathBuf, peer: &str, describe: &str) -> bool {
         let pending_here = self
             .lock()
             .pending
             .get(path)
             .is_some_and(|p| p.peer == peer && p.outcome.is_none());
-        if pending_here {
-            let error = ServiceError::internal(format!("Session worker exited before readiness ({describe})"));
-            if self.coordinator().peer_snapshot().contains(peer) {
-                let mut inner = self.lock();
-                if let Some(pending) = inner.pending.get_mut(path)
-                    && pending.peer == peer
-                    && pending.outcome.is_none()
-                {
-                    pending.pid = 0;
-                    pending.exited = Some(error);
-                }
-                return;
+        if !pending_here {
+            return false;
+        }
+        let error = ServiceError::internal(format!("Session worker exited before readiness ({describe})"));
+        if self.coordinator().peer_snapshot().contains(peer) {
+            let mut inner = self.lock();
+            if let Some(pending) = inner.pending.get_mut(path)
+                && pending.peer == peer
+                && pending.outcome.is_none()
+            {
+                pending.pid = 0;
+                pending.exited = Some(error);
             }
-            self.fail_pending(path, error);
+            return true;
+        }
+        self.fail_pending(path, error);
+        true
+    }
+
+    fn defer_clean_exit(&self, peer: &str) {
+        let Some(worker) = self.forget(peer, None) else { return };
+        let terminated = worker.terminated.clone();
+        self.lock().exited.insert(peer.to_string(), worker);
+        let this = self.self_arc();
+        let peer = peer.to_string();
+        std::thread::spawn(move || {
+            if !terminated.wait(WORKER_SHUTDOWN_TIMEOUT)
+                && let Some(this) = this.and_then(|w| w.upgrade())
+            {
+                this.settle_exited(&peer);
+            }
+        });
+    }
+
+    fn child_exited(&self, path: &PathBuf, peer: &str, status: Option<std::process::ExitStatus>) {
+        let describe = Self::describe_exit(status);
+        if self.handle_pending_exit(path, peer, &describe) {
             return;
         }
         let inner = self.lock();
@@ -1387,19 +1143,7 @@ impl Manager {
             self.remove_worker(peer, error);
             return;
         }
-        if let Some(worker) = self.forget(peer, None) {
-            let terminated = worker.terminated.clone();
-            self.lock().exited.insert(peer.to_string(), worker);
-            let this = self.self_arc();
-            let peer = peer.to_string();
-            std::thread::spawn(move || {
-                if !terminated.wait(WORKER_SHUTDOWN_TIMEOUT)
-                    && let Some(this) = this.and_then(|w| w.upgrade())
-                {
-                    this.settle_exited(&peer);
-                }
-            });
-        }
+        self.defer_clean_exit(peer);
     }
 
     fn settle_exited(&self, peer: &str) {
@@ -1409,287 +1153,5 @@ impl Manager {
                 .then(|| format!("Session worker {} exited unexpectedly (0)", worker.meta.id));
             self.resolve_lost(worker, error);
         }
-    }
-
-    /// Coordinator events, on the coordinator connection's reader thread.
-    pub fn handle_event(&self, event: Event) {
-        if self.lock().detached {
-            return;
-        }
-        match event {
-            Event::PeerConnected(_) => {}
-            Event::PeerDisconnected(peer) => {
-                let mut inner = self.lock();
-                Self::mark_discovered(&mut inner, &peer);
-                inner.foreign.retain(|_, (p, _)| *p != peer);
-                let worker = inner
-                    .workers
-                    .get(&peer)
-                    .map(|w| (w.expected_stop || w.retiring, w.meta.id.clone()));
-                let pending = inner
-                    .pending
-                    .iter_mut()
-                    .find(|(_, p)| p.peer == peer)
-                    .map(|(k, p)| (k.clone(), p.exited.take()));
-                drop(inner);
-                self.changed.notify_all();
-                self.settle_exited(&peer);
-                if let Some((expected, id)) = worker {
-                    let error = (!expected).then(|| format!("Session worker {id} disconnected unexpectedly"));
-                    self.remove_worker(&peer, error);
-                }
-                if let Some((path, exited)) = pending {
-                    let error =
-                        exited.unwrap_or_else(|| ServiceError::internal("Session worker disconnected during startup"));
-                    self.fail_pending(&path, error);
-                }
-            }
-            Event::Message { from, payload } => self.handle_message(&from, &payload),
-        }
-    }
-
-    fn handle_message(&self, from: &str, message: &Value) {
-        let key = |m: &Value| PathBuf::from(m["sessionKey"].as_str().unwrap_or_default());
-        let token = message["token"].as_str().unwrap_or_default();
-        let mut inner = self.lock();
-        if let Some(worker) = inner.workers.get_mut(from) {
-            worker.last_seen = Instant::now();
-        }
-        let owns = |inner: &Inner, path: &PathBuf| {
-            inner
-                .workers
-                .get(from)
-                .is_some_and(|w| w.token == token && w.meta.path == *path)
-        };
-        match message["type"].as_str() {
-            Some("worker_owned") => {
-                if !inner.workers.contains_key(from) {
-                    let pid = message["pid"].as_u64().unwrap_or(0) as u32;
-                    inner.foreign.insert(key(message), (from.to_string(), pid));
-                }
-                Self::mark_discovered(&mut inner, from);
-            }
-            Some("worker_failed") => {
-                let path = key(message);
-                if inner
-                    .pending
-                    .get(&path)
-                    .is_some_and(|p| p.peer == from && p.token == token)
-                {
-                    drop(inner);
-                    let text = message["message"].as_str().unwrap_or_default();
-                    let error = match message["code"].as_str() {
-                        Some(code) => ServiceError::coded(code, text),
-                        None => ServiceError::internal(format!("Session worker failed: {text}")),
-                    };
-                    self.fail_pending(&path, error);
-                    return;
-                }
-            }
-            Some(kind @ ("demand_applied" | "demand_rejected")) => {
-                let request = message["requestId"].as_str().unwrap_or_default().to_string();
-                let path = key(message);
-                if inner.demands.get(&request).is_some_and(|(p, _)| p == from) && owns(&inner, &path) {
-                    let outcome = if kind == "demand_applied" {
-                        Ok(())
-                    } else {
-                        Err(format!(
-                            "Session worker rejected demand: {}",
-                            message["message"].as_str().unwrap_or_default()
-                        ))
-                    };
-                    if let Some(entry) = inner.demands.get_mut(&request) {
-                        entry.1 = Some(outcome);
-                    }
-                }
-                if message["attached"] == false
-                    && owns(&inner, &path)
-                    && let (Some(attachment), Some(worker)) =
-                        (message["attachmentId"].as_str(), inner.workers.get_mut(from))
-                {
-                    let outcome = match kind {
-                        "demand_applied" => Ok(()),
-                        _ => Err(DemandError::Failed(String::new())),
-                    };
-                    worker.demand.settle(attachment, false, &outcome);
-                }
-            }
-            Some("worker_retiring") => {
-                let path = key(message);
-                for worker in [inner.workers.get_mut(from)].into_iter().flatten() {
-                    if worker.token == token && worker.meta.path == path {
-                        worker.retiring = true;
-                    }
-                }
-                if let Some(worker) = inner.exited.get_mut(from)
-                    && worker.token == token
-                {
-                    worker.retiring = true;
-                }
-            }
-            Some("worker_released") => {
-                let request = message["requestId"].as_str().unwrap_or_default().to_string();
-                let path = key(message);
-                let valid = owns(&inner, &path);
-                if let Some(release) = inner.releases.get_mut(&request)
-                    && release.0 == from
-                    && valid
-                {
-                    release.1 = message["retained"].as_bool();
-                    release.2 = true;
-                }
-            }
-            Some("operation_response") => {
-                let response = &message["response"];
-                let request = response["requestId"].as_str().unwrap_or_default().to_string();
-                let path = key(message);
-                let valid = owns(&inner, &path);
-                let Some((peer, scope, done)) = inner.operations.remove(&request) else {
-                    return;
-                };
-                drop(inner);
-                let result = if peer != from || !valid || response["scope"] != scope {
-                    Err(ServiceError::internal(
-                        "Session worker returned a mismatched operation response",
-                    ))
-                } else if response["type"] == "operation_error" {
-                    let text = response["message"].as_str().unwrap_or_default();
-                    Err(match response["code"].as_str() {
-                        Some(code) => ServiceError::coded(code, text),
-                        None => ServiceError::internal(format!("Session worker operation failed: {text}")),
-                    })
-                } else {
-                    Ok(response.get("result").cloned())
-                };
-                done(result);
-                return;
-            }
-            Some("service_update") => {
-                let subscription = message["subscriptionId"].as_str().unwrap_or_default();
-                let path = key(message);
-                let valid = owns(&inner, &path);
-                let entry = inner
-                    .subscriptions
-                    .get(&scoped(&message["scope"], subscription))
-                    .cloned();
-                drop(inner);
-                if let Some((peer, publish)) = entry
-                    && peer == from
-                    && valid
-                {
-                    publish(subscription, message["update"].clone());
-                }
-                return;
-            }
-            Some("worker_schedules") => {
-                let path = key(message);
-                let meta = inner
-                    .workers
-                    .get(from)
-                    .filter(|_| owns(&inner, &path))
-                    .map(|w| w.meta.clone());
-                drop(inner);
-                if let (Some(meta), Some(listener)) = (meta, self.schedules.get()) {
-                    listener(&meta, &message["schedules"]);
-                }
-                return;
-            }
-            Some("worker_ready") => {
-                drop(inner);
-                self.record_ready(from, message);
-                return;
-            }
-            Some("worker_status") => {
-                let path = key(message);
-                if !owns(&inner, &path) {
-                    return;
-                }
-                let health = &message["health"];
-                let stuck = health["stuck"] == true;
-                let Some(worker) = inner.workers.get_mut(from) else {
-                    return;
-                };
-                worker.busy = message["busy"] == true;
-                let newly_stuck = stuck && !worker.stuck;
-                worker.stuck = stuck;
-                let id = worker.meta.id.clone();
-                drop(inner);
-                if newly_stuck {
-                    self.log(
-                        "[ultron server warning]",
-                        &format!(
-                            "Session {id}: run {} made no progress for {} ms (stuck); abort it with ultron.session-ops abortStuck",
-                            health["runId"].as_str().unwrap_or_default(),
-                            health["idleMs"]
-                        ),
-                    );
-                }
-                return;
-            }
-            _ => {}
-        }
-        drop(inner);
-        self.changed.notify_all();
-    }
-
-    fn record_ready(&self, peer: &str, message: &Value) {
-        let Some(meta) = Meta::from_json(&message["metadata"]) else {
-            return;
-        };
-        let path = PathBuf::from(message["sessionKey"].as_str().unwrap_or_default());
-        if path != meta.path
-            || message["sessionId"] != json!(meta.id)
-            || !std::path::Path::new(&meta.cwd).is_absolute()
-            || !meta.path.is_absolute()
-        {
-            return;
-        }
-        let token = message["token"].as_str().unwrap_or_default().to_string();
-        let pid = message["pid"].as_u64().unwrap_or(0) as u32;
-        let mut inner = self.lock();
-        Self::mark_discovered(&mut inner, peer);
-        if inner.foreign.get(&path).is_some_and(|(p, _)| p == peer) {
-            inner.foreign.remove(&path);
-        }
-        if let Some(existing) = inner.by_session.get(&path)
-            && existing != peer
-        {
-            drop(inner);
-            let _ = self.send(peer, json!({"type": "shutdown"}));
-            return;
-        }
-        if let Some(pending) = inner.pending.get(&path)
-            && (pending.peer != peer || pending.token != token || pending.pid != pid)
-        {
-            return;
-        }
-        if inner.by_session.contains_key(&path) {
-            return;
-        }
-        inner.workers.insert(
-            peer.to_string(),
-            Worker {
-                peer: peer.to_string(),
-                meta,
-                pid,
-                token,
-                demand: DemandLedger::default(),
-                expected_stop: false,
-                retiring: false,
-                stopping: false,
-                terminated: Arc::new(Terminated::default()),
-                busy: message["busy"] == true,
-                stuck: false,
-                last_seen: Instant::now(),
-                started: Instant::now(),
-            },
-        );
-        inner.by_session.insert(path.clone(), peer.to_string());
-        if let Some(pending) = inner.pending.get_mut(&path) {
-            pending.outcome = Some(Ok(peer.to_string()));
-        }
-        self.notify_count(&inner);
-        drop(inner);
-        self.changed.notify_all();
     }
 }

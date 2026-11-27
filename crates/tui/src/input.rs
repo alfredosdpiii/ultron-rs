@@ -2,6 +2,7 @@
 
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::attachments::{BracketedChunk, buffer_bracketed_paste};
 use crate::components::Component;
 use crate::editing::{KillRing, find_word_backward, find_word_forward, next_grapheme_len, prev_grapheme_len};
 use crate::frame::CURSOR_MARKER;
@@ -104,127 +105,192 @@ impl Input {
     pub fn move_cursor_to_end(&mut self) {
         self.cursor = self.value.len();
     }
+}
 
+type InputAction = fn(&mut Input);
+
+const INPUT_ACTIONS: &[(&str, InputAction)] = &[
+    ("tui.editor.deleteCharBackward", Input::delete_char_backward),
+    ("tui.editor.deleteCharForward", Input::delete_char_forward),
+    ("tui.editor.deleteWordBackward", Input::delete_word_backward),
+    ("tui.editor.deleteWordForward", Input::delete_word_forward),
+    ("tui.editor.deleteToLineStart", Input::delete_to_line_start),
+    ("tui.editor.deleteToLineEnd", Input::delete_to_line_end),
+    ("tui.editor.yank", Input::yank),
+    ("tui.editor.yankPop", Input::yank_pop),
+    ("tui.editor.cursorLeft", Input::move_left),
+    ("tui.editor.cursorRight", Input::move_right),
+    ("tui.editor.cursorLineStart", Input::move_line_start),
+    ("tui.editor.cursorLineEnd", Input::move_line_end),
+    ("tui.editor.cursorWordLeft", Input::move_word_left),
+    ("tui.editor.cursorWordRight", Input::move_word_right),
+];
+
+impl Input {
     pub fn handle_input(&mut self, data: &str) -> Option<InputEvent> {
-        let mut data = data.to_string();
-        if data.contains("\x1b[200~") {
-            self.in_paste = true;
-            self.paste_buffer.clear();
-            data = data.replacen("\x1b[200~", "", 1);
+        if let Some(res) = self.handle_paste_input(data) {
+            return res;
         }
-        if self.in_paste {
-            self.paste_buffer.push_str(&data);
-            if let Some(end) = self.paste_buffer.find("\x1b[201~") {
-                let content = self.paste_buffer[..end].to_string();
-                let remaining = self.paste_buffer[end + 6..].to_string();
-                self.handle_paste(&content);
-                self.in_paste = false;
-                self.paste_buffer.clear();
-                if !remaining.is_empty() {
-                    return self.handle_input(&remaining);
-                }
-            }
-            return None;
-        }
-        let kb = |id: &str| self.keys.matches(&data, id);
-        if kb("tui.select.cancel") {
+        if self.keys.matches(data, "tui.select.cancel") {
             return Some(InputEvent::Escape);
         }
-        if kb("tui.editor.undo") {
+        if self.keys.matches(data, "tui.editor.undo") {
             self.undo();
-        } else if kb("tui.input.submit") || data == "\n" {
+            return None;
+        }
+        if self.keys.matches(data, "tui.input.submit") || data == "\n" {
             return Some(InputEvent::Submit(self.value.clone()));
-        } else if kb("tui.editor.deleteCharBackward") {
-            self.last_action = None;
-            if self.cursor > 0 {
-                self.push_undo();
-                let n = prev_grapheme_len(&self.value, self.cursor);
-                self.value.replace_range(self.cursor - n..self.cursor, "");
-                self.cursor -= n;
+        }
+        if self.dispatch_input_action(data) {
+            return None;
+        }
+        self.handle_printable_fallback(data);
+        None
+    }
+
+    fn handle_paste_input(&mut self, data: &str) -> Option<Option<InputEvent>> {
+        match buffer_bracketed_paste(&mut self.in_paste, &mut self.paste_buffer, data) {
+            BracketedChunk::NotInPaste => None,
+            BracketedChunk::Buffering => Some(None),
+            BracketedChunk::Complete { content, remaining } => {
+                self.handle_paste(&content);
+                if !remaining.is_empty() {
+                    return Some(self.handle_input(&remaining));
+                }
+                Some(None)
             }
-        } else if kb("tui.editor.deleteCharForward") {
-            self.last_action = None;
-            if self.cursor < self.value.len() {
-                self.push_undo();
-                let n = next_grapheme_len(&self.value, self.cursor);
-                self.value.replace_range(self.cursor..self.cursor + n, "");
+        }
+    }
+
+    fn dispatch_input_action(&mut self, data: &str) -> bool {
+        for &(id, action) in INPUT_ACTIONS {
+            if self.keys.matches(data, id) {
+                action(self);
+                return true;
             }
-        } else if kb("tui.editor.deleteWordBackward") {
-            if self.cursor > 0 {
-                let was_kill = self.last_action == Some(LastAction::Kill);
-                self.push_undo();
-                let from = find_word_backward(&self.value, self.cursor);
-                self.kill(from, self.cursor, true, was_kill);
-                self.cursor = from;
-            }
-        } else if kb("tui.editor.deleteWordForward") {
-            if self.cursor < self.value.len() {
-                let was_kill = self.last_action == Some(LastAction::Kill);
-                self.push_undo();
-                let to = find_word_forward(&self.value, self.cursor);
-                self.kill(self.cursor, to, false, was_kill);
-            }
-        } else if kb("tui.editor.deleteToLineStart") {
-            if self.cursor > 0 {
-                self.push_undo();
-                let was_kill = self.last_action == Some(LastAction::Kill);
-                self.kill(0, self.cursor, true, was_kill);
-                self.cursor = 0;
-            }
-        } else if kb("tui.editor.deleteToLineEnd") {
-            if self.cursor < self.value.len() {
-                self.push_undo();
-                let was_kill = self.last_action == Some(LastAction::Kill);
-                self.kill(self.cursor, self.value.len(), false, was_kill);
-            }
-        } else if kb("tui.editor.yank") {
-            if let Some(text) = self.kill_ring.peek().filter(|t| !t.is_empty()).map(str::to_string) {
-                self.push_undo();
-                self.insert(&text);
-                self.last_action = Some(LastAction::Yank);
-            }
-        } else if kb("tui.editor.yankPop") {
-            if self.last_action == Some(LastAction::Yank) && self.kill_ring.len() > 1 {
-                self.push_undo();
-                let prev = self.kill_ring.peek().unwrap_or_default().len();
-                self.value.replace_range(self.cursor - prev..self.cursor, "");
-                self.cursor -= prev;
-                self.kill_ring.rotate();
-                let text = self.kill_ring.peek().unwrap_or_default().to_string();
-                self.insert(&text);
-                self.last_action = Some(LastAction::Yank);
-            }
-        } else if kb("tui.editor.cursorLeft") {
-            self.last_action = None;
-            self.cursor -= prev_grapheme_len(&self.value, self.cursor);
-        } else if kb("tui.editor.cursorRight") {
-            self.last_action = None;
-            self.cursor += next_grapheme_len(&self.value, self.cursor);
-        } else if kb("tui.editor.cursorLineStart") {
-            self.last_action = None;
-            self.cursor = 0;
-        } else if kb("tui.editor.cursorLineEnd") {
-            self.last_action = None;
-            self.cursor = self.value.len();
-        } else if kb("tui.editor.cursorWordLeft") {
-            if self.cursor > 0 {
-                self.last_action = None;
-                self.cursor = find_word_backward(&self.value, self.cursor);
-            }
-        } else if kb("tui.editor.cursorWordRight") {
-            if self.cursor < self.value.len() {
-                self.last_action = None;
-                self.cursor = find_word_forward(&self.value, self.cursor);
-            }
-        } else if let Some(ch) = data.ends_with('u').then(|| decode_printable_key(&data)).flatten() {
+        }
+        false
+    }
+
+    fn handle_printable_fallback(&mut self, data: &str) {
+        if let Some(ch) = data.ends_with('u').then(|| decode_printable_key(data)).flatten() {
             self.insert_character(&ch);
         } else if !data
             .chars()
             .any(|c| (c as u32) < 32 || (0x7f..=0x9f).contains(&(c as u32)))
         {
-            self.insert_character(&data);
+            self.insert_character(data);
         }
-        None
+    }
+
+    fn delete_char_backward(&mut self) {
+        self.last_action = None;
+        if self.cursor > 0 {
+            self.push_undo();
+            let n = prev_grapheme_len(&self.value, self.cursor);
+            self.value.replace_range(self.cursor - n..self.cursor, "");
+            self.cursor -= n;
+        }
+    }
+
+    fn delete_char_forward(&mut self) {
+        self.last_action = None;
+        if self.cursor < self.value.len() {
+            self.push_undo();
+            let n = next_grapheme_len(&self.value, self.cursor);
+            self.value.replace_range(self.cursor..self.cursor + n, "");
+        }
+    }
+
+    fn delete_word_backward(&mut self) {
+        if self.cursor > 0 {
+            let was_kill = self.last_action == Some(LastAction::Kill);
+            self.push_undo();
+            let from = find_word_backward(&self.value, self.cursor);
+            self.kill(from, self.cursor, true, was_kill);
+            self.cursor = from;
+        }
+    }
+
+    fn delete_word_forward(&mut self) {
+        if self.cursor < self.value.len() {
+            let was_kill = self.last_action == Some(LastAction::Kill);
+            self.push_undo();
+            let to = find_word_forward(&self.value, self.cursor);
+            self.kill(self.cursor, to, false, was_kill);
+        }
+    }
+
+    fn delete_to_line_start(&mut self) {
+        if self.cursor > 0 {
+            self.push_undo();
+            let was_kill = self.last_action == Some(LastAction::Kill);
+            self.kill(0, self.cursor, true, was_kill);
+            self.cursor = 0;
+        }
+    }
+
+    fn delete_to_line_end(&mut self) {
+        if self.cursor < self.value.len() {
+            self.push_undo();
+            let was_kill = self.last_action == Some(LastAction::Kill);
+            self.kill(self.cursor, self.value.len(), false, was_kill);
+        }
+    }
+
+    fn yank(&mut self) {
+        if let Some(text) = self.kill_ring.peek().filter(|t| !t.is_empty()).map(str::to_string) {
+            self.push_undo();
+            self.insert(&text);
+            self.last_action = Some(LastAction::Yank);
+        }
+    }
+
+    fn yank_pop(&mut self) {
+        if self.last_action == Some(LastAction::Yank) && self.kill_ring.len() > 1 {
+            self.push_undo();
+            let prev = self.kill_ring.peek().unwrap_or_default().len();
+            self.value.replace_range(self.cursor - prev..self.cursor, "");
+            self.cursor -= prev;
+            self.kill_ring.rotate();
+            let text = self.kill_ring.peek().unwrap_or_default().to_string();
+            self.insert(&text);
+            self.last_action = Some(LastAction::Yank);
+        }
+    }
+
+    fn move_left(&mut self) {
+        self.last_action = None;
+        self.cursor -= prev_grapheme_len(&self.value, self.cursor);
+    }
+
+    fn move_right(&mut self) {
+        self.last_action = None;
+        self.cursor += next_grapheme_len(&self.value, self.cursor);
+    }
+
+    fn move_line_start(&mut self) {
+        self.last_action = None;
+        self.cursor = 0;
+    }
+
+    fn move_line_end(&mut self) {
+        self.last_action = None;
+        self.cursor = self.value.len();
+    }
+
+    fn move_word_left(&mut self) {
+        if self.cursor > 0 {
+            self.last_action = None;
+            self.cursor = find_word_backward(&self.value, self.cursor);
+        }
+    }
+
+    fn move_word_right(&mut self) {
+        if self.cursor < self.value.len() {
+            self.last_action = None;
+            self.cursor = find_word_forward(&self.value, self.cursor);
+        }
     }
 
     fn kill(&mut self, from: usize, to: usize, prepend: bool, accumulate: bool) {
@@ -294,6 +360,57 @@ impl Input {
             ..MouseResult::default()
         })
     }
+
+    fn masked_value_and_cursor(&self) -> (String, usize) {
+        match &self.mask {
+            None => (self.value.clone(), self.cursor),
+            Some(m) => (
+                m.repeat(graphemes(&self.value)),
+                m.len() * graphemes(&self.value[..self.cursor]),
+            ),
+        }
+    }
+
+    fn render_placeholder(&self, available: usize, marker: &str) -> String {
+        let ph = truncate_to_width(&self.placeholder, available, "", false);
+        let at = ph.graphemes(true).next().unwrap_or(" ");
+        let after = if at.len() <= ph.len() { &ph[at.len()..] } else { "" };
+        let style = &self.placeholder_style;
+        let text = format!("{marker}\x1b[7m{}\x1b[27m{}", style(at), style(after));
+        let pad = " ".repeat(available.saturating_sub(visible_width(&text)));
+        format!("{}{text}{pad}", self.prompt)
+    }
+
+    fn compute_scroll_window(&mut self, value: &str, cursor: usize, available: usize) -> (String, usize) {
+        self.rendered_start_column = 0;
+        let total = visible_width(value);
+        if total < available {
+            return (value.to_string(), cursor);
+        }
+        let scroll = if cursor == value.len() {
+            available - 1
+        } else {
+            available
+        };
+        if scroll == 0 {
+            return (String::new(), 0);
+        }
+        let cursor_col = visible_width(&value[..cursor]);
+        let half = scroll / 2;
+        let start = if cursor_col < half {
+            0
+        } else if cursor_col > total.saturating_sub(half) {
+            total.saturating_sub(scroll)
+        } else {
+            cursor_col.saturating_sub(half)
+        };
+        self.rendered_start_column = start;
+        let visible = slice_with_width(value, start, scroll, true).0;
+        let cursor_display = slice_with_width(value, start, cursor_col.saturating_sub(start), true)
+            .0
+            .len();
+        (visible, cursor_display)
+    }
 }
 
 impl Component for Input {
@@ -304,52 +421,11 @@ impl Component for Input {
         }
         let available = width - prompt_w;
         let marker = if self.focused { CURSOR_MARKER } else { "" };
-        let (value, cursor) = match &self.mask {
-            None => (self.value.clone(), self.cursor),
-            Some(m) => (
-                m.repeat(graphemes(&self.value)),
-                m.len() * graphemes(&self.value[..self.cursor]),
-            ),
-        };
+        let (value, cursor) = self.masked_value_and_cursor();
         if value.is_empty() && !self.placeholder.is_empty() {
-            let ph = truncate_to_width(&self.placeholder, available, "", false);
-            let at = ph.graphemes(true).next().unwrap_or(" ");
-            let after = if at.len() <= ph.len() { &ph[at.len()..] } else { "" };
-            let style = &self.placeholder_style;
-            let text = format!("{marker}\x1b[7m{}\x1b[27m{}", style(at), style(after));
-            let pad = " ".repeat(available.saturating_sub(visible_width(&text)));
-            return vec![format!("{}{text}{pad}", self.prompt)];
+            return vec![self.render_placeholder(available, marker)];
         }
-        let mut visible = value.clone();
-        let mut cursor_display = cursor;
-        self.rendered_start_column = 0;
-        let total = visible_width(&value);
-        if total >= available {
-            let scroll = if cursor == value.len() {
-                available - 1
-            } else {
-                available
-            };
-            let cursor_col = visible_width(&value[..cursor]);
-            if scroll > 0 {
-                let half = scroll / 2;
-                let start = if cursor_col < half {
-                    0
-                } else if cursor_col > total.saturating_sub(half) {
-                    total.saturating_sub(scroll)
-                } else {
-                    cursor_col.saturating_sub(half)
-                };
-                self.rendered_start_column = start;
-                visible = slice_with_width(&value, start, scroll, true).0;
-                cursor_display = slice_with_width(&value, start, cursor_col.saturating_sub(start), true)
-                    .0
-                    .len();
-            } else {
-                visible.clear();
-                cursor_display = 0;
-            }
-        }
+        let (visible, cursor_display) = self.compute_scroll_window(&value, cursor, available);
         let at = visible[cursor_display..].graphemes(true).next().unwrap_or(" ");
         let after = visible.get(cursor_display + at.len()..).unwrap_or("");
         let text = format!("{}{marker}\x1b[7m{at}\x1b[27m{after}", &visible[..cursor_display]);

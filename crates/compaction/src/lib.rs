@@ -133,6 +133,43 @@ fn truncate_for_summary(text: &str, max_chars: usize) -> String {
     )
 }
 
+fn format_tool_call(block: &Value) -> String {
+    let args = match block.get("arguments") {
+        Some(Value::Object(map)) => jsrt::json::object_entries(map)
+            .into_iter()
+            .map(|(k, v)| format!("{k}={}", jsrt::json::stringify(v)))
+            .collect::<Vec<_>>()
+            .join(", "),
+        _ => String::new(),
+    };
+    format!("{}({args})", js::join_string(block.get("name")))
+}
+
+fn push_assistant_parts(message: &Value, parts: &mut Vec<String>) {
+    let blocks = message
+        .get("content")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    let mut thinking = Vec::new();
+    let mut calls = Vec::new();
+    for block in blocks {
+        match str_of(block, "type") {
+            Some("thinking") => thinking.push(js::join_string(block.get("thinking"))),
+            Some("toolCall") => calls.push(format_tool_call(block)),
+            _ => {}
+        }
+    }
+    if !thinking.is_empty() {
+        parts.push(format!("[Assistant thinking]: {}", thinking.join("\n")));
+    }
+    if blocks.iter().any(|b| str_of(b, "type") == Some("text")) {
+        parts.push(format!("[Assistant]: {}", content_text(message.get("content"), "\n")));
+    }
+    if !calls.is_empty() {
+        parts.push(format!("[Assistant tool calls]: {}", calls.join("; ")));
+    }
+}
+
 /// `serializeConversation`: LLM messages (see [`convert_to_llm`]) as `[Role]: ...` text, so the summarizer reads the
 /// transcript instead of continuing it. Tool results are cut to 2000 characters.
 pub fn serialize_conversation(messages: &[Value]) -> String {
@@ -145,40 +182,7 @@ pub fn serialize_conversation(messages: &[Value]) -> String {
                     parts.push(format!("[User]: {content}"));
                 }
             }
-            Some("assistant") => {
-                let blocks = message
-                    .get("content")
-                    .and_then(Value::as_array)
-                    .map_or(&[][..], Vec::as_slice);
-                let mut thinking = Vec::new();
-                let mut calls = Vec::new();
-                for block in blocks {
-                    match str_of(block, "type") {
-                        Some("thinking") => thinking.push(js::join_string(block.get("thinking"))),
-                        Some("toolCall") => {
-                            let args = match block.get("arguments") {
-                                Some(Value::Object(map)) => jsrt::json::object_entries(map)
-                                    .into_iter()
-                                    .map(|(k, v)| format!("{k}={}", jsrt::json::stringify(v)))
-                                    .collect::<Vec<_>>()
-                                    .join(", "),
-                                _ => String::new(),
-                            };
-                            calls.push(format!("{}({args})", js::join_string(block.get("name"))));
-                        }
-                        _ => {}
-                    }
-                }
-                if !thinking.is_empty() {
-                    parts.push(format!("[Assistant thinking]: {}", thinking.join("\n")));
-                }
-                if blocks.iter().any(|b| str_of(b, "type") == Some("text")) {
-                    parts.push(format!("[Assistant]: {}", content_text(message.get("content"), "\n")));
-                }
-                if !calls.is_empty() {
-                    parts.push(format!("[Assistant tool calls]: {}", calls.join("; ")));
-                }
-            }
+            Some("assistant") => push_assistant_parts(message, &mut parts),
             Some("toolResult") => {
                 let content = content_text(message.get("content"), "");
                 if !content.is_empty() {
@@ -504,6 +508,48 @@ fn is_projected_turn_start(entry: &ProjectedEntry<'_>) -> bool {
     source_type(entry) != Some("compaction") && entry.messages.iter().any(is_turn_start_message)
 }
 
+fn is_visible_projected(entry: &ProjectedEntry<'_>) -> bool {
+    source_type(entry) != Some("context_edit") && !session_file::entry_messages(entry.source).is_empty()
+}
+
+fn is_omitted_projected(entry: &ProjectedEntry<'_>) -> bool {
+    is_visible_projected(entry) && entry.messages.is_empty()
+}
+
+fn is_recovery_suffix(suffix: &[ProjectedEntry<'_>]) -> bool {
+    let omitted_ids: HashSet<String> = suffix
+        .iter()
+        .filter(|e| is_omitted_projected(e))
+        .map(|e| id_key(e.source.get("id")))
+        .collect();
+    let external_replacement = suffix.iter().any(|e| {
+        source_type(e) == Some("context_edit")
+            && e.source.get("replacement") != Some(&Value::Null)
+            && !omitted_ids.contains(&id_key(e.source.get("targetId")))
+    });
+    let has_omitted_assistant = suffix.iter().any(|e| {
+        source_type(e) == Some("message")
+            && e.source.get("message").and_then(role) == Some("assistant")
+            && is_omitted_projected(e)
+    });
+    !external_replacement
+        && has_omitted_assistant
+        && suffix
+            .iter()
+            .all(|e| source_type(e) != Some("compaction") && (!is_visible_projected(e) || is_omitted_projected(e)))
+}
+
+fn rewind_empty_projected(entries: &[ProjectedEntry<'_>], start: usize, mut cut: usize) -> usize {
+    while cut > start {
+        let previous = &entries[cut - 1];
+        if source_type(previous) == Some("compaction") || !previous.messages.is_empty() {
+            break;
+        }
+        cut -= 1;
+    }
+    cut
+}
+
 /// `findProjectedCutPoint`: [`find_cut_point`] over context-edited entries.
 fn find_projected_cut_point(entries: &[ProjectedEntry<'_>], start: usize, end: usize, keep: u64) -> CutPoint {
     let cut_points: Vec<usize> = (start..end)
@@ -521,43 +567,11 @@ fn find_projected_cut_point(entries: &[ProjectedEntry<'_>], start: usize, end: u
     let (mut cut, exceeded) = budget_cut(&cut_points, start, end, keep, |i| {
         entries[i].messages.iter().map(estimate_tokens).sum()
     });
-
     let suffix = entries.get(cut + 1..end).unwrap_or_default();
-    let visible = |e: &ProjectedEntry<'_>| {
-        source_type(e) != Some("context_edit") && !session_file::entry_messages(e.source).is_empty()
-    };
-    let omitted = |e: &ProjectedEntry<'_>| visible(e) && e.messages.is_empty();
-    let omitted_ids: HashSet<String> = suffix
-        .iter()
-        .filter(|e| omitted(e))
-        .map(|e| id_key(e.source.get("id")))
-        .collect();
-    let external_replacement = suffix.iter().any(|e| {
-        source_type(e) == Some("context_edit")
-            && e.source.get("replacement") != Some(&Value::Null)
-            && !omitted_ids.contains(&id_key(e.source.get("targetId")))
-    });
-    let recovery_suffix = exceeded
-        && !external_replacement
-        && suffix.iter().any(|e| {
-            source_type(e) == Some("message")
-                && e.source.get("message").and_then(role) == Some("assistant")
-                && omitted(e)
-        })
-        && suffix
-            .iter()
-            .all(|e| source_type(e) != Some("compaction") && (!visible(e) || omitted(e)));
-    if recovery_suffix {
+    if exceeded && is_recovery_suffix(suffix) {
         cut += 1;
     }
-
-    while cut > start {
-        let previous = &entries[cut - 1];
-        if source_type(previous) == Some("compaction") || !previous.messages.is_empty() {
-            break;
-        }
-        cut -= 1;
-    }
+    cut = rewind_empty_projected(entries, start, cut);
     let starts_turn = is_projected_turn_start(&entries[cut]);
     let turn_start_index = if starts_turn {
         None
@@ -622,6 +636,39 @@ fn add_recorded_files(entry: &Value, ops: &mut FileOperations) {
     ops.edited.extend(files("modifiedFiles"));
 }
 
+fn split_compaction_messages(
+    entries: &[ProjectedEntry<'_>],
+    boundary_start: usize,
+    cut: &CutPoint,
+) -> (Vec<Value>, Vec<Value>) {
+    let history_end = match cut.turn_start_index {
+        Some(turn_start) if cut.is_split_turn => turn_start,
+        _ => cut.first_kept_entry_index,
+    };
+    let messages_to_summarize = summary_messages(entries.get(boundary_start..history_end).unwrap_or_default());
+    let turn_prefix_messages = match cut.turn_start_index {
+        Some(turn_start) if cut.is_split_turn => summary_messages(&entries[turn_start..cut.first_kept_entry_index]),
+        _ => Vec::new(),
+    };
+    (messages_to_summarize, turn_prefix_messages)
+}
+
+fn collect_compaction_file_ops(
+    entries: &[ProjectedEntry<'_>],
+    prev_compaction: Option<usize>,
+    messages_to_summarize: &[Value],
+    turn_prefix_messages: &[Value],
+) -> FileOperations {
+    let mut file_ops = FileOperations::default();
+    if let Some(i) = prev_compaction {
+        add_recorded_files(entries[i].source, &mut file_ops);
+    }
+    for message in messages_to_summarize.iter().chain(turn_prefix_messages) {
+        extract_file_ops_from_message(message, &mut file_ops);
+    }
+    file_ops
+}
+
 /// `prepareCompaction`: picks the cut on the session path and collects what to summarize. `None` when the path
 /// ends in a compaction or nothing would be summarized.
 pub fn prepare_compaction(path_entries: &[Value], settings: CompactionSettings) -> Option<CompactionPreparation> {
@@ -639,32 +686,16 @@ pub fn prepare_compaction(path_entries: &[Value], settings: CompactionSettings) 
     let boundary_start = prev_compaction.map_or(0, |i| i + 1);
     let tokens_before = estimate_projected_context_tokens(&projection, path_entries).tokens;
     let cut = find_projected_cut_point(entries, boundary_start, entries.len(), settings.keep_recent_tokens);
-
     let first_kept_entry_id = entries
         .get(cut.first_kept_entry_index)
         .and_then(|e| str_of(e.source, "id"))
         .filter(|id| !id.is_empty())?
         .to_string();
-    let history_end = match cut.turn_start_index {
-        Some(turn_start) if cut.is_split_turn => turn_start,
-        _ => cut.first_kept_entry_index,
-    };
-    let messages_to_summarize = summary_messages(entries.get(boundary_start..history_end).unwrap_or_default());
-    let turn_prefix_messages = match cut.turn_start_index {
-        Some(turn_start) if cut.is_split_turn => summary_messages(&entries[turn_start..cut.first_kept_entry_index]),
-        _ => Vec::new(),
-    };
+    let (messages_to_summarize, turn_prefix_messages) = split_compaction_messages(entries, boundary_start, &cut);
     if messages_to_summarize.is_empty() && turn_prefix_messages.is_empty() {
         return None;
     }
-
-    let mut file_ops = FileOperations::default();
-    if let Some(i) = prev_compaction {
-        add_recorded_files(entries[i].source, &mut file_ops);
-    }
-    for message in messages_to_summarize.iter().chain(&turn_prefix_messages) {
-        extract_file_ops_from_message(message, &mut file_ops);
-    }
+    let file_ops = collect_compaction_file_ops(entries, prev_compaction, &messages_to_summarize, &turn_prefix_messages);
     Some(CompactionPreparation {
         first_kept_entry_id,
         messages_to_summarize,
@@ -1038,6 +1069,28 @@ async fn summarize_parts(
     Ok((previous.unwrap_or_default(), usage.unwrap_or_default()))
 }
 
+async fn summarize_split_turn(
+    prefix: &[Value],
+    previous: Option<String>,
+    reserve: u64,
+    options: &CompactOptions<'_>,
+    call: &mut impl AsyncFnMut(SummaryRequest) -> AssistantMessage,
+) -> Result<(String, Usage), String> {
+    const LABEL: &str = "Turn prefix summarization";
+    let request = turn_prefix_request(prefix, reserve, options);
+    match summarize(request, LABEL, call).await {
+        Ok((prefix_text, used)) => {
+            let history = previous.unwrap_or_else(|| NO_PRIOR_HISTORY.to_string());
+            Ok((split_turn_summary(&history, &prefix_text), used))
+        }
+        Err(failure) if failure.too_long && prefix.len() > 1 => {
+            let (first, rest) = prefix.split_at(halfway(prefix));
+            summarize_parts(vec![first, rest], previous, LABEL, reserve, options, call).await
+        }
+        Err(failure) => Err(failure.message),
+    }
+}
+
 /// `compact`: summarizes a prepared compaction through `call` (history, then the split turn's prefix when cutting
 /// mid-turn) and appends the file lists.
 pub async fn compact(
@@ -1055,24 +1108,11 @@ pub async fn compact(
         let (text, used) = summarize_parts(history, previous, "Summarization", reserve, options, &mut call).await?;
         (previous, usage) = (Some(text), Some(used));
     }
-    let plus = |used: Usage| usage.as_ref().map_or(used.clone(), |sum| combine_usage(sum, &used));
     let (mut summary, usage) = if split {
-        const LABEL: &str = "Turn prefix summarization";
-        let prefix = &prep.turn_prefix_messages[..];
-        let request = turn_prefix_request(prefix, reserve, options);
-        match summarize(request, LABEL, &mut call).await {
-            Ok((prefix_text, used)) => {
-                let history = previous.unwrap_or_else(|| NO_PRIOR_HISTORY.to_string());
-                (split_turn_summary(&history, &prefix_text), plus(used))
-            }
-            Err(failure) if failure.too_long && prefix.len() > 1 => {
-                let (first, rest) = prefix.split_at(halfway(prefix));
-                let (text, used) =
-                    summarize_parts(vec![first, rest], previous, LABEL, reserve, options, &mut call).await?;
-                (text, plus(used))
-            }
-            Err(failure) => return Err(failure.message),
-        }
+        let (text, used) =
+            summarize_split_turn(&prep.turn_prefix_messages, previous, reserve, options, &mut call).await?;
+        let total = usage.as_ref().map_or(used.clone(), |sum| combine_usage(sum, &used));
+        (text, total)
     } else {
         (previous.unwrap_or_default(), usage.unwrap_or_default())
     };

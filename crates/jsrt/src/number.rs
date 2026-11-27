@@ -26,6 +26,28 @@ pub fn safe_integer(value: &Value) -> Option<i64> {
     is_safe_integer(f).then_some(f as i64)
 }
 
+fn format_exponential(digits: &str, exponent: i64) -> String {
+    let sign = if exponent < 0 { '-' } else { '+' };
+    if digits.len() == 1 {
+        format!("{digits}e{sign}{}", exponent.abs())
+    } else {
+        format!("{}.{}e{sign}{}", &digits[..1], &digits[1..], exponent.abs())
+    }
+}
+
+fn format_decimal_body(digits: &str, n: i64) -> String {
+    let k = digits.len() as i64;
+    if k <= n && n <= 21 {
+        format!("{digits}{}", "0".repeat((n - k) as usize))
+    } else if 0 < n && n <= 21 {
+        format!("{}.{}", &digits[..n as usize], &digits[n as usize..])
+    } else if -6 < n && n <= 0 {
+        format!("0.{}{digits}", "0".repeat((-n) as usize))
+    } else {
+        format_exponential(digits, n - 1)
+    }
+}
+
 /// `String(x)`: `Number.prototype.toString()` with the shortest round-tripping digits, positional notation for
 /// 1e-7 < |x| < 1e21 and `1e+21` / `1e-7` exponent notation outside it. `-0` is `"0"`.
 pub fn to_string(x: f64) -> String {
@@ -42,24 +64,8 @@ pub fn to_string(x: f64) -> String {
     let sci = format!("{:e}", x.abs());
     let (mantissa, exponent) = sci.split_once('e').unwrap_or((&sci, "0"));
     let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
-    let k = digits.len() as i64;
     let n = exponent.parse::<i64>().unwrap_or(0) + 1;
-    let body = if k <= n && n <= 21 {
-        format!("{digits}{}", "0".repeat((n - k) as usize))
-    } else if 0 < n && n <= 21 {
-        format!("{}.{}", &digits[..n as usize], &digits[n as usize..])
-    } else if -6 < n && n <= 0 {
-        format!("0.{}{digits}", "0".repeat((-n) as usize))
-    } else {
-        let e = n - 1;
-        let e_sign = if e < 0 { '-' } else { '+' };
-        if k == 1 {
-            format!("{digits}e{e_sign}{}", e.abs())
-        } else {
-            format!("{}.{}e{e_sign}{}", &digits[..1], &digits[1..], e.abs())
-        }
-    };
-    format!("{sign}{body}")
+    format!("{sign}{}", format_decimal_body(&digits, n))
 }
 
 /// The number `JSON.parse` would hold for a parsed JSON number: integers beyond 2^53 round to the nearest double.
@@ -131,91 +137,108 @@ pub fn round(x: f64) -> f64 {
     if x - floor >= 0.5 { floor + 1.0 } else { floor }
 }
 
-/// `Number(text)`: JavaScript whitespace trimmed; blank is 0; a decimal literal (sign, fraction, exponent), a signed
-/// `Infinity`, or an unsigned `0x` / `0o` / `0b` literal; anything else (`inf`, `nan`, `1_000`, `-0x10`) is `NaN`.
-pub fn parse(text: &str) -> f64 {
-    let t = crate::string::trim(text);
-    if t.is_empty() {
-        return 0.0;
+fn parse_radix_literal(text: &str) -> Option<f64> {
+    const PREFIXES: [(&str, u32); 6] = [("0x", 16), ("0X", 16), ("0o", 8), ("0O", 8), ("0b", 2), ("0B", 2)];
+    let (rest, radix) = PREFIXES
+        .into_iter()
+        .find_map(|(prefix, radix)| text.strip_prefix(prefix).map(|rest| (rest, radix)))?;
+    if rest.is_empty() || !rest.chars().all(|c| c.is_digit(radix)) {
+        return Some(f64::NAN);
     }
-    match t {
-        "Infinity" | "+Infinity" => return f64::INFINITY,
-        "-Infinity" => return f64::NEG_INFINITY,
-        _ => {}
-    }
-    for (prefix, radix) in [("0x", 16), ("0X", 16), ("0o", 8), ("0O", 8), ("0b", 2), ("0B", 2)] {
-        if let Some(rest) = t.strip_prefix(prefix) {
-            if rest.is_empty() || !rest.chars().all(|c| c.is_digit(radix)) {
-                return f64::NAN;
-            }
-            return match u128::from_str_radix(rest, radix) {
-                Ok(n) => n as f64,
-                Err(_) => rest.chars().fold(0.0, |acc, c| {
-                    acc * f64::from(radix) + f64::from(c.to_digit(radix).unwrap_or(0))
-                }),
-            };
-        }
-    }
-    let unsigned = t.strip_prefix(['+', '-']).unwrap_or(t);
+    let value = match u128::from_str_radix(rest, radix) {
+        Ok(n) => n as f64,
+        Err(_) => rest.chars().fold(0.0, |acc, c| {
+            acc * f64::from(radix) + f64::from(c.to_digit(radix).unwrap_or(0))
+        }),
+    };
+    Some(value)
+}
+
+fn is_valid_decimal_literal(text: &str) -> bool {
+    let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
     let (mantissa, exponent) = match unsigned.find(['e', 'E']) {
         Some(i) => (&unsigned[..i], Some(&unsigned[i + 1..])),
         None => (unsigned, None),
     };
     let (int, frac) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-    let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
-    let mantissa_ok = digits(int) && digits(frac) && !(int.is_empty() && frac.is_empty());
-    let exponent_ok = exponent.is_none_or(|e| {
-        let e = e.strip_prefix(['+', '-']).unwrap_or(e);
-        !e.is_empty() && digits(e)
+    let is_digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    let mantissa_ok = is_digits(int) && is_digits(frac) && !(int.is_empty() && frac.is_empty());
+    let exponent_ok = exponent.is_none_or(|exp| {
+        let exp = exp.strip_prefix(['+', '-']).unwrap_or(exp);
+        !exp.is_empty() && is_digits(exp)
     });
-    if mantissa_ok && exponent_ok {
-        t.parse::<f64>().unwrap_or(f64::NAN)
+    mantissa_ok && exponent_ok
+}
+
+/// `Number(text)`: JavaScript whitespace trimmed; blank is 0; a decimal literal (sign, fraction, exponent), a signed
+/// `Infinity`, or an unsigned `0x` / `0o` / `0b` literal; anything else (`inf`, `nan`, `1_000`, `-0x10`) is `NaN`.
+pub fn parse(text: &str) -> f64 {
+    let trimmed = crate::string::trim(text);
+    if trimmed.is_empty() {
+        return 0.0;
+    }
+    match trimmed {
+        "Infinity" | "+Infinity" => return f64::INFINITY,
+        "-Infinity" => return f64::NEG_INFINITY,
+        _ => {}
+    }
+    if let Some(value) = parse_radix_literal(trimmed) {
+        return value;
+    }
+    if is_valid_decimal_literal(trimmed) {
+        trimmed.parse::<f64>().unwrap_or(f64::NAN)
     } else {
         f64::NAN
+    }
+}
+
+fn scan_ascii_digits(bytes: &[u8], index: &mut usize) -> bool {
+    let start = *index;
+    while bytes.get(*index).is_some_and(u8::is_ascii_digit) {
+        *index += 1;
+    }
+    *index > start
+}
+
+fn scan_exponent(bytes: &[u8], index: &mut usize) {
+    if !matches!(bytes.get(*index), Some(b'e' | b'E')) {
+        return;
+    }
+    let mut next = *index + 1;
+    if matches!(bytes.get(next), Some(b'+' | b'-')) {
+        next += 1;
+    }
+    if scan_ascii_digits(bytes, &mut next) {
+        *index = next;
     }
 }
 
 /// `Number.parseFloat`: the longest decimal prefix after leading whitespace, a signed `Infinity` included; `NaN`
 /// without one.
 pub fn parse_float(text: &str) -> f64 {
-    let t = text.trim_start();
-    let bytes = t.as_bytes();
-    let mut i = usize::from(matches!(bytes.first(), Some(b'+' | b'-')));
-    if t[i..].starts_with("Infinity") {
+    let trimmed = text.trim_start();
+    let bytes = trimmed.as_bytes();
+    let mut index = usize::from(matches!(bytes.first(), Some(b'+' | b'-')));
+    if trimmed[index..].starts_with("Infinity") {
         return if bytes.first() == Some(&b'-') {
             f64::NEG_INFINITY
         } else {
             f64::INFINITY
         };
     }
-    let digits = |i: &mut usize| {
-        let start = *i;
-        while bytes.get(*i).is_some_and(u8::is_ascii_digit) {
-            *i += 1;
-        }
-        *i > start
-    };
-    let mut any = digits(&mut i);
-    if bytes.get(i) == Some(&b'.') {
-        let mut j = i + 1;
-        if digits(&mut j) || any {
-            any = true;
-            i = j;
+    let mut has_digits = scan_ascii_digits(bytes, &mut index);
+    if bytes.get(index) == Some(&b'.') {
+        let mut next = index + 1;
+        if scan_ascii_digits(bytes, &mut next) || has_digits {
+            has_digits = true;
+            index = next;
         }
     }
-    if !any {
+    if !has_digits {
         return f64::NAN;
     }
-    if matches!(bytes.get(i), Some(b'e' | b'E')) {
-        let mut j = i + 1;
-        if matches!(bytes.get(j), Some(b'+' | b'-')) {
-            j += 1;
-        }
-        if digits(&mut j) {
-            i = j;
-        }
-    }
-    t[..i].trim_end_matches('.').parse().unwrap_or(f64::NAN)
+    scan_exponent(bytes, &mut index);
+    trimmed[..index].trim_end_matches('.').parse().unwrap_or(f64::NAN)
 }
 
 #[cfg(test)]

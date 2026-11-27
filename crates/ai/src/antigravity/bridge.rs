@@ -100,79 +100,158 @@ enum Reply {
     Hold(Value, oneshot::Receiver<Value>, oneshot::Receiver<()>),
 }
 
+#[derive(Default)]
+struct Headers {
+    length: usize,
+    chunked: bool,
+    authorization: Option<String>,
+}
+
+fn apply_header(headers: &mut Headers, header: &str) -> Option<()> {
+    let (name, value) = header.split_once(':')?;
+    match name.trim().to_ascii_lowercase().as_str() {
+        "content-length" => headers.length = value.trim().parse().ok()?,
+        "authorization" => headers.authorization = Some(value.trim().to_string()),
+        "transfer-encoding" => {
+            if !value.trim().eq_ignore_ascii_case("chunked") {
+                return None;
+            }
+            headers.chunked = true;
+        }
+        _ => {}
+    }
+    Some(())
+}
+
+async fn read_headers(reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>, line: &mut String) -> Option<Headers> {
+    let mut headers = Headers::default();
+    loop {
+        line.clear();
+        reader.read_line(line).await.ok().filter(|n| *n > 0)?;
+        let header = line.trim_end();
+        if header.is_empty() {
+            return Some(headers);
+        }
+        apply_header(&mut headers, header)?;
+    }
+}
+
+async fn read_chunk_size(reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>, line: &mut String) -> Option<usize> {
+    line.clear();
+    reader.read_line(line).await.ok().filter(|n| *n > 0)?;
+    usize::from_str_radix(line.trim().split(';').next()?, 16).ok()
+}
+
+async fn drain_trailers(reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>, line: &mut String) -> Option<()> {
+    loop {
+        line.clear();
+        if reader.read_line(line).await.ok()? <= 2 {
+            return Some(());
+        }
+    }
+}
+
+async fn read_chunked_body(
+    reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>,
+    line: &mut String,
+) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    loop {
+        let size = read_chunk_size(reader, line).await?;
+        if size == 0 {
+            drain_trailers(reader, line).await?;
+            return Some(out);
+        }
+        if out.len().saturating_add(size) > MAX_BODY {
+            return None;
+        }
+        let start = out.len();
+        out.resize(start + size, 0);
+        reader.read_exact(&mut out[start..]).await.ok()?;
+        let mut crlf = [0u8; 2];
+        reader.read_exact(&mut crlf).await.ok()?;
+    }
+}
+
+async fn read_fixed_body(reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>, length: usize) -> Option<Vec<u8>> {
+    if length > MAX_BODY {
+        return None;
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).await.ok()?;
+    Some(body)
+}
+
 async fn read_request(reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>) -> Option<Request> {
     let mut line = String::new();
     reader.read_line(&mut line).await.ok().filter(|n| *n > 0)?;
     let mut parts = line.split_whitespace();
     let method = parts.next()?.to_string();
     let path = parts.next()?.to_string();
-    let mut length = 0usize;
-    let mut chunked = false;
-    let mut authorization = None;
-    loop {
-        line.clear();
-        reader.read_line(&mut line).await.ok().filter(|n| *n > 0)?;
-        let header = line.trim_end();
-        if header.is_empty() {
-            break;
-        }
-        let (name, value) = header.split_once(':')?;
-        match name.trim().to_ascii_lowercase().as_str() {
-            "content-length" => length = value.trim().parse().ok()?,
-            "authorization" => authorization = Some(value.trim().to_string()),
-            "transfer-encoding" => {
-                if value.trim().eq_ignore_ascii_case("chunked") {
-                    chunked = true;
-                } else {
-                    return None;
-                }
-            }
-            _ => {}
-        }
-    }
-    let body = if chunked {
-        let mut out = Vec::new();
-        loop {
-            line.clear();
-            reader.read_line(&mut line).await.ok().filter(|n| *n > 0)?;
-            let size = usize::from_str_radix(line.trim().split(';').next()?, 16).ok()?;
-            if size == 0 {
-                loop {
-                    line.clear();
-                    if reader.read_line(&mut line).await.ok()? <= 2 {
-                        break;
-                    }
-                }
-                break;
-            }
-            if out.len().saturating_add(size) > MAX_BODY {
-                return None;
-            }
-            let start = out.len();
-            out.resize(start + size, 0);
-            reader.read_exact(&mut out[start..]).await.ok()?;
-            let mut crlf = [0u8; 2];
-            reader.read_exact(&mut crlf).await.ok()?;
-        }
-        out
+    let headers = read_headers(reader, &mut line).await?;
+    let body = if headers.chunked {
+        read_chunked_body(reader, &mut line).await?
     } else {
-        if length > MAX_BODY {
-            return None;
-        }
-        let mut body = vec![0; length];
-        reader.read_exact(&mut body).await.ok()?;
-        body
+        read_fixed_body(reader, headers.length).await?
     };
     Some(Request {
         method,
         path,
-        authorization,
+        authorization: headers.authorization,
         body,
     })
 }
 
 fn rpc_result(id: &Value, result: Value) -> Reply {
     Reply::Json(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+}
+
+fn handle_notification(inventory: &Inventory, message: &Value) -> Reply {
+    if message["method"] == "notifications/cancelled" {
+        let request = message["params"]["requestId"].to_string();
+        if let Some(cancel) = jsrt::sync::lock(&inventory.cancels).remove(&request) {
+            let _ = cancel.send(());
+        }
+    }
+    Reply::Status(202)
+}
+
+fn handle_tool_call(inventory: &Inventory, id: &Value, params: &Value) -> Reply {
+    let name = params["name"].as_str().unwrap_or_default();
+    if !inventory.names.contains(name) {
+        return rpc_result(
+            id,
+            json!({"isError": true, "content": [{"type": "text", "text": format!("Unknown tool: {name}")}]}),
+        );
+    }
+    let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    let (reply, answer) = oneshot::channel();
+    let (cancel, cancelled) = oneshot::channel();
+    jsrt::sync::lock(&inventory.cancels).insert(id.to_string(), cancel);
+    let _ = inventory.sender.send(Captured {
+        name: name.to_string(),
+        arguments,
+        reply,
+    });
+    Reply::Hold(id.clone(), answer, cancelled)
+}
+
+fn dispatch_rpc(inventory: &Inventory, id: &Value, message: &Value) -> Reply {
+    let params = &message["params"];
+    match message["method"].as_str() {
+        Some("initialize") => rpc_result(
+            id,
+            json!({
+                "protocolVersion": params["protocolVersion"].as_str().unwrap_or("2025-06-18"),
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "ultron", "version": "1"},
+            }),
+        ),
+        Some("ping") => rpc_result(id, json!({})),
+        Some("tools/list") => rpc_result(id, json!({"tools": inventory.manifest})),
+        Some("tools/call") => handle_tool_call(inventory, id, params),
+        _ => Reply::Json(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "Method not found"}})),
+    }
 }
 
 fn answer(inventory: &Inventory, request: &Request) -> Reply {
@@ -192,51 +271,9 @@ fn answer(inventory: &Inventory, request: &Request) -> Reply {
         return Reply::Status(400);
     };
     let Some(id) = message.get("id") else {
-        if message["method"] == "notifications/cancelled" {
-            let request = message["params"]["requestId"].to_string();
-            if let Some(cancel) = jsrt::sync::lock(&inventory.cancels).remove(&request) {
-                let _ = cancel.send(());
-            }
-        }
-        return Reply::Status(202);
+        return handle_notification(inventory, &message);
     };
-    let params = &message["params"];
-    match message["method"].as_str() {
-        Some("initialize") => rpc_result(
-            id,
-            json!({
-                "protocolVersion": params["protocolVersion"].as_str().unwrap_or("2025-06-18"),
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "ultron", "version": "1"},
-            }),
-        ),
-        Some("ping") => rpc_result(id, json!({})),
-        Some("tools/list") => rpc_result(id, json!({"tools": inventory.manifest})),
-        Some("tools/call") => {
-            let name = params["name"].as_str().unwrap_or_default();
-            if !inventory.names.contains(name) {
-                return rpc_result(
-                    id,
-                    json!({"isError": true, "content": [{"type": "text", "text": format!("Unknown tool: {name}")}]}),
-                );
-            }
-            let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-            let (reply, answer) = oneshot::channel();
-            let (cancel, cancelled) = oneshot::channel();
-            inventory
-                .cancels
-                .lock()
-                .expect("bridge cancels")
-                .insert(id.to_string(), cancel);
-            let _ = inventory.sender.send(Captured {
-                name: name.to_string(),
-                arguments,
-                reply,
-            });
-            Reply::Hold(id.clone(), answer, cancelled)
-        }
-        _ => Reply::Json(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "Method not found"}})),
-    }
+    dispatch_rpc(inventory, id, &message)
 }
 
 async fn serve(stream: TcpStream, inventory: std::sync::Arc<Inventory>) {
@@ -251,11 +288,7 @@ async fn serve(stream: TcpStream, inventory: std::sync::Arc<Inventory>) {
                     result = answer => result,
                     _ = cancelled => return,
                 };
-                inventory
-                    .cancels
-                    .lock()
-                    .expect("bridge cancels")
-                    .remove(&id.to_string());
+                jsrt::sync::lock(&inventory.cancels).remove(&id.to_string());
                 match result {
                     Ok(result) => (200, json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string()),
                     Err(_) => return,

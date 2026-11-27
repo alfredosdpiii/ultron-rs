@@ -96,7 +96,7 @@ fn acceptance_a13_a_dependent_is_not_admitted_or_started_until_the_slow_dependen
         )
     });
     wait_for("slow started", Duration::from_secs(120), || {
-        names(&run.events).contains(&"slow:start".to_string())
+        names(&run.events).iter().any(|i| i == "slow:start")
     });
     settle();
     // The dependency is admitted and running, which is not enough to start the dependent.
@@ -182,7 +182,7 @@ fn acceptance_a13_a_dependency_that_ends_unsuccessfully_skips_its_dependent_and_
     );
     *lock(&run.release) = Some("too late".into());
     settle();
-    assert!(!names(&run.events).contains(&"dependent:start".to_string()));
+    assert!(!names(&run.events).iter().any(|i| i == "dependent:start"));
     let tasks: Vec<Value> = run.fixture.journal();
     assert_eq!(tasks.len(), 1);
     assert_eq!(

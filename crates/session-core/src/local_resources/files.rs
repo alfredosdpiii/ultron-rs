@@ -107,36 +107,33 @@ fn collect_skill_entries(dir: &str, mode: SkillMode, ig: &mut Ignore, root: &str
     }
     add_ignore_rules(ig, dir, root);
     let list = entries(dir);
-    for entry in &list {
-        if entry.name != "SKILL.md" {
-            continue;
-        }
-        let full = jsrt::path::join(&[dir, &entry.name]);
-        if entry.is_file && !ig.ignores(&relative(root, &full)) {
-            out.push(full);
-            return;
-        }
+    if let Some(skill) = find_skill_md(dir, &list, ig, root) {
+        out.push(skill);
+        return;
     }
+    let loose_allowed = (mode == SkillMode::Pi) == (dir == root);
     for entry in &list {
         if entry.name.starts_with('.') || entry.name == "node_modules" {
             continue;
         }
         let full = jsrt::path::join(&[dir, &entry.name]);
         let rel = relative(root, &full);
-        let at_root = dir == root;
-        if entry.is_file
-            && entry.name.ends_with(".md")
-            && !ig.ignores(&rel)
-            && ((mode == SkillMode::Pi && at_root) || (mode == SkillMode::Agents && !at_root))
-        {
+        if is_loose_skill_file(entry, loose_allowed, ig, &rel) {
             out.push(full);
-            continue;
+        } else if entry.is_dir && !ig.ignores(&format!("{rel}/")) {
+            collect_skill_entries(&full, mode, ig, root, out);
         }
-        if !entry.is_dir || ig.ignores(&format!("{rel}/")) {
-            continue;
-        }
-        collect_skill_entries(&full, mode, ig, root, out);
     }
+}
+
+fn find_skill_md(dir: &str, list: &[Entry], ig: &Ignore, root: &str) -> Option<String> {
+    let entry = list.iter().find(|entry| entry.name == "SKILL.md" && entry.is_file)?;
+    let full = jsrt::path::join(&[dir, &entry.name]);
+    (!ig.ignores(&relative(root, &full))).then_some(full)
+}
+
+fn is_loose_skill_file(entry: &Entry, loose_allowed: bool, ig: &Ignore, rel: &str) -> bool {
+    loose_allowed && entry.is_file && entry.name.ends_with(".md") && !ig.ignores(rel)
 }
 
 fn skill_entries(dir: &str, mode: SkillMode) -> Vec<String> {
@@ -239,37 +236,54 @@ pub fn enabled_by_overrides(file: &str, patterns: &[String], base: &str) -> bool
     enabled
 }
 
-/// `applyPatterns`: the enabled subset of `all`, in `applyPatterns`' order (includes, then force-includes).
-pub fn apply_patterns(all: &[String], patterns: &[String], base: &str) -> Vec<String> {
-    let (mut includes, mut excludes, mut force_in, mut force_out) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+struct PatternGroups<'a> {
+    includes: Vec<&'a str>,
+    excludes: Vec<&'a str>,
+    force_in: Vec<&'a str>,
+    force_out: Vec<&'a str>,
+}
+
+fn partition_patterns(patterns: &[String]) -> PatternGroups<'_> {
+    let mut groups = PatternGroups {
+        includes: Vec::new(),
+        excludes: Vec::new(),
+        force_in: Vec::new(),
+        force_out: Vec::new(),
+    };
     for p in patterns {
         if let Some(rest) = p.strip_prefix('+') {
-            force_in.push(rest);
+            groups.force_in.push(rest);
         } else if let Some(rest) = p.strip_prefix('-') {
-            force_out.push(rest);
+            groups.force_out.push(rest);
         } else if let Some(rest) = p.strip_prefix('!') {
-            excludes.push(rest);
+            groups.excludes.push(rest);
         } else {
-            includes.push(p.as_str());
+            groups.includes.push(p.as_str());
         }
     }
-    let mut result: Vec<&String> = if includes.is_empty() {
+    groups
+}
+
+/// `applyPatterns`: the enabled subset of `all`, in `applyPatterns`' order (includes, then force-includes).
+pub fn apply_patterns(all: &[String], patterns: &[String], base: &str) -> Vec<String> {
+    let groups = partition_patterns(patterns);
+    let mut result: Vec<&String> = if groups.includes.is_empty() {
         all.iter().collect()
     } else {
-        all.iter().filter(|f| matches_any(f, &includes, base)).collect()
+        all.iter().filter(|f| matches_any(f, &groups.includes, base)).collect()
     };
-    if !excludes.is_empty() {
-        result.retain(|f| !matches_any(f, &excludes, base));
+    if !groups.excludes.is_empty() {
+        result.retain(|f| !matches_any(f, &groups.excludes, base));
     }
-    if !force_in.is_empty() {
+    if !groups.force_in.is_empty() {
         for f in all {
-            if !result.contains(&f) && matches_any_exact(f, &force_in, base) {
+            if !result.contains(&f) && matches_any_exact(f, &groups.force_in, base) {
                 result.push(f);
             }
         }
     }
-    if !force_out.is_empty() {
-        result.retain(|f| !matches_any_exact(f, &force_out, base));
+    if !groups.force_out.is_empty() {
+        result.retain(|f| !matches_any_exact(f, &groups.force_out, base));
     }
     result.into_iter().cloned().collect()
 }

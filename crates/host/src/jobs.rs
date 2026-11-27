@@ -561,20 +561,104 @@ impl Digest {
 /// Interval for tailing a durable job's `.out` and `.exit` files while it runs.
 const FOLLOW_POLL: Duration = Duration::from_millis(10);
 
+fn spawn_child_waiter(job: &Arc<Job>, mut child: std::process::Child) {
+    let waiter = job.clone();
+    std::thread::spawn(move || {
+        let code = child.wait().ok().and_then(|status| status.code());
+        let guard = sync::lock(&waiter.cancel.0);
+        *sync::lock(&waiter.exited) = Some(code);
+        drop(guard);
+        waiter.cancel.1.notify_all();
+    });
+}
+
+fn poll_job_end(job: &Job, own: bool, process: Option<(i32, Option<u64>)>) -> Option<Option<i32>> {
+    if own {
+        return *sync::lock(&job.exited);
+    }
+    let code = exit_status(&job.exit_path);
+    (code.is_some() || !keeper_alive(process)).then_some(code)
+}
+
+fn check_stop_condition(job: &Job, deadline: Option<u64>, process: Option<(i32, Option<u64>)>) -> Option<Status> {
+    let status = if deadline.is_some_and(|deadline| jsrt::date::now_ms() as u64 >= deadline) {
+        Some(Status::TimedOut)
+    } else if *sync::lock(&job.cancel.0) {
+        Some(Status::Cancelled)
+    } else {
+        None
+    };
+    if status.is_some()
+        && let Some((pid, _)) = process
+    {
+        kernel::kill_command_group(pid);
+    }
+    status
+}
+
+fn wait_for_poll(job: &Job) {
+    let cancel = sync::lock(&job.cancel.0);
+    if sync::lock(&job.exited).is_none() {
+        drop(
+            job.cancel
+                .1
+                .wait_timeout(cancel, FOLLOW_POLL)
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+    }
+}
+
+fn job_ended_at(job: &Job, own: bool, code: Option<i32>) -> u64 {
+    if own {
+        return jsrt::date::now_ms() as u64;
+    }
+    std::fs::metadata(&job.exit_path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .filter(|_| code.is_some())
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map_or_else(|| jsrt::date::now_ms() as u64, |d| d.as_millis() as u64)
+}
+
+fn settle_job_record(job: &Job, own: bool, stopped: Option<Status>, code: Option<i32>, ended: Option<i32>) {
+    let mut record = sync::lock(&job.record);
+    record.ended_at = Some(job_ended_at(job, own, code));
+    if let Some(status) = stopped {
+        record.status = status;
+        record.exit_code = None;
+        if status == Status::TimedOut {
+            record.error = Some(format!(
+                "timed out after {}s; process tree killed",
+                jsrt::number::to_string(job.timeout.unwrap_or(0.0))
+            ));
+        }
+        return;
+    }
+    match (code, own) {
+        (Some(code), _) => {
+            record.status = Status::Completed;
+            record.exit_code = Some(code);
+        }
+        (None, true) => {
+            record.status = Status::Completed;
+            record.exit_code = ended;
+        }
+        (None, false) => {
+            record.status = Status::Lost;
+            record.exit_code = None;
+            record.error =
+                Some("its process ended while no Ultron worker was running; the exit status is unknown".into());
+        }
+    }
+}
+
 /// Follows a job until it ends: its own child (`child`), or a keeper started by an earlier worker (`None`), whose
 /// end is its exit file or, without one, its process going away (`lost`). Stops the process group on cancel or
 /// timeout. Returns without settling the job when the host released its jobs.
 fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
     let own = child.is_some();
-    if let Some(mut child) = child {
-        let waiter = job.clone();
-        std::thread::spawn(move || {
-            let code = child.wait().ok().and_then(|status| status.code());
-            let guard = sync::lock(&waiter.cancel.0);
-            *sync::lock(&waiter.exited) = Some(code);
-            drop(guard);
-            waiter.cancel.1.notify_all();
-        });
+    if let Some(child) = child {
+        spawn_child_waiter(job, child);
     }
     let mut digest = Digest::new(job);
     let mut raw = File::open(&job.raw_path).ok();
@@ -585,13 +669,7 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
     let process = *sync::lock(&job.process);
     let mut stopped: Option<Status> = None;
     let ended = loop {
-        let ended = match own {
-            true => *sync::lock(&job.exited),
-            false => {
-                let code = exit_status(&job.exit_path);
-                (code.is_some() || !keeper_alive(process)).then_some(code)
-            }
-        };
+        let ended = poll_job_end(job, own, process);
         digest.pump(job, &mut raw);
         if let Some(ended) = ended {
             break ended;
@@ -601,26 +679,9 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
             return;
         }
         if stopped.is_none() {
-            if deadline.is_some_and(|deadline| jsrt::date::now_ms() as u64 >= deadline) {
-                stopped = Some(Status::TimedOut);
-            } else if *sync::lock(&job.cancel.0) {
-                stopped = Some(Status::Cancelled);
-            }
-            if stopped.is_some()
-                && let Some((pid, _)) = process
-            {
-                kernel::kill_command_group(pid);
-            }
+            stopped = check_stop_condition(job, deadline, process);
         }
-        let cancel = sync::lock(&job.cancel.0);
-        if sync::lock(&job.exited).is_none() {
-            drop(
-                job.cancel
-                    .1
-                    .wait_timeout(cancel, FOLLOW_POLL)
-                    .unwrap_or_else(PoisonError::into_inner),
-            );
-        }
+        wait_for_poll(job);
     };
     digest.finish(job);
     let code = exit_status(&job.exit_path);
@@ -630,46 +691,7 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
         job.stop_following(Tracking::Released);
         return;
     }
-    {
-        let mut record = sync::lock(&job.record);
-        record.ended_at = Some(match own {
-            true => jsrt::date::now_ms() as u64,
-            false => std::fs::metadata(&job.exit_path)
-                .and_then(|meta| meta.modified())
-                .ok()
-                .filter(|_| code.is_some())
-                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-                .map_or_else(|| jsrt::date::now_ms() as u64, |d| d.as_millis() as u64),
-        });
-        match stopped {
-            Some(status) => {
-                record.status = status;
-                record.exit_code = None;
-                if status == Status::TimedOut {
-                    record.error = Some(format!(
-                        "timed out after {}s; process tree killed",
-                        jsrt::number::to_string(job.timeout.unwrap_or(0.0))
-                    ));
-                }
-            }
-            None => match (code, own) {
-                (Some(code), _) => {
-                    record.status = Status::Completed;
-                    record.exit_code = Some(code);
-                }
-                (None, true) => {
-                    record.status = Status::Completed;
-                    record.exit_code = ended;
-                }
-                (None, false) => {
-                    record.status = Status::Lost;
-                    record.exit_code = None;
-                    record.error =
-                        Some("its process ended while no Ultron worker was running; the exit status is unknown".into());
-                }
-            },
-        }
-    }
+    settle_job_record(job, own, stopped, code, ended);
     shared.persist_locked(&jobs);
     drop(jobs);
     let reason = *sync::lock(&job.reason);

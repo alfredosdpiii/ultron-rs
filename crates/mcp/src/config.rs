@@ -92,18 +92,7 @@ pub fn is_loopback_redirect_uri(value: &str) -> bool {
     })
 }
 
-fn validate_oauth(value: Option<&Value>) -> Option<String> {
-    let value = value?;
-    let Some(oauth) = value.as_object() else {
-        return Some("oauth must be an object".into());
-    };
-    let not_string = |key: &str| oauth.get(key).is_some_and(|v| !v.is_string());
-    if not_string("clientId") {
-        return Some("oauth.clientId must be a string".into());
-    }
-    if not_string("clientSecret") {
-        return Some("oauth.clientSecret must be a string".into());
-    }
+fn validate_oauth_callback(oauth: &Map<String, Value>) -> Option<String> {
     let port = oauth.get("callbackPort");
     if let Some(port) = port
         && !port
@@ -112,25 +101,43 @@ fn validate_oauth(value: Option<&Value>) -> Option<String> {
     {
         return Some("oauth.callbackPort must be a port number".into());
     }
-    if let Some(callback) = oauth.get("callbackUrl") {
-        let Some(url) = callback
-            .as_str()
-            .filter(|s| is_loopback_redirect_uri(s))
-            .and_then(|s| Url::parse(s).ok())
-        else {
-            return Some(
-                "oauth.callbackUrl must be an http URI on localhost, 127.0.0.1, or [::1] without query or fragment"
-                    .into(),
-            );
-        };
-        if let (Some(url_port), Some(port)) = (url.port(), port.and_then(Value::as_f64))
-            && f64::from(url_port) != port
-        {
-            return Some("oauth.callbackUrl and oauth.callbackPort name different ports".into());
+    let callback = oauth.get("callbackUrl")?;
+    let Some(url) = callback
+        .as_str()
+        .filter(|s| is_loopback_redirect_uri(s))
+        .and_then(|s| Url::parse(s).ok())
+    else {
+        return Some(
+            "oauth.callbackUrl must be an http URI on localhost, 127.0.0.1, or [::1] without query or fragment".into(),
+        );
+    };
+    if let (Some(url_port), Some(port)) = (url.port(), port.and_then(Value::as_f64))
+        && f64::from(url_port) != port
+    {
+        return Some("oauth.callbackUrl and oauth.callbackPort name different ports".into());
+    }
+    None
+}
+
+fn validate_oauth_metadata_url(oauth: &Map<String, Value>) -> Option<String> {
+    let metadata = oauth.get("authServerMetadataUrl")?;
+    let ok =
+        parse_url(metadata).is_some_and(|url| url.scheme() == "https" || (url.scheme() == "http" && is_loopback(&url)));
+    (!ok).then(|| "oauth.authServerMetadataUrl must be an https URL, or http on localhost, 127.0.0.1, or [::1]".into())
+}
+
+fn validate_oauth(value: Option<&Value>) -> Option<String> {
+    let oauth = match value? {
+        Value::Object(map) => map,
+        _ => return Some("oauth must be an object".into()),
+    };
+    for key in ["clientId", "clientSecret", "scope"] {
+        if oauth.get(key).is_some_and(|v| !v.is_string()) {
+            return Some(format!("oauth.{key} must be a string"));
         }
     }
-    if not_string("scope") {
-        return Some("oauth.scope must be a string".into());
+    if let Some(error) = validate_oauth_callback(oauth) {
+        return Some(error);
     }
     if oauth
         .get("clientName")
@@ -138,16 +145,34 @@ fn validate_oauth(value: Option<&Value>) -> Option<String> {
     {
         return Some("oauth.clientName must be a non-empty string".into());
     }
-    if let Some(metadata) = oauth.get("authServerMetadataUrl") {
-        let ok = parse_url(metadata)
-            .is_some_and(|url| url.scheme() == "https" || (url.scheme() == "http" && is_loopback(&url)));
-        if !ok {
-            return Some(
-                "oauth.authServerMetadataUrl must be an https URL, or http on localhost, 127.0.0.1, or [::1]".into(),
-            );
+    validate_oauth_metadata_url(oauth)
+}
+
+fn apply_adapter_bearer(value: &mut Map<String, Value>) {
+    let non_empty = |map: &Map<String, Value>, key: &str| {
+        map.get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let bearer =
+        non_empty(value, "bearerToken").or_else(|| non_empty(value, "bearerTokenEnv").map(|env| format!("${{{env}}}")));
+    if let Some(bearer) = bearer
+        && value.get("url").is_some_and(Value::is_string)
+    {
+        let mut headers = value
+            .get("headers")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let has_authorization = headers.keys().any(|h| h.eq_ignore_ascii_case("authorization"));
+        if !has_authorization && !bearer.starts_with('!') {
+            headers.insert("Authorization".into(), json!(format!("Bearer {bearer}")));
+            value.insert("headers".into(), Value::Object(headers));
         }
     }
-    None
+    value.shift_remove("bearerToken");
+    value.shift_remove("bearerTokenEnv");
 }
 
 /// One server entry as pi-mcp-adapter wrote it, translated to the validated shape. `defaults` are the
@@ -172,30 +197,7 @@ pub fn normalize_adapter_server_config(raw: &Value, defaults: &Value) -> Value {
     if value.get("auth").is_some_and(Value::is_string) {
         value.shift_remove("auth");
     }
-    let non_empty = |key: &str| {
-        value
-            .get(key)
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-    };
-    let bearer = non_empty("bearerToken").or_else(|| non_empty("bearerTokenEnv").map(|env| format!("${{{env}}}")));
-    if let Some(bearer) = bearer
-        && value.get("url").is_some_and(Value::is_string)
-    {
-        let mut headers = value
-            .get("headers")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-        let has_authorization = headers.keys().any(|h| h.eq_ignore_ascii_case("authorization"));
-        if !has_authorization && !bearer.starts_with('!') {
-            headers.insert("Authorization".into(), json!(format!("Bearer {bearer}")));
-            value.insert("headers".into(), Value::Object(headers));
-        }
-    }
-    value.shift_remove("bearerToken");
-    value.shift_remove("bearerTokenEnv");
+    apply_adapter_bearer(&mut value);
     Value::Object(value)
 }
 
@@ -246,34 +248,19 @@ fn valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// Validates one `mcpServers` entry; returns the entry with exposure aliases resolved, or the error message.
-pub fn validate_server_config(name: &str, raw: &Value) -> Result<Map<String, Value>, String> {
-    if !valid_name(name) {
-        return Err(format!(
-            "invalid server name \"{name}\" (use letters, digits, \"_\" and \"-\")"
-        ));
-    }
-    let Some(raw) = raw.as_object() else {
-        return Err(format!("server \"{name}\" must be an object"));
-    };
-    let mut value = raw.clone();
-    if let Some(exposure) = value.get("exposure").map(resolve_alias) {
-        value.insert("exposure".into(), exposure);
-    }
-    if let Some(Value::Object(tools)) = value.get_mut("toolExposure") {
-        for entry in tools.values_mut() {
-            *entry = resolve_alias(entry);
-        }
-    }
-    let quoted = |list: &[&str]| list.iter().map(|v| format!("\"{v}\"")).collect::<Vec<_>>().join(", ");
-    let exposures = quoted(&EXPOSURES);
+fn quoted_list(list: &[&str]) -> String {
+    list.iter().map(|v| format!("\"{v}\"")).collect::<Vec<_>>().join(", ")
+}
+
+fn validate_common_server_fields(name: &str, value: &Map<String, Value>) -> Result<(), String> {
+    let exposures = quoted_list(&EXPOSURES);
     if value
         .get("lifecycle")
         .is_some_and(|l| !l.as_str().is_some_and(|l| LIFECYCLES.contains(&l)))
     {
         return Err(format!(
             "server \"{name}\": lifecycle must be one of {}",
-            quoted(&LIFECYCLES)
+            quoted_list(&LIFECYCLES)
         ));
     }
     if value.get("exposure").is_some_and(|e| !is_exposure(e)) {
@@ -305,6 +292,63 @@ pub fn validate_server_config(name: &str, raw: &Value) -> Result<Map<String, Val
             "server \"{name}\": timeout must be a positive number of seconds"
         ));
     }
+    Ok(())
+}
+
+fn validate_http_server(name: &str, value: &Map<String, Value>) -> Result<(), String> {
+    let Some(url) = parse_url(&value["url"]).filter(|u| u.scheme() == "http" || u.scheme() == "https") else {
+        return Err(format!("server \"{name}\": url must be an http or https URL"));
+    };
+    if value.get("headers").is_some_and(|h| !is_string_record(h)) {
+        return Err(format!("server \"{name}\": headers must map names to strings"));
+    }
+    if let Some(error) = validate_oauth(value.get("oauth")) {
+        return Err(format!("server \"{name}\": {error}"));
+    }
+    if let Some(auth) = value.get("auth") {
+        if auth.get("provider").and_then(Value::as_str).is_none_or(str::is_empty) || !auth.is_object() {
+            return Err(format!("server \"{name}\": auth.provider must be a provider name"));
+        }
+        if url.scheme() != "https" && !is_loopback(&url) {
+            return Err(format!(
+                "server \"{name}\": auth requires an https URL, or http on localhost, 127.0.0.1, or [::1]"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_stdio_server(name: &str, value: &Map<String, Value>) -> Result<(), String> {
+    if value
+        .get("args")
+        .is_some_and(|a| !a.as_array().is_some_and(|a| a.iter().all(Value::is_string)))
+    {
+        return Err(format!("server \"{name}\": args must be an array of strings"));
+    }
+    if value.get("env").is_some_and(|e| !is_string_record(e)) {
+        return Err(format!("server \"{name}\": env must map names to strings"));
+    }
+    if value.get("cwd").is_some_and(|c| !c.is_string()) {
+        return Err(format!("server \"{name}\": cwd must be a string"));
+    }
+    if value.get("inheritEnv").is_some_and(|c| !c.is_boolean()) {
+        return Err(format!("server \"{name}\": inheritEnv must be a boolean"));
+    }
+    Ok(())
+}
+
+fn resolve_exposure_aliases(value: &mut Map<String, Value>) {
+    if let Some(exposure) = value.get("exposure").map(resolve_alias) {
+        value.insert("exposure".into(), exposure);
+    }
+    if let Some(Value::Object(tools)) = value.get_mut("toolExposure") {
+        for entry in tools.values_mut() {
+            *entry = resolve_alias(entry);
+        }
+    }
+}
+
+fn validate_server_transport(name: &str, value: &Map<String, Value>) -> Result<(), String> {
     let kind = value.get("type").and_then(Value::as_str);
     let has_type = value.contains_key("type");
     if kind == Some("sse") {
@@ -314,55 +358,82 @@ pub fn validate_server_config(name: &str, raw: &Value) -> Result<Map<String, Val
     }
     if value.get("url").is_some_and(Value::is_string) && (!has_type || matches!(kind, Some("http" | "streamable-http")))
     {
-        let Some(url) = parse_url(&value["url"]).filter(|u| u.scheme() == "http" || u.scheme() == "https") else {
-            return Err(format!("server \"{name}\": url must be an http or https URL"));
-        };
-        if value.get("headers").is_some_and(|h| !is_string_record(h)) {
-            return Err(format!("server \"{name}\": headers must map names to strings"));
-        }
-        if let Some(error) = validate_oauth(value.get("oauth")) {
-            return Err(format!("server \"{name}\": {error}"));
-        }
-        if let Some(auth) = value.get("auth") {
-            if auth.get("provider").and_then(Value::as_str).is_none_or(str::is_empty) || !auth.is_object() {
-                return Err(format!("server \"{name}\": auth.provider must be a provider name"));
-            }
-            if url.scheme() != "https" && !is_loopback(&url) {
-                return Err(format!(
-                    "server \"{name}\": auth requires an https URL, or http on localhost, 127.0.0.1, or [::1]"
-                ));
-            }
-        }
-        return Ok(value);
+        return validate_http_server(name, value);
     }
     if value.get("command").is_some_and(Value::is_string) && (!has_type || kind == Some("stdio")) {
-        if value
-            .get("args")
-            .is_some_and(|a| !a.as_array().is_some_and(|a| a.iter().all(Value::is_string)))
-        {
-            return Err(format!("server \"{name}\": args must be an array of strings"));
-        }
-        if value.get("env").is_some_and(|e| !is_string_record(e)) {
-            return Err(format!("server \"{name}\": env must map names to strings"));
-        }
-        if value.get("cwd").is_some_and(|c| !c.is_string()) {
-            return Err(format!("server \"{name}\": cwd must be a string"));
-        }
-        if value.get("inheritEnv").is_some_and(|c| !c.is_boolean()) {
-            return Err(format!("server \"{name}\": inheritEnv must be a boolean"));
-        }
-        return Ok(value);
+        return validate_stdio_server(name, value);
     }
     Err(format!(
         "server \"{name}\" needs either \"command\" (stdio) or \"url\" (streamable HTTP)"
     ))
 }
 
+/// Validates one `mcpServers` entry; returns the entry with exposure aliases resolved, or the error message.
+pub fn validate_server_config(name: &str, raw: &Value) -> Result<Map<String, Value>, String> {
+    if !valid_name(name) {
+        return Err(format!(
+            "invalid server name \"{name}\" (use letters, digits, \"_\" and \"-\")"
+        ));
+    }
+    let Some(raw) = raw.as_object() else {
+        return Err(format!("server \"{name}\" must be an object"));
+    };
+    let mut value = raw.clone();
+    resolve_exposure_aliases(&mut value);
+    validate_common_server_fields(name, &value)?;
+    validate_server_transport(name, &value)?;
+    Ok(value)
+}
+
+fn insert_server_entry(
+    shown: &str,
+    scope: Scope,
+    name: &str,
+    raw: &Value,
+    defaults: &Value,
+    loaded: &mut LoadedConfig,
+) {
+    let config = match validate_server_config(name, &normalize_adapter_server_config(raw, defaults)) {
+        Ok(config) => config,
+        Err(error) => {
+            loaded.errors.push(format!("{shown}: {error}"));
+            return;
+        }
+    };
+    let namespace = mcp_namespace(name);
+    if let Some(clash) = loaded
+        .servers
+        .iter()
+        .find(|s| s.name != name && mcp_namespace(&s.name) == namespace)
+    {
+        loaded
+            .errors
+            .push(format!("{shown}: server \"{name}\" conflicts with \"{}\"", clash.name));
+        return;
+    }
+    if scope == Scope::Project && config.contains_key("url") && config.contains_key("auth") {
+        loaded.errors.push(format!(
+            "{shown}: server \"{name}\": auth is only allowed in the global mcp.json"
+        ));
+        return;
+    }
+    let entry = ServerEntry {
+        name: name.to_string(),
+        config,
+        source: shown.to_string(),
+        scope,
+    };
+    match loaded.servers.iter_mut().find(|s| s.name == name) {
+        Some(existing) => *existing = entry,
+        None => loaded.servers.push(entry),
+    }
+}
+
 fn read_config_file(path: &Path, scope: Scope, loaded: &mut LoadedConfig) {
     let Ok(text) = std::fs::read_to_string(path) else {
         return;
     };
-    let shown = path.display();
+    let shown = path.display().to_string();
     let parsed: Value = match serde_json::from_str(&text) {
         Ok(parsed) => parsed,
         Err(error) => {
@@ -391,40 +462,7 @@ fn read_config_file(path: &Path, scope: Scope, loaded: &mut LoadedConfig) {
         .cloned()
         .unwrap_or(json!({}));
     for (name, raw) in servers.and_then(Value::as_object).into_iter().flatten() {
-        let config = match validate_server_config(name, &normalize_adapter_server_config(raw, &defaults)) {
-            Ok(config) => config,
-            Err(error) => {
-                loaded.errors.push(format!("{shown}: {error}"));
-                continue;
-            }
-        };
-        let namespace = mcp_namespace(name);
-        if let Some(clash) = loaded
-            .servers
-            .iter()
-            .find(|s| &s.name != name && mcp_namespace(&s.name) == namespace)
-        {
-            loaded
-                .errors
-                .push(format!("{shown}: server \"{name}\" conflicts with \"{}\"", clash.name));
-            continue;
-        }
-        if scope == Scope::Project && config.contains_key("url") && config.contains_key("auth") {
-            loaded.errors.push(format!(
-                "{shown}: server \"{name}\": auth is only allowed in the global mcp.json"
-            ));
-            continue;
-        }
-        let entry = ServerEntry {
-            name: name.clone(),
-            config,
-            source: shown.to_string(),
-            scope,
-        };
-        match loaded.servers.iter_mut().find(|s| s.name == *name) {
-            Some(existing) => *existing = entry,
-            None => loaded.servers.push(entry),
-        }
+        insert_server_entry(&shown, scope, name, raw, &defaults, loaded);
     }
 }
 

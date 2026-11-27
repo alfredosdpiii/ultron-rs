@@ -113,6 +113,47 @@ impl SseDecoder {
     }
 }
 
+fn process_openai_event(
+    sse: ServerSentEvent,
+    headers: &crate::http::HeaderMap,
+    done: &mut bool,
+    handle: &mut impl FnMut(&Value) -> Result<(), Failure>,
+) -> Result<(), Failure> {
+    if *done {
+        return Ok(());
+    }
+    if sse.data.starts_with("[DONE]") {
+        *done = true;
+        return Ok(());
+    }
+    if sse.event.as_deref().is_some_and(|e| e.starts_with("thread.")) {
+        return Ok(());
+    }
+    let data = parse_json(&sse.data).map_err(|e| Failure::plain(e.to_string()))?;
+    if let Some(error) = data.get("error").filter(|e| jsrt::value::truthy(Some(e))) {
+        return Err(Failure::api(
+            Sdk::OpenAi,
+            None,
+            Some(headers.clone()),
+            Some(json!({ "error": error })),
+            None,
+        ));
+    }
+    handle(&data)
+}
+
+fn process_openai_events(
+    events: Vec<ServerSentEvent>,
+    headers: &crate::http::HeaderMap,
+    done: &mut bool,
+    handle: &mut impl FnMut(&Value) -> Result<(), Failure>,
+) -> Result<(), Failure> {
+    for sse in events {
+        process_openai_event(sse, headers, done, handle)?;
+    }
+    Ok(())
+}
+
 /// The OpenAI SDK stream: JSON per `data:` event until `[DONE]`; a body with `error` throws an API error. An abort ends
 /// the stream quietly, as the SDK does.
 pub(crate) async fn read_openai_stream(
@@ -123,36 +164,10 @@ pub(crate) async fn read_openai_stream(
     let headers = response.headers.clone();
     let mut decoder = SseDecoder::default();
     let mut done = false;
-    let mut process = |events: Vec<ServerSentEvent>, done: &mut bool| -> Result<(), Failure> {
-        for sse in events {
-            if *done {
-                continue;
-            }
-            if sse.data.starts_with("[DONE]") {
-                *done = true;
-                continue;
-            }
-            if sse.event.as_deref().is_some_and(|e| e.starts_with("thread.")) {
-                continue;
-            }
-            let data = parse_json(&sse.data).map_err(|e| Failure::plain(e.to_string()))?;
-            if let Some(error) = data.get("error").filter(|e| jsrt::value::truthy(Some(e))) {
-                return Err(Failure::api(
-                    Sdk::OpenAi,
-                    None,
-                    Some(headers.clone()),
-                    Some(json!({ "error": error })),
-                    None,
-                ));
-            }
-            handle(&data)?;
-        }
-        Ok(())
-    };
     loop {
         match read_chunk(response.body.as_mut(), signal).await {
             Read::Chunk(bytes) => {
-                process(decoder.push(&bytes), &mut done)?;
+                process_openai_events(decoder.push(&bytes), &headers, &mut done, &mut handle)?;
                 if is_aborted(signal) {
                     return Ok(());
                 }
@@ -162,5 +177,5 @@ pub(crate) async fn read_openai_stream(
             Read::Failed(error) => return Err(Failure::plain(error)),
         }
     }
-    process(decoder.finish(false), &mut done)
+    process_openai_events(decoder.finish(false), &headers, &mut done, &mut handle)
 }

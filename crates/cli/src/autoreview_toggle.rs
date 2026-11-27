@@ -60,102 +60,127 @@ fn ban(env: &Env, login: &str, account: Option<&str>, add: bool) -> LaneEvent {
     })
 }
 
+fn status_event(
+    settings: &config::settings::SettingsManager,
+    service: Option<&review::service::ServiceFile>,
+) -> LaneEvent {
+    let saved = review::settings::saved(settings.global_settings());
+    let accounts: Vec<&str> = saved
+        .get("accounts")
+        .and_then(Value::as_array)
+        .map_or_default(|accounts| accounts.iter().filter_map(Value::as_str).collect());
+    let reviewing_as = if accounts.is_empty() {
+        "every logged-in gh account".to_string()
+    } else {
+        accounts.join(", ")
+    };
+    let installed = match service {
+        Some(file) if std::path::Path::new(&file.path).exists() => format!("installed ({})", file.path),
+        _ => "not installed".into(),
+    };
+    let on = saved.get("enabled") != Some(&Value::Bool(false));
+    let bans = crate::autoreview_ban::summary(&review::ban::BanList::from_value(saved.get("ban")));
+    LaneEvent::Status(format!(
+        "Autoreview is {}: reviewing as {reviewing_as}; service {installed}; {bans}. /autoreview on|off, ban|unban <login>",
+        if on { "on" } else { "off" }
+    ))
+}
+
+fn accounts_event(run: Runner) -> LaneEvent {
+    match run("gh", &["auth", "status", "--json", "hosts"]) {
+        Err(_) => LaneEvent::Status(
+            "Autoreview needs the GitHub CLI (gh): install it and run gh auth login, then /autoreview on".into(),
+        ),
+        Ok(ran) => LaneEvent::AutoreviewAccounts(
+            review::accounts::parse_auth_status(&ran.stdout, &ran.stderr)
+                .into_iter()
+                .map(|account| (account.login, account.host))
+                .collect(),
+        ),
+    }
+}
+
+fn disable_autoreview(
+    settings: &mut config::settings::SettingsManager,
+    service: Option<review::service::ServiceFile>,
+    run: Runner,
+) -> LaneEvent {
+    settings.patch_global_object(review::settings::KEY, &[("enabled", Some(Value::Bool(false)))]);
+    let mut notes = Vec::new();
+    if let Some(file) = service.filter(|file| std::path::Path::new(&file.path).exists()) {
+        for line in &file.disable {
+            if let Some(failed) = run_line(run, line) {
+                notes.push(format!("`{line}` failed: {failed}"));
+            }
+        }
+        review::service::uninstall_service(&file);
+        notes.insert(0, format!("service removed ({})", file.path));
+    }
+    let notes = if notes.is_empty() {
+        String::new()
+    } else {
+        format!("; {}", notes.join("; "))
+    };
+    LaneEvent::Status(format!(
+        "Autoreview off: {APP_NAME} autoreview run and its service review nothing{notes}"
+    ))
+}
+
+fn enable_autoreview(
+    settings: &mut config::settings::SettingsManager,
+    service: Option<review::service::ServiceFile>,
+    platform: &str,
+    run: Runner,
+    accounts: Option<Vec<String>>,
+    reviewing_as: String,
+) -> LaneEvent {
+    settings.patch_global_object(
+        review::settings::KEY,
+        &[
+            ("enabled", Some(Value::Bool(true))),
+            ("accounts", accounts.map(|accounts| json!(accounts))),
+        ],
+    );
+    let Some(file) = service else {
+        return LaneEvent::Status(format!(
+            "Autoreview on, reviewing as {reviewing_as}. No user service on {platform}: run {APP_NAME} autoreview run under your own supervisor"
+        ));
+    };
+    if let Err(error) = review::service::install_service(&file) {
+        return LaneEvent::Status(format!("Error: {error}"));
+    }
+    let failures: Vec<String> = file
+        .enable
+        .iter()
+        .filter_map(|line| run_line(run, line).map(|failed| format!("`{line}` failed: {failed}")))
+        .collect();
+    LaneEvent::Status(if failures.is_empty() {
+        format!(
+            "Autoreview on, reviewing as {reviewing_as}: the service is started ({}); it reviews pull requests that request or mention the account",
+            file.path
+        )
+    } else {
+        format!(
+            "Autoreview on, reviewing as {reviewing_as}; the service file is written ({}) but could not be started: {}. Start it by hand: {}",
+            file.path,
+            failures.join("; "),
+            file.enable.join(" && ")
+        )
+    })
+}
+
 /// Answers one `/autoreview` request; `platform` is upstream's (`linux`, `darwin`, ...).
 pub fn autoreview(request: AutoreviewRequest, env: &Env, platform: &str, run: Runner) -> LaneEvent {
-    let status = LaneEvent::Status;
     let service = user_service(env, platform).ok().flatten();
     let mut settings = config::settings::SettingsManager::create(&env.cwd, &env.agent_dir(), false);
     match request {
-        AutoreviewRequest::Status => {
-            let saved = review::settings::saved(settings.global_settings());
-            let accounts: Vec<&str> = saved
-                .get("accounts")
-                .and_then(Value::as_array)
-                .map_or_default(|accounts| accounts.iter().filter_map(Value::as_str).collect());
-            let reviewing_as = if accounts.is_empty() {
-                "every logged-in gh account".to_string()
-            } else {
-                accounts.join(", ")
-            };
-            let installed = match &service {
-                Some(file) if std::path::Path::new(&file.path).exists() => format!("installed ({})", file.path),
-                _ => "not installed".into(),
-            };
-            let on = saved.get("enabled") != Some(&Value::Bool(false));
-            let bans = crate::autoreview_ban::summary(&review::ban::BanList::from_value(saved.get("ban")));
-            status(format!(
-                "Autoreview is {}: reviewing as {reviewing_as}; service {installed}; {bans}. /autoreview on|off, ban|unban <login>",
-                if on { "on" } else { "off" }
-            ))
-        }
+        AutoreviewRequest::Status => status_event(&settings, service.as_ref()),
         AutoreviewRequest::Ban { login, account } => ban(env, &login, account.as_deref(), true),
         AutoreviewRequest::Unban { login, account } => ban(env, &login, account.as_deref(), false),
-        AutoreviewRequest::Accounts => match run("gh", &["auth", "status", "--json", "hosts"]) {
-            Err(_) => status(
-                "Autoreview needs the GitHub CLI (gh): install it and run gh auth login, then /autoreview on".into(),
-            ),
-            Ok(ran) => LaneEvent::AutoreviewAccounts(
-                review::accounts::parse_auth_status(&ran.stdout, &ran.stderr)
-                    .into_iter()
-                    .map(|account| (account.login, account.host))
-                    .collect(),
-            ),
-        },
-        AutoreviewRequest::Off => {
-            settings.patch_global_object(review::settings::KEY, &[("enabled", Some(Value::Bool(false)))]);
-            let mut notes = Vec::new();
-            if let Some(file) = service.filter(|file| std::path::Path::new(&file.path).exists()) {
-                for line in &file.disable {
-                    if let Some(failed) = run_line(run, line) {
-                        notes.push(format!("`{line}` failed: {failed}"));
-                    }
-                }
-                review::service::uninstall_service(&file);
-                notes.insert(0, format!("service removed ({})", file.path));
-            }
-            let notes = if notes.is_empty() {
-                String::new()
-            } else {
-                format!("; {}", notes.join("; "))
-            };
-            status(format!(
-                "Autoreview off: {APP_NAME} autoreview run and its service review nothing{notes}"
-            ))
-        }
+        AutoreviewRequest::Accounts => accounts_event(run),
+        AutoreviewRequest::Off => disable_autoreview(&mut settings, service, run),
         AutoreviewRequest::On { accounts, reviewing_as } => {
-            settings.patch_global_object(
-                review::settings::KEY,
-                &[
-                    ("enabled", Some(Value::Bool(true))),
-                    ("accounts", accounts.map(|accounts| json!(accounts))),
-                ],
-            );
-            let Some(file) = service else {
-                return status(format!(
-                    "Autoreview on, reviewing as {reviewing_as}. No user service on {platform}: run {APP_NAME} autoreview run under your own supervisor"
-                ));
-            };
-            if let Err(error) = review::service::install_service(&file) {
-                return status(format!("Error: {error}"));
-            }
-            let failures: Vec<String> = file
-                .enable
-                .iter()
-                .filter_map(|line| run_line(run, line).map(|failed| format!("`{line}` failed: {failed}")))
-                .collect();
-            status(if failures.is_empty() {
-                format!(
-                    "Autoreview on, reviewing as {reviewing_as}: the service is started ({}); it reviews pull requests that request or mention the account",
-                    file.path
-                )
-            } else {
-                format!(
-                    "Autoreview on, reviewing as {reviewing_as}; the service file is written ({}) but could not be started: {}. Start it by hand: {}",
-                    file.path,
-                    failures.join("; "),
-                    file.enable.join(" && ")
-                )
-            })
+            enable_autoreview(&mut settings, service, platform, run, accounts, reviewing_as)
         }
     }
 }

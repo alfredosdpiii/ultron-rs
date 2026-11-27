@@ -302,33 +302,33 @@ impl Server {
         }
     }
 
-    /// Open `target` in `cwd`: on that directory's front end (switched to it) or a new one. Returns the slot and the
-    /// session id.
-    fn open(&mut self, cwd: &Path, target: Target) -> Result<(usize, String), RpcError> {
+    fn open_in_existing_slot(&mut self, index: usize, target: Target) -> Result<(usize, String), RpcError> {
         let internal = |e: String| RpcError::new(INTERNAL_ERROR, e);
-        if let Some(index) = self.slots.iter().position(|s| s.cwd == cwd) {
-            let slot = &mut self.slots[index];
-            if slot.turn.is_some() {
-                return Err(RpcError::new(
-                    INVALID_REQUEST,
-                    "A prompt is running in another session of this directory; cancel it or wait for its end",
-                ));
-            }
-            match &target {
-                Target::Open(metadata) => slot.remote.switch_session(&metadata.id).map_err(internal)?,
-                _ => {
-                    let name = self.parsed.name.as_deref().filter(|_| self.name_pending);
-                    slot.remote.new_named_session(name).map_err(internal)?;
-                    self.name_pending &= name.is_none();
-                }
-            }
-            let id = slot.remote.state()["sessionId"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string();
-            slot.attached = id.clone();
-            return Ok((index, id));
+        let slot = &mut self.slots[index];
+        if slot.turn.is_some() {
+            return Err(RpcError::new(
+                INVALID_REQUEST,
+                "A prompt is running in another session of this directory; cancel it or wait for its end",
+            ));
         }
+        match &target {
+            Target::Open(metadata) => slot.remote.switch_session(&metadata.id).map_err(internal)?,
+            _ => {
+                let name = self.parsed.name.as_deref().filter(|_| self.name_pending);
+                slot.remote.new_named_session(name).map_err(internal)?;
+                self.name_pending &= name.is_none();
+            }
+        }
+        let id = slot.remote.state()["sessionId"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        slot.attached = id.clone();
+        Ok((index, id))
+    }
+
+    fn open_in_new_slot(&mut self, cwd: &Path, target: Target) -> Result<(usize, String), RpcError> {
+        let internal = |e: String| RpcError::new(INTERNAL_ERROR, e);
         let env = self.env_for(cwd);
         let index = self.slots.len();
         let (remote_tx, remote_rx) = channel();
@@ -359,6 +359,15 @@ impl Server {
             turn: None,
         });
         Ok((index, id))
+    }
+
+    /// Open `target` in `cwd`: on that directory's front end (switched to it) or a new one. Returns the slot and the
+    /// session id.
+    fn open(&mut self, cwd: &Path, target: Target) -> Result<(usize, String), RpcError> {
+        if let Some(index) = self.slots.iter().position(|s| s.cwd == cwd) {
+            return self.open_in_existing_slot(index, target);
+        }
+        self.open_in_new_slot(cwd, target)
     }
 
     fn config_options(&self, index: usize) -> Value {
@@ -488,21 +497,26 @@ impl Server {
         Ok(index)
     }
 
-    fn set_config_option(&mut self, params: &Value) -> Reply {
-        let index = self.slot_of(params_str(params, "sessionId")?)?;
-        let value = params_str(params, "value")?;
+    fn apply_config_option(remote: &mut Remote, config_id: &str, value: &str) -> Result<(), RpcError> {
         let invalid = |e: String| RpcError::new(INVALID_PARAMS, e);
-        let slot = &mut self.slots[index];
-        match params_str(params, "configId")? {
+        match config_id {
             "model" => {
                 let (provider, model) = value
                     .split_once('/')
                     .ok_or_else(|| invalid(format!("Unknown model: {value}")))?;
-                slot.remote.set_model(provider, model).map_err(invalid)?;
+                remote.set_model(provider, model).map_err(invalid)?;
+                Ok(())
             }
-            "thought_level" => slot.remote.set_thinking_level(value).map_err(invalid)?,
-            other => return Err(invalid(format!("Unknown config option: {other}"))),
+            "thought_level" => remote.set_thinking_level(value).map_err(invalid),
+            other => Err(invalid(format!("Unknown config option: {other}"))),
         }
+    }
+
+    fn set_config_option(&mut self, params: &Value) -> Reply {
+        let index = self.slot_of(params_str(params, "sessionId")?)?;
+        let value = params_str(params, "value")?;
+        let config_id = params_str(params, "configId")?;
+        Self::apply_config_option(&mut self.slots[index].remote, config_id, value)?;
         self.drain(index);
         Ok(json!({"configOptions": self.config_options(index)}))
     }
@@ -572,19 +586,36 @@ impl Server {
         }
     }
 
+    fn act_update(&mut self, index: usize, session: Option<String>, update: Value) {
+        let slot = &mut self.slots[index];
+        let to = match (&session, &slot.turn) {
+            (Some(session), Some(_)) => Some(session.clone()),
+            _ => (update["sessionUpdate"] == "session_info_update").then(|| slot.attached.clone()),
+        };
+        if let Some(to) = to {
+            self.notify(&to, update);
+        }
+    }
+
+    fn act_run_ended(&mut self, index: usize, messages: Vec<Value>) {
+        let slot = &mut self.slots[index];
+        slot.tracker.end();
+        let Some(turn) = slot.turn.take() else { return };
+        let window = slot.remote.state()["model"]["contextWindow"].as_u64();
+        if let Some(usage) = translate::usage_update(&messages, window) {
+            self.notify(&turn.session_id, usage);
+        }
+        let reply = match translate::turn_end(&messages, turn.cancelled) {
+            TurnEnd::Stop(reason) => Ok(json!({"stopReason": reason})),
+            TurnEnd::Failed(message) => Err(RpcError::new(INTERNAL_ERROR, message)),
+        };
+        self.respond(&turn.request, reply);
+    }
+
     fn act(&mut self, index: usize, action: Action) {
         let session = self.slots[index].turn.as_ref().map(|t| t.session_id.clone());
         match action {
-            Action::Update(update) => {
-                let slot = &mut self.slots[index];
-                let to = match (&session, &slot.turn) {
-                    (Some(session), Some(_)) => Some(session.clone()),
-                    _ => (update["sessionUpdate"] == "session_info_update").then(|| slot.attached.clone()),
-                };
-                if let Some(to) = to {
-                    self.notify(&to, update);
-                }
-            }
+            Action::Update(update) => self.act_update(index, session, update),
             Action::CellStarted => {
                 let slot = &mut self.slots[index];
                 slot.tracker.begin(&slot.cwd);
@@ -604,20 +635,7 @@ impl Server {
                     );
                 }
             }
-            Action::RunEnded(messages) => {
-                let slot = &mut self.slots[index];
-                slot.tracker.end();
-                let Some(turn) = slot.turn.take() else { return };
-                let window = slot.remote.state()["model"]["contextWindow"].as_u64();
-                if let Some(usage) = translate::usage_update(&messages, window) {
-                    self.notify(&turn.session_id, usage);
-                }
-                let reply = match translate::turn_end(&messages, turn.cancelled) {
-                    TurnEnd::Stop(reason) => Ok(json!({"stopReason": reason})),
-                    TurnEnd::Failed(message) => Err(RpcError::new(INTERNAL_ERROR, message)),
-                };
-                self.respond(&turn.request, reply);
-            }
+            Action::RunEnded(messages) => self.act_run_ended(index, messages),
             Action::ExtensionUi(request) => self.extension_ui(index, &request),
         }
     }

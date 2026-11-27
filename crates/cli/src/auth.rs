@@ -65,21 +65,55 @@ pub fn is_help(args: &[String]) -> bool {
         && (args.get(1).is_none_or(|a| a == "help") || args.iter().any(|a| a == "--help" || a == "-h"))
 }
 
+fn parse_auth_kind(arg: Option<&str>) -> Result<Kind, String> {
+    match arg {
+        Some("check") => Ok(Kind::Check),
+        Some("print-api-key") => Ok(Kind::ApiKey),
+        Some("print-bearer-token") => Ok(Kind::BearerToken),
+        other => Err(format!(
+            "Unknown auth command \"{}\". Use \"ultron auth print-api-key\", \"ultron auth print-bearer-token\", or \"ultron auth check\".",
+            other.unwrap_or("")
+        )),
+    }
+}
+
+fn apply_auth_arg(command: &mut AuthCommand, args: &[String], index: &mut usize) -> Result<(), String> {
+    let arg = &args[*index];
+    if arg == "--min-expiry" {
+        if command.kind != Kind::BearerToken {
+            return Err("--min-expiry is only supported by print-bearer-token".into());
+        }
+        *index += 1;
+        let ms = args
+            .get(*index)
+            .and_then(|v| parse_duration(v))
+            .ok_or_else(|| "--min-expiry must use a duration such as 30m or 1h".to_string())?;
+        command.min_expiry_ms = Some(ms);
+        return Ok(());
+    }
+    if matches!(arg.as_str(), "--json" | "--credentials" | "--no-refresh") {
+        if command.kind != Kind::Check {
+            return Err(format!("{arg} is only supported by auth check"));
+        }
+        match arg.as_str() {
+            "--json" => command.json = true,
+            "--credentials" => command.credentials = true,
+            _ => command.no_refresh = true,
+        }
+        return Ok(());
+    }
+    command.args.push(arg.clone());
+    Ok(())
+}
+
 /// `parseAuthCommand`: None when `args` is not an auth command.
 pub fn parse_auth_command(args: &[String]) -> Option<Result<AuthCommand, String>> {
     if args.first().map(String::as_str) != Some("auth") {
         return None;
     }
-    let kind = match args.get(1).map(String::as_str) {
-        Some("check") => Kind::Check,
-        Some("print-api-key") => Kind::ApiKey,
-        Some("print-bearer-token") => Kind::BearerToken,
-        other => {
-            return Some(Err(format!(
-                "Unknown auth command \"{}\". Use \"ultron auth print-api-key\", \"ultron auth print-bearer-token\", or \"ultron auth check\".",
-                other.unwrap_or("")
-            )));
-        }
+    let kind = match parse_auth_kind(args.get(1).map(String::as_str)) {
+        Ok(kind) => kind,
+        Err(err) => return Some(Err(err)),
     };
     let mut command = AuthCommand {
         kind,
@@ -91,27 +125,8 @@ pub fn parse_auth_command(args: &[String]) -> Option<Result<AuthCommand, String>
     };
     let mut index = 2;
     while index < args.len() {
-        let arg = &args[index];
-        if arg == "--min-expiry" {
-            if kind != Kind::BearerToken {
-                return Some(Err("--min-expiry is only supported by print-bearer-token".into()));
-            }
-            index += 1;
-            match args.get(index).and_then(|v| parse_duration(v)) {
-                Some(ms) => command.min_expiry_ms = Some(ms),
-                None => return Some(Err("--min-expiry must use a duration such as 30m or 1h".into())),
-            }
-        } else if arg == "--json" || arg == "--credentials" || arg == "--no-refresh" {
-            if kind != Kind::Check {
-                return Some(Err(format!("{arg} is only supported by auth check")));
-            }
-            match arg.as_str() {
-                "--json" => command.json = true,
-                "--credentials" => command.credentials = true,
-                _ => command.no_refresh = true,
-            }
-        } else {
-            command.args.push(arg.clone());
+        if let Err(err) = apply_auth_arg(&mut command, args, &mut index) {
+            return Some(Err(err));
         }
         index += 1;
     }
@@ -249,6 +264,89 @@ impl Credentials<'_> {
     }
 }
 
+fn invalid_state(provider: &str) -> Value {
+    json!({"status": "invalid", "provider": provider, "reason": "invalid_state"})
+}
+
+fn auth_file_invalid(command: &AuthCommand, path: &std::path::Path) -> bool {
+    command.no_refresh
+        && std::fs::read_to_string(path).is_ok_and(|content| config::auth::validate_auth_file(&content).is_err())
+}
+
+fn resolve_check_provider(
+    env: &Env,
+    provider: Option<String>,
+    model: Option<String>,
+    requested: String,
+) -> Option<String> {
+    let Some(model) = model else {
+        return Some(requested);
+    };
+    let resolved = session_core::lane::resolve_cli_model(env, provider.as_deref(), &model, false);
+    match resolved.model {
+        Some(found) if resolved.error.is_none() => Some(found.provider),
+        _ => None,
+    }
+}
+
+fn check_claude_code(env: &Env, command: &AuthCommand, provider: &str) -> Value {
+    let source = ai::env::EnvSource {
+        lookup: &*env.var,
+        exists: &|p: &std::path::Path| p.exists(),
+        home: Some(env.home.clone()),
+    };
+    if !ai::claude_code::configured(&source) {
+        json!({"status": "not_ready", "provider": provider, "reason": "credentials_not_configured"})
+    } else if command.credentials {
+        json!({"status": "not_ready", "provider": provider, "reason": "credential_not_available"})
+    } else {
+        json!({"status": "ready", "provider": provider, "authType": "api_key"})
+    }
+}
+
+fn resolve_check_credential(
+    credentials: &mut Credentials<'_>,
+    command: &AuthCommand,
+    provider: &str,
+) -> Result<Option<String>, Unsupported> {
+    let stored = credentials.read(provider)?;
+    if command.no_refresh
+        && let Some(s) = stored
+        && s.get("type").and_then(Value::as_str) == Some("oauth")
+    {
+        return Ok(s.get("access").and_then(Value::as_str).map(str::to_string));
+    }
+    Ok(credentials
+        .resolve(provider, None)?
+        .map(|(c, _)| c)
+        .filter(|c| c != ai::env::AMBIENT_CREDENTIALS))
+}
+
+fn check_stored_credential(
+    credentials: &mut Credentials<'_>,
+    command: &AuthCommand,
+    provider: &str,
+) -> Result<(Value, Option<String>), Unsupported> {
+    let not_configured = json!({"status": "not_ready", "provider": provider, "reason": "credentials_not_configured"});
+    let Some(auth_type) = credentials.check(provider)? else {
+        return Ok((not_configured, None));
+    };
+    if !command.no_refresh && credentials.resolve(provider, None)?.is_none() {
+        return Ok((not_configured, None));
+    }
+    let ready = json!({"status": "ready", "provider": provider, "authType": auth_type});
+    if !command.credentials {
+        return Ok((ready, None));
+    }
+    Ok(match resolve_check_credential(credentials, command, provider)? {
+        Some(c) => (ready, Some(c)),
+        None => (
+            json!({"status": "not_ready", "provider": provider, "reason": "credential_not_available"}),
+            None,
+        ),
+    })
+}
+
 fn check(
     command: &AuthCommand,
     parsed: &Args,
@@ -256,14 +354,10 @@ fn check(
     options: &session_core::stored_auth::OAuthOptions,
 ) -> Result<(Value, Option<String>), String> {
     let (provider, model) = validate(parsed, Kind::Check)?;
-    let invalid = |p: &str| json!({"status": "invalid", "provider": p, "reason": "invalid_state"});
     let requested = provider.clone().or_else(|| model.clone()).unwrap_or_default();
     let path = config::paths::AgentPaths::new(env.agent_dir()).auth();
-    if command.no_refresh
-        && let Ok(content) = std::fs::read_to_string(&path)
-        && config::auth::validate_auth_file(&content).is_err()
-    {
-        return Ok((invalid(&requested), None));
+    if auth_file_invalid(command, &path) {
+        return Ok((invalid_state(&requested), None));
     }
     let mut credentials = Credentials {
         env,
@@ -271,20 +365,13 @@ fn check(
         options,
     };
     if credentials.list().is_err() {
-        return Ok((invalid(&requested), None));
+        return Ok((invalid_state(&requested), None));
     }
-    let provider = match &model {
-        Some(model) => {
-            let resolved = session_core::lane::resolve_cli_model(env, provider.as_deref(), model, false);
-            match resolved.model {
-                Some(found) if resolved.error.is_none() => found.provider,
-                _ => return Ok((invalid(&requested), None)),
-            }
-        }
-        None => requested,
+    let Some(provider) = resolve_check_provider(env, provider, model, requested.clone()) else {
+        return Ok((invalid_state(&requested), None));
     };
     if session_core::lane::registry(env).error().is_some() {
-        return Ok((invalid(&provider), None));
+        return Ok((invalid_state(&provider), None));
     }
     if !credentials.known(&provider) {
         return Ok((
@@ -292,52 +379,104 @@ fn check(
             None,
         ));
     }
-    let not_configured = json!({"status": "not_ready", "provider": provider, "reason": "credentials_not_configured"});
     if provider == ai::claude_code::PROVIDER {
-        let source = ai::env::EnvSource {
-            lookup: &*env.var,
-            exists: &|p: &std::path::Path| p.exists(),
-            home: Some(env.home.clone()),
-        };
-        let result = if !ai::claude_code::configured(&source) {
-            not_configured
-        } else if command.credentials {
-            json!({"status": "not_ready", "provider": provider, "reason": "credential_not_available"})
-        } else {
-            json!({"status": "ready", "provider": provider, "authType": "api_key"})
-        };
-        return Ok((result, None));
+        return Ok((check_claude_code(env, command, &provider), None));
     }
-    let outcome = (|| -> Result<(Value, Option<String>), Unsupported> {
-        let Some(auth_type) = credentials.check(&provider)? else {
-            return Ok((not_configured.clone(), None));
-        };
-        if !command.no_refresh && credentials.resolve(&provider, None)?.is_none() {
-            return Ok((not_configured.clone(), None));
+    let outcome = check_stored_credential(&mut credentials, command, &provider);
+    Ok(outcome.unwrap_or_else(|Unsupported| (invalid_state(&provider), None)))
+}
+
+fn credential_type_of<'a>(types: &'a [(String, Value)], id: &str) -> Option<&'a str> {
+    types.iter().find(|(p, _)| p == id).and_then(|(_, t)| t.as_str())
+}
+
+fn resolve_named_provider(
+    env: &Env,
+    credentials: &Credentials<'_>,
+    provider: &str,
+    model: Option<&str>,
+) -> Result<Vec<String>, String> {
+    if !credentials.known(provider) {
+        return Err(format!(
+            "Unknown provider \"{provider}\". Use --list-models to see available providers."
+        ));
+    }
+    if let Some(model) = model {
+        let resolved = session_core::lane::resolve_cli_model(env, Some(provider), model, true);
+        if resolved.model.is_none() || resolved.error.is_some() {
+            return Err(resolved
+                .error
+                .unwrap_or_else(|| "Unable to resolve the requested provider/model".into()));
         }
-        let ready = json!({"status": "ready", "provider": provider, "authType": auth_type});
-        if !command.credentials {
-            return Ok((ready, None));
-        }
-        let stored = credentials.read(&provider)?;
-        let credential = match stored {
-            Some(s) if command.no_refresh && s.get("type").and_then(Value::as_str) == Some("oauth") => {
-                s.get("access").and_then(Value::as_str).map(str::to_string)
-            }
-            _ => credentials
-                .resolve(&provider, None)?
-                .map(|(c, _)| c)
-                .filter(|c| c != ai::env::AMBIENT_CREDENTIALS),
-        };
-        Ok(match credential {
-            Some(c) => (ready, Some(c)),
-            None => (
-                json!({"status": "not_ready", "provider": provider, "reason": "credential_not_available"}),
-                None,
-            ),
+    }
+    Ok(vec![provider.to_string()])
+}
+
+fn resolve_model_providers(env: &Env, model: &str, types: &[(String, Value)]) -> Result<Vec<String>, String> {
+    let matched: Vec<String> = session_core::lane::registry(env)
+        .provider_ids()
+        .into_iter()
+        .filter(|id| credential_type_of(types, id).is_some())
+        .filter(|id| {
+            let resolved = session_core::lane::resolve_cli_model(env, Some(id), model, true);
+            resolved.model.is_some()
+                && resolved.error.is_none()
+                && !resolved
+                    .warning
+                    .as_deref()
+                    .is_some_and(|w| w.contains("Using custom model id"))
         })
-    })();
-    Ok(outcome.unwrap_or_else(|Unsupported| (invalid(&provider), None)))
+        .collect();
+    if matched.is_empty() {
+        return Err(format!(
+            "Model \"{model}\" not found. Use --list-models to see available models."
+        ));
+    }
+    Ok(matched)
+}
+
+fn collect_credentials(
+    command: &AuthCommand,
+    credentials: &mut Credentials<'_>,
+    providers: &[String],
+    types: &[(String, Value)],
+) -> Result<Vec<(String, String)>, String> {
+    let kind = command.kind;
+    let min =
+        (kind == Kind::BearerToken).then_some(command.min_expiry_ms.unwrap_or(DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS));
+    let mut found = Vec::new();
+    for id in providers {
+        let is_oauth = credential_type_of(types, id) == Some("oauth");
+        if (kind == Kind::ApiKey) == is_oauth {
+            continue;
+        }
+        if let Some(value) = credentials
+            .resolve(id, min)
+            .map_err(|Unsupported| "Failed to resolve credential".to_string())?
+            .map(|(c, _)| c)
+            .filter(|c| c != ai::env::AMBIENT_CREDENTIALS)
+        {
+            found.push((id.clone(), value));
+        }
+    }
+    Ok(found)
+}
+
+fn missing_credential_error(kind: Kind, named: bool, provider: &str, credential_type: Option<&str>) -> String {
+    if named && kind == Kind::ApiKey && credential_type == Some("oauth") {
+        return format!("Provider \"{provider}\" is configured with OAuth, not an API key");
+    }
+    if named && kind == Kind::BearerToken && credential_type != Some("oauth") {
+        return format!("Provider \"{provider}\" is not configured with an OAuth bearer token");
+    }
+    format!(
+        "No usable {} is configured",
+        if kind == Kind::ApiKey {
+            "API key"
+        } else {
+            "OAuth bearer token"
+        }
+    )
 }
 
 fn print_credential(
@@ -348,82 +487,20 @@ fn print_credential(
 ) -> Result<String, String> {
     let kind = command.kind;
     let (provider, model) = validate(parsed, kind)?;
-    let failed = |Unsupported| "Failed to resolve credential".to_string();
     let path = config::paths::AgentPaths::new(env.agent_dir()).auth();
     let mut credentials = Credentials {
         env,
         storage: config::auth::AuthStorage::create(path),
         options,
     };
-    let types: Vec<(String, Value)> = credentials.list().map_err(failed)?;
-    let type_of = |id: &str| {
-        types
-            .iter()
-            .find(|(p, _)| p == id)
-            .and_then(|(_, t)| t.as_str().map(str::to_string))
+    let types = credentials
+        .list()
+        .map_err(|Unsupported| "Failed to resolve credential".to_string())?;
+    let providers = match provider.as_deref() {
+        Some(p) => resolve_named_provider(env, &credentials, p, model.as_deref())?,
+        None => resolve_model_providers(env, model.as_deref().unwrap_or_default(), &types)?,
     };
-    let providers: Vec<String> = match &provider {
-        Some(provider) => {
-            if !credentials.known(provider) {
-                return Err(format!(
-                    "Unknown provider \"{provider}\". Use --list-models to see available providers."
-                ));
-            }
-            if let Some(model) = &model {
-                let resolved = session_core::lane::resolve_cli_model(env, Some(provider), model, true);
-                if resolved.model.is_none() || resolved.error.is_some() {
-                    return Err(resolved
-                        .error
-                        .unwrap_or_else(|| "Unable to resolve the requested provider/model".into()));
-                }
-            }
-            vec![provider.clone()]
-        }
-        None => {
-            let model = model.unwrap_or_default();
-            let matched: Vec<String> = session_core::lane::registry(env)
-                .provider_ids()
-                .into_iter()
-                .filter(|id| type_of(id).is_some())
-                .filter(|id| {
-                    let resolved = session_core::lane::resolve_cli_model(env, Some(id), &model, true);
-                    resolved.model.is_some()
-                        && resolved.error.is_none()
-                        && !resolved
-                            .warning
-                            .as_deref()
-                            .is_some_and(|w| w.contains("Using custom model id"))
-                })
-                .collect();
-            if matched.is_empty() {
-                return Err(format!(
-                    "Model \"{model}\" not found. Use --list-models to see available models."
-                ));
-            }
-            matched
-        }
-    };
-    let mut found: Vec<(String, String)> = Vec::new();
-    for id in &providers {
-        let credential_type = type_of(id);
-        let skip = match kind {
-            Kind::ApiKey => credential_type.as_deref() == Some("oauth"),
-            _ => credential_type.as_deref() != Some("oauth"),
-        };
-        if skip {
-            continue;
-        }
-        let min =
-            (kind == Kind::BearerToken).then_some(command.min_expiry_ms.unwrap_or(DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS));
-        if let Some(value) = credentials
-            .resolve(id, min)
-            .map_err(failed)?
-            .map(|(c, _)| c)
-            .filter(|c| c != ai::env::AMBIENT_CREDENTIALS)
-        {
-            found.push((id.clone(), value));
-        }
-    }
+    let mut found = collect_credentials(command, &mut credentials, &providers, &types)?;
     if found.len() > 1 {
         let ids: Vec<&str> = found.iter().map(|(id, _)| id.as_str()).collect();
         return Err(format!(
@@ -434,27 +511,12 @@ fn print_credential(
     if let Some((_, value)) = found.pop() {
         return Ok(value);
     }
-    let first = providers[0].clone();
-    let credential_type = type_of(&first);
-    let named = provider.is_some();
-    let provider = first;
-    if named && kind == Kind::ApiKey && credential_type.as_deref() == Some("oauth") {
-        return Err(format!(
-            "Provider \"{provider}\" is configured with OAuth, not an API key"
-        ));
-    }
-    if named && kind == Kind::BearerToken && credential_type.as_deref() != Some("oauth") {
-        return Err(format!(
-            "Provider \"{provider}\" is not configured with an OAuth bearer token"
-        ));
-    }
-    Err(format!(
-        "No usable {} is configured",
-        if kind == Kind::ApiKey {
-            "API key"
-        } else {
-            "OAuth bearer token"
-        }
+    let first = &providers[0];
+    Err(missing_credential_error(
+        kind,
+        provider.is_some(),
+        first,
+        credential_type_of(&types, first),
     ))
 }
 
@@ -467,6 +529,53 @@ pub fn run(argv: &[String], env: &Env, out: &mut dyn std::io::Write, err: &mut d
         err,
         &session_core::stored_auth::OAuthOptions::for_env(env),
     )
+}
+
+fn write_print_outcome(
+    outcome: Result<String, String>,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+) -> i32 {
+    match outcome {
+        Ok(value) => {
+            let _ = writeln!(out, "{value}");
+            0
+        }
+        Err(message) => {
+            let _ = writeln!(err, "Error: {message}");
+            1
+        }
+    }
+}
+
+fn write_check_outcome(
+    command: &AuthCommand,
+    outcome: Result<(Value, Option<String>), String>,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+) -> i32 {
+    let (mut result, credential) = match outcome {
+        Ok(ok) => ok,
+        Err(message) => {
+            let _ = writeln!(err, "Error: {message}");
+            return 2;
+        }
+    };
+    let status = result["status"].as_str().unwrap_or_default().to_string();
+    let output = if command.json {
+        if let Some(c) = &credential {
+            result["credentials"] = Value::String(c.clone());
+        }
+        jsrt::json::stringify(&result)
+    } else {
+        credential.unwrap_or_else(|| status.clone())
+    };
+    let _ = writeln!(out, "{output}");
+    match status.as_str() {
+        "ready" => 0,
+        "not_ready" => 1,
+        _ => 2,
+    }
 }
 
 /// [`run`] with OAuth refreshes going through `options` (tests answer the providers' endpoints).
@@ -494,45 +603,22 @@ pub fn run_with(
         let _ = writeln!(err, "Use \"ultron --help\" or \"{}\".", usage(command.kind));
         return Some(1);
     }
-    let fail_code = if command.kind == Kind::Check { 2 } else { 1 };
     if !parsed.diagnostics.is_empty() {
         let messages: Vec<&str> = parsed.diagnostics.iter().map(|d| d.message.as_str()).collect();
         let _ = writeln!(err, "Error: {}", messages.join("\n"));
-        return Some(fail_code);
+        return Some(if command.kind == Kind::Check { 2 } else { 1 });
     }
     if command.kind != Kind::Check {
-        return Some(match print_credential(&command, &parsed, env, options) {
-            Ok(value) => {
-                let _ = writeln!(out, "{value}");
-                0
-            }
-            Err(message) => {
-                let _ = writeln!(err, "Error: {message}");
-                1
-            }
-        });
+        return Some(write_print_outcome(
+            print_credential(&command, &parsed, env, options),
+            out,
+            err,
+        ));
     }
-    match check(&command, &parsed, env, options) {
-        Ok((mut result, credential)) => {
-            let status = result["status"].as_str().unwrap_or_default().to_string();
-            let output = if command.json {
-                if let Some(c) = &credential {
-                    result["credentials"] = Value::String(c.clone());
-                }
-                jsrt::json::stringify(&result)
-            } else {
-                credential.unwrap_or_else(|| status.clone())
-            };
-            let _ = writeln!(out, "{output}");
-            Some(match status.as_str() {
-                "ready" => 0,
-                "not_ready" => 1,
-                _ => 2,
-            })
-        }
-        Err(message) => {
-            let _ = writeln!(err, "Error: {message}");
-            Some(2)
-        }
-    }
+    Some(write_check_outcome(
+        &command,
+        check(&command, &parsed, env, options),
+        out,
+        err,
+    ))
 }

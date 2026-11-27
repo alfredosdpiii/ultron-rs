@@ -66,84 +66,112 @@ impl Capture {
 
     pub fn event(&mut self, event: &Value) -> Result<(), &'static str> {
         match event.get("type").and_then(Value::as_str).ok_or("KeyError")? {
-            "message_start" => {
-                let mut message = event.get("message").cloned().ok_or("KeyError")?;
-                if !message.is_object() {
-                    return Err("TypeError");
-                }
-                if !message.get("content").is_some_and(Value::is_array) {
-                    message["content"] = json!([]);
-                }
-                self.message = Some(message);
-            }
-            "content_block_start" => {
-                let block = event.get("content_block").cloned().ok_or("KeyError")?;
-                self.content()?.push(block);
-            }
-            "content_block_delta" => {
-                let delta = event.get("delta").ok_or("KeyError")?;
-                let index = event.get("index").and_then(Value::as_u64).ok_or("KeyError")?;
-                let kind = delta.get("type").and_then(Value::as_str).ok_or("KeyError")?;
-                let field = match kind {
-                    "text_delta" => Some("text"),
-                    "thinking_delta" => Some("thinking"),
-                    "signature_delta" => Some("signature"),
-                    _ => None,
-                };
-                if let Some(field) = field {
-                    let piece = delta.get(field).and_then(Value::as_str).ok_or("KeyError")?;
-                    let block = self.block(index)?;
-                    let joined = format!(
-                        "{}{piece}",
-                        block.get(field).and_then(Value::as_str).unwrap_or_default()
-                    );
-                    block[field] = Value::String(joined);
-                } else if kind == "input_json_delta" {
-                    let piece = delta.get("partial_json").and_then(Value::as_str).ok_or("KeyError")?;
-                    self.block(index)?;
-                    self.arguments.entry(index).or_default().push_str(piece);
-                } else if kind == "citations_delta" {
-                    let citation = delta.get("citation").cloned().ok_or("KeyError")?;
-                    let block = self.block(index)?.as_object_mut().ok_or("TypeError")?;
-                    let citations = block.entry("citations").or_insert_with(|| json!([]));
-                    citations.as_array_mut().ok_or("AttributeError")?.push(citation);
-                }
-            }
-            "content_block_stop" => {
-                let index = event.get("index").and_then(Value::as_u64).ok_or("KeyError")?;
-                if let Some(raw) = self.arguments.remove(&index) {
-                    let input = if raw.trim().is_empty() {
-                        json!({})
-                    } else {
-                        serde_json::from_str(&raw).map_err(|_| "ValueError")?
-                    };
-                    self.block(index)?["input"] = input;
-                }
-            }
-            "message_delta" => {
-                let message = self.message.as_mut().ok_or("TypeError")?;
-                let map = message.as_object_mut().ok_or("TypeError")?;
-                if let Some(delta) = event.get("delta").and_then(Value::as_object) {
-                    for (k, v) in delta {
-                        map.insert(k.clone(), v.clone());
-                    }
-                }
-                let usage = map.entry("usage").or_insert_with(|| json!({}));
-                let usage = usage.as_object_mut().ok_or("AttributeError")?;
-                if let Some(delta) = event.get("usage").and_then(Value::as_object) {
-                    for (k, v) in delta {
-                        usage.insert(k.clone(), v.clone());
-                    }
-                }
-            }
+            "message_start" => self.on_message_start(event),
+            "content_block_start" => self.on_content_block_start(event),
+            "content_block_delta" => self.on_content_block_delta(event),
+            "content_block_stop" => self.on_content_block_stop(event),
+            "message_delta" => self.on_message_delta(event),
             "message_stop" => {
-                self.complete = self
-                    .message
-                    .as_ref()
-                    .is_some_and(|m| jsrt::value::truthy(m.get("stop_reason")))
-                    && self.arguments.is_empty();
+                self.on_message_stop();
+                Ok(())
             }
-            _ => {}
+            _ => Ok(()),
+        }
+    }
+
+    fn on_content_block_start(&mut self, event: &Value) -> Result<(), &'static str> {
+        let block = event.get("content_block").cloned().ok_or("KeyError")?;
+        self.content()?.push(block);
+        Ok(())
+    }
+
+    fn on_message_stop(&mut self) {
+        self.complete = self
+            .message
+            .as_ref()
+            .is_some_and(|m| jsrt::value::truthy(m.get("stop_reason")))
+            && self.arguments.is_empty();
+    }
+
+    fn on_message_start(&mut self, event: &Value) -> Result<(), &'static str> {
+        let mut message = event.get("message").cloned().ok_or("KeyError")?;
+        if !message.is_object() {
+            return Err("TypeError");
+        }
+        if !message.get("content").is_some_and(Value::is_array) {
+            message["content"] = json!([]);
+        }
+        self.message = Some(message);
+        Ok(())
+    }
+
+    fn append_delta_field(&mut self, index: u64, delta: &Value, field: &str) -> Result<(), &'static str> {
+        let piece = delta.get(field).and_then(Value::as_str).ok_or("KeyError")?;
+        let block = self.block(index)?;
+        let joined = format!(
+            "{}{piece}",
+            block.get(field).and_then(Value::as_str).unwrap_or_default()
+        );
+        block[field] = Value::String(joined);
+        Ok(())
+    }
+
+    fn append_input_json_delta(&mut self, index: u64, delta: &Value) -> Result<(), &'static str> {
+        let piece = delta.get("partial_json").and_then(Value::as_str).ok_or("KeyError")?;
+        self.block(index)?;
+        self.arguments.entry(index).or_default().push_str(piece);
+        Ok(())
+    }
+
+    fn append_citation_delta(&mut self, index: u64, delta: &Value) -> Result<(), &'static str> {
+        let citation = delta.get("citation").cloned().ok_or("KeyError")?;
+        let block = self.block(index)?.as_object_mut().ok_or("TypeError")?;
+        let citations = block.entry("citations").or_insert_with(|| json!([]));
+        citations.as_array_mut().ok_or("AttributeError")?.push(citation);
+        Ok(())
+    }
+
+    fn on_content_block_delta(&mut self, event: &Value) -> Result<(), &'static str> {
+        let delta = event.get("delta").ok_or("KeyError")?;
+        let index = event.get("index").and_then(Value::as_u64).ok_or("KeyError")?;
+        match delta.get("type").and_then(Value::as_str).ok_or("KeyError")? {
+            "text_delta" => self.append_delta_field(index, delta, "text"),
+            "thinking_delta" => self.append_delta_field(index, delta, "thinking"),
+            "signature_delta" => self.append_delta_field(index, delta, "signature"),
+            "input_json_delta" => self.append_input_json_delta(index, delta),
+            "citations_delta" => self.append_citation_delta(index, delta),
+            _ => Ok(()),
+        }
+    }
+
+    fn on_content_block_stop(&mut self, event: &Value) -> Result<(), &'static str> {
+        let index = event.get("index").and_then(Value::as_u64).ok_or("KeyError")?;
+        let Some(raw) = self.arguments.remove(&index) else {
+            return Ok(());
+        };
+        let input = if raw.trim().is_empty() {
+            json!({})
+        } else {
+            serde_json::from_str(&raw).map_err(|_| "ValueError")?
+        };
+        self.block(index)?["input"] = input;
+        Ok(())
+    }
+
+    fn on_message_delta(&mut self, event: &Value) -> Result<(), &'static str> {
+        let message = self.message.as_mut().ok_or("TypeError")?;
+        let map = message.as_object_mut().ok_or("TypeError")?;
+        if let Some(delta) = event.get("delta").and_then(Value::as_object) {
+            for (k, v) in delta {
+                map.insert(k.clone(), v.clone());
+            }
+        }
+        let usage = map.entry("usage").or_insert_with(|| json!({}));
+        let usage = usage.as_object_mut().ok_or("AttributeError")?;
+        if let Some(delta) = event.get("usage").and_then(Value::as_object) {
+            for (k, v) in delta {
+                usage.insert(k.clone(), v.clone());
+            }
         }
         Ok(())
     }
@@ -229,6 +257,28 @@ fn bypassed(host: &str, port: u16, no_proxy: &str) -> bool {
     })
 }
 
+fn parse_connect_proxy(raw: &str) -> Option<Url> {
+    let normalized = if raw.contains("://") {
+        raw.to_string()
+    } else {
+        format!("http://{raw}")
+    };
+    Url::parse(&normalized)
+        .ok()
+        .filter(|url| url.scheme() == "http" && url.host_str().is_some_and(|h| !h.is_empty()))
+}
+
+fn proxy_authorization(url: &Url) -> Option<String> {
+    (!url.username().is_empty() || url.password().is_some()).then(|| {
+        let credentials = format!(
+            "{}:{}",
+            jsrt::uri::decode(url.username()),
+            jsrt::uri::decode(url.password().unwrap_or_default())
+        );
+        format!("Basic {}", jsrt::base64::encode(credentials))
+    })
+}
+
 /// The CONNECT proxy for `upstream` from `env` (`upstream_proxy`): `https_proxy`/`HTTPS_PROXY`, then
 /// `http_proxy`/`HTTP_PROXY`, with `NO_PROXY` exceptions; `ALL_PROXY` is ignored as native ignores it. An unusable
 /// proxy (SOCKS, TLS-to-proxy, a bad port) is ignored with a warning that never quotes the URL.
@@ -248,16 +298,7 @@ pub fn upstream_proxy(
         return None;
     }
     let raw = found.get("https").or_else(|| found.get("http"))?;
-    let raw = if raw.contains("://") {
-        raw.clone()
-    } else {
-        format!("http://{raw}")
-    };
-    let parsed = Url::parse(&raw).ok();
-    let usable = parsed
-        .as_ref()
-        .filter(|url| url.scheme() == "http" && url.host_str().is_some_and(|h| !h.is_empty()));
-    let Some(url) = usable else {
+    let Some(url) = parse_connect_proxy(raw) else {
         warnings.push(
             "ignoring HTTPS_PROXY for the relay: only an http://host[:port] CONNECT proxy is supported (SOCKS and \
              TLS-to-proxy are not); connecting directly"
@@ -265,18 +306,10 @@ pub fn upstream_proxy(
         );
         return None;
     };
-    let authorization = (!url.username().is_empty() || url.password().is_some()).then(|| {
-        let credentials = format!(
-            "{}:{}",
-            jsrt::uri::decode(url.username()),
-            jsrt::uri::decode(url.password().unwrap_or_default())
-        );
-        format!("Basic {}", jsrt::base64::encode(credentials))
-    });
     Some(ProxyRoute {
         host: url.host_str().unwrap_or_default().trim_matches(['[', ']']).to_string(),
         port: url.port().unwrap_or(80),
-        authorization,
+        authorization: proxy_authorization(&url),
     })
 }
 
@@ -528,26 +561,30 @@ fn header<'h>(head: &'h Head, name: &str) -> Option<&'h str> {
         .map(|(_, v)| v.as_str())
 }
 
+fn read_chunked_body(reader: &mut BufReader<TcpStream>) -> Option<Vec<u8>> {
+    let mut body = Vec::new();
+    loop {
+        let mut size = String::new();
+        reader.read_line(&mut size).ok()?;
+        let size = usize::from_str_radix(size.trim().split(';').next()?, 16).ok()?;
+        if size == 0 {
+            let mut trailer = String::new();
+            while reader.read_line(&mut trailer).ok()? > 2 {
+                trailer.clear();
+            }
+            return Some(body);
+        }
+        let start = body.len();
+        body.resize(start + size, 0);
+        reader.read_exact(&mut body[start..]).ok()?;
+        let mut crlf = [0u8; 2];
+        reader.read_exact(&mut crlf).ok()?;
+    }
+}
+
 fn read_body(reader: &mut BufReader<TcpStream>, head: &Head) -> Option<Vec<u8>> {
     if header(head, "transfer-encoding").is_some_and(|v| v.eq_ignore_ascii_case("chunked")) {
-        let mut body = Vec::new();
-        loop {
-            let mut size = String::new();
-            reader.read_line(&mut size).ok()?;
-            let size = usize::from_str_radix(size.trim().split(';').next()?, 16).ok()?;
-            if size == 0 {
-                let mut trailer = String::new();
-                while reader.read_line(&mut trailer).ok()? > 2 {
-                    trailer.clear();
-                }
-                return Some(body);
-            }
-            let start = body.len();
-            body.resize(start + size, 0);
-            reader.read_exact(&mut body[start..]).ok()?;
-            let mut crlf = [0u8; 2];
-            reader.read_exact(&mut crlf).ok()?;
-        }
+        return read_chunked_body(reader);
     }
     let length: usize = header(head, "content-length")?.parse().ok()?;
     let mut body = vec![0; length];
@@ -638,13 +675,7 @@ fn forward(
     })
 }
 
-async fn exchange(
-    gate: &Gate,
-    head: &Head,
-    query: Option<&str>,
-    payload: Vec<u8>,
-    writer: &mut TcpStream,
-) -> Result<(), String> {
+fn build_upstream_client(gate: &Gate) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .no_proxy()
         .connect_timeout(gate.timeout)
@@ -660,7 +691,16 @@ async fn exchange(
         }
         builder = builder.proxy(route);
     }
-    let client = builder.build().map_err(|_| "OSError")?;
+    builder.build().map_err(|_| "OSError".into())
+}
+
+fn build_upstream_request(
+    client: &reqwest::Client,
+    gate: &Gate,
+    head: &Head,
+    query: Option<&str>,
+    payload: Vec<u8>,
+) -> reqwest::RequestBuilder {
     let mut url = gate.upstream.clone();
     url.set_path(&format!("{}/v1/messages", gate.upstream.path().trim_end_matches('/')));
     url.set_query(query);
@@ -679,35 +719,26 @@ async fn exchange(
             request = request.header(name.as_str(), value.as_str());
         }
     }
-    request = request.header("Accept-Encoding", "identity");
-    let sent = tokio::time::timeout(gate.timeout, request.send()).await;
-    let mut response = match sent {
-        Err(_) => return Err("TimeoutError".into()),
-        Ok(Err(error)) => {
-            return Err(if error.is_connect() {
-                "ConnectionError"
-            } else {
-                "OSError"
-            }
-            .into());
-        }
-        Ok(Ok(response)) => response,
+    request.header("Accept-Encoding", "identity")
+}
+
+fn record_response_headers(gate: &Gate, response: &reqwest::Response) {
+    let mut outcome = jsrt::sync::lock(&gate.outcome);
+    let header_value = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
     };
+    outcome.request_id = header_value("request-id").or_else(|| header_value("x-request-id"));
+    outcome.unified_status = header_value("anthropic-ratelimit-unified-status");
+    outcome.unified_reset = header_value("anthropic-ratelimit-unified-reset");
+    outcome.status = Some(response.status().as_u16());
+}
+
+fn write_response_head(response: &reqwest::Response, writer: &mut TcpStream) -> Result<(), String> {
     let status = response.status();
-    {
-        let mut outcome = jsrt::sync::lock(&gate.outcome);
-        let id = |name: &str| {
-            response
-                .headers()
-                .get(name)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string)
-        };
-        outcome.request_id = id("request-id").or_else(|| id("x-request-id"));
-        outcome.unified_status = id("anthropic-ratelimit-unified-status");
-        outcome.unified_reset = id("anthropic-ratelimit-unified-reset");
-        outcome.status = Some(status.as_u16());
-    }
     let mut out = format!(
         "HTTP/1.1 {} {}\r\n",
         status.as_u16(),
@@ -719,7 +750,15 @@ async fn exchange(
         }
     }
     out.push_str("Connection: close\r\n\r\n");
-    writer.write_all(out.as_bytes()).map_err(|_| "BrokenPipeError")?;
+    writer.write_all(out.as_bytes()).map_err(|_| "BrokenPipeError".into())
+}
+
+async fn relay_response_body(
+    gate: &Gate,
+    response: &mut reqwest::Response,
+    writer: &mut TcpStream,
+) -> Result<(), String> {
+    let status = response.status().as_u16();
     let idle = gate.timeout.min(gate.idle);
     loop {
         let chunk = match tokio::time::timeout(idle, response.chunk()).await {
@@ -730,7 +769,7 @@ async fn exchange(
         };
         {
             let mut outcome = jsrt::sync::lock(&gate.outcome);
-            if status.as_u16() == 200 {
+            if status == 200 {
                 outcome.capture.feed(&chunk)?;
             } else if outcome.error_body.len() < ERROR_BODY_LIMIT {
                 outcome.error_body.extend_from_slice(&chunk);
@@ -739,4 +778,24 @@ async fn exchange(
         writer.write_all(&chunk).map_err(|_| "BrokenPipeError")?;
         writer.flush().map_err(|_| "BrokenPipeError")?;
     }
+}
+
+async fn exchange(
+    gate: &Gate,
+    head: &Head,
+    query: Option<&str>,
+    payload: Vec<u8>,
+    writer: &mut TcpStream,
+) -> Result<(), String> {
+    let client = build_upstream_client(gate)?;
+    let request = build_upstream_request(&client, gate, head, query, payload);
+    let mut response = match tokio::time::timeout(gate.timeout, request.send()).await {
+        Err(_) => return Err("TimeoutError".into()),
+        Ok(Err(error)) if error.is_connect() => return Err("ConnectionError".into()),
+        Ok(Err(_)) => return Err("OSError".into()),
+        Ok(Ok(response)) => response,
+    };
+    record_response_headers(gate, &response);
+    write_response_head(&response, writer)?;
+    relay_response_body(gate, &mut response, writer).await
 }

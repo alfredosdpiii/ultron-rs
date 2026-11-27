@@ -243,7 +243,194 @@ impl SchedulesModule {
         self.changed();
         Ok(result)
     }
+}
 
+fn reconcile_goal_tasks(draft: &mut Value, tasks: &[Value]) -> bool {
+    let mut changed = false;
+    for goal in draft["goals"].as_array_mut().into_iter().flatten() {
+        let prefix = format!("goal:{}:", goal["id"].as_str().unwrap_or(""));
+        for task in tasks {
+            if task["key"].as_str().is_some_and(|key| key.starts_with(&prefix))
+                && !goal["task_ids"].as_array().is_some_and(|ids| ids.contains(&task["id"]))
+            {
+                push_task(goal, &task["id"]);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+fn reconcile_schedule_goals(draft: &mut Value, tasks: &[Value]) -> bool {
+    let mut changed = false;
+    let schedules = draft["schedules"].as_array().cloned().unwrap_or_default();
+    for schedule in schedules {
+        let Some(goal_id) = schedule["goal_id"].as_str() else {
+            continue;
+        };
+        let slot = schedule["pending_slot"]
+            .as_i64()
+            .or_else(|| schedule["last_slot"].as_i64());
+        let task = slot.and_then(|slot| {
+            let key = schedule_key(&schedule, slot);
+            tasks.iter().find(|task| task["key"] == key.as_str())
+        });
+        if let (Some(goal), Some(task)) = (find(draft, "goals", goal_id), task)
+            && !goal["task_ids"].as_array().is_some_and(|ids| ids.contains(&task["id"]))
+        {
+            push_task(goal, &task["id"]);
+            changed = true;
+        }
+    }
+    changed
+}
+
+struct ScheduleInput {
+    definition: String,
+    input: Value,
+    every_ms: i64,
+    start_at: i64,
+    max_runs: Option<i64>,
+    model: Value,
+    goal_id: Value,
+}
+
+fn parse_schedule_input(payload: &Map<String, Value>, now: i64) -> Result<ScheduleInput, String> {
+    kernel::ops::fields("schedules.create", payload)?;
+    let definition = definition_key(payload.get("definition"), "definition")?;
+    let input = payload.get("input").cloned().ok_or("input must be JSON")?;
+    let every_ms = integer(payload.get("every_ms"), "every_ms", 1, MAX_EVERY_MS)?;
+    let start_at = optional_integer(payload.get("start_at"), "start_at", 0)?.unwrap_or(now);
+    let max_runs = optional_integer(payload.get("max_runs"), "max_runs", 1)?;
+    let model = match payload.get("model") {
+        None | Some(Value::Null) => Value::Null,
+        Some(model) => model_scope::model_ref(model)?.into(),
+    };
+    let goal_id = payload.get("goal_id").cloned().unwrap_or(Value::Null);
+    Ok(ScheduleInput {
+        definition,
+        input,
+        every_ms,
+        start_at,
+        max_runs,
+        model,
+        goal_id,
+    })
+}
+
+struct DueSlot {
+    slot: i64,
+    resuming: bool,
+    skipped: i64,
+    goal: Option<Value>,
+}
+
+fn resolve_due_slot(document: &Value, id: &str, now: i64) -> Option<DueSlot> {
+    let current = document["schedules"]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["id"] == id))?;
+    if current["state"] != "active" {
+        return None;
+    }
+    let pending = current["pending_slot"].as_i64();
+    let slot = pending.unwrap_or_else(|| {
+        schedule_slot(
+            current["start_at"].as_i64().unwrap_or(0),
+            current["every_ms"].as_i64().unwrap_or(1),
+            now,
+        )
+    });
+    if slot < 0 {
+        return None;
+    }
+    let resuming = pending.is_some();
+    let last = current["last_slot"].as_i64();
+    if !resuming && last.is_some_and(|last| slot <= last) {
+        return None;
+    }
+    let goal = current["goal_id"].as_str().and_then(|goal_id| {
+        document["goals"]
+            .as_array()
+            .and_then(|goals| goals.iter().find(|goal| goal["id"] == goal_id))
+            .cloned()
+    });
+    if !current["goal_id"].is_null() && goal.as_ref().is_none_or(|goal| goal["state"] != "active") {
+        return None;
+    }
+    let skipped = if resuming {
+        current["last_skipped"].as_i64().unwrap_or(0)
+    } else {
+        slot - last.unwrap_or(-1) - 1
+    };
+    Some(DueSlot {
+        slot,
+        resuming,
+        skipped,
+        goal,
+    })
+}
+
+fn spawn_due_slot(claimed: &Value, due: &DueSlot, host: &dyn TaskHost) -> Result<Value, String> {
+    if let Some(goal) = due.goal.as_ref().filter(|goal| !has_capacity(goal, 1)) {
+        return Err(format!("Goal task limit reached ({})", goal["max_tasks"]));
+    }
+    let mut request = json!({
+        "definition": claimed["definition"], "input": claimed["input"], "key": schedule_key(claimed, due.slot),
+    });
+    if !claimed["model"].is_null() {
+        request["model"] = claimed["model"].clone();
+    }
+    host.spawn(&request, claimed["owner"].as_str())
+}
+
+fn validate_verify_goal(goal: &Value) -> Result<Vec<String>, String> {
+    if goal["state"] == "achieved" {
+        return Err("Goal is already achieved".into());
+    }
+    if goal["state"] == "paused" {
+        return Err("Goal is paused".into());
+    }
+    let checks: Vec<String> = goal["required_checks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|check| check.as_str().map(str::to_string))
+        .collect();
+    if !has_capacity(goal, checks.len() as i64) {
+        return Err(format!(
+            "Goal task limit reached: verification needs {} tasks, {} remain",
+            checks.len(),
+            capacity(goal).unwrap_or(0).max(0)
+        ));
+    }
+    Ok(checks)
+}
+
+type SpawnedCheck = (String, Result<Value, String>);
+
+struct VerifyRound {
+    goal_id: String,
+    round: i64,
+    spawned: Vec<SpawnedCheck>,
+}
+
+fn collect_verify_checks(spawned: &[SpawnedCheck], host: &dyn TaskHost) -> Vec<Value> {
+    spawned
+        .iter()
+        .map(|(definition, task)| match task {
+            Err(error) => missing(definition, None, error),
+            Ok(task) => {
+                let id = task["id"].as_str().unwrap_or("");
+                match host.result(id) {
+                    Ok(result) => check_outcome(definition, Some(id), &result),
+                    Err(error) => missing(definition, Some(id), &error),
+                }
+            }
+        })
+        .collect()
+}
+
+impl SchedulesModule {
     /// Recovers goal task links written by keys the host already admitted before a crash.
     fn reconcile(&self, document: &mut Value, host: &dyn TaskHost) -> Result<(), String> {
         if document["goals"].as_array().is_none_or(Vec::is_empty) {
@@ -251,37 +438,7 @@ impl SchedulesModule {
         }
         let tasks = host.tasks()?;
         let mut draft = document.clone();
-        let mut changed = false;
-        for goal in draft["goals"].as_array_mut().into_iter().flatten() {
-            let prefix = format!("goal:{}:", goal["id"].as_str().unwrap_or(""));
-            for task in &tasks {
-                if task["key"].as_str().is_some_and(|key| key.starts_with(&prefix))
-                    && !goal["task_ids"].as_array().is_some_and(|ids| ids.contains(&task["id"]))
-                {
-                    push_task(goal, &task["id"]);
-                    changed = true;
-                }
-            }
-        }
-        let schedules = draft["schedules"].as_array().cloned().unwrap_or_default();
-        for schedule in schedules {
-            let Some(goal_id) = schedule["goal_id"].as_str() else {
-                continue;
-            };
-            let slot = schedule["pending_slot"]
-                .as_i64()
-                .or_else(|| schedule["last_slot"].as_i64());
-            let task = slot.and_then(|slot| {
-                let key = schedule_key(&schedule, slot);
-                tasks.iter().find(|task| task["key"] == key.as_str())
-            });
-            if let (Some(goal), Some(task)) = (find(&mut draft, "goals", goal_id), task)
-                && !goal["task_ids"].as_array().is_some_and(|ids| ids.contains(&task["id"]))
-            {
-                push_task(goal, &task["id"]);
-                changed = true;
-            }
-        }
+        let changed = reconcile_goal_tasks(&mut draft, &tasks) | reconcile_schedule_goals(&mut draft, &tasks);
         if changed {
             self.store.write(&draft)?;
             *document = draft;
@@ -295,18 +452,25 @@ impl SchedulesModule {
         self.reconcile(document, host)
     }
 
-    pub fn handle(
+    fn delete_schedule(&self, document: &mut Value, payload: &Map<String, Value>) -> Result<Value, String> {
+        kernel::ops::fields("schedules.delete", payload)?;
+        self.update(document, |draft| {
+            let schedule = lookup(draft, "schedules", payload.get("id"), "Unknown schedule")?;
+            if let Some(items) = draft["schedules"].as_array_mut() {
+                items.retain(|item| item["id"] != schedule["id"]);
+            }
+            Ok(json!({"deleted": true}))
+        })
+    }
+
+    fn handle_schedule_op(
         &self,
+        document: &mut Value,
         kind: &str,
         payload: &Map<String, Value>,
         caller: Option<&str>,
         host: &dyn TaskHost,
     ) -> Result<Value, String> {
-        if kind == "goals.verify" {
-            return self.verify(payload, caller, host);
-        }
-        let mut guard = jsrt::sync::lock(&self.document);
-        let document = self.loaded(&mut guard)?;
         match kind {
             "schedules.create" => self.create_schedule(document, payload, caller, host),
             "schedules.list" => {
@@ -315,20 +479,24 @@ impl SchedulesModule {
             }
             "schedules.pause" => self.set_schedule_state(document, kind, payload, "paused"),
             "schedules.resume" => self.set_schedule_state(document, kind, payload, "active"),
-            "schedules.delete" => {
-                kernel::ops::fields("schedules.delete", payload)?;
-                self.update(document, |draft| {
-                    let schedule = lookup(draft, "schedules", payload.get("id"), "Unknown schedule")?;
-                    if let Some(items) = draft["schedules"].as_array_mut() {
-                        items.retain(|item| item["id"] != schedule["id"]);
-                    }
-                    Ok(json!({"deleted": true}))
-                })
-            }
+            "schedules.delete" => self.delete_schedule(document, payload),
             "schedules.tick" => {
                 kernel::ops::fields("schedules.tick", payload)?;
                 self.tick_locked(document, host)
             }
+            _ => Err(format!("Unknown schedule request: {kind}")),
+        }
+    }
+
+    fn handle_goal_op(
+        &self,
+        document: &mut Value,
+        kind: &str,
+        payload: &Map<String, Value>,
+        caller: Option<&str>,
+        host: &dyn TaskHost,
+    ) -> Result<Value, String> {
+        match kind {
             "goals.create" => self.create_goal(document, payload, caller, host),
             "goals.list" => {
                 kernel::ops::fields("goals.list", payload)?;
@@ -345,6 +513,25 @@ impl SchedulesModule {
         }
     }
 
+    pub fn handle(
+        &self,
+        kind: &str,
+        payload: &Map<String, Value>,
+        caller: Option<&str>,
+        host: &dyn TaskHost,
+    ) -> Result<Value, String> {
+        if kind == "goals.verify" {
+            return self.verify(payload, caller, host);
+        }
+        let mut guard = jsrt::sync::lock(&self.document);
+        let document = self.loaded(&mut guard)?;
+        if kind.starts_with("schedules.") {
+            self.handle_schedule_op(document, kind, payload, caller, host)
+        } else {
+            self.handle_goal_op(document, kind, payload, caller, host)
+        }
+    }
+
     fn create_schedule(
         &self,
         document: &mut Value,
@@ -352,26 +539,19 @@ impl SchedulesModule {
         owner: Option<&str>,
         host: &dyn TaskHost,
     ) -> Result<Value, String> {
-        kernel::ops::fields("schedules.create", payload)?;
-        let definition = definition_key(payload.get("definition"), "definition")?;
-        let input = payload.get("input").cloned().ok_or("input must be JSON")?;
-        let every_ms = integer(payload.get("every_ms"), "every_ms", 1, MAX_EVERY_MS)?;
         let now = self.now(host);
-        let start_at = optional_integer(payload.get("start_at"), "start_at", 0)?.unwrap_or(now);
-        let max_runs = optional_integer(payload.get("max_runs"), "max_runs", 1)?;
-        let model = match payload.get("model") {
-            None | Some(Value::Null) => Value::Null,
-            Some(model) => model_scope::model_ref(model)?.into(),
-        };
-        let goal_id = payload.get("goal_id").cloned().unwrap_or(Value::Null);
+        let input = parse_schedule_input(payload, now)?;
         self.update(document, |draft| {
-            if !goal_id.is_null() && lookup(draft, "goals", Some(&goal_id), "Unknown goal")?["state"] == "achieved" {
+            if !input.goal_id.is_null()
+                && lookup(draft, "goals", Some(&input.goal_id), "Unknown goal")?["state"] == "achieved"
+            {
                 return Err("Cannot attach a schedule to an achieved goal".into());
             }
             let schedule = json!({
                 "id": format!("schedule-{}", jsrt::random::uuid_v4()),
-                "definition": definition, "input": input, "every_ms": every_ms, "start_at": start_at,
-                "max_runs": max_runs, "goal_id": goal_id, "model": model, "owner": owner, "state": "active",
+                "definition": input.definition, "input": input.input, "every_ms": input.every_ms,
+                "start_at": input.start_at, "max_runs": input.max_runs, "goal_id": input.goal_id,
+                "model": input.model, "owner": owner, "state": "active",
                 "created_at": now, "runs": 0, "last_slot": null, "pending_slot": null, "last_task_id": null,
                 "last_fired_at": null, "last_skipped": 0, "skipped_total": 0, "last_failure": null, "failures": 0,
             });
@@ -482,6 +662,56 @@ impl SchedulesModule {
         self.tick_locked(document, host)
     }
 
+    fn claim_due_slot(&self, document: &mut Value, id: &str, due: &DueSlot) -> Result<Value, String> {
+        self.update(document, |draft| {
+            let schedule = find(draft, "schedules", id).ok_or("Unknown schedule")?;
+            schedule["last_slot"] = due.slot.into();
+            schedule["pending_slot"] = due.slot.into();
+            schedule["last_skipped"] = due.skipped.into();
+            if !due.resuming {
+                schedule["skipped_total"] = (schedule["skipped_total"].as_i64().unwrap_or(0) + due.skipped).into();
+            }
+            Ok(schedule.clone())
+        })
+    }
+
+    fn record_slot_outcome(
+        &self,
+        document: &mut Value,
+        id: &str,
+        slot: i64,
+        now: i64,
+        outcome: &Result<Value, String>,
+    ) -> Result<(), String> {
+        self.update(document, |draft| {
+            let schedule = find(draft, "schedules", id).ok_or("Unknown schedule")?;
+            schedule["pending_slot"] = Value::Null;
+            let mut linked = None;
+            match outcome {
+                Ok(task) => {
+                    let runs = schedule["runs"].as_i64().unwrap_or(0) + 1;
+                    schedule["runs"] = runs.into();
+                    schedule["last_task_id"] = task["id"].clone();
+                    schedule["last_fired_at"] = now.into();
+                    if schedule["max_runs"].as_i64().is_some_and(|max| runs >= max) {
+                        schedule["state"] = "completed".into();
+                    }
+                    linked = schedule["goal_id"].as_str().map(str::to_string);
+                }
+                Err(error) => {
+                    schedule["failures"] = (schedule["failures"].as_i64().unwrap_or(0) + 1).into();
+                    schedule["last_failure"] = json!({"slot": slot, "error": error, "at": now});
+                }
+            }
+            if let (Some(goal_id), Ok(task)) = (linked, outcome)
+                && let Some(goal) = find(draft, "goals", &goal_id)
+            {
+                push_task(goal, &task["id"]);
+            }
+            Ok(())
+        })
+    }
+
     fn tick_locked(&self, document: &mut Value, host: &dyn TaskHost) -> Result<Value, String> {
         let mut fired = Vec::new();
         let mut failed = Vec::new();
@@ -493,187 +723,84 @@ impl SchedulesModule {
             .filter_map(|item| item["id"].as_str().map(str::to_string))
             .collect();
         for id in ids {
-            let Some(current) = document["schedules"]
-                .as_array()
-                .and_then(|items| items.iter().find(|item| item["id"] == id.as_str()))
-                .cloned()
-            else {
+            let Some(due) = resolve_due_slot(document, &id, now) else {
                 continue;
             };
-            if current["state"] != "active" {
-                continue;
-            }
-            let pending = current["pending_slot"].as_i64();
-            let slot = pending.unwrap_or_else(|| {
-                schedule_slot(
-                    current["start_at"].as_i64().unwrap_or(0),
-                    current["every_ms"].as_i64().unwrap_or(1),
-                    now,
-                )
-            });
-            if slot < 0 {
-                continue;
-            }
-            let resuming = pending.is_some();
-            let last = current["last_slot"].as_i64();
-            if !resuming && last.is_some_and(|last| slot <= last) {
-                continue;
-            }
-            let goal = current["goal_id"].as_str().and_then(|goal_id| {
-                document["goals"]
-                    .as_array()
-                    .and_then(|goals| goals.iter().find(|goal| goal["id"] == goal_id))
-                    .cloned()
-            });
-            if !current["goal_id"].is_null() && goal.as_ref().is_none_or(|goal| goal["state"] != "active") {
-                continue;
-            }
-            let skipped = if resuming {
-                current["last_skipped"].as_i64().unwrap_or(0)
-            } else {
-                slot - last.unwrap_or(-1) - 1
-            };
-            let claimed = self.update(document, |draft| {
-                let schedule = find(draft, "schedules", &id).ok_or("Unknown schedule")?;
-                schedule["last_slot"] = slot.into();
-                schedule["pending_slot"] = slot.into();
-                schedule["last_skipped"] = skipped.into();
-                if !resuming {
-                    schedule["skipped_total"] = (schedule["skipped_total"].as_i64().unwrap_or(0) + skipped).into();
-                }
-                Ok(schedule.clone())
-            })?;
-            let mut task = None;
-            let mut failure = None;
-            if let Some(goal) = goal.as_ref().filter(|goal| !has_capacity(goal, 1)) {
-                failure = Some(format!("Goal task limit reached ({})", goal["max_tasks"]));
-            } else {
-                let mut request = json!({
-                    "definition": claimed["definition"], "input": claimed["input"], "key": schedule_key(&claimed, slot),
-                });
-                if !claimed["model"].is_null() {
-                    request["model"] = claimed["model"].clone();
-                }
-                match host.spawn(&request, claimed["owner"].as_str()) {
-                    Ok(spawned) => task = Some(spawned),
-                    Err(error) => failure = Some(error),
-                }
-            }
-            self.update(document, |draft| {
-                let schedule = find(draft, "schedules", &id).ok_or("Unknown schedule")?;
-                schedule["pending_slot"] = Value::Null;
-                let mut linked = None;
-                match &task {
-                    Some(task) => {
-                        let runs = schedule["runs"].as_i64().unwrap_or(0) + 1;
-                        schedule["runs"] = runs.into();
-                        schedule["last_task_id"] = task["id"].clone();
-                        schedule["last_fired_at"] = now.into();
-                        if schedule["max_runs"].as_i64().is_some_and(|max| runs >= max) {
-                            schedule["state"] = "completed".into();
-                        }
-                        linked = schedule["goal_id"].as_str().map(str::to_string);
-                    }
-                    None => {
-                        schedule["failures"] = (schedule["failures"].as_i64().unwrap_or(0) + 1).into();
-                        schedule["last_failure"] = json!({"slot": slot,
-                            "error": failure.clone().unwrap_or_else(|| "unknown failure".into()), "at": now});
-                    }
-                }
-                if let (Some(goal_id), Some(task)) = (linked, &task)
-                    && let Some(goal) = find(draft, "goals", &goal_id)
-                {
-                    push_task(goal, &task["id"]);
-                }
-                Ok(())
-            })?;
-            match task {
-                Some(task) => {
-                    fired.push(json!({"schedule_id": id, "slot": slot, "task_id": task["id"], "skipped": skipped}));
-                }
-                None => failed.push(json!({"schedule_id": id, "slot": slot,
-                    "error": failure.unwrap_or_else(|| "unknown failure".into())})),
+            let claimed = self.claim_due_slot(document, &id, &due)?;
+            let outcome = spawn_due_slot(&claimed, &due, host);
+            self.record_slot_outcome(document, &id, due.slot, now, &outcome)?;
+            match outcome {
+                Ok(task) => fired.push(json!({
+                    "schedule_id": id, "slot": due.slot, "task_id": task["id"], "skipped": due.skipped,
+                })),
+                Err(error) => failed.push(json!({"schedule_id": id, "slot": due.slot, "error": error})),
             }
         }
         Ok(json!({"fired": fired, "failed": failed}))
     }
 
-    /// Runs every required check and accepts the goal only on unanimous, explicit passes. Admission is serialized
-    /// with other mutations; waiting for results is not.
-    fn verify(&self, payload: &Map<String, Value>, caller: Option<&str>, host: &dyn TaskHost) -> Result<Value, String> {
-        kernel::ops::fields("goals.verify", payload)?;
-        let (goal_id, round, spawned) = {
-            let mut guard = jsrt::sync::lock(&self.document);
-            let document = self.loaded(&mut guard)?;
-            let goal = lookup(document, "goals", payload.get("id"), "Unknown goal")?;
-            if goal["state"] == "achieved" {
-                return Err("Goal is already achieved".into());
-            }
-            if goal["state"] == "paused" {
-                return Err("Goal is paused".into());
-            }
-            let checks: Vec<String> = goal["required_checks"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|check| check.as_str().map(str::to_string))
-                .collect();
-            if !has_capacity(&goal, checks.len() as i64) {
-                return Err(format!(
-                    "Goal task limit reached: verification needs {} tasks, {} remain",
-                    checks.len(),
-                    capacity(&goal).unwrap_or(0).max(0)
-                ));
-            }
-            let goal_id = goal["id"].as_str().unwrap_or("").to_string();
-            let round = self.update(document, |draft| {
-                let target = find(draft, "goals", &goal_id).ok_or("Unknown goal")?;
-                let round = target["verify_rounds"].as_i64().unwrap_or(0) + 1;
-                target["verify_rounds"] = round.into();
-                Ok(round)
-            })?;
-            let input = payload
-                .get("input")
-                .cloned()
-                .unwrap_or_else(|| json!({"goal_id": goal_id, "title": goal["title"]}));
-            let spawned: Vec<(String, Result<Value, String>)> = checks
-                .iter()
-                .enumerate()
-                .map(|(index, definition)| {
-                    let request = json!({"definition": definition, "input": input,
-                        "key": format!("goal:{goal_id}:verify:{round}:{index}")});
-                    (definition.clone(), host.spawn(&request, caller))
-                })
-                .collect();
-            self.update(document, |draft| {
-                let target = find(draft, "goals", &goal_id).ok_or("Unknown goal")?;
-                for (_, task) in &spawned {
-                    if let Ok(task) = task {
-                        push_task(target, &task["id"]);
-                    }
+    fn link_spawned_tasks(&self, document: &mut Value, goal_id: &str, spawned: &[SpawnedCheck]) -> Result<(), String> {
+        self.update(document, |draft| {
+            let target = find(draft, "goals", goal_id).ok_or("Unknown goal")?;
+            for (_, task) in spawned {
+                if let Ok(task) = task {
+                    push_task(target, &task["id"]);
                 }
-                Ok(())
-            })?;
-            (goal_id, round, spawned)
-        };
-        let checks: Vec<Value> = spawned
+            }
+            Ok(())
+        })
+    }
+
+    fn start_verify_round(
+        &self,
+        payload: &Map<String, Value>,
+        caller: Option<&str>,
+        host: &dyn TaskHost,
+    ) -> Result<VerifyRound, String> {
+        let mut guard = jsrt::sync::lock(&self.document);
+        let document = self.loaded(&mut guard)?;
+        let goal = lookup(document, "goals", payload.get("id"), "Unknown goal")?;
+        let checks = validate_verify_goal(&goal)?;
+        let goal_id = goal["id"].as_str().unwrap_or("").to_string();
+        let round = self.update(document, |draft| {
+            let target = find(draft, "goals", &goal_id).ok_or("Unknown goal")?;
+            let round = target["verify_rounds"].as_i64().unwrap_or(0) + 1;
+            target["verify_rounds"] = round.into();
+            Ok(round)
+        })?;
+        let input = payload
+            .get("input")
+            .cloned()
+            .unwrap_or_else(|| json!({"goal_id": goal_id, "title": goal["title"]}));
+        let spawned: Vec<SpawnedCheck> = checks
             .iter()
-            .map(|(definition, task)| match task {
-                Err(error) => missing(definition, None, error),
-                Ok(task) => {
-                    let id = task["id"].as_str().unwrap_or("");
-                    match host.result(id) {
-                        Ok(result) => check_outcome(definition, Some(id), &result),
-                        Err(error) => missing(definition, Some(id), &error),
-                    }
-                }
+            .enumerate()
+            .map(|(index, definition)| {
+                let request = json!({"definition": definition, "input": input,
+                    "key": format!("goal:{goal_id}:verify:{round}:{index}")});
+                (definition.clone(), host.spawn(&request, caller))
             })
             .collect();
+        self.link_spawned_tasks(document, &goal_id, &spawned)?;
+        Ok(VerifyRound {
+            goal_id,
+            round,
+            spawned,
+        })
+    }
+
+    fn record_verify_round(
+        &self,
+        goal_id: &str,
+        round: i64,
+        checks: Vec<Value>,
+        host: &dyn TaskHost,
+    ) -> Result<Value, String> {
         let mut guard = jsrt::sync::lock(&self.document);
         let document = self.loaded(&mut guard)?;
         let now = self.now(host);
         self.update(document, |draft| {
-            let goal = find(draft, "goals", &goal_id).ok_or("Unknown goal")?;
+            let goal = find(draft, "goals", goal_id).ok_or("Unknown goal")?;
             let mut reasons: Vec<Value> = checks.iter().filter_map(|check| check.get("reason").cloned()).collect();
             let status = if checks.is_empty() {
                 reasons.push("Goal has no required checks".into());
@@ -694,6 +821,15 @@ impl SchedulesModule {
             }
             Ok(goal.clone())
         })
+    }
+
+    /// Runs every required check and accepts the goal only on unanimous, explicit passes. Admission is serialized
+    /// with other mutations; waiting for results is not.
+    fn verify(&self, payload: &Map<String, Value>, caller: Option<&str>, host: &dyn TaskHost) -> Result<Value, String> {
+        kernel::ops::fields("goals.verify", payload)?;
+        let round = self.start_verify_round(payload, caller, host)?;
+        let checks = collect_verify_checks(&round.spawned, host);
+        self.record_verify_round(&round.goal_id, round.round, checks, host)
     }
 }
 

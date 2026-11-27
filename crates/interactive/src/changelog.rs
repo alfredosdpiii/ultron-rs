@@ -81,29 +81,37 @@ fn encode_uri(text: &str) -> String {
     out
 }
 
+fn push_posix_part<'a>(parts: &mut Vec<&'a str>, part: &'a str, absolute: bool) {
+    match part {
+        "" | "." => {}
+        ".." => {
+            if parts.last().is_some_and(|p| *p != "..") {
+                parts.pop();
+            } else if !absolute {
+                parts.push("..");
+            }
+        }
+        p => parts.push(p),
+    }
+}
+
 /// `path.posix.normalize`.
 fn normalize_posix(path: &str) -> String {
     let absolute = path.starts_with('/');
     let mut parts: Vec<&str> = Vec::new();
     for part in path.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => {
-                if parts.last().is_some_and(|p| *p != "..") {
-                    parts.pop();
-                } else if !absolute {
-                    parts.push("..");
-                }
-            }
-            p => parts.push(p),
-        }
+        push_posix_part(&mut parts, part, absolute);
     }
     let joined = parts.join("/");
-    let trailing = path.ends_with('/') && !joined.is_empty();
+    let suffix = if path.ends_with('/') && !joined.is_empty() {
+        "/"
+    } else {
+        ""
+    };
     match (absolute, joined.is_empty()) {
-        (true, _) => format!("/{joined}{}", if trailing { "/" } else { "" }),
+        (true, _) => format!("/{joined}{suffix}"),
         (false, true) => ".".into(),
-        (false, false) => format!("{joined}{}", if trailing { "/" } else { "" }),
+        (false, false) => format!("{joined}{suffix}"),
     }
 }
 
@@ -115,9 +123,7 @@ fn is_scheme(target: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
 }
 
-/// `normalizeChangelogLinkTarget`.
-fn link_target(target: &str, tag: &str) -> String {
-    let repo = format!("https://github.com/{GITHUB_REPO}");
+fn canonicalize_repo_url(target: &str, repo: &str, tag: &str) -> String {
     let mut canonical = target.to_string();
     for legacy in [
         "https://github.com/badlogic/pi-mono",
@@ -137,19 +143,24 @@ fn link_target(target: &str, tag: &str) -> String {
             }
         }
     }
-    if canonical.starts_with('#') || canonical.starts_with("//") || is_scheme(&canonical) {
-        return canonical;
-    }
-    let (before_hash, fragment) = match canonical.find('#') {
-        Some(i) => (&canonical[..i], &canonical[i..]),
-        None => (canonical.as_str(), ""),
+    canonical
+}
+
+fn split_path_query_fragment(target: &str) -> (&str, &str, &str) {
+    let (before_hash, fragment) = match target.find('#') {
+        Some(i) => (&target[..i], &target[i..]),
+        None => (target, ""),
     };
     let (path_part, query) = match before_hash.find('?') {
         Some(i) => (&before_hash[..i], &before_hash[i..]),
         None => (before_hash, ""),
     };
+    (path_part, query, fragment)
+}
+
+fn resolve_repo_relative_path(path_part: &str) -> Option<String> {
     if path_part.is_empty() {
-        return canonical.clone();
+        return None;
     }
     let target_path = path_part.replace('\\', "/");
     let joined = if let Some(abs) = target_path.strip_prefix('/') {
@@ -158,8 +169,22 @@ fn link_target(target: &str, tag: &str) -> String {
         normalize_posix(&format!("{LINK_BASE}/{target_path}"))
     };
     if joined == "." || joined == ".." || joined.starts_with("../") {
-        return canonical.clone();
+        return None;
     }
+    Some(joined)
+}
+
+/// `normalizeChangelogLinkTarget`.
+fn link_target(target: &str, tag: &str) -> String {
+    let repo = format!("https://github.com/{GITHUB_REPO}");
+    let canonical = canonicalize_repo_url(target, &repo, tag);
+    if canonical.starts_with('#') || canonical.starts_with("//") || is_scheme(&canonical) {
+        return canonical;
+    }
+    let (path_part, query, fragment) = split_path_query_fragment(&canonical);
+    let Some(joined) = resolve_repo_relative_path(path_part) else {
+        return canonical;
+    };
     let base = joined.rsplit('/').next().unwrap_or("");
     let route = if path_part.ends_with('/') || !base.contains('.') {
         "tree"

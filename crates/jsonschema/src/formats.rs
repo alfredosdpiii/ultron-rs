@@ -127,47 +127,64 @@ pub fn is_date(value: &str) -> bool {
     (1..=12).contains(&month) && day >= 1 && day <= if month == 2 && leap { 29 } else { DAYS[month as usize] }
 }
 
-/// `IsTime` (time zone required): leap seconds only at 23:59:60 UTC.
-pub fn is_time(value: &str) -> bool {
+fn strip_fraction(rest: &str) -> Option<&str> {
+    let Some(fraction) = rest.strip_prefix('.') else {
+        return Some(rest);
+    };
+    let n = fraction.bytes().take_while(u8::is_ascii_digit).count();
+    (n > 0).then(|| &fraction[n..])
+}
+
+fn parse_hms_digits(value: &str) -> Option<(u32, u32, u32)> {
     let b = value.as_bytes();
     if b.len() < 8 || b[2] != b':' || b[5] != b':' || !value.is_char_boundary(8) {
-        return false;
+        return None;
     }
-    let (Some(hr), Some(min), Some(sec)) = (digits(&value[..2]), digits(&value[3..5]), digits(&value[6..8])) else {
-        return false;
-    };
-    let mut rest = &value[8..];
-    if let Some(fraction) = rest.strip_prefix('.') {
-        let n = fraction.bytes().take_while(u8::is_ascii_digit).count();
-        if n == 0 {
-            return false;
-        }
-        rest = &fraction[n..];
-    }
-    let (sign, tz_h, tz_m) = match rest {
-        "Z" | "z" => (1i64, 0u32, 0u32),
-        _ => {
-            let r = rest.as_bytes();
-            if r.len() != 6 || !matches!(r[0], b'+' | b'-') || r[3] != b':' {
-                return false;
-            }
-            let (Some(h), Some(m)) = (digits(&rest[1..3]), digits(&rest[4..6])) else {
-                return false;
-            };
-            if h > 23 || m > 59 {
-                return false;
-            }
-            (if r[0] == b'-' { -1 } else { 1 }, h, m)
-        }
-    };
+    Some((digits(&value[..2])?, digits(&value[3..5])?, digits(&value[6..8])?))
+}
+
+fn parse_hms(value: &str) -> Option<(u32, u32, u32, &str)> {
+    let (hr, min, sec) = parse_hms_digits(value)?;
     if hr > 23 || min > 59 || sec > 60 {
-        return false;
+        return None;
     }
+    Some((hr, min, sec, strip_fraction(&value[8..])?))
+}
+
+fn parse_numeric_tz(negative: bool, hours: &str, mins: &str) -> Option<i64> {
+    let h = digits(hours)?;
+    let m = digits(mins)?;
+    if h > 23 || m > 59 {
+        return None;
+    }
+    let sign = if negative { -1 } else { 1 };
+    Some(sign * i64::from(h * 60 + m))
+}
+
+fn parse_tz_offset_minutes(rest: &str) -> Option<i64> {
+    if rest.eq_ignore_ascii_case("z") {
+        return Some(0);
+    }
+    let r = rest.as_bytes();
+    if r.len() != 6 || (r[0] != b'+' && r[0] != b'-') || r[3] != b':' {
+        return None;
+    }
+    parse_numeric_tz(r[0] == b'-', &rest[1..3], &rest[4..6])
+}
+
+/// `IsTime` (time zone required): leap seconds only at 23:59:60 UTC.
+pub fn is_time(value: &str) -> bool {
+    let Some((hr, min, sec, rest)) = parse_hms(value) else {
+        return false;
+    };
+    let Some(offset) = parse_tz_offset_minutes(rest) else {
+        return false;
+    };
     if sec < 60 {
         return true;
     }
-    let total = i64::from(hr * 60 + min) - sign * i64::from(tz_h * 60 + tz_m);
-    (total % 1440 + 1440) % 1440 == 1439
+    let total = i64::from(hr * 60 + min) - offset;
+    total.rem_euclid(1440) == 1439
 }
 
 /// `IsDateTime`: a date and a time split at one `T` (either case).
@@ -243,76 +260,99 @@ fn is_regex(value: &str) -> bool {
     js_regex(value).is_some()
 }
 
+macro_rules! js_space_str {
+    () => {
+        r"\t\n\x0B\x0C\r \u{A0}\u{1680}\u{2000}-\u{200A}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}\u{FEFF}"
+    };
+}
+
+const JS_SPACE: &str = js_space_str!();
+const JS_SPACE_CLASS: &str = concat!("[", js_space_str!(), "]");
+const JS_NON_SPACE_CLASS: &str = concat!("[^", js_space_str!(), "]");
+
+fn js_class_escape(next: char) -> Option<(&'static str, &'static str)> {
+    match next {
+        'd' => Some(("0-9", "[0-9]")),
+        'D' => Some(("", "[^0-9]")),
+        'w' => Some(("A-Za-z0-9_", "[A-Za-z0-9_]")),
+        'W' => Some(("", "[^A-Za-z0-9_]")),
+        's' => Some((JS_SPACE, JS_SPACE_CLASS)),
+        'S' => Some(("", JS_NON_SPACE_CLASS)),
+        _ => None,
+    }
+}
+
+fn js_boundary_escape(next: char) -> Option<&'static str> {
+    match next {
+        'b' => Some(r"(?:(?<=[A-Za-z0-9_])(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])(?=[A-Za-z0-9_]))"),
+        'B' => Some(r"(?:(?<=[A-Za-z0-9_])(?=[A-Za-z0-9_])|(?<![A-Za-z0-9_])(?![A-Za-z0-9_]))"),
+        _ => None,
+    }
+}
+
+fn push_js_escape(out: &mut String, next: char, in_class: bool) {
+    if !in_class && let Some(boundary) = js_boundary_escape(next) {
+        out.push_str(boundary);
+        return;
+    }
+    if let Some((inside, outside)) = js_class_escape(next) {
+        if !in_class {
+            out.push_str(outside);
+        } else if !inside.is_empty() {
+            out.push_str(inside);
+        } else {
+            out.push('\\');
+            out.push(next);
+        }
+        return;
+    }
+    out.push('\\');
+    out.push(next);
+}
+
+fn push_backslash_escape(out: &mut String, next: Option<char>, in_class: bool) {
+    match next {
+        Some(c) => push_js_escape(out, c, in_class),
+        None => out.push('\\'),
+    }
+}
+
+fn open_js_class(out: &mut String, chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> bool {
+    let negated = chars.next_if_eq(&'^').is_some();
+    if chars.next_if_eq(&']').is_some() {
+        out.push_str(if negated { r"[\s\S]" } else { "(?!)" });
+        return false;
+    }
+    out.push('[');
+    if negated {
+        out.push('^');
+    }
+    true
+}
+
+fn step_js_regex(c: char, chars: &mut std::iter::Peekable<std::str::Chars<'_>>, out: &mut String, in_class: &mut bool) {
+    if c == '\\' {
+        push_backslash_escape(out, chars.next(), *in_class);
+    } else if c == '[' && !*in_class {
+        *in_class = open_js_class(out, chars);
+    } else if c == ']' && *in_class {
+        *in_class = false;
+        out.push(c);
+    } else if c == '.' && !*in_class {
+        out.push_str(r"[^\n\r\u{2028}\u{2029}]");
+    } else {
+        out.push(c);
+    }
+}
+
 /// `pattern`'s regular expression: `new RegExp(pattern, "u")`, translated to fancy-regex: `\d`, `\w`, `\s` and `\b` keep
 /// their ECMAScript meaning (ASCII digits and word characters, ECMAScript white space).
 pub fn js_regex(pattern: &str) -> Option<fancy_regex::Regex> {
-    const SPACE: &str =
-        r"\t\n\x0B\x0C\r \u{A0}\u{1680}\u{2000}-\u{200A}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}\u{FEFF}";
     let mut out = String::new();
     let mut chars = pattern.chars().peekable();
     let mut in_class = false;
     while let Some(c) = chars.next() {
-        match c {
-            '\\' => {
-                let Some(next) = chars.next() else {
-                    out.push('\\');
-                    break;
-                };
-                let (inside, outside) = match next {
-                    'd' => ("0-9", "[0-9]".to_string()),
-                    'D' => ("", "[^0-9]".to_string()),
-                    'w' => ("A-Za-z0-9_", "[A-Za-z0-9_]".to_string()),
-                    'W' => ("", "[^A-Za-z0-9_]".to_string()),
-                    's' => (SPACE, format!("[{SPACE}]")),
-                    'S' => ("", format!("[^{SPACE}]")),
-                    'b' if !in_class => (
-                        "",
-                        r"(?:(?<=[A-Za-z0-9_])(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])(?=[A-Za-z0-9_]))".to_string(),
-                    ),
-                    'B' if !in_class => (
-                        "",
-                        r"(?:(?<=[A-Za-z0-9_])(?=[A-Za-z0-9_])|(?<![A-Za-z0-9_])(?![A-Za-z0-9_]))".to_string(),
-                    ),
-                    _ => {
-                        out.push('\\');
-                        out.push(next);
-                        continue;
-                    }
-                };
-                if in_class && !inside.is_empty() {
-                    out.push_str(inside);
-                } else if in_class {
-                    out.push('\\');
-                    out.push(next);
-                } else {
-                    out.push_str(&outside);
-                }
-            }
-            '[' if !in_class => {
-                in_class = true;
-                out.push(c);
-                if chars.peek() == Some(&'^') {
-                    out.push(chars.next().unwrap_or('^'));
-                }
-                if chars.peek() == Some(&']') {
-                    chars.next();
-                    in_class = false;
-                    if out.ends_with("[^") {
-                        out.truncate(out.len() - 2);
-                        out.push_str(r"[\s\S]");
-                    } else {
-                        out.truncate(out.len() - 1);
-                        out.push_str("(?!)");
-                    }
-                }
-            }
-            ']' if in_class => {
-                in_class = false;
-                out.push(c);
-            }
-            '.' if !in_class => out.push_str(r"[^\n\r\u{2028}\u{2029}]"),
-            _ => out.push(c),
-        }
+        step_js_regex(c, &mut chars, &mut out, &mut in_class);
     }
     if quantifier_out_of_order(pattern) {
         return None;
@@ -396,46 +436,59 @@ fn adapt(delta: u32, points: u32, first: bool) -> u32 {
     k + ((BASE - TMIN + 1) * delta) / (delta + 38)
 }
 
+fn decode_basic_prefix(units: &[u16]) -> Option<(Vec<u32>, usize)> {
+    let Some(delim) = units.iter().rposition(|u| *u == u16::from(b'-')) else {
+        return Some((Vec::new(), 0));
+    };
+    if delim == 0 {
+        return Some((Vec::new(), 1));
+    }
+    let mut output = Vec::with_capacity(delim);
+    for &unit in &units[..delim] {
+        if unit >= 128 {
+            return None;
+        }
+        output.push(u32::from(unit));
+    }
+    Some((output, delim + 1))
+}
+
+fn puny_digit(ch: u16) -> Option<u32> {
+    match ch {
+        0x61..=0x7a => Some(u32::from(ch) - 0x61),
+        0x30..=0x39 => Some(u32::from(ch) - 0x30 + 26),
+        _ => None,
+    }
+}
+
+fn puny_threshold(k: u32, bias: u32) -> u32 {
+    k.saturating_sub(bias).clamp(TMIN, TMAX)
+}
+
+fn decode_delta(units: &[u16], index: &mut usize, i: &mut u32, bias: u32) -> Option<()> {
+    let (mut w, mut k) = (1u32, BASE);
+    loop {
+        let ch = *units.get(*index)?;
+        *index += 1;
+        let digit = puny_digit(ch)?;
+        *i = i.checked_add(digit.checked_mul(w)?)?;
+        let t = puny_threshold(k, bias);
+        if digit < t {
+            return Some(());
+        }
+        w = w.checked_mul(BASE - t)?;
+        k += BASE;
+    }
+}
+
 /// `Decode` of TypeBox's punycode (lowercase digits only).
 fn puny_decode(value: &str) -> Option<String> {
     let units: Vec<u16> = value.encode_utf16().collect();
-    let mut output: Vec<u32> = Vec::new();
+    let (mut output, mut index) = decode_basic_prefix(&units)?;
     let (mut n, mut i, mut bias) = (128u32, 0u32, 72u32);
-    let delim = units.iter().rposition(|u| *u == u16::from(b'-'));
-    if let Some(delim) = delim.filter(|d| *d > 0) {
-        for unit in &units[..delim] {
-            if *unit >= 128 {
-                return None;
-            }
-            output.push(u32::from(*unit));
-        }
-    }
-    let mut index = delim.map_or(0, |d| d + 1);
     while index < units.len() {
         let old = i;
-        let (mut w, mut k) = (1u32, BASE);
-        loop {
-            let ch = *units.get(index)?;
-            index += 1;
-            let digit = match ch {
-                0x61..=0x7a => u32::from(ch) - 0x61,
-                0x30..=0x39 => u32::from(ch) - 0x30 + 26,
-                _ => return None,
-            };
-            i = i.checked_add(digit.checked_mul(w)?)?;
-            let t = if k <= bias {
-                TMIN
-            } else if k >= bias + TMAX {
-                TMAX
-            } else {
-                k - bias
-            };
-            if digit < t {
-                break;
-            }
-            w = w.checked_mul(BASE - t)?;
-            k += BASE;
-        }
+        decode_delta(&units, &mut index, &mut i, bias)?;
         let len = output.len() as u32 + 1;
         bias = adapt(i - old, len, old == 0);
         n = n.checked_add(i / len)?;
@@ -469,13 +522,7 @@ fn puny_encode(input: &str) -> String {
                 let mut q = delta;
                 let mut k = BASE;
                 loop {
-                    let t = if k <= bias {
-                        TMIN
-                    } else if k >= bias + TMAX {
-                        TMAX
-                    } else {
-                        k - bias
-                    };
+                    let t = puny_threshold(k, bias);
                     if q < t {
                         break;
                     }
@@ -572,48 +619,59 @@ const VIRAMA: &[u32] = &[
     0x1163f, 0x116b6, 0x11c3f, 0x11d44, 0x11d45,
 ];
 
-/// `IsUnicodeLabel` (RFC 5891/5892 rules as TypeBox applies them).
-fn is_unicode_label(value: &str) -> bool {
+fn has_valid_label_length_and_bidi(value: &str) -> bool {
     if !value.is_ascii() && puny_encode(value).encode_utf16().count() + 4 > 63 {
         return false;
     }
-    if has_rtl(value) && !satisfies_bidi_rule(value) {
+    !has_rtl(value) || satisfies_bidi_rule(value)
+}
+
+fn has_valid_label_edges(chars: &[char]) -> bool {
+    if chars.first() == Some(&'-') || chars.last() == Some(&'-') || chars.get(2..4) == Some(&['-', '-']) {
+        return false;
+    }
+    !chars.first().is_some_and(|c| class(r"[\p{Mn}\p{Mc}\p{Me}]")(*c))
+}
+
+fn is_permitted_label_char(c: char) -> bool {
+    const DISALLOWED: &str = "\u{0640}\u{07fa}\u{302e}\u{302f}\u{3031}\u{3032}\u{3033}\u{3034}\u{3035}\u{303b}";
+    const PERMITTED: &str = r"[\p{L}\-+.,:/\p{Nd}\p{Mn}\p{Mc}\u{00b7}\u{0375}\u{05f3}\u{05f4}\u{200c}\u{200d}\u{30fb}\u{00df}\u{03c2}\u{06fd}\u{06fe}\u{0f0b}\u{3007}]";
+    !DISALLOWED.contains(c) && class(PERMITTED)(c)
+}
+
+fn is_zwnj_prev(p: char) -> bool {
+    (p as u32) >= 0x80 || VIRAMA.contains(&(p as u32))
+}
+
+fn context_ok(c: char, prev: Option<char>, next: Option<char>) -> bool {
+    match c {
+        '\u{00b7}' => prev == Some('l') && next == Some('l'),
+        '\u{0375}' => next.is_some_and(class(r"\p{Script=Greek}")),
+        '\u{05f3}' | '\u{05f4}' => prev.is_some_and(class(r"\p{Script=Hebrew}")),
+        '\u{200c}' => prev.is_some_and(is_zwnj_prev),
+        '\u{200d}' => prev.is_some_and(|p| VIRAMA.contains(&(p as u32))),
+        _ => true,
+    }
+}
+
+/// `IsUnicodeLabel` (RFC 5891/5892 rules as TypeBox applies them).
+fn is_unicode_label(value: &str) -> bool {
+    if !has_valid_label_length_and_bidi(value) {
         return false;
     }
     let chars: Vec<char> = value.chars().collect();
-    if chars.first() == Some(&'-')
-        || chars.last() == Some(&'-')
-        || chars.iter().skip(2).collect::<String>().starts_with("--")
-    {
+    if !has_valid_label_edges(&chars) {
         return false;
     }
-    if chars.first().is_some_and(|c| class(r"[\p{Mn}\p{Mc}\p{Me}]")(*c)) {
-        return false;
-    }
-    let permitted = class(
-        r"[\p{L}\-+.,:/\p{Nd}\p{Mn}\p{Mc}\u{00b7}\u{0375}\u{05f3}\u{05f4}\u{200c}\u{200d}\u{30fb}\u{00df}\u{03c2}\u{06fd}\u{06fe}\u{0f0b}\u{3007}]",
-    );
     let japanese = class(r"[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]");
     let mut has_japanese = false;
     for (i, &c) in chars.iter().enumerate() {
-        if "\u{0640}\u{07fa}\u{302e}\u{302f}\u{3031}\u{3032}\u{3033}\u{3034}\u{3035}\u{303b}".contains(c)
-            || !permitted(c)
-        {
+        let prev = i.checked_sub(1).map(|p| chars[p]);
+        let next = chars.get(i + 1).copied();
+        if !is_permitted_label_char(c) || !context_ok(c, prev, next) {
             return false;
         }
         has_japanese |= japanese(c);
-        let (prev, next) = (i.checked_sub(1).map(|p| chars[p]), chars.get(i + 1).copied());
-        let ok = match c {
-            '\u{00b7}' => prev == Some('l') && next == Some('l'),
-            '\u{0375}' => next.is_some_and(class(r"\p{Script=Greek}")),
-            '\u{05f3}' | '\u{05f4}' => prev.is_some_and(class(r"\p{Script=Hebrew}")),
-            '\u{200c}' => prev.is_some_and(|p| (p as u32) >= 0x80 || VIRAMA.contains(&(p as u32))),
-            '\u{200d}' => prev.is_some_and(|p| VIRAMA.contains(&(p as u32))),
-            _ => true,
-        };
-        if !ok {
-            return false;
-        }
     }
     !(value.contains('\u{30fb}') && !has_japanese)
 }
@@ -667,31 +725,123 @@ fn is_idn_email(value: &str) -> bool {
     .unwrap_or(false)
 }
 
+type RegexFormat = (&'static str, fn() -> &'static Regex);
+type StrFormat = (&'static str, fn(&str) -> bool);
+
+const REGEX_FORMATS: &[RegexFormat] = &[
+    ("duration", duration),
+    ("email", email),
+    ("ipv4", ipv4),
+    ("ipv6", ipv6),
+    ("json-pointer-uri-fragment", json_pointer_fragment),
+    ("json-pointer", json_pointer),
+    ("relative-json-pointer", relative_json_pointer),
+    ("uri-reference", uri_reference),
+    ("uri-template", uri_template),
+    ("uri", uri),
+    ("uuid", uuid),
+];
+
+fn is_url(value: &str) -> bool {
+    can_parse(value, None)
+}
+
+const STR_FORMATS: &[StrFormat] = &[
+    ("date-time", is_date_time),
+    ("date", is_date),
+    ("hostname", is_hostname),
+    ("idn-email", is_idn_email),
+    ("idn-hostname", is_idn_hostname),
+    ("iri-reference", is_iri_reference),
+    ("iri", is_iri),
+    ("regex", is_regex),
+    ("time", is_time),
+    ("url", is_url),
+];
+
 /// Whether `value` matches TypeBox format `format` (an unknown format matches).
 pub fn matches(format: &str, value: &str) -> bool {
-    let bytes = value.as_bytes();
-    match format {
-        "date-time" => is_date_time(value),
-        "date" => is_date(value),
-        "duration" => duration().is_match(bytes),
-        "email" => email().is_match(bytes),
-        "hostname" => is_hostname(value),
-        "idn-email" => is_idn_email(value),
-        "idn-hostname" => is_idn_hostname(value),
-        "ipv4" => ipv4().is_match(bytes),
-        "ipv6" => ipv6().is_match(bytes),
-        "iri-reference" => is_iri_reference(value),
-        "iri" => is_iri(value),
-        "json-pointer-uri-fragment" => json_pointer_fragment().is_match(bytes),
-        "json-pointer" => json_pointer().is_match(bytes),
-        "regex" => is_regex(value),
-        "relative-json-pointer" => relative_json_pointer().is_match(bytes),
-        "time" => is_time(value),
-        "uri-reference" => uri_reference().is_match(bytes),
-        "uri-template" => uri_template().is_match(bytes),
-        "uri" => uri().is_match(bytes),
-        "url" => can_parse(value, None),
-        "uuid" => uuid().is_match(bytes),
-        _ => true,
+    if let Some((_, re)) = REGEX_FORMATS.iter().find(|(name, _)| *name == format) {
+        return re().is_match(value.as_bytes());
+    }
+    if let Some((_, check)) = STR_FORMATS.iter().find(|(name, _)| *name == format) {
+        return check(value);
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_time_leap_seconds() {
+        assert!(is_time("23:59:60Z"));
+        assert!(is_time("23:59:60z"));
+        assert!(is_time("00:59:60+01:00"));
+        assert!(is_time("18:59:60-05:00"));
+        assert!(is_time("12:00:00-00:00"));
+        assert!(!is_time("23:59:60+01:00"));
+        assert!(!is_time("03:04:05.Z"));
+        assert!(!is_time("00:00:00+00:\u{e9}"));
+    }
+
+    #[test]
+    fn test_js_regex_classes() {
+        let empty = js_regex("[]");
+        assert!(empty.is_some());
+        assert!(!empty.is_some_and(|re| re.is_match("a").unwrap_or(false)));
+
+        let any_char = js_regex("[^]");
+        assert!(any_char.is_some_and(|re| re.is_match("\n").unwrap_or(false)));
+
+        let in_class = js_regex(r"[\D]");
+        assert!(in_class.is_some_and(|re| re.is_match("a").unwrap_or(false)));
+        assert!(!js_regex(r"[\D]").is_some_and(|re| re.is_match("5").unwrap_or(false)));
+
+        let boundary = js_regex(r"\bfoo\b");
+        assert!(boundary.is_some_and(|re| re.is_match("foo bar").unwrap_or(false)));
+        let non_boundary = js_regex(r"\Bfoo\B");
+        assert!(non_boundary.is_some_and(|re| re.is_match("afoob").unwrap_or(false)));
+
+        assert!(js_regex(r"\").is_none());
+        assert!(js_regex("[").is_none());
+        assert!(js_regex("a{2,1}").is_none());
+        assert!(js_regex(r"\{2,1\}").is_some());
+    }
+
+    #[test]
+    fn test_puny_decode_edges() {
+        assert_eq!(puny_decode("mnchen-3ya").as_deref(), Some("m\u{fc}nchen"));
+        assert_eq!(puny_decode("99999999999999"), None);
+        assert_eq!(puny_decode("\u{e9}-abc"), None);
+        assert_eq!(puny_decode("MNCHEN-3YA"), None);
+        assert_eq!(puny_decode("0b"), None);
+    }
+
+    #[test]
+    fn test_unicode_label_context() {
+        assert!(is_unicode_label("l\u{00b7}l"));
+        assert!(!is_unicode_label("a\u{00b7}b"));
+        assert!(is_unicode_label("\u{0375}\u{03b1}"));
+        assert!(!is_unicode_label("\u{0375}a"));
+        assert!(is_unicode_label("\u{05d0}\u{05f3}"));
+        assert!(!is_unicode_label("a\u{05f3}"));
+        assert!(is_unicode_label("\u{0627}\u{200c}\u{0628}"));
+        assert!(!is_unicode_label("a\u{200c}b"));
+        assert!(is_unicode_label("\u{0915}\u{094d}\u{200d}"));
+        assert!(!is_unicode_label("a\u{200d}b"));
+        assert!(is_unicode_label("\u{30ab}\u{30fb}\u{30bf}"));
+        assert!(!is_unicode_label("abc\u{30fb}def"));
+        assert!(!is_unicode_label("\u{0301}abc"));
+        let too_long: String = "\u{00fc}".repeat(60);
+        assert!(!is_unicode_label(&too_long));
+    }
+
+    #[test]
+    fn test_matches_unknown_format() {
+        assert!(matches("custom-unknown", "anything"));
+        assert!(matches("url", "https://example.com/a"));
+        assert!(!matches("url", "not a url"));
     }
 }

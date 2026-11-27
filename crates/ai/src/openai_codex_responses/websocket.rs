@@ -233,6 +233,71 @@ enum Cached {
     Busy,
 }
 
+async fn connect_untracked(
+    transport: &dyn Transport,
+    url: &str,
+    headers: &HeaderMap,
+    signal: Option<&AbortSignal>,
+    connect_timeout_ms: Option<u64>,
+) -> Result<Acquired, CodexError> {
+    let socket = connect(transport, url, headers, signal, connect_timeout_ms).await?;
+    Ok(Acquired {
+        socket,
+        slot: None,
+        reused: false,
+        continuation: None,
+    })
+}
+
+fn take_cached_entry(session: &str, account: &str) -> Cached {
+    let mut state = state();
+    let Some(entry) = state
+        .cache
+        .get_mut(session)
+        .and_then(|accounts| accounts.get_mut(account))
+    else {
+        return Cached::None;
+    };
+    entry.idle_generation += 1;
+    if entry.busy {
+        return Cached::Busy;
+    }
+    if clock() - entry.created_at >= SESSION_WEBSOCKET_MAX_AGE_MS {
+        let socket = entry.socket.take();
+        remove_entry(&mut state, session, account, None);
+        return socket.map_or(Cached::None, Cached::Expired);
+    }
+    entry.busy = true;
+    let id = entry.id;
+    let continuation = entry.continuation.take();
+    match entry.socket.take() {
+        Some(socket) => Cached::Idle(socket, id, continuation),
+        None => Cached::None,
+    }
+}
+
+fn insert_new_entry(session: &str, account: &str) -> Slot {
+    let mut state = state();
+    state.next_id += 1;
+    let id = state.next_id;
+    state.cache.entry(session.to_string()).or_default().insert(
+        account.to_string(),
+        Entry {
+            id,
+            socket: None,
+            busy: true,
+            created_at: clock(),
+            continuation: None,
+            idle_generation: 0,
+        },
+    );
+    Slot {
+        session: session.to_string(),
+        account: account.to_string(),
+        id,
+    }
+}
+
 /// `acquireWebSocket`.
 async fn acquire(
     transport: &dyn Transport,
@@ -244,49 +309,10 @@ async fn acquire(
     connect_timeout_ms: Option<u64>,
 ) -> Result<Acquired, CodexError> {
     let Some(session) = session else {
-        let socket = connect(transport, url, headers, signal, connect_timeout_ms).await?;
-        return Ok(Acquired {
-            socket,
-            slot: None,
-            reused: false,
-            continuation: None,
-        });
+        return connect_untracked(transport, url, headers, signal, connect_timeout_ms).await;
     };
-    let cached = {
-        let mut state = state();
-        let accounts = state.cache.get_mut(session);
-        match accounts.and_then(|accounts| accounts.get_mut(account)) {
-            None => Cached::None,
-            Some(entry) => {
-                entry.idle_generation += 1;
-                if entry.busy {
-                    Cached::Busy
-                } else if clock() - entry.created_at >= SESSION_WEBSOCKET_MAX_AGE_MS {
-                    let socket = entry.socket.take();
-                    remove_entry(&mut state, session, account, None);
-                    socket.map_or(Cached::None, Cached::Expired)
-                } else {
-                    entry.busy = true;
-                    let id = entry.id;
-                    let continuation = entry.continuation.take();
-                    match entry.socket.take() {
-                        Some(socket) => Cached::Idle(socket, id, continuation),
-                        None => Cached::None,
-                    }
-                }
-            }
-        }
-    };
-    match cached {
-        Cached::Busy => {
-            let socket = connect(transport, url, headers, signal, connect_timeout_ms).await?;
-            return Ok(Acquired {
-                socket,
-                slot: None,
-                reused: false,
-                continuation: None,
-            });
-        }
+    match take_cached_entry(session, account) {
+        Cached::Busy => return connect_untracked(transport, url, headers, signal, connect_timeout_ms).await,
         Cached::Expired(mut socket) => socket.close(1000, "connection_age_limit").await,
         Cached::Idle(mut socket, id, continuation) => {
             if socket.is_open().await {
@@ -307,27 +333,10 @@ async fn acquire(
         Cached::None => {}
     }
     let socket = connect(transport, url, headers, signal, connect_timeout_ms).await?;
-    let mut state = state();
-    state.next_id += 1;
-    let id = state.next_id;
-    state.cache.entry(session.to_string()).or_default().insert(
-        account.to_string(),
-        Entry {
-            id,
-            socket: None,
-            busy: true,
-            created_at: clock(),
-            continuation: None,
-            idle_generation: 0,
-        },
-    );
+    let slot = insert_new_entry(session, account);
     Ok(Acquired {
         socket,
-        slot: Some(Slot {
-            session: session.to_string(),
-            account: account.to_string(),
-            id,
-        }),
+        slot: Some(slot),
         reused: false,
         continuation: None,
     })
@@ -499,6 +508,80 @@ pub(super) struct Request<'a> {
     pub signal: Option<&'a AbortSignal>,
 }
 
+fn record_request_stats(session: &str, reused: bool, use_cached_context: bool, request_body: &Map<String, Value>) {
+    let mut state = state();
+    let stats = state.stats.entry(session.to_string()).or_default();
+    stats.requests += 1;
+    if reused {
+        stats.connections_reused += 1;
+    } else {
+        stats.connections_created += 1;
+    }
+    if use_cached_context {
+        stats.cached_context_requests += 1;
+    }
+    if request_body.get("store") == Some(&Value::Bool(true)) {
+        stats.store_true_requests += 1;
+    }
+    let items = request_body.get("input").and_then(Value::as_array).map_or(0, Vec::len) as u64;
+    stats.last_input_items = items;
+    match request_body
+        .get("previous_response_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
+        Some(id) => {
+            stats.delta_requests += 1;
+            stats.last_delta_input_items = Some(items);
+            stats.last_previous_response_id = Some(id.to_string());
+        }
+        None => {
+            stats.full_context_requests += 1;
+            stats.last_delta_input_items = None;
+            stats.last_previous_response_id = None;
+        }
+    }
+}
+
+fn build_next_continuation(
+    run: &ResponsesRun<'_, '_>,
+    request: &Request<'_>,
+    full_body: Map<String, Value>,
+    response_id: &str,
+) -> Continuation {
+    let context = TranscriptContext {
+        messages: vec![Message::Assistant(run.output.clone())],
+    };
+    let items = crate::openai_responses::convert_responses_messages(
+        request.model,
+        &context,
+        &ConvertOptions {
+            tool_call_providers: OPENAI_TOOL_CALL_PROVIDERS,
+            include_system_prompt: false,
+            grammar: request.grammar,
+            supports_mid_convo_system_messages: false,
+            supports_additional_tools: false,
+            supports_tool_search: false,
+            tool_options: ToolOptions::default(),
+        },
+        jsrt::date::now_ms(),
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .filter(|item| {
+        !matches!(
+            item.get("type").and_then(Value::as_str),
+            Some("function_call_output" | "custom_tool_call_output")
+        )
+    })
+    .collect();
+    Continuation {
+        last_request_body: full_body,
+        last_response_id: response_id.to_string(),
+        last_response_items: items,
+    }
+}
+
 /// `processWebSocketStream`: `started` turns true with the first response event (when `start` is emitted unless
 /// `start_emitted` says it was).
 pub(super) async fn process_websocket_stream(
@@ -527,38 +610,7 @@ pub(super) async fn process_websocket_stream(
         (full_body.clone(), previous)
     };
     if let Some(session) = request.cache_session_id {
-        let mut state = state();
-        let stats = state.stats.entry(session.to_string()).or_default();
-        stats.requests += 1;
-        if acquired.reused {
-            stats.connections_reused += 1;
-        } else {
-            stats.connections_created += 1;
-        }
-        if use_cached_context {
-            stats.cached_context_requests += 1;
-        }
-        if request_body.get("store") == Some(&Value::Bool(true)) {
-            stats.store_true_requests += 1;
-        }
-        let items = request_body.get("input").and_then(Value::as_array).map_or(0, Vec::len) as u64;
-        stats.last_input_items = items;
-        match request_body
-            .get("previous_response_id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-        {
-            Some(id) => {
-                stats.delta_requests += 1;
-                stats.last_delta_input_items = Some(items);
-                stats.last_previous_response_id = Some(id.to_string());
-            }
-            None => {
-                stats.full_context_requests += 1;
-                stats.last_delta_input_items = None;
-                stats.last_previous_response_id = None;
-            }
-        }
+        record_request_stats(session, acquired.reused, use_cached_context, &request_body);
     }
     let mut message = Map::new();
     message.insert("type".into(), json!("response.create"));
@@ -569,37 +621,7 @@ pub(super) async fn process_websocket_stream(
             let aborted = is_aborted(request.signal);
             let continuation = match (&run.output.response_id, aborted) {
                 (Some(response_id), false) if use_cached_context && acquired.slot.is_some() => {
-                    let context = TranscriptContext {
-                        messages: vec![Message::Assistant(run.output.clone())],
-                    };
-                    let items = crate::openai_responses::convert_responses_messages(
-                        request.model,
-                        &context,
-                        &ConvertOptions {
-                            tool_call_providers: OPENAI_TOOL_CALL_PROVIDERS,
-                            include_system_prompt: false,
-                            grammar: request.grammar,
-                            supports_mid_convo_system_messages: false,
-                            supports_additional_tools: false,
-                            supports_tool_search: false,
-                            tool_options: ToolOptions::default(),
-                        },
-                        jsrt::date::now_ms(),
-                    )
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|item| {
-                        !matches!(
-                            item.get("type").and_then(Value::as_str),
-                            Some("function_call_output" | "custom_tool_call_output")
-                        )
-                    })
-                    .collect();
-                    Some(Continuation {
-                        last_request_body: full_body,
-                        last_response_id: response_id.clone(),
-                        last_response_items: items,
-                    })
+                    Some(build_next_continuation(run, request, full_body, response_id))
                 }
                 _ => kept,
             };
@@ -610,6 +632,62 @@ pub(super) async fn process_websocket_stream(
             release(acquired, false, None).await;
             Err(error)
         }
+    }
+}
+
+async fn next_ws_event(
+    socket: &mut dyn WebSocketConnection,
+    idle_timeout_ms: Option<u64>,
+    signal: Option<&AbortSignal>,
+) -> Result<WsEvent, CodexError> {
+    if is_aborted(signal) {
+        return Err(aborted_error());
+    }
+    let idle = async {
+        match idle_timeout_ms.filter(|ms| *ms > 0) {
+            Some(ms) => tokio::time::sleep(Duration::from_millis(ms)).await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::select! {
+        event = socket.next_event() => Ok(event),
+        () = cancelled(signal) => Err(aborted_error()),
+        () = idle => {
+            socket.close(1000, "idle_timeout").await;
+            Err(CodexError::Plain(format!(
+                "WebSocket idle timeout after {}ms",
+                idle_timeout_ms.unwrap_or_default()
+            )))
+        }
+    }
+}
+
+fn extract_frame_text(event: WsEvent) -> Result<Option<String>, CodexError> {
+    match message_text(event) {
+        Ok(Some(text)) if text.is_empty() => Ok(None),
+        Ok(Some(text)) => Ok(Some(text)),
+        Ok(None) => Ok(None),
+        Err(WsEvent::Error(message)) => Err(CodexError::Plain(message)),
+        Err(WsEvent::Closed { code, reason, .. }) => Err(close_error(code, &reason)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn decode_ws_event(text: &str) -> Result<Value, CodexError> {
+    parse_json(text).map_err(|e| {
+        let message = jsrt::json::parse(text).err().unwrap_or_else(|| e.to_string());
+        CodexError::Protocol(format!("Invalid Codex WebSocket JSON: {message}"))
+    })
+}
+
+fn mark_started(run: &mut ResponsesRun<'_, '_>, started: &mut bool, start_emitted: &mut bool) {
+    if *started {
+        return;
+    }
+    *started = true;
+    if !*start_emitted {
+        *start_emitted = true;
+        run.emit(|partial| AssistantMessageEvent::Start { partial });
     }
 }
 
@@ -625,50 +703,16 @@ async fn read_response(
 ) -> Result<(), CodexError> {
     let text = serde_json::to_string(message).unwrap_or_default();
     socket.send_text(&text).await;
-    let signal = request.signal;
     loop {
-        if is_aborted(signal) {
-            return Err(aborted_error());
-        }
-        let idle = async {
-            match request.idle_timeout_ms.filter(|ms| *ms > 0) {
-                Some(ms) => tokio::time::sleep(Duration::from_millis(ms)).await,
-                None => std::future::pending().await,
-            }
+        let raw_event = next_ws_event(socket, request.idle_timeout_ms, request.signal).await?;
+        let Some(text) = extract_frame_text(raw_event)? else {
+            continue;
         };
-        let event = tokio::select! {
-            event = socket.next_event() => event,
-            () = cancelled(signal) => return Err(aborted_error()),
-            () = idle => {
-                socket.close(1000, "idle_timeout").await;
-                return Err(CodexError::Plain(format!(
-                    "WebSocket idle timeout after {}ms",
-                    request.idle_timeout_ms.unwrap_or_default()
-                )));
-            }
-        };
-        let text = match message_text(event) {
-            Ok(Some(text)) if text.is_empty() => continue,
-            Ok(Some(text)) => text,
-            Ok(None) => continue,
-            Err(WsEvent::Error(message)) => return Err(CodexError::Plain(message)),
-            Err(WsEvent::Closed { code, reason, .. }) => return Err(close_error(code, &reason)),
-            Err(_) => continue,
-        };
-        let event = parse_json(&text).map_err(|e| {
-            let message = jsrt::json::parse(&text).err().unwrap_or_else(|| e.to_string());
-            CodexError::Protocol(format!("Invalid Codex WebSocket JSON: {message}"))
-        })?;
+        let event = decode_ws_event(&text)?;
         let Some((event, terminal)) = map_codex_event(event, &mut run.output)? else {
             continue;
         };
-        if !*started {
-            *started = true;
-            if !*start_emitted {
-                *start_emitted = true;
-                run.emit(|partial| AssistantMessageEvent::Start { partial });
-            }
-        }
+        mark_started(run, started, start_emitted);
         run.handle(
             &event,
             request.model,

@@ -566,7 +566,9 @@ fn claude_root_skip_permissions_setting_leaves_the_flag_out() {
             .output()
             .unwrap();
         let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
-        strings(&printed["args"]).contains(&"--dangerously-skip-permissions".to_string())
+        strings(&printed["args"])
+            .iter()
+            .any(|i| i == "--dangerously-skip-permissions")
     };
     assert!(run(&root));
     root.place(Some(

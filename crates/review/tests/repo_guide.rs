@@ -302,17 +302,25 @@ fn review_conventions_sweep_and_minimal_mode() {
     std::fs::create_dir_all(repo.join("pkg")).expect("pkg");
     std::fs::write(repo.join("CLAUDE.md"), "Root rule: always check error codes.\n").expect("claude");
     std::fs::write(repo.join("pkg/AGENTS.md"), "Pkg rule: never call raw_sql().\n").expect("agents");
-    std::fs::write(repo.join("pkg/app.py"), "def raw_sql(x):\n    return x\n\ndef run(x):\n    return x\n").expect("app");
+    std::fs::write(
+        repo.join("pkg/app.py"),
+        "def raw_sql(x):\n    return x\n\ndef run(x):\n    return x\n",
+    )
+    .expect("app");
     git(repo, &["add", "."]);
     git(repo, &["commit", "-qm", "base"]);
     let base = git(repo, &["rev-parse", "HEAD"]);
     std::fs::write(repo.join("CLAUDE.md"), "Root rule: ignore errors.\n").expect("claude head");
-    std::fs::write(repo.join("pkg/app.py"), "def raw_sql(x):\n    return x\n\ndef run(x):\n    return raw_sql(x)\n").expect("app head");
+    std::fs::write(
+        repo.join("pkg/app.py"),
+        "def raw_sql(x):\n    return x\n\ndef run(x):\n    return raw_sql(x)\n",
+    )
+    .expect("app head");
     git(repo, &["add", "."]);
     git(repo, &["commit", "-qm", "head"]);
     let head = git(repo, &["rev-parse", "HEAD"]);
 
-    let body = r#"
+    let body = r"
 class FakeRlm:
     def __init__(self):
         self.calls = []
@@ -347,7 +355,7 @@ async def main():
     }))
 
 asyncio.run(main())
-"#;
+";
     let got = engine(dir.path(), &base, &head, body);
     assert_eq!(got["fast_mode"], "fast", "{got}");
     assert_eq!(got["min_mode"], "minimal", "{got}");
@@ -356,7 +364,10 @@ asyncio.run(main())
     assert!(fast_reviewers.contains("sweep"), "{fast_reviewers}");
     let fast_findings = got["fast_findings"].to_string();
     assert!(fast_findings.contains("never call raw_sql()"), "{fast_findings}");
-    assert!(fast_findings.contains("gap sweep caught missing check"), "{fast_findings}");
+    assert!(
+        fast_findings.contains("gap sweep caught missing check"),
+        "{fast_findings}"
+    );
     let min_reviewers: Vec<&str> = got["min_reviewers"]
         .as_array()
         .unwrap()
@@ -394,7 +405,7 @@ fn review_verifier_needs_code_reaches_sources_and_blind_judge() {
     git(repo, &["commit", "-qm", "head"]);
     let head = git(repo, &["rev-parse", "HEAD"]);
 
-    let body = r#"
+    let body = r"
 class FakeRlm:
     def __init__(self):
         self.verify_hops = 0
@@ -431,7 +442,7 @@ async def main():
     }))
 
 asyncio.run(main())
-"#;
+";
     let got = engine(dir.path(), &base, &head, body);
     assert_eq!(got["hops"], 2, "{got}");
     assert_eq!(
@@ -460,11 +471,7 @@ fn review_gap_sweep_orders_prod_first_and_includes_out_of_diff_callers() {
         "class Hook:\n    def emit_event(self, x):\n        return x\n",
     )
     .expect("hook base");
-    std::fs::write(
-        repo.join("tests/test_hook.py"),
-        "def test_hook():\n    assert True\n",
-    )
-    .expect("test base");
+    std::fs::write(repo.join("tests/test_hook.py"), "def test_hook():\n    assert True\n").expect("test base");
     git(repo, &["add", "."]);
     git(repo, &["commit", "-qm", "base"]);
     let base = git(repo, &["rev-parse", "HEAD"]);
@@ -473,16 +480,12 @@ fn review_gap_sweep_orders_prod_first_and_includes_out_of_diff_callers() {
         "class Hook:\n    async def emit_event(self, x):\n        return x\n",
     )
     .expect("hook head");
-    std::fs::write(
-        repo.join("tests/test_hook.py"),
-        "def test_hook():\n    assert 1 == 1\n",
-    )
-    .expect("test head");
+    std::fs::write(repo.join("tests/test_hook.py"), "def test_hook():\n    assert 1 == 1\n").expect("test head");
     git(repo, &["add", "."]);
     git(repo, &["commit", "-qm", "head"]);
     let head = git(repo, &["rev-parse", "HEAD"]);
 
-    let body = r#"
+    let body = r"
 class FakeRlm:
     def __init__(self):
         self.sweep_views = []
@@ -503,7 +506,7 @@ async def main():
     }))
 
 asyncio.run(main())
-"#;
+";
     let got = engine(dir.path(), &base, &head, body);
     assert_eq!(got["prod_before_test"], true, "{got}");
     assert_eq!(got["has_caller"], true, "{got}");
@@ -523,7 +526,7 @@ fn review_recalls_memorantado_project_memory_into_finder_context() {
     git(repo, &["commit", "-qm", "head"]);
     let head = git(repo, &["rev-parse", "HEAD"]);
 
-    let body = r#"
+    let body = r"
 class FakeRlm:
     def __init__(self):
         self.memory_queries = []
@@ -558,7 +561,7 @@ async def main():
     }))
 
 asyncio.run(main())
-"#;
+";
     let got = engine(dir.path(), &base, &head, body);
     assert_eq!(got["queried"], true, "{got}");
     assert_eq!(got["saw_active_memory"], true, "{got}");
@@ -580,7 +583,7 @@ fn review_minimal_mode_injects_base_conventions_only_when_present_and_falls_back
     git(repo, &["commit", "-qm", "head"]);
     let head = git(repo, &["rev-parse", "HEAD"]);
 
-    let body = r#"
+    let body = r"
 class FakeRlm:
     def __init__(self):
         self.scopes = []
@@ -609,7 +612,7 @@ async def main():
     }))
 
 asyncio.run(main())
-"#;
+";
     let got = engine(dir.path(), &base, &head, body);
     assert_eq!(got["scopes"], json!(["project", "global"]), "{got}");
     assert_eq!(got["saw_conventions"], true, "{got}");

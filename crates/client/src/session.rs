@@ -126,37 +126,51 @@ pub fn select_remote_session(
     sessions: &[Value],
     radius: bool,
 ) -> Result<Selected, String> {
-    let existing = |id: &str| Selected::Existing {
-        session_id: id.to_string(),
-        rename: selection.name.clone(),
-    };
     if let Some(id) = &selection.session_id {
-        if sessions.iter().any(|s| s["sessionId"] == json!(id)) {
-            return Ok(existing(id));
-        }
-        if radius {
-            return Err(format!("Remote server does not contain Session {id}"));
-        }
-        let mut options = json!({"id": id});
-        if let Some(name) = &selection.name {
-            options["name"] = json!(name);
-        }
-        return Ok(Selected::Create(options));
+        return select_named_session(id, selection.name.as_ref(), sessions, radius);
     }
-    if selection.continue_ {
-        let text = |s: &Value, key: &str| s[key].as_str().unwrap_or_default().to_string();
-        let newest = sessions.iter().min_by(|a, b| {
-            let modified = |s: &Value| s["modifiedAt"].as_f64().unwrap_or(0.0);
-            modified(b)
-                .partial_cmp(&modified(a))
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| text(a, "serverId").cmp(&text(b, "serverId")))
-                .then_with(|| text(a, "sessionId").cmp(&text(b, "sessionId")))
+    if selection.continue_
+        && let Some(id) = newest_session_id(sessions)
+    {
+        return Ok(Selected::Existing {
+            session_id: id,
+            rename: selection.name.clone(),
         });
-        if let Some(newest) = newest {
-            return Ok(existing(&text(newest, "sessionId")));
-        }
     }
+    Ok(Selected::Create(build_create_options(selection)))
+}
+
+fn select_named_session(id: &str, name: Option<&String>, sessions: &[Value], radius: bool) -> Result<Selected, String> {
+    if sessions.iter().any(|s| s["sessionId"] == json!(id)) {
+        return Ok(Selected::Existing {
+            session_id: id.to_string(),
+            rename: name.cloned(),
+        });
+    }
+    if radius {
+        return Err(format!("Remote server does not contain Session {id}"));
+    }
+    let mut options = json!({"id": id});
+    if let Some(name) = name {
+        options["name"] = json!(name);
+    }
+    Ok(Selected::Create(options))
+}
+
+fn newest_session_id(sessions: &[Value]) -> Option<String> {
+    let text = |s: &Value, key: &str| s[key].as_str().unwrap_or_default().to_string();
+    let newest = sessions.iter().min_by(|a, b| {
+        let modified = |s: &Value| s["modifiedAt"].as_f64().unwrap_or(0.0);
+        modified(b)
+            .partial_cmp(&modified(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| text(a, "serverId").cmp(&text(b, "serverId")))
+            .then_with(|| text(a, "sessionId").cmp(&text(b, "sessionId")))
+    })?;
+    Some(text(newest, "sessionId"))
+}
+
+fn build_create_options(selection: &RemoteSelection) -> Value {
     let mut options = json!({});
     if let Some(fork) = &selection.fork {
         options["forkFromSessionId"] = json!(fork);
@@ -164,7 +178,7 @@ pub fn select_remote_session(
     if let Some(name) = &selection.name {
         options["name"] = json!(name);
     }
-    Ok(Selected::Create(options))
+    options
 }
 
 /// A Radius recovery's watch events (`ServerConnectionState` and `SessionAttachmentState` of client-tui.ts).
@@ -397,48 +411,13 @@ impl Shared {
     fn subscribe(&self, connection: &Arc<Connection>, id: &str) -> Result<(), String> {
         let attachment = connection.attachment().map(|a| a.attachment_id);
         let session = connection.session_target().map_err(crate::lost::message)?;
-        let mut started = Vec::new();
-        for service in [
-            protocol::names::MODELS,
-            protocol::names::AGENT_CONTROLLER,
-            protocol::names::TRANSCRIPT,
-        ] {
-            started.push(
-                connection
-                    .start_subscribe(session.clone(), service)
-                    .map_err(crate::lost::message)?,
-            );
-        }
-        let mut subscriptions = Vec::new();
-        for (subscription, request) in &started {
-            connection
-                .finish_subscribe(subscription, request)
-                .map_err(crate::lost::message)?;
-            subscriptions.push(subscription.clone());
-        }
+        let (mut subscriptions, transcript) = subscribe_core_services(connection, &session)?;
         let ops = connection
             .subscribe(session, protocol::names::SESSION_OPS)
             .map_err(crate::lost::message)?;
-        let ops_events = self.events.clone();
-        connection.listen(
-            &ops,
-            Box::new(move |member, value| match member {
-                "name" => ops_events(json!({"type": "session_name", "name": value["name"]})),
-                "health" if value["stuck"] == true => ops_events(json!({"type": "run_stuck", "health": value})),
-                _ => {}
-            }),
-        );
+        attach_ops_listener(connection, &ops, self.events.clone());
         subscriptions.push(ops);
-        let transcript = started[2].0.clone();
-        let events = self.events.clone();
-        connection.listen(
-            &transcript,
-            Box::new(move |_, value| {
-                if !value["event"].is_null() {
-                    events(value["event"].clone());
-                }
-            }),
-        );
+        attach_transcript_listener(connection, &transcript, self.events.clone());
         let mut state = self.lock();
         state.subscriptions = subscriptions;
         state.transcript = Some(transcript);
@@ -642,6 +621,54 @@ impl Shared {
             reconnector.dispose();
         }
     }
+}
+
+fn subscribe_core_services(
+    connection: &Arc<Connection>,
+    session: &protocol::RpcTarget,
+) -> Result<(Vec<String>, String), String> {
+    let mut started = Vec::new();
+    for service in [
+        protocol::names::MODELS,
+        protocol::names::AGENT_CONTROLLER,
+        protocol::names::TRANSCRIPT,
+    ] {
+        started.push(
+            connection
+                .start_subscribe(session.clone(), service)
+                .map_err(crate::lost::message)?,
+        );
+    }
+    let mut subscriptions = Vec::new();
+    for (subscription, request) in &started {
+        connection
+            .finish_subscribe(subscription, request)
+            .map_err(crate::lost::message)?;
+        subscriptions.push(subscription.clone());
+    }
+    Ok((subscriptions, started[2].0.clone()))
+}
+
+fn attach_ops_listener(connection: &Arc<Connection>, ops: &str, events: WatchSink) {
+    connection.listen(
+        ops,
+        Box::new(move |member, value| match member {
+            "name" => events(json!({"type": "session_name", "name": value["name"]})),
+            "health" if value["stuck"] == true => events(json!({"type": "run_stuck", "health": value})),
+            _ => {}
+        }),
+    );
+}
+
+fn attach_transcript_listener(connection: &Arc<Connection>, transcript: &str, events: WatchSink) {
+    connection.listen(
+        transcript,
+        Box::new(move |_, value| {
+            if !value["event"].is_null() {
+                events(value["event"].clone());
+            }
+        }),
+    );
 }
 
 /// The link as the Radius reconnector's client (`RadiusReconnectClient`): reconnecting opens a new relay connection

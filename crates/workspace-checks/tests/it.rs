@@ -260,13 +260,23 @@ fn no_lock_expect_in_prod_src() {
         let text = fs::read_to_string(&file).unwrap();
         let prod = text.split("\n#[cfg(test)]").next().unwrap_or(&text);
         let rel = file.strip_prefix(&crates).unwrap_or(&file).display();
-        for (idx, line) in prod.lines().enumerate() {
+        let lines: Vec<&str> = prod.lines().collect();
+        for (idx, line) in lines.iter().enumerate() {
             let trimmed = line.trim_start();
             if trimmed.starts_with("///") || trimmed.starts_with("//!") {
                 continue;
             }
-            if line.contains(".lock().expect(") || line.contains(".read().expect(") || line.contains(".write().expect(")
-            {
+            let joined = if idx + 1 < lines.len() {
+                format!("{trimmed}{}", lines[idx + 1].trim_start())
+            } else {
+                trimmed.to_string()
+            };
+            let matches_lock_expect = |text: &str| {
+                text.contains(".lock().expect(")
+                    || text.contains(".read().expect(")
+                    || text.contains(".write().expect(")
+            };
+            if matches_lock_expect(line) || (matches_lock_expect(&joined) && !matches_lock_expect(lines[idx + 1])) {
                 hits.push(format!("crates/{rel}:{}: {}", idx + 1, trimmed));
             }
         }
@@ -395,7 +405,7 @@ fn no_raw_settings_get_for_owned_keys() {
 #[test]
 fn no_new_god_files() {
     const MAX_LINES: usize = 1_200;
-    const GRANDFATHERED: [(&str, usize); 30] = [
+    const GRANDFATHERED: [(&str, usize); 28] = [
         ("ai/src/anthropic.rs", 1247),
         ("ai/src/antigravity/mod.rs", 1358),
         ("ai/src/aws_credentials.rs", 1410),
@@ -406,7 +416,6 @@ fn no_new_god_files() {
         ("claude-root/src/mcp_server.rs", 1598),
         ("cli/src/setup_wizard.rs", 1759),
         ("client/src/runtime.rs", 1306),
-        ("daemon/src/workers.rs", 1705),
         ("delegation/src/usage.rs", 1397),
         ("delegation/src/worktrees.rs", 1739),
         ("durable/src/transaction.rs", 1312),
@@ -414,8 +423,7 @@ fn no_new_god_files() {
         ("interactive/src/agent_hub.rs", 1240),
         ("interactive/src/components.rs", 1342),
         ("interactive/src/tree_selector.rs", 1344),
-        ("kernel-apis/src/memory.rs", 2262),
-        ("review/src/github.rs", 1232),
+        ("kernel-apis/src/memory.rs", 1705),
         ("rlm-views/src/graph.rs", 2022),
         ("rlm-views/src/pane.rs", 1665),
         ("rlm-views/src/visualizer.rs", 1226),

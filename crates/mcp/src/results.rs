@@ -76,32 +76,47 @@ fn str_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
 }
 
+fn resource_link_to_content(server: &str, block: &Value, readable: bool) -> Value {
+    let mut details: Vec<String> = str_field(block, "mimeType").map(String::from).into_iter().collect();
+    if let Some(size) = block.get("size").and_then(Value::as_f64) {
+        details.push(format_size(size as usize));
+    }
+    let read = if readable {
+        format!(". Read it with await mcp.read(\"{server}\", uri)")
+    } else {
+        String::new()
+    };
+    let description = str_field(block, "description").map_or_default(|d| format!(": {d}"));
+    let title = block
+        .get("title")
+        .and_then(Value::as_str)
+        .or_else(|| block.get("name").and_then(Value::as_str))
+        .unwrap_or("undefined");
+    let details = if details.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", details.join(", "))
+    };
+    let uri = block["uri"].as_str().unwrap_or_default();
+    text(format!("[Resource {uri} \"{title}\"{details}{description}{read}]"))
+}
+
+fn resource_blob_to_content(resource: &Value, mime: Option<&str>, blob: &str, save: OutputSaver) -> Value {
+    let uri = resource["uri"].as_str().unwrap_or_default();
+    let data = jsrt::base64::buffer_from(blob);
+    if is_text_mime_type(mime) {
+        return text(String::from_utf8_lossy(&data).into_owned());
+    }
+    let kind = format!("{}, {}", mime.unwrap_or("unknown type"), format_size(data.len()));
+    text(match save(&data, &extension_of(uri)) {
+        Ok(path) => format!("[Binary resource {uri} ({kind}) saved to {path}]"),
+        Err(reason) => format!("[Binary resource {uri} ({kind}) could not be saved: {reason}]"),
+    })
+}
+
 fn block_to_content(server: &str, block: &Value, readable: bool, save: OutputSaver) -> Vec<Value> {
     if block["type"] == "resource_link" {
-        let mut details: Vec<String> = str_field(block, "mimeType").map(String::from).into_iter().collect();
-        if let Some(size) = block.get("size").and_then(Value::as_f64) {
-            details.push(format_size(size as usize));
-        }
-        let read = if readable {
-            format!(". Read it with await mcp.read(\"{server}\", uri)")
-        } else {
-            String::new()
-        };
-        let description = str_field(block, "description").map_or_default(|d| format!(": {d}"));
-        let title = block
-            .get("title")
-            .and_then(Value::as_str)
-            .or_else(|| block.get("name").and_then(Value::as_str))
-            .unwrap_or("undefined");
-        let details = if details.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", details.join(", "))
-        };
-        let uri = block["uri"].as_str().unwrap_or_default();
-        return vec![text(format!(
-            "[Resource {uri} \"{title}\"{details}{description}{read}]"
-        ))];
+        return vec![resource_link_to_content(server, block, readable)];
     }
     let resource = &block["resource"];
     let mime = resource.get("mimeType").and_then(Value::as_str);
@@ -109,16 +124,7 @@ fn block_to_content(server: &str, block: &Value, readable: bool, save: OutputSav
         && let Some(blob) = resource.get("blob").and_then(Value::as_str)
         && !mime.is_some_and(|m| m.starts_with("image/"))
     {
-        let uri = resource["uri"].as_str().unwrap_or_default();
-        let data = jsrt::base64::buffer_from(blob);
-        if is_text_mime_type(mime) {
-            return vec![text(String::from_utf8_lossy(&data).into_owned())];
-        }
-        let kind = format!("{}, {}", mime.unwrap_or("unknown type"), format_size(data.len()));
-        return vec![text(match save(&data, &extension_of(uri)) {
-            Ok(path) => format!("[Binary resource {uri} ({kind}) saved to {path}]"),
-            Err(reason) => format!("[Binary resource {uri} ({kind}) could not be saved: {reason}]"),
-        })];
+        return vec![resource_blob_to_content(resource, mime, blob, save)];
     }
     to_llm_content(&json!({ "content": [block] }))
 }

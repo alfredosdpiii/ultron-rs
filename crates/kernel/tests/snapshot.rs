@@ -623,7 +623,7 @@ fn kernel_continuity_debounce_reports_unsaved_cells() {
     checkpointed(&kernel, "a");
     // Inside the interval: no checkpoint yet, so a crash now loses this cell, and the report says so.
     value(&kernel, "b = 2");
-    assert!(!kernel.checkpoint().unwrap().saved.contains(&"b".to_string()));
+    assert!(!kernel.checkpoint().unwrap().saved.iter().any(|s| s == "b"));
     let old = kernel.pid().unwrap();
     kill(old);
     restarted(&kernel, old);
@@ -743,7 +743,7 @@ fn kernel_snapshot_round_trips_rich_stdlib_data_types() {
     let saved = first.snapshot(Some(&path)).unwrap().snapshot.unwrap();
     for expected in ["bundle", "d", "dec", "dt", "p", "pp", "rx", "td", "u"] {
         assert!(
-            saved.saved.contains(&expected.to_string()),
+            saved.saved.iter().any(|s| s == expected),
             "missing {expected} in {:?}",
             saved.saved
         );
@@ -789,10 +789,10 @@ fn kernel_snapshot_enforces_per_variable_and_aggregate_caps_prioritizing_state()
     );
     let saved = first.snapshot(Some(&path)).unwrap().snapshot.unwrap();
     assert!(
-        saved.saved.contains(&"state".to_string()),
+        saved.saved.iter().any(|s| s == "state"),
         "state must always be prioritized"
     );
-    assert!(saved.saved.contains(&"first_scratch".to_string()));
+    assert!(saved.saved.iter().any(|s| s == "first_scratch"));
     assert!(
         saved
             .reasons

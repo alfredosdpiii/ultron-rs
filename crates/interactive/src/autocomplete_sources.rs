@@ -84,8 +84,7 @@ fn has_left_boundary(text: &str, idx: usize) -> bool {
         )
 }
 
-/// `:name` suggestions for the text before the cursor (emoticons first, then shortcodes), at most 12.
-pub fn emoji_suggestions(text_before: &str) -> Option<AutocompleteSuggestions> {
+fn emoji_name_before_cursor(text_before: &str) -> Option<&str> {
     let b = text_before.as_bytes();
     let mut i = b.len();
     while i > 0 && is_name_byte(b[i - 1]) {
@@ -95,12 +94,11 @@ pub fn emoji_suggestions(text_before: &str) -> Option<AutocompleteSuggestions> {
         return None;
     }
     let name = &text_before[i..];
-    let query = name.to_lowercase();
-    if query.is_empty() {
-        return None;
-    }
+    (!name.is_empty()).then_some(name)
+}
+
+fn push_emoticon_suggestions(items: &mut Vec<AutocompleteItem>, query: &str) {
     let wanted = format!(":{query}");
-    let mut items = Vec::new();
     for (pattern, ch) in EMOTICONS {
         if items.len() >= MAX_EMOJI_SUGGESTIONS {
             break;
@@ -113,19 +111,32 @@ pub fn emoji_suggestions(text_before: &str) -> Option<AutocompleteSuggestions> {
             });
         }
     }
-    if let Some(bucket) = buckets().get(&query[..1]) {
-        let start = bucket.partition_point(|(n, _)| n.as_str() < query.as_str());
-        for (n, ch) in &bucket[start..] {
-            if items.len() >= MAX_EMOJI_SUGGESTIONS || !n.starts_with(&query) {
-                break;
-            }
-            items.push(AutocompleteItem {
-                value: ch.clone(),
-                label: format!("{ch}  :{n}:"),
-                description: None,
-            });
+}
+
+fn push_shortcode_suggestions(items: &mut Vec<AutocompleteItem>, query: &str) {
+    let Some(bucket) = buckets().get(&query[..1]) else {
+        return;
+    };
+    let start = bucket.partition_point(|(n, _)| n.as_str() < query);
+    for (n, ch) in &bucket[start..] {
+        if items.len() >= MAX_EMOJI_SUGGESTIONS || !n.starts_with(query) {
+            break;
         }
+        items.push(AutocompleteItem {
+            value: ch.clone(),
+            label: format!("{ch}  :{n}:"),
+            description: None,
+        });
     }
+}
+
+/// `:name` suggestions for the text before the cursor (emoticons first, then shortcodes), at most 12.
+pub fn emoji_suggestions(text_before: &str) -> Option<AutocompleteSuggestions> {
+    let name = emoji_name_before_cursor(text_before)?;
+    let query = name.to_lowercase();
+    let mut items = Vec::new();
+    push_emoticon_suggestions(&mut items, &query);
+    push_shortcode_suggestions(&mut items, &query);
     (!items.is_empty()).then(|| AutocompleteSuggestions {
         items,
         prefix: format!(":{name}"),
@@ -192,6 +203,39 @@ pub struct GithubRefContext {
     pub number: String,
 }
 
+fn is_github_ref_boundary(text_before: &str, i: usize) -> bool {
+    i == 0
+        || text_before[..i]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_whitespace() || "\"'`(<=".contains(c))
+}
+
+fn qualified_github_ref(text_before: &str, hash: usize, number: &str) -> Option<GithubRefContext> {
+    let before = &text_before[..hash];
+    let ws = before.len() - before.trim_end().len();
+    if ws == 0 {
+        return None;
+    }
+    let word_end = hash - ws;
+    let word_start = before[..word_end]
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_ascii_alphabetic())
+        .last()
+        .map_or(word_end, |(i, _)| i);
+    let qualifier = match before[word_start..word_end].to_ascii_lowercase().as_str() {
+        "pr" | "pull" => Some(RefKind::Pr),
+        "issue" => Some(RefKind::Issue),
+        _ => None,
+    }?;
+    is_github_ref_boundary(text_before, word_start).then(|| GithubRefContext {
+        prefix: text_before[word_start..].to_string(),
+        qualifier: Some(qualifier),
+        number: number.to_string(),
+    })
+}
+
 /// A standalone `#N` token (optionally `pr`/`pull`/`issue` before it) ending at the cursor.
 pub fn github_ref_context(text_before: &str) -> Option<GithubRefContext> {
     let digits = text_before.len() - text_before.trim_end_matches(|c: char| c.is_ascii_digit()).len();
@@ -201,38 +245,10 @@ pub fn github_ref_context(text_before: &str) -> Option<GithubRefContext> {
         return None;
     }
     let hash = num_start - 1;
-    let boundary = |i: usize| {
-        i == 0
-            || text_before[..i]
-                .chars()
-                .next_back()
-                .is_some_and(|c| c.is_whitespace() || "\"'`(<=".contains(c))
-    };
-    let before = &text_before[..hash];
-    let ws = before.len() - before.trim_end().len();
-    if ws > 0 {
-        let word_end = hash - ws;
-        let word_start = before[..word_end]
-            .char_indices()
-            .rev()
-            .take_while(|(_, c)| c.is_ascii_alphabetic())
-            .last()
-            .map_or(word_end, |(i, _)| i);
-        let word = &before[word_start..word_end];
-        let qualifier = match word.to_ascii_lowercase().as_str() {
-            "pr" | "pull" => Some(RefKind::Pr),
-            "issue" => Some(RefKind::Issue),
-            _ => None,
-        };
-        if let Some(q) = qualifier.filter(|_| boundary(word_start)) {
-            return Some(GithubRefContext {
-                prefix: text_before[word_start..].to_string(),
-                qualifier: Some(q),
-                number: number.to_string(),
-            });
-        }
+    if let Some(qualified) = qualified_github_ref(text_before, hash, number) {
+        return Some(qualified);
     }
-    boundary(hash).then(|| GithubRefContext {
+    is_github_ref_boundary(text_before, hash).then(|| GithubRefContext {
         prefix: format!("#{number}"),
         qualifier: None,
         number: number.to_string(),

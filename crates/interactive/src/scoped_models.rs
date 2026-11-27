@@ -254,97 +254,128 @@ impl ScopedModelsSelector {
         ScopedAction::Changed(self.enabled.clone())
     }
 
-    pub fn handle_input(&mut self, data: &str) -> ScopedAction {
-        let keys = self.keys.clone();
+    fn move_up(&mut self) {
         let count = self.filtered.len();
-        if keys.matches(data, "tui.select.up") {
-            if count > 0 {
-                self.selected = if self.selected == 0 {
-                    count - 1
-                } else {
-                    self.selected - 1
-                };
-            }
+        if count > 0 {
+            self.selected = if self.selected == 0 {
+                count - 1
+            } else {
+                self.selected - 1
+            };
+        }
+    }
+
+    fn move_down(&mut self) {
+        let count = self.filtered.len();
+        if count > 0 {
+            self.selected = if self.selected + 1 >= count {
+                0
+            } else {
+                self.selected + 1
+            };
+        }
+    }
+
+    fn reorder_selected(&mut self, up: bool) -> ScopedAction {
+        let Some(ids) = self.enabled.clone() else {
             return ScopedAction::None;
+        };
+        let Some(item) = self.filtered.get(self.selected).cloned() else {
+            return ScopedAction::None;
+        };
+        let Some(index) = ids.iter().position(|id| *id == item.full_id) else {
+            return ScopedAction::None;
+        };
+        let target = if up { index.checked_sub(1) } else { Some(index + 1) };
+        if let Some(target) = target.filter(|t| *t < ids.len()) {
+            let mut ids = ids;
+            ids.swap(index, target);
+            self.enabled = Some(ids);
+            self.selected = if up {
+                self.selected.saturating_sub(1)
+            } else {
+                self.selected + 1
+            };
+            return self.changed();
+        }
+        ScopedAction::None
+    }
+
+    fn toggle_selected_provider(&mut self) -> ScopedAction {
+        let Some(provider) = self
+            .filtered
+            .get(self.selected)
+            .and_then(|item| item.model.as_ref())
+            .map(|m| m.provider.clone())
+        else {
+            return ScopedAction::None;
+        };
+        let ids: Vec<String> = self
+            .models
+            .iter()
+            .filter(|(_, m)| m.provider == provider)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let all_enabled = ids.iter().all(|id| is_enabled(&self.enabled, id));
+        self.enabled = if all_enabled {
+            clear_all(&self.enabled, &self.all_ids, Some(&ids))
+        } else {
+            enable_all(&self.enabled, &self.all_ids, Some(&ids))
+        };
+        self.changed()
+    }
+
+    fn handle_navigation_or_reorder(&mut self, keys: &KeybindingsManager, data: &str) -> Option<ScopedAction> {
+        if keys.matches(data, "tui.select.up") {
+            self.move_up();
+            return Some(ScopedAction::None);
         }
         if keys.matches(data, "tui.select.down") {
-            if count > 0 {
-                self.selected = if self.selected + 1 >= count {
-                    0
-                } else {
-                    self.selected + 1
-                };
-            }
-            return ScopedAction::None;
+            self.move_down();
+            return Some(ScopedAction::None);
         }
         let up = keys.matches(data, "app.models.reorderUp");
         if up || keys.matches(data, "app.models.reorderDown") {
-            let Some(ids) = self.enabled.clone() else {
-                return ScopedAction::None;
-            };
-            let Some(item) = self.filtered.get(self.selected).cloned() else {
-                return ScopedAction::None;
-            };
-            let Some(index) = ids.iter().position(|id| *id == item.full_id) else {
-                return ScopedAction::None;
-            };
-            let target = if up { index.checked_sub(1) } else { Some(index + 1) };
-            if let Some(target) = target.filter(|t| *t < ids.len()) {
-                let mut ids = ids;
-                ids.swap(index, target);
-                self.enabled = Some(ids);
-                self.selected = if up {
-                    self.selected.saturating_sub(1)
-                } else {
-                    self.selected + 1
-                };
-                return self.changed();
-            }
-            return ScopedAction::None;
+            return Some(self.reorder_selected(up));
         }
+        None
+    }
+
+    fn handle_model_action(&mut self, keys: &KeybindingsManager, data: &str) -> Option<ScopedAction> {
         if keys.matches(data, "tui.select.confirm") {
             let Some(item) = self.filtered.get(self.selected).cloned() else {
-                return ScopedAction::None;
+                return Some(ScopedAction::None);
             };
             self.enabled = toggle(&self.enabled, &self.all_ids, &item.full_id);
-            return self.changed();
+            return Some(self.changed());
         }
         let targets: Option<Vec<String>> =
             (!self.search.value().is_empty()).then(|| self.filtered.iter().map(|i| i.full_id.clone()).collect());
         if keys.matches(data, "app.models.enableAll") {
             self.enabled = enable_all(&self.enabled, &self.all_ids, targets.as_deref());
-            return self.changed();
+            return Some(self.changed());
         }
         if keys.matches(data, "app.models.clearAll") {
             self.enabled = clear_all(&self.enabled, &self.all_ids, targets.as_deref());
-            return self.changed();
+            return Some(self.changed());
         }
         if keys.matches(data, "app.models.toggleProvider") {
-            let Some(provider) = self
-                .filtered
-                .get(self.selected)
-                .and_then(|item| item.model.as_ref())
-                .map(|m| m.provider.clone())
-            else {
-                return ScopedAction::None;
-            };
-            let ids: Vec<String> = self
-                .models
-                .iter()
-                .filter(|(_, m)| m.provider == provider)
-                .map(|(id, _)| id.clone())
-                .collect();
-            let all_enabled = ids.iter().all(|id| is_enabled(&self.enabled, id));
-            self.enabled = if all_enabled {
-                clear_all(&self.enabled, &self.all_ids, Some(&ids))
-            } else {
-                enable_all(&self.enabled, &self.all_ids, Some(&ids))
-            };
-            return self.changed();
+            return Some(self.toggle_selected_provider());
         }
         if keys.matches(data, "app.models.save") {
             self.dirty = false;
-            return ScopedAction::Persist(self.enabled.clone());
+            return Some(ScopedAction::Persist(self.enabled.clone()));
+        }
+        None
+    }
+
+    pub fn handle_input(&mut self, data: &str) -> ScopedAction {
+        let keys = self.keys.clone();
+        if let Some(action) = self.handle_navigation_or_reorder(&keys, data) {
+            return action;
+        }
+        if let Some(action) = self.handle_model_action(&keys, data) {
+            return action;
         }
         if data == "\x03" {
             if self.search.value().is_empty() {
@@ -381,6 +412,60 @@ impl ScopedModelsSelector {
         self.search.handle_mouse(&local)
     }
 
+    fn render_model_row(&self, item: &Item, selected: bool) -> String {
+        let t = &self.theme;
+        let prefix = if selected {
+            t.fg(Fg::Accent, "→ ")
+        } else {
+            "  ".into()
+        };
+        let id = item.model.as_ref().map_or(item.full_id.clone(), |m| m.id.clone());
+        let styled = if item.model.is_some() { id } else { strikethrough(&id) };
+        let model_text = if selected { t.fg(Fg::Accent, &styled) } else { styled };
+        let badge = t.fg(
+            Fg::Muted,
+            &item
+                .model
+                .as_ref()
+                .map_or(" [unavailable]".to_string(), |m| format!(" [{}]", m.provider)),
+        );
+        let status = if item.model.is_some() && item.enabled {
+            t.fg(Fg::Accent, "✓ ")
+        } else {
+            "  ".into()
+        };
+        format!("{prefix}{status}{model_text}{badge}")
+    }
+
+    fn render_model_list(&self, width: usize) -> Vec<String> {
+        let t = &self.theme;
+        let text = |s: &str| Text::new(s, 0, 0, None).render(width);
+        if self.filtered.is_empty() {
+            return text(&t.fg(Fg::Muted, "  No matching models"));
+        }
+        let mut lines = Vec::new();
+        let count = self.filtered.len();
+        let start = self
+            .selected
+            .saturating_sub(MAX_VISIBLE / 2)
+            .min(count.saturating_sub(MAX_VISIBLE));
+        let end = (start + MAX_VISIBLE).min(count);
+        for (index, item) in self.filtered[start..end].iter().enumerate() {
+            lines.extend(text(&self.render_model_row(item, start + index == self.selected)));
+        }
+        if start > 0 || end < count {
+            lines.extend(text(&t.fg(Fg::Muted, &format!("  ({}/{count})", self.selected + 1))));
+        }
+        let selected = &self.filtered[self.selected];
+        lines.push(String::new());
+        let name = match &selected.model {
+            Some(model) => format!("  Model Name: {}", model.name),
+            None => "  Model unavailable".into(),
+        };
+        lines.extend(text(&t.fg(Fg::Muted, &name)));
+        lines
+    }
+
     pub fn render(&mut self, width: usize) -> Vec<String> {
         let t = Rc::clone(&self.theme);
         let text = |s: &str| Text::new(s, 0, 0, None).render(width);
@@ -394,50 +479,7 @@ impl ScopedModelsSelector {
         lines.push(String::new());
         lines.extend(self.search.render(width));
         lines.push(String::new());
-        if self.filtered.is_empty() {
-            lines.extend(text(&t.fg(Fg::Muted, "  No matching models")));
-        } else {
-            let count = self.filtered.len();
-            let start = self
-                .selected
-                .saturating_sub(MAX_VISIBLE / 2)
-                .min(count.saturating_sub(MAX_VISIBLE));
-            let end = (start + MAX_VISIBLE).min(count);
-            for (index, item) in self.filtered[start..end].iter().enumerate() {
-                let selected = start + index == self.selected;
-                let prefix = if selected {
-                    t.fg(Fg::Accent, "→ ")
-                } else {
-                    "  ".into()
-                };
-                let id = item.model.as_ref().map_or(item.full_id.clone(), |m| m.id.clone());
-                let styled = if item.model.is_some() { id } else { strikethrough(&id) };
-                let model_text = if selected { t.fg(Fg::Accent, &styled) } else { styled };
-                let badge = t.fg(
-                    Fg::Muted,
-                    &item
-                        .model
-                        .as_ref()
-                        .map_or(" [unavailable]".to_string(), |m| format!(" [{}]", m.provider)),
-                );
-                let status = if item.model.is_some() && item.enabled {
-                    t.fg(Fg::Accent, "✓ ")
-                } else {
-                    "  ".into()
-                };
-                lines.extend(text(&format!("{prefix}{status}{model_text}{badge}")));
-            }
-            if start > 0 || end < count {
-                lines.extend(text(&t.fg(Fg::Muted, &format!("  ({}/{count})", self.selected + 1))));
-            }
-            let selected = &self.filtered[self.selected];
-            lines.push(String::new());
-            let name = match &selected.model {
-                Some(model) => format!("  Model Name: {}", model.name),
-                None => "  Model unavailable".into(),
-            };
-            lines.extend(text(&t.fg(Fg::Muted, &name)));
-        }
+        lines.extend(self.render_model_list(width));
         lines.push(String::new());
         if let Some((message, kind)) = &self.refresh {
             lines.extend(text(&t.fg(*kind, &format!("  {message}"))));

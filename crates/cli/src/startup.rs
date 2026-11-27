@@ -104,14 +104,8 @@ pub fn read_piped_stdin(parsed: &Args) -> Option<String> {
     piped_prompt(&String::from_utf8_lossy(&bytes))
 }
 
-/// The model's tools TypeScript's worker would activate for these flags (`effectiveActiveToolNames` over the
-/// built-ins, whose default is `[rlm]`), and the warnings for what the Rust build cannot do: its model's tool list is
-/// exactly `[rlm]`, so flags that would take `rlm` away or add a native tool are reported and the list stays.
-pub fn tool_flag_warnings(parsed: &Args) -> Vec<String> {
+fn effective_tools(parsed: &Args) -> Vec<String> {
     const BUILTINS: [&str; 8] = ["read", "bash", "edit", "write", "grep", "find", "ls", "rlm"];
-    if !parsed.no_tools && parsed.tools.is_none() && parsed.exclude_tools.is_none() && !parsed.no_builtin_tools {
-        return Vec::new();
-    }
     let mut active: Vec<String> = if parsed.no_tools {
         Vec::new()
     } else {
@@ -130,13 +124,24 @@ pub fn tool_flag_warnings(parsed: &Args) -> Vec<String> {
     if parsed.no_builtin_tools {
         active.retain(|name| name == "rlm");
     }
+    active
+}
+
+/// The model's tools TypeScript's worker would activate for these flags (`effectiveActiveToolNames` over the
+/// built-ins, whose default is `[rlm]`), and the warnings for what the Rust build cannot do: its model's tool list is
+/// exactly `[rlm]`, so flags that would take `rlm` away or add a native tool are reported and the list stays.
+pub fn tool_flag_warnings(parsed: &Args) -> Vec<String> {
+    if !parsed.no_tools && parsed.tools.is_none() && parsed.exclude_tools.is_none() && !parsed.no_builtin_tools {
+        return Vec::new();
+    }
+    let active = effective_tools(parsed);
     let mut warnings = Vec::new();
     let native: Vec<&str> = active.iter().map(String::as_str).filter(|n| *n != "rlm").collect();
     if !native.is_empty() {
+        let verb = if native.len() == 1 { "is" } else { "are" };
         warnings.push(format!(
-            "{} {} not a model tool here: the model's only tool is rlm, whose REPL has {} as Python functions",
+            "{} {verb} not a model tool here: the model's only tool is rlm, whose REPL has {} as Python functions",
             native.join(", "),
-            if native.len() == 1 { "is" } else { "are" },
             native.join(", ")
         ));
     }

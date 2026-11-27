@@ -166,28 +166,38 @@ pub fn route(text: &str) -> Option<(&'static str, &'static str)> {
     if text.trim_start().starts_with('/') || words.len() < 2 {
         return None;
     }
-    let read = if words.len() > 2 * EDGE_WORDS {
+    let read = edge_window(&words);
+    let is_request = OPENS_AS_REQUEST.is_match(&read);
+    if words.len() < 5 && !is_request {
+        return None;
+    }
+    let question = !is_request && reads_as_question(&read);
+    let document = ASKS_FOR_A_DOCUMENT.is_match(&read);
+    COMPILED
+        .iter()
+        .find(|(file, _, pattern)| route_allowed(file, question, document) && pattern.is_match(&read))
+        .map(|(file, title, _)| (*file, *title))
+        .or(question.then_some(INVESTIGATION))
+}
+
+fn edge_window(words: &[&str]) -> String {
+    if words.len() > 2 * EDGE_WORDS {
         [&words[..EDGE_WORDS], &words[words.len() - EDGE_WORDS..]]
             .concat()
             .join(" ")
     } else {
         words.join(" ")
-    };
-    if words.len() < 5 && !OPENS_AS_REQUEST.is_match(&read) {
-        return None;
     }
-    let question = !OPENS_AS_REQUEST.is_match(&read)
-        && (read.ends_with('?')
-            || ASKS_FOR_STATUS.is_match(&read)
-            || (OPENS_AS_QUESTION.is_match(&read) && !ASKS_FOR_A_FIX.is_match(&read)));
-    let document = ASKS_FOR_A_DOCUMENT.is_match(&read);
-    COMPILED
-        .iter()
-        .find(|(file, _, pattern)| {
-            !(question && CHANGES_CODE.contains(file)) && !(document && *file == "feature") && pattern.is_match(&read)
-        })
-        .map(|(file, title, _)| (*file, *title))
-        .or(question.then_some(INVESTIGATION))
+}
+
+fn reads_as_question(read: &str) -> bool {
+    read.ends_with('?')
+        || ASKS_FOR_STATUS.is_match(read)
+        || (OPENS_AS_QUESTION.is_match(read) && !ASKS_FOR_A_FIX.is_match(read))
+}
+
+fn route_allowed(file: &str, question: bool, document: bool) -> bool {
+    !(question && CHANGES_CODE.contains(&file)) && !(document && file == "feature")
 }
 
 /// Playbooks shown on the branch since its last compaction.

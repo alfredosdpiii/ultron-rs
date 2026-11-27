@@ -127,26 +127,37 @@ struct DialogInteraction {
     env: Env,
 }
 
+fn prompt_view(prompt: AuthPrompt) -> LoginPrompt {
+    match prompt {
+        AuthPrompt::Select { message, options } => LoginPrompt::Select {
+            message,
+            options: options.into_iter().map(|o| (o.id, o.label)).collect(),
+        },
+        AuthPrompt::ManualCode { message, .. } => LoginPrompt::ManualCode { message },
+        AuthPrompt::Text { message, placeholder } => LoginPrompt::Text {
+            message,
+            placeholder,
+            secret: false,
+        },
+        AuthPrompt::Secret { message, placeholder } => LoginPrompt::Text {
+            message,
+            placeholder,
+            secret: true,
+        },
+    }
+}
+
+async fn wait_cancelled(cancel: Option<&AbortSignal>) {
+    match cancel {
+        Some(cancel) => cancel.cancelled().await,
+        None => std::future::pending().await,
+    }
+}
+
 impl AuthInteraction for DialogInteraction {
     fn prompt<'a>(&'a self, prompt: AuthPrompt, cancel: Option<AbortSignal>) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
-            let view = match prompt {
-                AuthPrompt::Select { message, options } => LoginPrompt::Select {
-                    message,
-                    options: options.into_iter().map(|o| (o.id, o.label)).collect(),
-                },
-                AuthPrompt::ManualCode { message, .. } => LoginPrompt::ManualCode { message },
-                AuthPrompt::Text { message, placeholder } => LoginPrompt::Text {
-                    message,
-                    placeholder,
-                    secret: false,
-                },
-                AuthPrompt::Secret { message, placeholder } => LoginPrompt::Text {
-                    message,
-                    placeholder,
-                    secret: true,
-                },
-            };
+            let view = prompt_view(prompt);
             if self.signal.aborted() || cancel.as_ref().is_some_and(AbortSignal::aborted) {
                 return Err(CANCELLED.into());
             }
@@ -155,19 +166,13 @@ impl AuthInteraction for DialogInteraction {
                 return Err(CANCELLED.into());
             }
             (self.send)(LaneEvent::Login(self.id, LoginStep::Prompt(view)));
-            let cancelled = async {
-                match &cancel {
-                    Some(cancel) => cancel.cancelled().await,
-                    None => std::future::pending().await,
-                }
-            };
             tokio::select! {
                 answer = receiver => match answer {
                     Ok(Some(answer)) => Ok(answer),
                     _ => Err(CANCELLED.into()),
                 },
                 () = self.signal.cancelled() => Err(CANCELLED.into()),
-                () = cancelled => Err(CANCELLED.into()),
+                () = wait_cancelled(cancel.as_ref()) => Err(CANCELLED.into()),
             }
         })
     }
@@ -218,6 +223,30 @@ pub fn start(
     start_with(env, id, provider, name, send, slot, saved, options);
 }
 
+fn run_oauth_login(
+    env: &Env,
+    provider: &str,
+    name: &str,
+    options: &session_core::stored_auth::OAuthOptions,
+    interaction: &DialogInteraction,
+    signal: &AbortSignal,
+) -> Result<(), String> {
+    let oauth = session_core::stored_auth::oauth_handler_with(env, provider, options)
+        .ok_or_else(|| format!("{name} does not support oauth login"))?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let credential = runtime.block_on(oauth.login(interaction))?;
+    if signal.aborted() {
+        return Err(CANCELLED.into());
+    }
+    let auth = config::paths::AgentPaths::new(env.agent_dir()).auth();
+    config::auth::AuthStorage::create(auth)
+        .modify(provider, |_| Some(credential.to_json()))
+        .map(|_| ())
+}
+
 /// [`start`] with the provider reached through `options` (tests answer its endpoints).
 #[expect(
     clippy::too_many_arguments,
@@ -252,22 +281,7 @@ pub fn start_with(
             reach,
             env: env.clone(),
         };
-        let outcome = (|| -> Result<(), String> {
-            let oauth = session_core::stored_auth::oauth_handler_with(&env, &provider, &options)
-                .ok_or_else(|| format!("{name} does not support oauth login"))?;
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| e.to_string())?;
-            let credential = runtime.block_on(oauth.login(&interaction))?;
-            if signal.aborted() {
-                return Err(CANCELLED.into());
-            }
-            let auth = config::paths::AgentPaths::new(env.agent_dir()).auth();
-            config::auth::AuthStorage::create(auth)
-                .modify(&provider, |_| Some(credential.to_json()))
-                .map(|_| ())
-        })();
+        let outcome = run_oauth_login(&env, &provider, &name, &options, &interaction, &signal);
         slot.end(id);
         send(LaneEvent::Login(id, LoginStep::Finished));
         match outcome {

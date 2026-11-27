@@ -2,16 +2,10 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import base64
-import collections
 import contextlib
 import contextvars
-import datetime
-from decimal import Decimal, InvalidOperation
-import hashlib
 import io
 import json
-import linecache
 import math
 import os
 import re
@@ -20,11 +14,9 @@ import sys
 import threading
 import time
 import tokenize
-import traceback
-import uuid
 import weakref
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 from typing import Any
 from agents_api import Agents, Workflows
 from budget_api import BudgetEstimator
@@ -53,6 +45,41 @@ from knowledge_api import KnowledgeApi
 import waits
 from tools_api import Mcp, McpError, ToolCall, ToolError, ToolResult, Tools
 from worktree_api import Worktrees, worktree_path
+from runtime_console import (
+    ConsoleBuffer,
+    ReplGlobalOverwrite as ReplGlobalOverwrite,
+    _CORE_HOST_BINDINGS,
+    _ConsoleTee,
+    _check_protected_overwrites,
+)
+from runtime_preview import (
+    _BoundedTextIO as _BoundedTextIO,
+    _MARKER_BYTES as _MARKER_BYTES,
+    _PREVIEW_BYTES as _PREVIEW_BYTES,
+    _TRUNCATION_MARKER as _TRUNCATION_MARKER,
+    _cell_result_text,
+    _exception_message,
+    _frame_preview as _frame_preview,
+    _preview_deadline,
+    _reference_preview as _reference_preview,
+    _render_preview as _render_preview,
+    _result_preview,
+    _safe_repr as _safe_repr,
+    _text_preview,
+    _type_name as _type_name,
+    preview,
+    render_error_preview,
+)
+from runtime_snapshot import (
+    SnapshotIntegrityError as SnapshotIntegrityError,
+    _NonRestorable as _NonRestorable,
+    _checked_definitions as _checked_definitions,
+    _decode_value as _decode_value,
+    _encode_value as _encode_value,
+    _persistable_namespace as _snapshot_persistable,
+    restore_snapshot_file,
+    save_snapshot_file,
+)
 
 @dataclass
 class SpawnHandle:
@@ -129,6 +156,111 @@ class HostBridge:
             future.set_result(payload)
 
 
+_SPAWN_ALLOWED_OPTIONS = frozenset({
+    "name",
+    "model",
+    "thinking",
+    "timeout_ms",
+    "depth",
+    "worktree",
+    "worktree_setup",
+    "cwd",
+    "context",
+    "fork",
+})
+
+
+def _validate_spawn_core(prompt: Any, kwargs: dict[str, Any]) -> None:
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError("rlm.spawn prompt must be a non-empty string")
+    name = kwargs.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("rlm.spawn name must be a non-empty string")
+    unknown = sorted(set(kwargs) - _SPAWN_ALLOWED_OPTIONS)
+    if unknown:
+        raise TypeError(f"rlm.spawn unknown options: {', '.join(unknown)}")
+
+
+def _validate_spawn_limits(kwargs: dict[str, Any]) -> None:
+    timeout_ms = kwargs.get("timeout_ms")
+    if timeout_ms is not None:
+        invalid_timeout = (
+            isinstance(timeout_ms, bool)
+            or not isinstance(timeout_ms, (int, float))
+            or timeout_ms < 1
+        )
+        if invalid_timeout:
+            raise ValueError("rlm.spawn timeout_ms must be a positive number")
+    depth = kwargs.get("depth")
+    if depth is not None:
+        if isinstance(depth, bool) or not isinstance(depth, int) or depth < 0:
+            raise ValueError("rlm.spawn depth must be a non-negative integer")
+
+
+def _validate_spawn_mode(kwargs: dict[str, Any]) -> None:
+    worktree = kwargs.get("worktree")
+    if worktree is not None and worktree not in (True, False, "auto"):
+        raise ValueError(
+            'rlm.spawn worktree must be True, False or "auto" '
+            "(every worktree child gets its own)"
+        )
+    if kwargs.get("fork") is not None and not isinstance(kwargs["fork"], bool):
+        raise ValueError("rlm.spawn fork must be True or False")
+    context = kwargs.get("context")
+    if context is not None and context not in ("fresh", "fork", "retrieve"):
+        raise ValueError('rlm.spawn context must be "fresh", "fork" or "retrieve"')
+    setup = kwargs.get("worktree_setup")
+    if setup is not None and not isinstance(setup, dict):
+        raise ValueError(
+            'rlm.spawn worktree_setup must be a dict: '
+            '{"link": [...], "copy": [...], "command": "..."}'
+        )
+
+
+def _validate_spawn_cwd(kwargs: dict[str, Any]) -> None:
+    cwd = kwargs.get("cwd")
+    if cwd is None:
+        return
+    if not isinstance(cwd, (str, os.PathLike)) or not str(cwd).strip():
+        raise ValueError("rlm.spawn cwd must be a directory path")
+    kwargs["cwd"] = str(cwd)
+
+
+def _normalize_merge_items(children: Any) -> list[Any]:
+    if children is None:
+        return []
+    if isinstance(children, (str, SpawnHandle, dict)):
+        return [children]
+    return list(children)
+
+
+def _dict_merge_selector(item: dict[str, Any]) -> str | None:
+    if isinstance(item.get("id"), str):
+        return item["id"]
+    worktree = item.get("worktree")
+    if isinstance(worktree, dict) and worktree.get("task"):
+        return worktree["task"]
+    result = item.get("result")
+    if isinstance(result, dict) and isinstance(result.get("worktree"), dict):
+        return result["worktree"]["task"]
+    return None
+
+
+def _merge_selector(item: Any) -> str:
+    if isinstance(item, SpawnHandle):
+        return item.rlm_child_id
+    if isinstance(item, str) and item:
+        return item
+    if isinstance(item, dict):
+        selected = _dict_merge_selector(item)
+        if selected is not None:
+            return selected
+    raise TypeError(
+        f"rlm.merge cannot tell which child {item!r} is: "
+        "pass SpawnHandles, ids or results"
+    )
+
+
 class RLMNamespace:
     """Subagents and bounded inference.
 
@@ -194,34 +326,10 @@ class RLMNamespace:
         cwd="path" (absolute or relative to your working directory; it must exist) runs the child there; with
         worktree=True the worktree branches from the Git repository at that path and `rlm.merge` merges back into
         it, so a session whose directory only holds a repository can still use worktrees. keep=True refuses it."""
-        if not isinstance(prompt, str) or not prompt.strip():
-            raise ValueError("rlm.spawn prompt must be a non-empty string")
-        name = kwargs.get("name")
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("rlm.spawn name must be a non-empty string")
-        allowed = {"name", "model", "thinking", "timeout_ms", "depth", "worktree", "worktree_setup", "cwd", "context", "fork"}
-        unknown = sorted(set(kwargs) - allowed)
-        if unknown:
-            raise TypeError(f"rlm.spawn unknown options: {', '.join(unknown)}")
-        timeout_ms = kwargs.get("timeout_ms")
-        if timeout_ms is not None and (isinstance(timeout_ms, bool) or not isinstance(timeout_ms, (int, float)) or timeout_ms < 1):
-            raise ValueError("rlm.spawn timeout_ms must be a positive number")
-        depth = kwargs.get("depth")
-        if depth is not None and (isinstance(depth, bool) or not isinstance(depth, int) or depth < 0):
-            raise ValueError("rlm.spawn depth must be a non-negative integer")
-        worktree = kwargs.get("worktree")
-        if worktree is not None and worktree not in (True, False, "auto"):
-            raise ValueError('rlm.spawn worktree must be True, False or "auto" (every worktree child gets its own)')
-        if kwargs.get("fork") is not None and not isinstance(kwargs["fork"], bool):
-            raise ValueError("rlm.spawn fork must be True or False")
-        if kwargs.get("context") is not None and kwargs["context"] not in ("fresh", "fork", "retrieve"):
-            raise ValueError('rlm.spawn context must be "fresh", "fork" or "retrieve"')
-        if kwargs.get("worktree_setup") is not None and not isinstance(kwargs["worktree_setup"], dict):
-            raise ValueError('rlm.spawn worktree_setup must be a dict: {"link": [...], "copy": [...], "command": "..."}')
-        if kwargs.get("cwd") is not None:
-            if not isinstance(kwargs["cwd"], (str, os.PathLike)) or not str(kwargs["cwd"]).strip():
-                raise ValueError("rlm.spawn cwd must be a directory path")
-            kwargs["cwd"] = str(kwargs["cwd"])
+        _validate_spawn_core(prompt, kwargs)
+        _validate_spawn_limits(kwargs)
+        _validate_spawn_mode(kwargs)
+        _validate_spawn_cwd(kwargs)
         result = await self._bridge.request("rlm.spawn", {
             "prompt": prompt,
             "kwargs": kwargs,
@@ -269,26 +377,8 @@ class RLMNamespace:
             raise ValueError('rlm.merge strategy must be "sequential"')
         if on_conflict not in ("stop", "skip", "markers"):
             raise ValueError('rlm.merge on_conflict must be "stop", "skip" or "markers"')
-        if children is None:
-            items: list[Any] = []
-        elif isinstance(children, (str, SpawnHandle, dict)):
-            items = [children]
-        else:
-            items = list(children)
-        selectors: list[str] = []
-        for item in items:
-            if isinstance(item, SpawnHandle):
-                selectors.append(item.rlm_child_id)
-            elif isinstance(item, str) and item:
-                selectors.append(item)
-            elif isinstance(item, dict) and isinstance(item.get("id"), str):
-                selectors.append(item["id"])
-            elif isinstance(item, dict) and isinstance(item.get("worktree"), dict) and item["worktree"].get("task"):
-                selectors.append(item["worktree"]["task"])
-            elif isinstance(item, dict) and isinstance(item.get("result"), dict) and isinstance(item["result"].get("worktree"), dict):
-                selectors.append(item["result"]["worktree"]["task"])
-            else:
-                raise TypeError(f"rlm.merge cannot tell which child {item!r} is: pass SpawnHandles, ids or results")
+        items = _normalize_merge_items(children)
+        selectors = [_merge_selector(item) for item in items]
         return await self._bridge.request("rlm.merge", {
             "selectors": selectors,
             "on_conflict": on_conflict,
@@ -361,9 +451,12 @@ class BackgroundNamespace:
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("background.start prompt must be non-empty")
         payload: dict[str, Any] = {"prompt": prompt}
-        if model is not None: payload["model"] = model
-        if key is not None: payload["key"] = key
-        if timeout_ms is not None: payload["timeout_ms"] = timeout_ms
+        if model is not None:
+            payload["model"] = model
+        if key is not None:
+            payload["key"] = key
+        if timeout_ms is not None:
+            payload["timeout_ms"] = timeout_ms
         result = await self._bridge.request("background.start", payload)
         return result if isinstance(result, dict) else {"result": result}
 
@@ -383,6 +476,44 @@ class BackgroundNamespace:
 
 # A command's full output is read back from the host's spill file up to this size.
 _BASH_MAX_OUTPUT_BYTES = 64 * 1024 * 1024
+
+
+def _format_running_job_note(job: "ShellJob", waited: float | None) -> str:
+    events = waits.async_events_enabled()
+    waited_text = f" after {waited:g} s" if waited is not None else ""
+    if events:
+        return (
+            f"\n[still running as job {job.id}{waited_text}; its completion will arrive as a "
+            "runtime event, or `await <result>.job.result()` to wait]"
+        )
+    return (
+        f"\n[still running as job {job.id}{waited_text}; "
+        "`await <result>.job.result()` waits for it]"
+    )
+
+
+def _format_termination_note(
+    timed_out: bool,
+    cancelled: bool,
+    exit_code: int | None,
+    timeout: float | None,
+    notes: dict[str, Any],
+) -> str:
+    if timed_out:
+        return f"\n[timed out after {timeout:g}s]"
+    if cancelled:
+        return "\n[cancelled]"
+    if exit_code not in (0, None):
+        return _bash_exit_lines(exit_code, notes)
+    return ""
+
+
+def _format_truncation_note(truncated: bool, full_output_path: str | None) -> str:
+    if not truncated:
+        return ""
+    if full_output_path:
+        return f"\n[output truncated; full output in {full_output_path}]"
+    return "\n[output truncated]"
 
 
 class BashOutput(str):
@@ -412,23 +543,11 @@ class BashOutput(str):
                 job: "ShellJob | None" = None, waited: float | None = None, **notes: Any) -> "BashOutput":
         text = output.strip()
         running = job is not None and job.running
-        if running:
-            events = waits.async_events_enabled()
-            waited_text = f" after {waited:g} s" if waited is not None else ""
-            text += (
-                f"\n[still running as job {job.id}{waited_text}; its completion will arrive as a runtime event, "
-                "or `await <result>.job.result()` to wait]"
-                if events
-                else f"\n[still running as job {job.id}{waited_text}; `await <result>.job.result()` waits for it]"
-            )
-        elif timed_out:
-            text += f"\n[timed out after {timeout:g}s]"
-        elif cancelled:
-            text += "\n[cancelled]"
-        elif exit_code not in (0, None):
-            text += _bash_exit_lines(exit_code, notes)
-        if truncated:
-            text += f"\n[output truncated; full output in {full_output_path}]" if full_output_path else "\n[output truncated]"
+        if running and job is not None:
+            text += _format_running_job_note(job, waited)
+        else:
+            text += _format_termination_note(timed_out, cancelled, exit_code, timeout, notes)
+        text += _format_truncation_note(truncated, full_output_path)
         self = super().__new__(cls, text.strip() or "(no output)")
         self.output = output
         self.exit_code = exit_code
@@ -463,6 +582,15 @@ class BashOutput(str):
             return default
 
 
+def _str_field(data: dict[str, Any], key: str) -> str:
+    return str(data.get(key) or "")
+
+
+def _opt_str_field(data: dict[str, Any], key: str) -> str | None:
+    value = data.get(key)
+    return value if isinstance(value, str) else None
+
+
 class ShellJob:
     """A shell command owned by the Ultron host (started with ``bash(cmd, yield_after=...)``).
 
@@ -483,22 +611,23 @@ class ShellJob:
         if not isinstance(data, dict) or not isinstance(data.get("id"), str):
             raise RuntimeError("bash: the host returned no job")
         self.id: str = data["id"]
-        self.command: str = str(data.get("command") or "")
-        self.status: str = str(data.get("status") or "")
+        self.command: str = _str_field(data, "command")
+        self.status: str = _str_field(data, "status")
         self.running: bool = bool(data.get("running"))
         exit_code = data.get("exit_code")
         self.exit_code: int | None = exit_code if isinstance(exit_code, int) else None
         self.ok: bool = bool(data.get("ok"))
-        text = data.get("text")
-        self.text: str | None = text if isinstance(text, str) else None
+        self.text: str | None = _opt_str_field(data, "text")
         self.truncated: bool = bool(data.get("truncated"))
         self.timed_out: bool = bool(data.get("timed_out"))
         self.cancelled: bool = bool(data.get("cancelled"))
-        self.output_path: str = str(data.get("output_path") or "")
+        self.output_path: str = _str_field(data, "output_path")
         self.output_bytes: int = int(data.get("output_bytes") or 0)
         self.elapsed_seconds: float = float(data.get("elapsed_seconds") or 0)
-        error = data.get("error")
-        self.error, self.exit_note, self.sandbox_note = (error if isinstance(error, str) else None), *_bash_notes(data).values()
+        self.error, self.exit_note, self.sandbox_note = (
+            _opt_str_field(data, "error"),
+            *_bash_notes(data).values(),
+        )
 
     @property
     def job(self) -> "ShellJob":
@@ -556,6 +685,99 @@ def _quiet_git_usage(output: str) -> str:
     return _GIT_DIFF_USAGE.sub("(not a git work tree: no diff; compare against the text you read instead)\n", output)
 
 
+def _validate_bash_args(command: str, timeout: float | None) -> None:
+    if not isinstance(command, str) or not command.strip():
+        raise ValueError("bash command must be a non-empty string")
+    if timeout is not None:
+        invalid_timeout = (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or timeout <= 0
+        )
+        if invalid_timeout:
+            raise ValueError("bash timeout must be a positive number of seconds")
+
+
+def _resolve_yield_after(yield_after: Any) -> tuple[bool, float | None]:
+    if yield_after is waits.DEFAULT:
+        return False, waits.setting("ULTRON_BASH_YIELD_AFTER")
+    if yield_after is None:
+        return False, None
+    invalid_wait = (
+        isinstance(yield_after, bool)
+        or not isinstance(yield_after, (int, float))
+        or yield_after < 0
+    )
+    if invalid_wait:
+        raise ValueError("bash yield_after must be a non-negative number of seconds")
+    return True, min(float(yield_after), waits.MAX_WAIT_SECONDS)
+
+
+def _bash_job_payload(
+    command: str, timeout: float | None, wait_seconds: float | None
+) -> dict[str, Any]:
+    fields: dict[str, Any] = {"command": command, "yield_after": wait_seconds}
+    if timeout is not None:
+        fields["timeout"] = timeout
+    return fields
+
+
+def _bash_run_payload(
+    command: str, timeout: float | None, auto: float | None
+) -> dict[str, Any]:
+    fields: dict[str, Any] = {"command": command}
+    if timeout is not None:
+        fields["timeout"] = timeout
+    if auto is not None:
+        fields["yield_after"] = auto
+    return fields
+
+
+def _read_spill_output(result: dict[str, Any], job: ShellJob | None) -> tuple[str, bool]:
+    output = str(result.get("output") or "")
+    truncated = bool(result.get("truncated"))
+    path = result.get("full_output_path")
+    can_read_spill = (
+        truncated
+        and isinstance(path, str)
+        and bool(path)
+        and job is None
+        and not result.get("partial_file")
+    )
+    if not can_read_spill:
+        return output, truncated
+    # The host keeps only the tail; the whole output is in its spill file.
+    with contextlib.suppress(OSError):
+        with open(path, "rb") as handle:
+            data = handle.read(_BASH_MAX_OUTPUT_BYTES + 1)
+        if len(data) <= _BASH_MAX_OUTPUT_BYTES:
+            return data.decode("utf-8", errors="replace"), False
+    return output, truncated
+
+
+def _build_bash_output(
+    result: dict[str, Any], timeout: float | None, auto: float | None
+) -> BashOutput:
+    job_data = result.get("job")
+    running = bool(result.get("running")) and isinstance(job_data, dict)
+    job = ShellJob(_STATE.bridge, job_data) if running else None
+    output, truncated = _read_spill_output(result, job)
+    path = result.get("full_output_path")
+    exit_code = result.get("exit_code")
+    return BashOutput(
+        _quiet_git_usage(output),
+        exit_code if isinstance(exit_code, int) else None,
+        timed_out=bool(result.get("timed_out")),
+        cancelled=bool(result.get("cancelled")),
+        truncated=truncated,
+        full_output_path=path if isinstance(path, str) else None,
+        timeout=timeout,
+        job=job,
+        waited=auto,
+        **_bash_notes(result),
+    )
+
+
 async def bash(command: str, timeout: float | None = None, yield_after: Any = waits.DEFAULT) -> Any:
     """Run a shell command in the working directory.
 
@@ -576,54 +798,16 @@ async def bash(command: str, timeout: float | None = None, yield_after: Any = wa
         appended when the command failed; .exit_code and .ok carry the status. With a number, a
         ShellJob (see help(ShellJob)).
     """
-    if not isinstance(command, str) or not command.strip():
-        raise ValueError("bash command must be a non-empty string")
-    if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0):
-        raise ValueError("bash timeout must be a positive number of seconds")
-    auto: float | None = None
-    if yield_after is waits.DEFAULT:
-        auto = waits.setting("ULTRON_BASH_YIELD_AFTER")
-    elif yield_after is not None:
-        if isinstance(yield_after, bool) or not isinstance(yield_after, (int, float)) or yield_after < 0:
-            raise ValueError("bash yield_after must be a non-negative number of seconds")
-        job_payload: dict[str, Any] = {"command": command, "yield_after": min(float(yield_after), waits.MAX_WAIT_SECONDS)}
-        if timeout is not None:
-            job_payload["timeout"] = timeout
+    _validate_bash_args(command, timeout)
+    job_mode, wait_seconds = _resolve_yield_after(yield_after)
+    if job_mode:
+        job_payload = _bash_job_payload(command, timeout, wait_seconds)
         return ShellJob(_STATE.bridge, await _STATE.bridge.request("shell.run", job_payload))
-    payload: dict[str, Any] = {"command": command}
-    if timeout is not None:
-        payload["timeout"] = timeout
-    if auto is not None:
-        payload["yield_after"] = auto
+    payload = _bash_run_payload(command, timeout, wait_seconds)
     result = await _STATE.bridge.request("bash", payload)
     if not isinstance(result, dict):
         raise RuntimeError("bash: the host returned no result")
-    output = str(result.get("output") or "")
-    truncated = bool(result.get("truncated"))
-    path = result.get("full_output_path")
-    job_data = result.get("job")
-    job = ShellJob(_STATE.bridge, job_data) if result.get("running") and isinstance(job_data, dict) else None
-    # A job's spill file may hold only the head of a very long output (partial_file): the text is better then.
-    if truncated and isinstance(path, str) and path and job is None and not result.get("partial_file"):
-        # The host keeps only the tail; the whole output is in its spill file.
-        with contextlib.suppress(OSError):
-            with open(path, "rb") as handle:
-                data = handle.read(_BASH_MAX_OUTPUT_BYTES + 1)
-            if len(data) <= _BASH_MAX_OUTPUT_BYTES:
-                output = data.decode("utf-8", errors="replace")
-                truncated = False
-    exit_code = result.get("exit_code")
-    return BashOutput(
-        _quiet_git_usage(output),
-        exit_code if isinstance(exit_code, int) else None,
-        timed_out=bool(result.get("timed_out")),
-        cancelled=bool(result.get("cancelled")),
-        truncated=truncated,
-        full_output_path=path if isinstance(path, str) else None,
-        timeout=timeout,
-        job=job,
-        waited=auto, **_bash_notes(result),
-    )
+    return _build_bash_output(result, timeout, wait_seconds)
 
 
 # `read` returns a file's text up to this size and a ContextHandle above it (ULTRON_READ_HANDLE_BYTES).
@@ -710,17 +894,7 @@ def _pil_png(source: Any) -> bytes | None:
     return buffer.getvalue()
 
 
-async def view_image(path_or_bytes: Any, *, detail: str | None = None) -> str:
-    """Show an image to the model: it is attached to this cell's tool result as an image.
-
-    Accepts a path (png, jpeg, gif or webp, detected from the file's bytes, not its extension), raw image bytes,
-    a PIL image, or a matplotlib figure (rendered to PNG). Oversized images are downscaled to the model's limits;
-    ``detail="low"`` caps the long side at 512 px. At most 8 images per cell. Returns a short description
-    (dimensions, format, bytes). The image itself never appears in printed output.
-    """
-    if detail is not None and detail not in ("low", "high", "auto"):
-        raise ValueError("view_image detail must be None, 'low', 'high' or 'auto'")
-    data: bytes | None = None
+def _resolve_image_input(path_or_bytes: Any) -> tuple[Path | None, bytes | None]:
     if isinstance(path_or_bytes, (str, os.PathLike)):
         if not str(path_or_bytes):
             raise ValueError("view_image path must be a non-empty string")
@@ -732,42 +906,68 @@ async def view_image(path_or_bytes: Any, *, detail: str | None = None) -> str:
         with filepath.open("rb") as handle:
             if _image_kind(handle.read(16)) is None:
                 raise ValueError(f"{path_or_bytes} is not a png, jpeg, gif or webp image")
-    elif isinstance(path_or_bytes, (bytes, bytearray, memoryview)):
-        data = bytes(path_or_bytes)
-    else:
-        data = _pil_png(path_or_bytes)
-        if data is None:
-            data = _figure_png(path_or_bytes)
-        if data is None:
-            raise TypeError(
-                "view_image takes a path, image bytes, a PIL image or a matplotlib figure, "
-                f"not {type(path_or_bytes).__name__}"
-            )
+        return filepath, None
+    if isinstance(path_or_bytes, (bytes, bytearray, memoryview)):
+        return None, bytes(path_or_bytes)
+    data = _pil_png(path_or_bytes)
+    if data is None:
+        data = _figure_png(path_or_bytes)
+    if data is None:
+        raise TypeError(
+            "view_image takes a path, image bytes, a PIL image or a matplotlib figure, "
+            f"not {type(path_or_bytes).__name__}"
+        )
+    return None, data
+
+
+def _write_temp_image(data: bytes) -> tuple[Path, str]:
+    kind = _image_kind(data[:16])
+    if kind is None:
+        raise ValueError("view_image bytes are not a png, jpeg, gif or webp image")
+    import tempfile
+
+    descriptor, temporary = tempfile.mkstemp(prefix="ultron-view-image-", suffix=f".{kind}")
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(data)
+    return Path(temporary), temporary
+
+
+def _cleanup_temp_image(temporary: str | None) -> None:
+    if temporary is not None:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+
+
+def _format_view_image_reply(reply: Any) -> str:
+    if not isinstance(reply, dict):
+        return str(reply)
+    description = str(reply.get("description", "image attached"))
+    note = reply.get("note")
+    return f"{description}\n{note}" if note else description
+
+
+async def view_image(path_or_bytes: Any, *, detail: str | None = None) -> str:
+    """Show an image to the model: it is attached to this cell's tool result as an image.
+
+    Accepts a path (png, jpeg, gif or webp, detected from the file's bytes, not its extension), raw image bytes,
+    a PIL image, or a matplotlib figure (rendered to PNG). Oversized images are downscaled to the model's limits;
+    ``detail="low"`` caps the long side at 512 px. At most 8 images per cell. Returns a short description
+    (dimensions, format, bytes). The image itself never appears in printed output.
+    """
+    if detail is not None and detail not in ("low", "high", "auto"):
+        raise ValueError("view_image detail must be None, 'low', 'high' or 'auto'")
+    filepath, data = _resolve_image_input(path_or_bytes)
     temporary: str | None = None
     if data is not None:
-        kind = _image_kind(data[:16])
-        if kind is None:
-            raise ValueError("view_image bytes are not a png, jpeg, gif or webp image")
-        import tempfile
-
-        descriptor, temporary = tempfile.mkstemp(prefix="ultron-view-image-", suffix=f".{kind}")
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-        filepath = Path(temporary)
+        filepath, temporary = _write_temp_image(data)
     payload: dict[str, Any] = {"path": str(filepath)}
     if detail is not None:
         payload["detail"] = detail
     try:
         reply = await _STATE.bridge.request("rlm.view_image", payload)
     finally:
-        if temporary is not None:
-            with contextlib.suppress(OSError):
-                os.unlink(temporary)
-    if not isinstance(reply, dict):
-        return str(reply)
-    description = str(reply.get("description", "image attached"))
-    note = reply.get("note")
-    return f"{description}\n{note}" if note else description
+        _cleanup_temp_image(temporary)
+    return _format_view_image_reply(reply)
 
 
 _FILE_HOOKS_STICKY = os.environ.get("ULTRON_FILE_HOOKS") == "1"
@@ -779,6 +979,13 @@ def _file_hooks_enabled() -> bool:
     if not _FILE_HOOKS_STICKY and os.environ.get("ULTRON_FILE_HOOKS") == "1":
         _FILE_HOOKS_STICKY = True
     return _FILE_HOOKS_STICKY
+
+
+def _extract_write_hook_result(reply: Any) -> dict[str, Any]:
+    results = reply.get("results") if isinstance(reply, dict) else None
+    if isinstance(results, list) and results and isinstance(results[0], dict):
+        return results[0]
+    return {}
 
 
 async def _check_write(filepath: Path, content: str, display: str) -> None:
@@ -795,8 +1002,7 @@ async def _check_write(filepath: Path, content: str, display: str) -> None:
         )
     except (RuntimeError, ValueError) as error:
         raise ValueError(f"{display} was not written: write hook check failed: {error}") from None
-    results = reply.get("results") if isinstance(reply, dict) else None
-    result = results[0] if isinstance(results, list) and results and isinstance(results[0], dict) else {}
+    result = _extract_write_hook_result(reply)
     for note in result.get("notes") or []:
         print(note)
     if result.get("blocked"):
@@ -945,33 +1151,34 @@ def _on_cpu_limit(_signum: int, _frame: Any) -> None:
         )
 
 
+def _disable_core_dumps(resource: Any) -> None:
+    # No process in the kernel's tree dumps core when hitting resource limits.
+    if hasattr(resource, "RLIMIT_CORE"):
+        with contextlib.suppress(ValueError, OSError):
+            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+
+def _apply_memory_limit(resource: Any) -> None:
+    # macOS reserves ~400 GiB of virtual address space on Apple Silicon, so RLIMIT_DATA
+    # cannot meaningfully cap memory there.
+    if _MAX_MEMORY_MB <= 0 or not hasattr(resource, "RLIMIT_DATA") or sys.platform == "darwin":
+        return
+    limit = _MAX_MEMORY_MB * 1024 * 1024
+    with contextlib.suppress(ValueError, OSError):
+        _soft, hard = resource.getrlimit(resource.RLIMIT_DATA)
+        if hard != resource.RLIM_INFINITY:
+            limit = min(limit, hard)
+        # The hard limit is lowered too, so cell code cannot raise it again for itself or its children.
+        resource.setrlimit(resource.RLIMIT_DATA, (limit, limit))
+
+
 def _apply_resource_limits() -> None:
     try:
         import resource
     except ImportError:
         return
-    # A limit kill (SIGXCPU, or an out-of-memory abort) would otherwise write a core dump for the kernel
-    # or any subprocess a cell starts, and desktop crash reporters announce every one. Limit hits are
-    # expected, reported outcomes, so no process in the kernel's tree dumps core.
-    if hasattr(resource, "RLIMIT_CORE"):
-        try:
-            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        except (ValueError, OSError):
-            pass
-    # macOS checks RLIMIT_DATA against the whole virtual map, and every Apple Silicon process reserves ~400 GiB of
-    # address space before it allocates anything: a GiB-scale limit is refused with EINVAL, and one it would accept
-    # caps nothing (#1). There the kernel runs without a per-process memory limit.
-    if _MAX_MEMORY_MB > 0 and hasattr(resource, "RLIMIT_DATA") and sys.platform != "darwin":
-        limit = _MAX_MEMORY_MB * 1024 * 1024
-        try:
-            _soft, hard = resource.getrlimit(resource.RLIMIT_DATA)
-            if hard != resource.RLIM_INFINITY:
-                limit = min(limit, hard)
-            # The hard limit is lowered too, so cell code cannot raise it again for itself or its children.
-            resource.setrlimit(resource.RLIMIT_DATA, (limit, limit))
-        except (ValueError, OSError):
-            # A platform that refuses the limit runs the kernel without it rather than failing to start.
-            pass
+    _disable_core_dumps(resource)
+    _apply_memory_limit(resource)
     if _MAX_CPU_SECONDS > 0 and hasattr(signal, "SIGXCPU"):
         signal.signal(signal.SIGXCPU, _on_cpu_limit)
         _arm_cpu_limit()
@@ -1162,191 +1369,47 @@ def emit(event: str, **fields: Any) -> None:
     _write_frame(_encode_frame({"event": event, **fields}))
 
 
+def _flush_stdio_buffers() -> None:
+    for stream in (sys.__stdout__, sys.__stderr__):
+        with contextlib.suppress(BaseException):
+            stream.flush()
+    if _LIBC_FFLUSH is not None:
+        with contextlib.suppress(BaseException):
+            _LIBC_FFLUSH(None)
+
+
+def _write_flush_marker(fd: int, identity: tuple[int, int], marker: bytes) -> bool:
+    try:
+        # Cell code may have closed or redirected the fd: the marker would never reach the host.
+        stat = os.fstat(fd)
+        if (stat.st_dev, stat.st_ino) != identity:
+            return False
+        view = memoryview(marker)
+        while view:
+            view = view[os.write(fd, view) :]
+        return True
+    except BaseException:
+        return False
+
+
 def _flush_raw_output(request_id: Any) -> dict[str, bool] | None:
     """Write the cell's flush marker to fd 1 and fd 2, after anything buffered in Python or C stdio. The host
     finalizes the cell once it has read each marker written here, so raw output from the cell precedes it."""
     if not _PRIVATE_PROTOCOL:
         return None
-    for stream in (sys.__stdout__, sys.__stderr__):
-        try:
-            stream.flush()
-        except BaseException:
-            pass
-    if _LIBC_FFLUSH is not None:
-        try:
-            _LIBC_FFLUSH(None)
-        except BaseException:
-            pass
+    _flush_stdio_buffers()
     marker = f"\x1eultron-rlm-flush:{request_id}\x1e".encode("utf-8")
     flushed: dict[str, bool] = {}
     for name in ("stdout", "stderr"):
-        flushed[name] = False
-        if name not in _RAW_STREAMS:
-            continue
-        fd, identity = _RAW_STREAMS[name]
-        try:
-            # Cell code may have closed or redirected the fd: the marker would never reach the host.
-            stat = os.fstat(fd)
-            if (stat.st_dev, stat.st_ino) != identity:
-                continue
-            view = memoryview(marker)
-            while view:
-                view = view[os.write(fd, view):]
-            flushed[name] = True
-        except BaseException:
-            pass
+        stream_info = _RAW_STREAMS.get(name)
+        if stream_info is None:
+            flushed[name] = False
+        else:
+            fd, identity = stream_info
+            flushed[name] = _write_flush_marker(fd, identity, marker)
     return flushed
 
 
-_SNAPSHOT_FORMAT = "ultron-rlm-snapshot"
-_SNAPSHOT_VERSION = 2
-_SCALARS = frozenset((type(None), bool, int, str, float))
-_PATH_TYPE = type(Path())
-_SNAPSHOT_VAR_MAX_BYTES_DEFAULT = 2 * 1024 * 1024
-_SNAPSHOT_MAX_BYTES_DEFAULT = 16 * 1024 * 1024
-
-
-def _snapshot_cap(env_name: str, default: int) -> int:
-    raw = os.environ.get(env_name, "").strip()
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return value if value > 0 else 0
-
-
-class _NonRestorable(Exception):
-    pass
-
-
-class SnapshotIntegrityError(Exception):
-    pass
-
-
-def _type_name(kind: type) -> str:
-    return f"{kind.__module__}.{kind.__qualname__}"
-
-
-def _encode_value(value: Any, mutable: set[int]) -> Any:
-    """Encode exact builtin and safe immutable stdlib data types. Every JSON object in the encoding is a tag, so
-    tuples, sets, bytes, non-string dict keys, paths, datetimes, decimals, UUIDs and regex patterns round-trip as
-    their own types. A large container of scalars only is copied at C speed."""
-    kind, scalars, encode = type(value), _SCALARS, _encode_value
-    if kind in scalars:
-        return value
-    if kind is not list and isinstance(value, list) and getattr(kind, "_snapshot_as_list", False):
-        # A list subclass that only adds metadata (rlm.map's MapResults) is kept as its plain items.
-        kind = list
-    if kind is _PATH_TYPE:
-        return {"$path": str(value)}
-    if kind is PurePosixPath:
-        return {"$pure_posix_path": str(value)}
-    if kind is PureWindowsPath:
-        return {"$pure_windows_path": str(value)}
-    if kind is datetime.datetime:
-        return {"$datetime": value.isoformat()}
-    if kind is datetime.date:
-        return {"$date": value.isoformat()}
-    if kind is datetime.timedelta:
-        return {"$timedelta": [value.days, value.seconds, value.microseconds]}
-    if kind is Decimal:
-        return {"$decimal": str(value)}
-    if kind is uuid.UUID:
-        return {"$uuid": str(value)}
-    if kind is re.Pattern and type(value.pattern) is str:
-        return {"$regex": [value.pattern, value.flags]}
-    if kind in (bytes, bytearray):
-        if kind is bytearray:
-            if id(value) in mutable:
-                raise _NonRestorable("shared or cyclic mutable reference")
-            mutable.add(id(value))
-        return {"$" + kind.__name__: base64.b64encode(bytes(value)).decode("ascii")}
-    if kind in (list, dict, set):
-        if id(value) in mutable:
-            raise _NonRestorable("shared or cyclic mutable reference")
-        mutable.add(id(value))
-    if kind is list:
-        return list(value) if len(value) > 16 and set(map(type, value)) <= scalars else [item if type(item) in scalars else encode(item, mutable) for item in value]
-    if kind is tuple:
-        return {"$tuple": list(value) if len(value) > 16 and set(map(type, value)) <= scalars else [item if type(item) in scalars else encode(item, mutable) for item in value]}
-    if kind in (set, frozenset):
-        return {"$" + kind.__name__: list(value) if len(value) > 16 and set(map(type, value)) <= scalars else [item if type(item) in scalars else encode(item, mutable) for item in value]}
-    if kind is dict:
-        plain = len(value) > 16 and set(map(type, value)) <= scalars and set(map(type, value.values())) <= scalars
-        return {"$dict": list(map(list, value.items())) if plain else [[key if type(key) in scalars else encode(key, mutable), item if type(item) in scalars else encode(item, mutable)] for key, item in value.items()]}
-    raise _NonRestorable(f"unsupported type {_type_name(kind)}")
-
-
-def _decode_value(value: Any) -> Any:
-    kind = type(value)
-    if value is None or kind in (bool, int, str, float):
-        return value
-    if kind is list:
-        return [_decode_value(item) for item in value]
-    if kind is not dict or len(value) != 1:
-        raise SnapshotIntegrityError("snapshot contains a malformed value")
-    tag, body = next(iter(value.items()))
-    if tag in ("$bytes", "$bytearray") and type(body) is str:
-        raw = base64.b64decode(body.encode("ascii"), validate=True)
-        return raw if tag == "$bytes" else bytearray(raw)
-    if tag == "$path" and type(body) is str:
-        return Path(body)
-    if tag == "$pure_posix_path" and type(body) is str:
-        return PurePosixPath(body)
-    if tag == "$pure_windows_path" and type(body) is str:
-        return PureWindowsPath(body)
-    if tag == "$datetime" and type(body) is str:
-        try:
-            return datetime.datetime.fromisoformat(body)
-        except ValueError as error:
-            raise SnapshotIntegrityError(f"snapshot contains a malformed datetime: {error}") from error
-    if tag == "$date" and type(body) is str:
-        try:
-            return datetime.date.fromisoformat(body)
-        except ValueError as error:
-            raise SnapshotIntegrityError(f"snapshot contains a malformed date: {error}") from error
-    if tag == "$decimal" and type(body) is str:
-        try:
-            return Decimal(body)
-        except InvalidOperation as error:
-            raise SnapshotIntegrityError(f"snapshot contains a malformed decimal: {error}") from error
-    if tag == "$uuid" and type(body) is str:
-        try:
-            return uuid.UUID(body)
-        except ValueError as error:
-            raise SnapshotIntegrityError(f"snapshot contains a malformed uuid: {error}") from error
-    if type(body) is not list:
-        raise SnapshotIntegrityError("snapshot contains a malformed value")
-    if tag == "$timedelta":
-        if len(body) != 3 or any(type(part) is not int for part in body):
-            raise SnapshotIntegrityError("snapshot contains a malformed timedelta")
-        return datetime.timedelta(days=body[0], seconds=body[1], microseconds=body[2])
-    if tag == "$regex":
-        if len(body) != 2 or type(body[0]) is not str or type(body[1]) is not int:
-            raise SnapshotIntegrityError("snapshot contains a malformed regex")
-        try:
-            return re.compile(body[0], body[1])
-        except re.error as error:
-            raise SnapshotIntegrityError(f"snapshot contains a malformed regex: {error}") from error
-    if tag == "$tuple":
-        return tuple(_decode_value(item) for item in body)
-    if tag == "$set":
-        return {_decode_value(item) for item in body}
-    if tag == "$frozenset":
-        return frozenset(_decode_value(item) for item in body)
-    if tag == "$dict":
-        result = {}
-        for pair in body:
-            if type(pair) is not list or len(pair) != 2:
-                raise SnapshotIntegrityError("snapshot contains a malformed dict")
-            result[_decode_value(pair[0])] = _decode_value(pair[1])
-        return result
-    raise SnapshotIntegrityError(f"snapshot contains an unknown tag: {_text_preview(str(tag))}")
-
-
-_DEFINING = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)
 # Name -> (source of the top-level def, class or import statement that bound it, the object it bound), in the
 # order they ran. A snapshot keeps the source of each name still bound to that object and a restore runs it again.
 _DEFINITIONS: dict[str, tuple[str, Any]] = {}
@@ -1358,11 +1421,18 @@ def _definitions(tree: ast.Module) -> list[tuple[str, str]]:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             found.append((node.name, ast.unparse(node)))
         elif isinstance(node, ast.Import):
-            found.extend((alias.asname or alias.name.partition(".")[0], ast.unparse(ast.Import(names=[alias]))) for alias in node.names)
+            found.extend(
+                (alias.asname or alias.name.partition(".")[0], ast.unparse(ast.Import(names=[alias])))
+                for alias in node.names
+            )
         elif isinstance(node, ast.ImportFrom):
             found.extend(
-                (alias.asname or alias.name, ast.unparse(ast.ImportFrom(module=node.module, names=[alias], level=node.level)))
-                for alias in node.names if alias.name != "*"
+                (
+                    alias.asname or alias.name,
+                    ast.unparse(ast.ImportFrom(module=node.module, names=[alias], level=node.level)),
+                )
+                for alias in node.names
+                if alias.name != "*"
             )
     return found
 
@@ -1376,77 +1446,8 @@ def _record_definitions(definitions: list[tuple[str, str]], before: dict[str, An
             _DEFINITIONS[name] = (source, value)
 
 
-def _checked_definitions(value: Any) -> list[tuple[str, str]]:
-    """A snapshot's definitions: each must be one def, class or import statement, so nothing else runs on restore."""
-    if type(value) is not list:
-        raise SnapshotIntegrityError("snapshot integrity check failed: malformed definitions")
-    checked: list[tuple[str, str]] = []
-    for item in value:
-        if type(item) is not list or len(item) != 2 or type(item[0]) is not str or type(item[1]) is not str:
-            raise SnapshotIntegrityError("snapshot integrity check failed: malformed definitions")
-        try:
-            body = ast.parse(item[1], filename="<rlm-cell>", mode="exec").body
-        except SyntaxError:
-            body = []
-        if len(body) != 1 or not isinstance(body[0], _DEFINING):
-            raise SnapshotIntegrityError("snapshot integrity check failed: a definition is not one def, class or import")
-        checked.append((item[0], item[1]))
-    return checked
-
-
 def _persistable_namespace() -> tuple[dict[str, str], dict[str, str], list[tuple[str, str]]]:
-    """Encode restorable names, each once to its compact JSON text, keep the source of names a def, class or import
-    bound, enforce per-variable and aggregate byte caps (encoding `state` first), and give every other user name an
-    explicit reason."""
-    encoded: dict[str, str] = {}
-    sizes: dict[str, int] = {}
-    reasons: dict[str, str] = {}
-    owners: dict[int, str] = {}
-    defined: set[str] = set()
-    var_cap = _snapshot_cap("ULTRON_SNAPSHOT_VAR_MAX_BYTES", _SNAPSHOT_VAR_MAX_BYTES_DEFAULT)
-    total_cap = _snapshot_cap("ULTRON_SNAPSHOT_MAX_BYTES", _SNAPSHOT_MAX_BYTES_DEFAULT)
-    total_bytes = 0
-    items = list(_STATE.namespace.items())
-    items.sort(key=lambda pair: 0 if pair[0] == "state" else 1)
-    for name, value in items:
-        if name.startswith("__") or (name in _STATE.bindings and value is _STATE.bindings[name]):
-            continue
-        mutable: set[int] = set()
-        try:
-            candidate = json.dumps(_encode_value(value, mutable), separators=(",", ":"), allow_nan=True)
-        except _NonRestorable as error:
-            # Agent classes come back from `state` (agent_class_api.rehydrate), not from their statement.
-            if name in _DEFINITIONS and _DEFINITIONS[name][1] is value and getattr(value, "__agent__", None) is None:
-                defined.add(name)
-            else:
-                reasons[name] = str(error)
-            continue
-        except Exception as error:
-            reasons[name] = f"not encodable: {type(error).__name__}"
-            continue
-        size = len(candidate.encode("utf-8"))
-        if var_cap > 0 and size > var_cap:
-            reasons[name] = f"exceeds per-variable snapshot cap ({size} > {var_cap} bytes)"
-            continue
-        if total_cap > 0 and total_bytes + size > total_cap:
-            reasons[name] = f"exceeds aggregate snapshot cap ({total_bytes + size} > {total_cap} bytes)"
-            continue
-        # Restoring separately encoded names would silently split an alias into copies.
-        shared = sorted({owners[item] for item in mutable if item in owners})
-        if shared:
-            reasons[name] = "aliases mutable data of " + ", ".join(shared)
-            for other in shared:
-                if other in encoded:
-                    encoded.pop(other, None)
-                    total_bytes -= sizes.pop(other, 0)
-                reasons.setdefault(other, "aliases mutable data of " + name)
-            continue
-        for item in mutable:
-            owners[item] = name
-        encoded[name] = candidate
-        sizes[name] = size
-        total_bytes += size
-    return encoded, reasons, [(name, source) for name, (source, _) in _DEFINITIONS.items() if name in defined]
+    return _snapshot_persistable(_STATE.namespace, _STATE.bindings, _DEFINITIONS)
 
 
 def save_snapshot(path: str) -> dict[str, Any]:
@@ -1455,34 +1456,7 @@ def save_snapshot(path: str) -> dict[str, Any]:
     The digest detects corruption. Authenticity is the host's job: it signs the file with an
     HMAC key this process never sees and verifies it before any restore.
     """
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    agent_class_api.flush()
-    encoded, reasons, definitions = _persistable_namespace()
-    skipped = sorted(reasons)
-    rest = json.dumps({"defs": definitions, "skipped": skipped, "reasons": reasons}, separators=(",", ":"), allow_nan=True)
-    body = ('{"names":{' + ",".join(json.dumps(name) + ":" + text for name, text in encoded.items()) + "}," + rest[1:]).encode()
-    digest = hashlib.sha256(body).hexdigest()
-    header = json.dumps(
-        {"format": _SNAPSHOT_FORMAT, "version": _SNAPSHOT_VERSION, "sha256": digest, "bytes": len(body)},
-        separators=(",", ":"),
-    ).encode("utf-8")
-    content = header + b"\n" + body
-    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    temporary.write_bytes(content)
-    os.replace(temporary, target)
-    return {
-        "saved": sorted([*encoded, *(name for name, _ in definitions)]),
-        "skipped": skipped,
-        "reasons": reasons,
-        "serializer": "json",
-        "sha256": digest,
-        # The host signs exactly these bytes; it refuses to sign a file that changed after this write.
-        "content_sha256": hashlib.sha256(content).hexdigest(),
-    }
-
-
-_SIGNATURE_FORMAT = "ultron-rlm-snapshot-signature"
+    return save_snapshot_file(path, _STATE.namespace, _STATE.bindings, _DEFINITIONS)
 
 
 def restore_snapshot(path: str, verified_sha256: Any = None) -> dict[str, Any]:
@@ -1491,72 +1465,9 @@ def restore_snapshot(path: str, verified_sha256: Any = None) -> dict[str, Any]:
     The host checks the HMAC signature line and passes the sha256 of the signed content; the bytes read
     here must hash to that value, so a file swapped after the host's check is refused as well.
     """
-    target = Path(path)
-    if not target.exists():
-        return {"restored": [], "missing": True, "skipped": [], "reasons": {}}
-    raw = target.read_bytes()
-    signature_line, separator, content = raw.partition(b"\n")
-    try:
-        signature = json.loads(signature_line) if separator else None
-    except ValueError:
-        signature = None
-    if type(signature) is not dict or signature.get("format") != _SIGNATURE_FORMAT:
-        raise SnapshotIntegrityError(
-            "snapshot integrity check failed: missing host signature (unsigned snapshots are refused)"
-        )
-    if type(verified_sha256) is not str or hashlib.sha256(content).hexdigest() != verified_sha256:
-        raise SnapshotIntegrityError("snapshot integrity check failed: content differs from the host-verified snapshot")
-    header_line, separator, body = content.partition(b"\n")
-    try:
-        header = json.loads(header_line) if separator else None
-    except ValueError:
-        header = None
-    if (
-        type(header) is not dict
-        or header.get("format") != _SNAPSHOT_FORMAT
-        or header.get("version") != _SNAPSHOT_VERSION
-        or type(header.get("sha256")) is not str
-        or type(header.get("bytes")) is not int
-    ):
-        raise SnapshotIntegrityError("snapshot integrity check failed: missing or unsupported header")
-    if header["bytes"] != len(body) or hashlib.sha256(body).hexdigest() != header["sha256"]:
-        raise SnapshotIntegrityError("snapshot integrity check failed: digest mismatch")
-    data = json.loads(body.decode("utf-8"))
-    names = data.get("names") if type(data) is dict else None
-    skipped = data.get("skipped") if type(data) is dict else None
-    reasons = data.get("reasons") if type(data) is dict else None
-    if (
-        type(names) is not dict
-        or type(skipped) is not list
-        or type(reasons) is not dict
-        or any(type(name) is not str for name in [*names, *skipped, *reasons.values()])
-    ):
-        raise SnapshotIntegrityError("snapshot integrity check failed: malformed body")
-    # Decode everything before touching the namespace, so a bad snapshot changes nothing.
-    decoded = {name: _decode_value(value) for name, value in names.items()}
-    # Snapshots written before definitions were kept have no "defs".
-    definitions = _checked_definitions(data.get("defs", []))
-    before = dict(_STATE.namespace)
-    _STATE.namespace.update(decoded)
-    redefined: list[str] = []
-    try:
-        for name, source in definitions:
-            try:
-                code = compile(source, "<rlm-cell>", "exec")
-                _remember_cell_source(code, source)
-                exec(code, _STATE.namespace, _STATE.namespace)
-                _DEFINITIONS[name] = (source, _STATE.namespace[name])
-                redefined.append(name)
-            except Exception as error:
-                skipped.append(name)
-                reasons[name] = f"definition failed on restore: {type(error).__name__}: {error}"
-        agent_class_api.rehydrate()
-    except BaseException:
-        # Defining the stored agent classes failed: put the namespace back as it was.
-        _STATE.namespace.clear()
-        _STATE.namespace.update(before)
-        raise
-    return {"restored": sorted([*decoded, *redefined]), "missing": False, "skipped": sorted(skipped), "reasons": reasons}
+    return restore_snapshot_file(
+        path, verified_sha256, _STATE.namespace, _DEFINITIONS, _remember_cell_source
+    )
 
 
 _UNCLOSED = re.compile(r"^'([(\[{])' was never closed$")
@@ -1596,16 +1507,7 @@ def _string_token_count(segment: str) -> int:
 _QUOTED_ESCAPE = re.compile(r"\\(?:\\|['\"])")
 
 
-def _raw_command_literal(source: str, node: ast.expr) -> str | None:
-    """The value of a plain string literal read as if written raw, when that differs.
-
-    A shell command is text for bash, which does its own escaping (and a heredoc's program its own):
-    ``bash('''python - <<'PY' ... print('a\\nb') ...''')`` means the two characters ``\\n``, as
-    Pi's bash tool would pass them. Python would turn them into a real newline and break the inner
-    program, so a literal whose backslashes only make sense raw is read raw. Literals written raw,
-    f-strings, concatenations, and ones that already escape backslashes or quotes (``\\\\``,
-    ``\\'``) are left as written.
-    """
+def _raw_literal_segment(source: str, node: ast.expr) -> tuple[str, str] | None:
     if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
         return None
     segment = ast.get_source_segment(source, node)
@@ -1616,8 +1518,25 @@ def _raw_command_literal(source: str, node: ast.expr) -> str | None:
         return None
     if _string_token_count(segment) != 1:
         return None
+    return segment, prefix
+
+
+def _raw_command_literal(source: str, node: ast.expr) -> str | None:
+    """The value of a plain string literal read as if written raw, when that differs.
+
+    A shell command is text for bash, which does its own escaping (and a heredoc's program its own):
+    ``bash('''python - <<'PY' ... print('a\\nb') ...''')`` means the two characters ``\\n``, as
+    Pi's bash tool would pass them. Python would turn them into a real newline and break the inner
+    program, so a literal whose backslashes only make sense raw is read raw. Literals written raw,
+    f-strings, concatenations, and ones that already escape backslashes or quotes (``\\\\``,
+    ``\\'``) are left as written.
+    """
+    extracted = _raw_literal_segment(source, node)
+    if extracted is None:
+        return None
+    segment, prefix = extracted
     try:
-        raw = ast.literal_eval("r" + segment[len(prefix):])
+        raw = ast.literal_eval("r" + segment[len(prefix) :])
     except (SyntaxError, ValueError):
         return None
     return raw if isinstance(raw, str) and raw != node.value else None
@@ -1642,385 +1561,7 @@ class _RawShellLiterals(ast.NodeTransformer):
         return node
 
 
-_CONSOLE_STREAMS = frozenset(("all", "stdout", "stderr", "log"))
-_CONSOLE_DEFAULT_MAX_BYTES = 256 * 1024
-_CONSOLE_DEFAULT_MAX_LINES = 4000
-
-
-class _ConsoleWriter(io.TextIOBase):
-    """Stream writer that feeds a ConsoleBuffer without emitting to the cell's model-facing output."""
-
-    def __init__(self, buf: "ConsoleBuffer", stream: str) -> None:
-        super().__init__()
-        self._buf = buf
-        self._stream = stream
-
-    def writable(self) -> bool:
-        return True
-
-    def write(self, text: str) -> int:
-        if not isinstance(text, str):
-            raise TypeError("write() argument must be str")
-        self._buf.record(self._stream, text)
-        return len(text)
-
-
-class _ConsoleTee(io.TextIOBase):
-    """Tees cell stdout/stderr into both the cell's capture stream and the session's ConsoleBuffer."""
-
-    def __init__(self, target: io.TextIOBase, buf: "ConsoleBuffer", stream: str) -> None:
-        super().__init__()
-        self._target = target
-        self._buf = buf
-        self._stream = stream
-
-    def writable(self) -> bool:
-        return True
-
-    def write(self, text: str) -> int:
-        written = self._target.write(text)
-        self._buf.record(self._stream, text)
-        return written
-
-    def flush(self) -> None:
-        if not getattr(self._target, "closed", False):
-            self._target.flush()
-
-    def getvalue(self) -> str:
-        return self._target.getvalue()  # type: ignore[attr-defined]
-
-
-class ConsoleBuffer:
-    """Bounded, queryable stdout/stderr/log ring buffer that persists across cells.
-
-    Normal `print()` output is still returned by the cell and also recorded here so later cells can inspect
-    it with `console.tail(n)`, `console.head(n)`, `console.search(pattern)` or `console.preview()`.
-    `console.log(*args)` and `with console.capture(): ...` write ONLY to this buffer, keeping noisy output
-    out of model context unless explicitly queried.
-    """
-
-    def __init__(self, max_bytes: int = _CONSOLE_DEFAULT_MAX_BYTES, max_lines: int = _CONSOLE_DEFAULT_MAX_LINES) -> None:
-        self._max_bytes = max(256, int(max_bytes))
-        self._max_lines = max(1, int(max_lines))
-        self._lock = threading.Lock()
-        self._lines: collections.deque[tuple[str, str, int]] = collections.deque()
-        self._partial: dict[str, str] = {}
-        self._bytes = 0
-        self._dropped_lines = 0
-        self._dropped_bytes = 0
-
-    def _evict_locked(self) -> None:
-        while self._lines and (self._bytes > self._max_bytes or len(self._lines) > self._max_lines):
-            _stream, _line, size = self._lines.popleft()
-            self._bytes -= size
-            self._dropped_lines += 1
-            self._dropped_bytes += size
-
-    def _append_line_locked(self, stream: str, line: str) -> None:
-        raw = line.encode("utf-8", errors="backslashreplace")
-        if len(raw) > self._max_bytes:
-            self._dropped_bytes += len(raw) - self._max_bytes
-            line = raw[-self._max_bytes:].decode("utf-8", errors="ignore")
-            size = len(line.encode("utf-8"))
-        else:
-            size = len(raw)
-        self._lines.append((stream, line, size))
-        self._bytes += size
-        self._evict_locked()
-
-    def record(self, stream: str, text: str) -> None:
-        if not text:
-            return
-        with self._lock:
-            combined = self._partial.pop(stream, "") + text
-            parts = combined.split("\n")
-            for line in parts[:-1]:
-                self._append_line_locked(stream, line)
-            rem = parts[-1]
-            if rem:
-                raw = rem.encode("utf-8", errors="backslashreplace")
-                if len(raw) > self._max_bytes:
-                    self._dropped_bytes += len(raw) - self._max_bytes
-                    rem = raw[-self._max_bytes:].decode("utf-8", errors="ignore")
-                self._partial[stream] = rem
-
-    def log(self, *args: Any, sep: str = " ", end: str = "\n") -> None:
-        """Write to the bounded console buffer ('log' stream) without emitting to model-facing stdout."""
-        self.record("log", sep.join(str(arg) for arg in args) + end)
-
-    @contextlib.contextmanager
-    def capture(self):
-        """Redirect sys.stdout and sys.stderr into this buffer only, suppressing model-facing cell output."""
-        with contextlib.redirect_stdout(_ConsoleWriter(self, "stdout")), contextlib.redirect_stderr(
-            _ConsoleWriter(self, "stderr")
-        ):
-            yield self
-
-    def _select_locked(self, stream: str) -> list[str]:
-        if stream not in _CONSOLE_STREAMS:
-            raise ValueError(f"console stream must be one of {sorted(_CONSOLE_STREAMS)}, not {stream!r}")
-        out = [line for st, line, _ in self._lines if stream == "all" or st == stream]
-        if stream == "all":
-            out.extend(self._partial.values())
-        elif stream in self._partial:
-            out.append(self._partial[stream])
-        return out
-
-    def tail(self, n: int = 20, *, stream: str = "all") -> str:
-        """Return the last `n` retained lines from `stream` ('all', 'stdout', 'stderr', 'log')."""
-        if type(n) is not int or n < 0:
-            raise ValueError("console.tail n must be a non-negative integer")
-        with self._lock:
-            lines = self._select_locked(stream)
-        return "\n".join(lines[-n:]) if n > 0 else ""
-
-    def head(self, n: int = 20, *, stream: str = "all") -> str:
-        """Return the first `n` retained lines from `stream` ('all', 'stdout', 'stderr', 'log')."""
-        if type(n) is not int or n < 0:
-            raise ValueError("console.head n must be a non-negative integer")
-        with self._lock:
-            lines = self._select_locked(stream)
-        return "\n".join(lines[:n]) if n > 0 else ""
-
-    def search(self, pattern: str, *, limit: int = 20, stream: str = "all") -> list[str]:
-        """Return up to `limit` retained lines matching regex `pattern`."""
-        if not isinstance(pattern, str):
-            raise TypeError("console.search pattern must be a str")
-        if type(limit) is not int or limit < 0:
-            raise ValueError("console.search limit must be a non-negative integer")
-        regex = re.compile(pattern)
-        with self._lock:
-            lines = self._select_locked(stream)
-        matches: list[str] = []
-        for line in lines:
-            if regex.search(line):
-                matches.append(line)
-                if len(matches) >= limit:
-                    break
-        return matches
-
-    def preview(self, max_bytes: int = 2000, *, stream: str = "all") -> dict[str, Any]:
-        """Bounded head/tail summary of retained console output without dumping the whole buffer."""
-        if type(max_bytes) is not int or not 64 <= max_bytes <= 1024 * 1024:
-            raise ValueError("console.preview max_bytes must be an integer between 64 and 1048576")
-        with self._lock:
-            lines = self._select_locked(stream)
-            dropped_lines = self._dropped_lines
-            dropped_bytes = self._dropped_bytes
-        text = "\n".join(lines)
-        raw = text.encode("utf-8", errors="backslashreplace")
-        truncated = len(raw) > max_bytes
-        if truncated:
-            half = max(1, max_bytes // 2)
-            head = raw[:half].decode("utf-8", errors="ignore")
-            tail = raw[-half:].decode("utf-8", errors="ignore")
-            shown = f"{head}\n[... {len(raw) - 2 * half} bytes elided ...]\n{tail}"
-        else:
-            shown = text
-        return {
-            "stream": stream,
-            "lines": len(lines),
-            "bytes": len(raw),
-            "dropped_lines": dropped_lines,
-            "dropped_bytes": dropped_bytes,
-            "truncated": truncated,
-            "preview": shown,
-        }
-
-    def stats(self) -> dict[str, int]:
-        with self._lock:
-            partial_lines = len(self._partial)
-            partial_bytes = sum(len(s.encode("utf-8", errors="backslashreplace")) for s in self._partial.values())
-            return {
-                "lines": len(self._lines) + partial_lines,
-                "bytes": self._bytes + partial_bytes,
-                "dropped_lines": self._dropped_lines,
-                "dropped_bytes": self._dropped_bytes,
-                "max_bytes": self._max_bytes,
-                "max_lines": self._max_lines,
-            }
-
-    def clear(self) -> None:
-        with self._lock:
-            self._lines.clear()
-            self._partial.clear()
-            self._bytes = 0
-            self._dropped_lines = 0
-            self._dropped_bytes = 0
-
-
-class ReplGlobalOverwrite(RuntimeError):
-    """Raised during AST pre-flight when a cell attempts to overwrite or delete a protected host binding."""
-
-
-# Core host-provided REPL bindings that cells must not shadow or delete; stdlib convenience imports and
-# secondary/optional namespaces (such as `notes`) remain rebindable as ordinary cell variables.
-_CORE_HOST_BINDINGS = frozenset(
-    {
-        "rlm",
-        "bash",
-        "read",
-        "edit",
-        "write",
-        "view_image",
-        "preview",
-        "console",
-        "tools",
-        "mcp",
-        "ctx",
-        "agents",
-        "workflows",
-        "background",
-        "skills",
-        "memory",
-        "hints",
-        "agent",
-        "Agent",
-        "AgentCallError",
-        "agent_message",
-        "Budget",
-        "ToolCall",
-        "ToolResult",
-        "ToolError",
-        "McpError",
-        "SpawnHandle",
-        "ShellJob",
-    }
-)
 _PROTECTED_BINDINGS: frozenset[str] = frozenset()
-
-
-def _reject_overwrite(name: str, node: ast.AST) -> None:
-    line = getattr(node, "lineno", 1)
-    raise ReplGlobalOverwrite(
-        f"cannot overwrite protected host binding {name!r} (line {line}); choose a different variable name"
-    )
-
-
-def _check_function_globals(fn: ast.FunctionDef | ast.AsyncFunctionDef, protected: frozenset[str]) -> None:
-    """Reject `global <protected>` inside a function when that function binds or deletes the name."""
-    declared: set[str] = set()
-
-    def collect_globals(node: ast.AST) -> None:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            return
-        if isinstance(node, ast.Global):
-            for name in node.names:
-                if name in protected:
-                    declared.add(name)
-            return
-        for child in ast.iter_child_nodes(node):
-            collect_globals(child)
-
-    for stmt in fn.body:
-        collect_globals(stmt)
-    if not declared:
-        return
-
-    def check_mutations(node: ast.AST) -> None:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            if node.name in declared:
-                _reject_overwrite(node.name, node)
-            return
-        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)) and node.id in declared:
-            _reject_overwrite(node.id, node)
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                bound = alias.asname or alias.name.partition(".")[0]
-                if bound in declared:
-                    _reject_overwrite(bound, node)
-        elif isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                if alias.name != "*":
-                    bound = alias.asname or alias.name
-                    if bound in declared:
-                        _reject_overwrite(bound, node)
-        elif isinstance(node, ast.ExceptHandler) and node.name in declared:
-            _reject_overwrite(node.name, node)
-        for child in ast.iter_child_nodes(node):
-            check_mutations(child)
-
-    for stmt in fn.body:
-        check_mutations(stmt)
-
-
-def _check_protected_overwrites(tree: ast.Module, protected: frozenset[str]) -> None:
-    """Pre-flight AST check preventing cells from shadowing, overwriting or deleting host-provided bindings."""
-    if not protected:
-        return
-
-    def walk(node: ast.AST, in_comp: bool = False) -> None:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if not in_comp and node.name in protected:
-                _reject_overwrite(node.name, node)
-            for dec in node.decorator_list:
-                walk(dec, in_comp)
-            for default in (*node.args.defaults, *node.args.kw_defaults):
-                if default is not None:
-                    walk(default, in_comp)
-            if not in_comp:
-                _check_function_globals(node, protected)
-            return
-        if isinstance(node, ast.ClassDef):
-            if not in_comp and node.name in protected:
-                _reject_overwrite(node.name, node)
-            for expr in (*node.bases, *node.decorator_list):
-                walk(expr, in_comp)
-            for kw in node.keywords:
-                walk(kw.value, in_comp)
-            return
-        if isinstance(node, ast.Lambda):
-            for default in (*node.args.defaults, *node.args.kw_defaults):
-                if default is not None:
-                    walk(default, in_comp)
-            return
-        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-            # Comprehension loop targets are local; walrus (NamedExpr) inside binds in the enclosing scope.
-            for gen in node.generators:
-                walk(gen.iter, True)
-                for cond in gen.ifs:
-                    walk(cond, True)
-            if isinstance(node, ast.DictComp):
-                walk(node.key, True)
-                walk(node.value, True)
-            else:
-                walk(node.elt, True)
-            return
-        if isinstance(node, ast.NamedExpr):
-            if isinstance(node.target, ast.Name) and node.target.id in protected:
-                _reject_overwrite(node.target.id, node)
-            walk(node.value, in_comp)
-            return
-        if in_comp:
-            for child in ast.iter_child_nodes(node):
-                walk(child, True)
-            return
-        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)) and node.id in protected:
-            _reject_overwrite(node.id, node)
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                bound = alias.asname or alias.name.partition(".")[0]
-                if bound in protected:
-                    _reject_overwrite(bound, node)
-        elif isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                if alias.name != "*":
-                    bound = alias.asname or alias.name
-                    if bound in protected:
-                        _reject_overwrite(bound, node)
-        elif isinstance(node, ast.ExceptHandler) and node.name in protected:
-            _reject_overwrite(node.name, node)
-        elif hasattr(ast, "MatchAs") and isinstance(node, ast.MatchAs) and node.name in protected:
-            _reject_overwrite(node.name, node)
-        elif hasattr(ast, "MatchStar") and isinstance(node, ast.MatchStar) and node.name in protected:
-            _reject_overwrite(node.name, node)
-        elif hasattr(ast, "MatchMapping") and isinstance(node, ast.MatchMapping) and node.rest in protected:
-            _reject_overwrite(node.rest, node)
-        for child in ast.iter_child_nodes(node):
-            walk(child, False)
-
-    for stmt in tree.body:
-        walk(stmt, False)
 
 
 def _prepare_code(source: str) -> tuple[Any, str | None, list[tuple[str, str]]]:
@@ -2069,52 +1610,11 @@ def _frame_source_line(code: Any, lineno: int | None) -> str:
     if entry is not None and entry[0] is code:
         lines = entry[1]
         return lines[lineno - 1].strip() if 0 < lineno <= len(lines) else ""
+    import linecache
+
     with contextlib.suppress(Exception):
         return linecache.getline(code.co_filename, lineno).strip()
     return ""
-
-
-_PREVIEW_BYTES = 8192
-_TRUNCATION_MARKER = "\n... [truncated]"
-_MARKER_BYTES = len(_TRUNCATION_MARKER.encode("utf-8"))
-
-
-class _BoundedTextIO(io.TextIOBase):
-    """Keep a UTF-8 prefix, never retaining more than the preview budget."""
-
-    def __init__(self, limit: int = _PREVIEW_BYTES) -> None:
-        super().__init__()
-        self._limit = limit
-        self._buffer = bytearray()
-        self.truncated = False
-
-    def writable(self) -> bool:
-        return True
-
-    def truncate_preview(self) -> None:
-        self.truncated = True
-        del self._buffer[self._limit - _MARKER_BYTES:]
-
-    def write(self, text: str) -> int:
-        if self.closed:
-            raise ValueError("I/O operation on closed file")
-        if not isinstance(text, str):
-            raise TypeError("write() argument must be str")
-        if not self.truncated:
-            remaining = self._limit - len(self._buffer)
-            # Slice before encoding so a huge write needs bounded temporary
-            # space too. Escape lone surrogates to keep the preview valid UTF-8.
-            encoded = text[:remaining + 1].encode("utf-8", errors="backslashreplace")
-            self._buffer.extend(encoded[:remaining])
-            if len(encoded) > remaining:
-                self.truncate_preview()
-        return len(text)
-
-    def getvalue(self) -> str:
-        # Drop a partial final code point rather than add a replacement glyph.
-        return self._buffer.decode("utf-8", errors="ignore") + (
-            _TRUNCATION_MARKER if self.truncated else ""
-        )
 
 
 def _output_budget() -> int:
@@ -2205,25 +1705,39 @@ class _MiddleTextIO(io.TextIOBase):
                 self._spill.close()
             self._spill = None
 
+    def _write_huge_text(self, text: str) -> int:
+        length = len(text)
+        self._start_spill()
+        for offset in range(0, length, _SPILL_CHUNK):
+            if self._spill is None or self._spilled >= _SPILL_MAX_BYTES:
+                break
+            chunk = text[offset : offset + _SPILL_CHUNK].encode(
+                "utf-8", errors="backslashreplace"
+            )
+            self._spill_bytes(chunk)
+        head_room = max(0, self._half - len(self._head))
+        self._total += len(text.encode("utf-8", errors="backslashreplace"))
+        front = text[:head_room].encode("utf-8", errors="backslashreplace")[:head_room]
+        self._head.extend(front)
+        tail_bytes = text[-self._half :].encode("utf-8", errors="backslashreplace")
+        self._tail = bytearray(tail_bytes[-self._half :])
+        return length
+
+    def _append_tail(self, encoded: bytes) -> None:
+        if not encoded:
+            return
+        self._tail.extend(encoded)
+        if len(self._tail) > 2 * self._half:
+            del self._tail[: len(self._tail) - self._half]
+
     def write(self, text: str) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file")
         if not isinstance(text, str):
             raise TypeError("write() argument must be str")
-        length = len(text)
         # Bound the temporary encoding of a huge write: only its ends can be kept.
-        if length > 4 * self._half + 8:
-            self._start_spill()
-            for offset in range(0, length, _SPILL_CHUNK):
-                if self._spill is None or self._spilled >= _SPILL_MAX_BYTES:
-                    break
-                self._spill_bytes(text[offset:offset + _SPILL_CHUNK].encode("utf-8", errors="backslashreplace"))
-            head_room = max(0, self._half - len(self._head))
-            self._total += len(text.encode("utf-8", errors="backslashreplace"))
-            front = text[:head_room].encode("utf-8", errors="backslashreplace")[:head_room]
-            self._head.extend(front)
-            self._tail = bytearray(text[-self._half:].encode("utf-8", errors="backslashreplace")[-self._half:])
-            return length
+        if len(text) > 4 * self._half + 8:
+            return self._write_huge_text(text)
         encoded = text.encode("utf-8", errors="backslashreplace")
         if self._total + len(encoded) > 2 * self._half:
             self._start_spill()
@@ -2233,11 +1747,8 @@ class _MiddleTextIO(io.TextIOBase):
         if head_room > 0:
             self._head.extend(encoded[:head_room])
             encoded = encoded[head_room:]
-        if encoded:
-            self._tail.extend(encoded)
-            if len(self._tail) > 2 * self._half:
-                del self._tail[: len(self._tail) - self._half]
-        return length
+        self._append_tail(encoded)
+        return len(text)
 
     def getvalue(self) -> str:
         self._close_spill()
@@ -2258,375 +1769,12 @@ class _MiddleTextIO(io.TextIOBase):
         )
 
 
-def _text_preview(text: str) -> str:
-    stream = _BoundedTextIO()
-    stream.write(text)
-    return stream.getvalue()
-
-
-_PREVIEW_SECONDS = 2.0
-_deadline_active = False
-# Once a preview deadline fires, no further user __repr__/__str__ runs for that preview.
-_deadline_expired = False
-
-
-class _PreviewTimeout(BaseException):
-    pass
-
-
-@contextlib.contextmanager
-def _preview_deadline(seconds: float = _PREVIEW_SECONDS):
-    """Interrupt user __repr__/__str__ code that runs during preview rendering.
-
-    Uses SIGALRM on the main thread. Code that swallows BaseException can still
-    stall; host-side cell cancellation then terminates the kernel process group.
-    """
-    global _deadline_active, _deadline_expired
-    usable = (
-        not _deadline_active
-        and hasattr(signal, "setitimer")
-        and threading.current_thread() is threading.main_thread()
-    )
-    if not usable:
-        yield
-        return
-
-    def on_alarm(_signum: int, _frame: Any) -> None:
-        global _deadline_expired
-        _deadline_expired = True
-        raise _PreviewTimeout()
-
-    previous = signal.signal(signal.SIGALRM, on_alarm)
-    _deadline_active = True
-    _deadline_expired = False
-    signal.setitimer(signal.ITIMER_REAL, seconds)
-    try:
-        yield
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
-        _deadline_active = False
-        _deadline_expired = False
-
-
-def _safe_repr(item: Any) -> str:
-    if _deadline_expired:
-        raise _PreviewTimeout()
-    try:
-        text = repr(item)
-        if type(text) is not str:
-            raise TypeError("__repr__ returned non-string")
-        return text
-    except _PreviewTimeout:
-        raise
-    except BaseException as error:
-        return f"<{type(item).__qualname__} object; repr raised {type(error).__name__}>"
-
-
-def _result_preview(value: Any, limit: int = _PREVIEW_BYTES, max_depth: int = 20) -> str:
-    return _render_preview(value, limit, max_depth)[0]
-
-
-def _render_preview(value: Any, limit: int = _PREVIEW_BYTES, max_depth: int = 20) -> tuple[str, bool]:
-    """Render builtins incrementally without copying or traversing whole values.
-
-    User-defined __repr__ methods run inside this worker, never on the host. Their
-    failures become placeholders, their text is bounded, and under a preview
-    deadline a stalled __repr__ ends the preview instead of the protocol.
-    """
-    stream = _BoundedTextIO(limit)
-    active: set[int] = set()
-
-    def render(item: Any, depth: int = 0) -> None:
-        if stream.truncated:
-            return
-        kind = type(item)
-        if kind in (str, bytes, bytearray):
-            prefix = item[:limit]
-            stream.write(repr(prefix))
-            if len(item) > len(prefix):
-                stream.truncate_preview()
-            return
-        if kind is int:
-            # Avoid both enormous decimal strings and Python's conversion limit.
-            digits = item.bit_length() * 30103 // 100000 + 1
-            int_limit = getattr(sys, "get_int_max_str_digits", lambda: 0)()
-            if digits + (item < 0) > limit or (int_limit and digits > int_limit):
-                stream.write(f"<int with {item.bit_length()} bits>")
-                stream.truncate_preview()
-            else:
-                stream.write(repr(item))
-            return
-        containers = (list, tuple, dict, set, frozenset, range, slice)
-        is_exception = isinstance(item, BaseException) and kind.__repr__ is BaseException.__repr__
-        if kind not in containers and not is_exception:
-            stream.write(_safe_repr(item))
-            return
-        if id(item) in active:
-            stream.write("{...}" if kind is dict else "[...]" if kind is list else "(...)")
-            return
-        if depth >= max_depth:
-            stream.truncate_preview()
-            return
-        active.add(id(item))
-        try:
-            if kind is dict:
-                opening, closing, values = "{", "}", iter(item)
-            elif kind is list:
-                opening, closing, values = "[", "]", iter(item)
-            elif kind is tuple:
-                opening, closing, values = "(", ")", iter(item)
-            elif kind in (set, frozenset):
-                if not item:
-                    stream.write("set()" if kind is set else "frozenset()")
-                    return
-                opening = "{" if kind is set else "frozenset({"
-                closing = "}" if kind is set else "})"
-                values = iter(item)
-            elif kind is range:
-                opening, closing = "range(", ")"
-                values = iter((item.start, item.stop) if item.step == 1 else (item.start, item.stop, item.step))
-            elif kind is slice:
-                opening, closing, values = "slice(", ")", iter((item.start, item.stop, item.step))
-            else:
-                stream.write(kind.__name__)
-                opening, closing, values = "(", ")", iter(item.args)
-            stream.write(opening)
-            count = 0
-            while not stream.truncated:
-                try:
-                    child = next(values)
-                except StopIteration:
-                    break
-                if count:
-                    stream.write(", ")
-                render(child, depth + 1)
-                if kind is dict and not stream.truncated:
-                    stream.write(": ")
-                    render(item[child], depth + 1)
-                count += 1
-            if kind is tuple and count == 1:
-                stream.write(",")
-            stream.write(closing)
-        finally:
-            active.remove(id(item))
-
-    try:
-        render(value)
-    except _PreviewTimeout:
-        stream.write(" <preview timed out>")
-        stream.truncated = True
-    except RecursionError:
-        stream.write(" <preview recursion limit>")
-        stream.truncated = True
-    return stream.getvalue(), stream.truncated
-
-
-def preview(value: Any, depth: int = 20, max_bytes: int = _PREVIEW_BYTES) -> dict[str, Any]:
-    """Bounded, model-visible description of a value. The value itself is untouched."""
-    if type(depth) is not int or not 1 <= depth <= 100:
-        raise ValueError("preview depth must be an integer between 1 and 100")
-    if type(max_bytes) is not int or not 64 <= max_bytes <= 1024 * 1024:
-        raise ValueError("preview max_bytes must be an integer between 64 and 1048576")
-    kind = type(value)
-    sized = (str, bytes, bytearray, list, tuple, dict, set, frozenset, range)
-    with _preview_deadline():
-        text, truncated = _render_preview(value, max_bytes, depth)
-    return {
-        "type": _type_name(kind),
-        "length": len(value) if kind in sized else None,
-        "preview": text,
-        "truncated": truncated,
-        "max_bytes": max_bytes,
-    }
-
-
-# A cell's last expression is shown whole only up to these sizes; a larger value stays in the kernel
-# (as `_`) and is shown by reference: its type, size, head, tail and digest (NOOA-style pass-by-reference).
-_REFERENCE_CHARS = 2_000
-_REFERENCE_ITEMS = 40
-_REFERENCE_HEAD = 600
-_REFERENCE_TAIL = 300
-_REFERENCE_HINT = "The whole value is kept in the kernel as `_`: slice it, search it, or use preview(_) instead of showing it all."
-
-
-def _digest(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()[:12]
-
-
-def _items_preview(items: list[Any]) -> str:
-    text, _truncated = _render_preview(items, _REFERENCE_HEAD * 2, 6)
-    return text
-
-
-def _frame_preview(value: Any) -> str | None:
-    """A pandas DataFrame/Series or numpy array, described without importing those packages."""
-    kind = type(value)
-    name = kind.__name__
-    if name in ("DataFrame", "Series") and hasattr(value, "shape") and hasattr(value, "head"):
-        shape = "x".join(str(int(n)) for n in value.shape)
-        lines = [f"<{name} {shape}, {_type_name(kind)}>"]
-        if name == "DataFrame":
-            lines.append("columns: " + _text_preview(", ".join(f"{col} ({dtype})" for col, dtype in value.dtypes.items())))
-        lines.append("head:\n" + _text_preview(str(value.head(5))))
-        if int(value.shape[0]) > 8:
-            lines.append("tail:\n" + _text_preview(str(value.tail(3))))
-        lines.append("It stays in the kernel as `_`: filter, aggregate or `.to_string()` a slice instead of showing it all.")
-        return "\n".join(lines)
-    if name == "ndarray" and hasattr(value, "shape") and hasattr(value, "dtype"):
-        if int(value.size) <= _REFERENCE_ITEMS:
-            return None
-        shape = "x".join(str(int(n)) for n in value.shape)
-        flat = value.ravel()
-        return "\n".join([
-            f"<ndarray {shape} dtype={value.dtype}, {_type_name(kind)}>",
-            "head: " + _text_preview(str(flat[: _REFERENCE_ITEMS // 2])),
-            "tail: " + _text_preview(str(flat[-(_REFERENCE_ITEMS // 4):])),
-            _REFERENCE_HINT,
-        ])
-    return None
-
-
-def _reference_preview(value: Any) -> str | None:
-    """A bounded, by-reference description of a large value, or None when it is small enough to show whole."""
-    kind = type(value)
-    if kind is str:
-        if len(value) <= _REFERENCE_CHARS:
-            return None
-        return "\n".join([
-            f"<str: {len(value):,} chars, {value.count(chr(10)) + 1:,} lines, sha256 {_digest(value.encode('utf-8', 'surrogatepass'))}>",
-            f"head: {value[:_REFERENCE_HEAD]!r}",
-            f"tail: {value[-_REFERENCE_TAIL:]!r}",
-            _REFERENCE_HINT,
-        ])
-    if kind in (bytes, bytearray):
-        if len(value) <= _REFERENCE_CHARS:
-            return None
-        return "\n".join([
-            f"<{kind.__name__}: {len(value):,} bytes, sha256 {_digest(bytes(value))}>",
-            f"head: {bytes(value[: _REFERENCE_HEAD // 4])!r}",
-            f"tail: {bytes(value[-(_REFERENCE_TAIL // 4):])!r}",
-            _REFERENCE_HINT,
-        ])
-    if kind in (list, tuple):
-        if len(value) <= _REFERENCE_ITEMS:
-            return None
-        kinds = sorted({type(item).__name__ for item in value[:200]})
-        return "\n".join([
-            f"<{kind.__name__}: {len(value):,} items; item types {', '.join(kinds)}>",
-            f"head: {_items_preview(list(value[:10]))}",
-            f"tail: {_items_preview(list(value[-5:]))}",
-            _REFERENCE_HINT,
-        ])
-    if kind is dict:
-        if len(value) <= _REFERENCE_ITEMS:
-            return None
-        keys = list(value)
-        return "\n".join([
-            f"<dict: {len(value):,} keys>",
-            f"first keys: {_items_preview(keys[:10])}",
-            f"last keys: {_items_preview(keys[-5:])}",
-            f"first item: {_items_preview([keys[0], value[keys[0]]])}",
-            _REFERENCE_HINT,
-        ])
-    if kind in (set, frozenset):
-        if len(value) <= _REFERENCE_ITEMS:
-            return None
-        sample = []
-        for item in value:
-            sample.append(item)
-            if len(sample) == 10:
-                break
-        return "\n".join([f"<{kind.__name__}: {len(value):,} items>", f"sample: {_items_preview(sample)}", _REFERENCE_HINT])
-    try:
-        return _frame_preview(value)
-    except BaseException:
-        return None
-
-
-def _cell_result_text(value: Any) -> str:
-    """The text shown for a cell's last expression: whole when small, by reference when large."""
-    reference = _reference_preview(value)
-    if reference is not None:
-        return reference
-    text, truncated = _render_preview(value)
-    if truncated:
-        return f"{text}\n{_REFERENCE_HINT}"
-    return text
-
-
-def _exception_message(error: BaseException) -> str:
-    if _deadline_expired:
-        return "<exception str() timed out>"
-    try:
-        if type(error).__str__ is BaseException.__str__:
-            if not error.args:
-                return ""
-            if len(error.args) != 1:
-                return _result_preview(error.args)
-            value = error.args[0]
-            if type(value) is str:
-                return _text_preview(value)
-            if type(value) in (int, bytes, bytearray, list, tuple, dict, set, frozenset, range, slice):
-                return _result_preview(value)
-            return _text_preview(str(value))
-        if type(error) is KeyError and len(error.args) == 1:
-            return _result_preview(error.args[0])
-        return _text_preview(str(error))
-    except BaseException:
-        return "<exception str() failed>"
-
-
 def _error_preview(error: BaseException) -> dict[str, Any]:
-    stream = _BoundedTextIO()
-    seen: set[int] = set()
-
-    def render(current: BaseException, depth: int = 0) -> None:
-        if stream.truncated or id(current) in seen:
-            return
-        if depth >= 20:
-            stream.truncate_preview()
-            return
-        seen.add(id(current))
-        cause = current.__cause__
-        context = current.__context__
-        if cause is not None:
-            render(cause, depth + 1)
-            stream.write("\nThe above exception was the direct cause of the following exception:\n\n")
-        elif context is not None and not current.__suppress_context__:
-            render(context, depth + 1)
-            stream.write("\nDuring handling of the above exception, another exception occurred:\n\n")
-        if stream.truncated:
-            return
-        if current.__traceback__ is not None:
-            stream.write("Traceback (most recent call last):\n")
-            for frame, lineno in traceback.walk_tb(current.__traceback__):
-                code = frame.f_code
-                if code.co_name == "execute_cell" and code.co_filename == __file__:
-                    continue  # the kernel's own frame around every cell
-                stream.write('  File "')
-                stream.write(code.co_filename)
-                stream.write(f'", line {lineno}, in ')
-                stream.write(code.co_name)
-                stream.write("\n")
-                line = _frame_source_line(code, lineno)
-                if line:
-                    stream.write("    ")
-                    stream.write(line[:300])
-                    stream.write("\n")
-                if stream.truncated:
-                    return
-        stream.write(type(current).__name__)
-        stream.write(": ")
-        stream.write(_exception_message(current))
-        stream.write("\n")
-
-    render(error)
-    return {
-        "ename": _text_preview(type(error).__name__),
-        "evalue": _exception_message(error),
-        "traceback": stream.getvalue().splitlines(),
-    }
+    return render_error_preview(
+        error,
+        skip_file=__file__,
+        frame_source_line=_frame_source_line,
+    )
 
 
 _STATE = RuntimeState()
@@ -2664,18 +1812,70 @@ def _on_interrupt(_signum: int, frame: Any) -> None:
         task.cancel()
 
 
+def _open_cell_streams(
+    request_id: str,
+) -> tuple[_MiddleTextIO, _MiddleTextIO, _LiveOutput | None, _CellStream, _CellStream]:
+    budget = _output_budget()
+    spill_dir = _spill_dir()
+    stdout = _MiddleTextIO(budget, "stdout", spill_dir)
+    stderr = _MiddleTextIO(budget, "stderr", spill_dir)
+    # With a host that keeps partial output (ULTRON_RLM_STREAM_OUTPUT), printed text reaches it live.
+    live = _LiveOutput.open(request_id)
+    out_tee = _ConsoleTee(_LiveOutput.tee(live, stdout, "stdout"), _STATE.console, "stdout")
+    err_tee = _ConsoleTee(_LiveOutput.tee(live, stderr, "stderr"), _STATE.console, "stderr")
+    return stdout, stderr, live, _CellStream(request_id, out_tee), _CellStream(request_id, err_tee)
+
+
+def _finalize_cell_result() -> str:
+    if "_rlm_result" not in _STATE.namespace:
+        return ""
+    value = _STATE.namespace.pop("_rlm_result")
+    if value is None:
+        # As in IPython, a None expression (a bare print(...) call) shows nothing.
+        return ""
+    # Keep the value reachable as `_`, so a by-reference preview can be followed up.
+    _STATE.namespace["_"] = value
+    with _preview_deadline():
+        return _cell_result_text(value)
+
+
+def _emit_cell_error(
+    request_id: str,
+    live: _LiveOutput | None,
+    stdout: _MiddleTextIO,
+    stderr: _MiddleTextIO,
+    error: BaseException,
+) -> None:
+    _STATE.cell_active = False
+    _LiveOutput.close(live)
+    try:
+        emit("stdout", id=request_id, text=stdout.getvalue())
+        emit("stderr", id=request_id, text=stderr.getvalue())
+        try:
+            with _preview_deadline():
+                details = _error_preview(error)
+        except BaseException:
+            details = {
+                "ename": _text_preview(type(error).__name__),
+                "evalue": "<error preview failed>",
+                "traceback": [],
+            }
+        if isinstance(error, MemoryError) and _MAX_MEMORY_MB > 0:
+            note = _memory_limit_note()
+            details["evalue"] = f"{details['evalue']} ({note})" if details["evalue"] else note
+        emit("error", id=request_id, **details)
+        emit("done", id=request_id, status="error", flush=_flush_raw_output(request_id))
+    except BaseException as secondary:
+        # Exit with a mapped code when the failure cannot be reported in-band.
+        _exit_for(error, secondary)
+
+
 async def execute_cell(request_id: str, source: str) -> None:
     async with _STATE.execution_lock:
         _CELL.set(request_id)
         _STATE.active_task = asyncio.current_task()
         _STATE.active_request_id = request_id
-        budget = _output_budget()
-        spill_dir = _spill_dir()
-        stdout = _MiddleTextIO(budget, "stdout", spill_dir)
-        stderr = _MiddleTextIO(budget, "stderr", spill_dir)
-        # With a host that keeps partial output (ULTRON_RLM_STREAM_OUTPUT), what the cell prints also reaches it
-        # while the cell runs, so a cell whose worker dies keeps its print output, not only its shell output.
-        live = _LiveOutput.open(request_id)
+        stdout, stderr, live, out, err = _open_cell_streams(request_id)
         _STATE.namespace.pop("_rlm_result", None)
         try:
             compiled, note, definitions = _prepare_code(source)
@@ -2684,8 +1884,6 @@ async def execute_cell(request_id: str, source: str) -> None:
                 stdout.write(note + "\n")
             _arm_cpu_limit()
             _STATE.cell_active = True
-            out = _CellStream(request_id, _ConsoleTee(_LiveOutput.tee(live, stdout, "stdout"), _STATE.console, "stdout"))
-            err = _CellStream(request_id, _ConsoleTee(_LiveOutput.tee(live, stderr, "stderr"), _STATE.console, "stderr"))
             try:
                 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                     agent_class_api.begin_cell(source)
@@ -2696,18 +1894,7 @@ async def execute_cell(request_id: str, source: str) -> None:
                     finally:
                         agent_class_api.end_cell()
                         _record_definitions(definitions, bound_before)
-                if "_rlm_result" in _STATE.namespace:
-                    value = _STATE.namespace.pop("_rlm_result")
-                    if value is None:
-                        # As in IPython, a None expression (a bare print(...) call) shows nothing.
-                        result_text = ""
-                    else:
-                        # The value stays reachable as `_`, so a by-reference preview can be followed up.
-                        _STATE.namespace["_"] = value
-                        with _preview_deadline():
-                            result_text = _cell_result_text(value)
-                else:
-                    result_text = ""
+                result_text = _finalize_cell_result()
             finally:
                 _STATE.cell_active = False
                 _LiveOutput.close(live)
@@ -2719,25 +1906,7 @@ async def execute_cell(request_id: str, source: str) -> None:
             emit("result", id=request_id, result=result_text)
             emit("done", id=request_id, status="ok", flush=_flush_raw_output(request_id))
         except BaseException as error:
-            _STATE.cell_active = False
-            _LiveOutput.close(live)
-            try:
-                emit("stdout", id=request_id, text=stdout.getvalue())
-                emit("stderr", id=request_id, text=stderr.getvalue())
-                try:
-                    with _preview_deadline():
-                        details = _error_preview(error)
-                except BaseException:
-                    details = {"ename": _text_preview(type(error).__name__), "evalue": "<error preview failed>", "traceback": []}
-                if isinstance(error, MemoryError) and _MAX_MEMORY_MB > 0:
-                    note = _memory_limit_note()
-                    details["evalue"] = f"{details['evalue']} ({note})" if details["evalue"] else note
-                emit("error", id=request_id, **details)
-                emit("done", id=request_id, status="error", flush=_flush_raw_output(request_id))
-            except BaseException as secondary:
-                # The cell cannot be reported in-band (e.g. no memory left to encode it): exit with a code
-                # the host maps to a clear error, rather than leaving the cell pending forever.
-                _exit_for(error, secondary)
+            _emit_cell_error(request_id, live, stdout, stderr, error)
         finally:
             if _STATE.active_request_id == request_id:
                 _STATE.active_task = None
@@ -2782,22 +1951,35 @@ async def _run_op(request_id: Any, request_type: str, frame: dict[str, Any]) -> 
         emit("done", id=request_id, status="ok", **fields)
 
 
+def _interrupt_active_cell(request_id: Any) -> None:
+    task = _STATE.active_task
+    matches_request = request_id is None or _STATE.active_request_id == request_id
+    if task is not None and not task.done() and matches_request:
+        task.cancel()
+
+
+def _reject_unknown_request(request_id: Any, request_type: Any) -> None:
+    detail = (
+        _text_preview(request_type)
+        if isinstance(request_type, str)
+        else _result_preview(request_type)
+    )
+    emit("done", id=request_id, status="error", error=_text_preview("unknown request: " + detail))
+
+
 async def handle_request(frame: dict[str, Any]) -> None:
     request_type = frame.get("request")
     request_id = frame.get("id")
     if request_type == "execute":
         asyncio.create_task(execute_cell(request_id, str(frame.get("code", ""))))
     elif request_type == "interrupt":
-        task = _STATE.active_task
-        if task is not None and not task.done() and (request_id is None or _STATE.active_request_id == request_id):
-            task.cancel()
+        _interrupt_active_cell(request_id)
     elif request_type == "host_reply":
         _STATE.bridge.resolve(str(frame.get("id")), frame.get("payload"), frame.get("error"))
     elif isinstance(request_type, str) and request_type in _OPS:
         asyncio.create_task(_run_op(request_id, request_type, frame))
     else:
-        detail = _text_preview(request_type) if isinstance(request_type, str) else _result_preview(request_type)
-        emit("done", id=request_id, status="error", error=_text_preview("unknown request: " + detail))
+        _reject_unknown_request(request_id, request_type)
 
 
 async def main() -> None:

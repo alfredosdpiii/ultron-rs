@@ -122,76 +122,99 @@ pub(crate) fn user_entry(content: &Value, now: u64) -> EntryDraft {
     }
 }
 
+fn item_mode(item: &Value) -> &str {
+    item["mode"].as_str().unwrap_or_default()
+}
+
+fn pick_mode_indexes(items: &[Value], wanted: &str, queue: QueueMode) -> Vec<usize> {
+    let indexes: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item_mode(item) == wanted)
+        .map(|(index, _)| index)
+        .collect();
+    match queue {
+        QueueMode::All => indexes,
+        QueueMode::OneAtATime => indexes.into_iter().take(1).collect(),
+    }
+}
+
+fn select_boundary_items(items: &[Value], modes: QueueModes, at: At) -> (Vec<usize>, Vec<usize>, bool) {
+    let reset = items
+        .iter()
+        .any(|item| item_mode(item) == "write" && item["entry"]["head"] == "self");
+    let last = at == At::Final || reset;
+    let writes = pick_mode_indexes(items, "write", QueueMode::All);
+    let mut users = pick_mode_indexes(items, "steer", modes.steering);
+    if last && !(modes.follow_up_after_steer && !users.is_empty()) {
+        users.extend(pick_mode_indexes(items, "followUp", modes.follow_up));
+    }
+    users.sort_unstable();
+    (writes, users, reset)
+}
+
+fn place_boundary_write(tx: &mut Tx<'_>, boundary: &mut Boundary, item: &Value) -> Result<()> {
+    let draft = entry_draft(&item["entry"])?;
+    if is_stale(boundary, &draft) {
+        tx.settle_submission(
+            item_id(item),
+            SubmissionSettlement::Unanswered {
+                reason: "stale".into(),
+                detail: None,
+            },
+        );
+        return Ok(());
+    }
+    let head = draft.head;
+    let entry = tx.append_entry(boundary.conversation_id, draft)?;
+    if let Some(head) = head {
+        boundary.head = Some(match head {
+            EntryHead::SelfId => entry.id,
+            EntryHead::Entry(target) => target,
+        });
+    }
+    tx.place_submission(item_id(item), entry.id);
+    Ok(())
+}
+
+fn place_boundary_users(
+    tx: &mut Tx<'_>,
+    boundary: &Boundary,
+    items: &[Value],
+    users: &[usize],
+    now: u64,
+) -> Result<Vec<SubmissionId>> {
+    let mut placed = Vec::new();
+    for &index in users {
+        let item = &items[index];
+        let entry = tx.append_entry(boundary.conversation_id, user_entry(&item["content"], now))?;
+        tx.place_submission(item_id(item), entry.id);
+        placed.push(item_id(item));
+    }
+    Ok(placed)
+}
+
+fn remove_boundary_items(inbox: &Draft, writes: Vec<usize>, users: Vec<usize>) -> Result<()> {
+    let mut removed: Vec<usize> = writes.into_iter().chain(users).collect();
+    removed.sort_unstable_by(|a, b| b.cmp(a));
+    for index in removed {
+        d(inbox.splice(&items_path(), index, 1, Vec::new()))?;
+    }
+    Ok(())
+}
+
 /// Place the queued items a boundary selects (spec §6): every write, the first or all steers, and at `final` the
 /// first or all follow-ups. A selected reset turns a `postTools` boundary into `final`. Writes are placed first and
 /// user items after them, each in ID order; a stale write settles `unanswered` with `stale`. Selected and stale items
 /// are removed positionally.
 pub(crate) fn apply_boundary(tx: &mut Tx<'_>, boundary: &mut Boundary, at: At, now: u64) -> Result<BoundaryResult> {
     let items = items(&boundary.inbox)?;
-    let mode = |item: &Value| item["mode"].as_str().unwrap_or_default().to_owned();
-    let reset = items
-        .iter()
-        .any(|item| mode(item) == "write" && item["entry"]["head"] == "self");
-    let last = at == At::Final || reset;
-    let pick = |wanted: &str, queue: QueueMode| -> Vec<usize> {
-        let indexes: Vec<usize> = items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| mode(item) == wanted)
-            .map(|(index, _)| index)
-            .collect();
-        match queue {
-            QueueMode::All => indexes,
-            QueueMode::OneAtATime => indexes.into_iter().take(1).collect(),
-        }
-    };
-    let writes: Vec<usize> = items
-        .iter()
-        .enumerate()
-        .filter(|(_, item)| mode(item) == "write")
-        .map(|(index, _)| index)
-        .collect();
-    let mut users = pick("steer", boundary.modes.steering);
-    if last && !(boundary.modes.follow_up_after_steer && !users.is_empty()) {
-        users.extend(pick("followUp", boundary.modes.follow_up));
-    }
-    users.sort_unstable();
-
+    let (writes, users, reset) = select_boundary_items(&items, boundary.modes, at);
     for &index in &writes {
-        let item = &items[index];
-        let draft = entry_draft(&item["entry"])?;
-        if is_stale(boundary, &draft) {
-            tx.settle_submission(
-                item_id(item),
-                SubmissionSettlement::Unanswered {
-                    reason: "stale".into(),
-                    detail: None,
-                },
-            );
-            continue;
-        }
-        let head = draft.head;
-        let entry = tx.append_entry(boundary.conversation_id, draft)?;
-        if let Some(head) = head {
-            boundary.head = Some(match head {
-                EntryHead::SelfId => entry.id,
-                EntryHead::Entry(target) => target,
-            });
-        }
-        tx.place_submission(item_id(item), entry.id);
+        place_boundary_write(tx, boundary, &items[index])?;
     }
-    let mut placed = Vec::new();
-    for &index in &users {
-        let item = &items[index];
-        let entry = tx.append_entry(boundary.conversation_id, user_entry(&item["content"], now))?;
-        tx.place_submission(item_id(item), entry.id);
-        placed.push(item_id(item));
-    }
-    let mut removed: Vec<usize> = writes.into_iter().chain(users).collect();
-    removed.sort_unstable_by(|a, b| b.cmp(a));
-    for index in removed {
-        d(boundary.inbox.splice(&items_path(), index, 1, Vec::new()))?;
-    }
+    let placed = place_boundary_users(tx, boundary, &items, &users, now)?;
+    remove_boundary_items(&boundary.inbox, writes, users)?;
     Ok(BoundaryResult { users: placed, reset })
 }
 

@@ -20,27 +20,35 @@ pub enum SpawnContext {
 impl SpawnContext {
     /// `context=` and `fork=` of a spawn's options: `fork=True` is `context="fork"`, and the two must agree.
     pub fn of(context: Option<&Value>, fork: Option<&Value>) -> Result<SpawnContext, String> {
-        let fork = match fork {
-            None | Some(Value::Bool(false)) => false,
-            Some(Value::Bool(true)) => true,
-            Some(_) => return Err("fork must be True or False".into()),
-        };
-        let context = match context {
-            None | Some(Value::Null) => None,
-            Some(Value::String(text)) => Some(match text.as_str() {
-                "fresh" => SpawnContext::Fresh,
-                "fork" => SpawnContext::Fork,
-                "retrieve" => SpawnContext::Retrieve,
-                _ => return Err(CONTEXT_VALUES.into()),
-            }),
-            Some(_) => return Err(CONTEXT_VALUES.into()),
-        };
+        let fork = parse_fork_flag(fork)?;
+        let context = parse_context_value(context)?;
         match (context, fork) {
             (None, true) | (Some(SpawnContext::Fork), _) => Ok(SpawnContext::Fork),
             (None, false) => Ok(SpawnContext::Fresh),
             (Some(context), false) => Ok(context),
             (Some(_), true) => Err("rlm.spawn fork=True is context=\"fork\": pass one of them".into()),
         }
+    }
+}
+
+fn parse_fork_flag(fork: Option<&Value>) -> Result<bool, String> {
+    match fork {
+        None | Some(Value::Bool(false)) => Ok(false),
+        Some(Value::Bool(true)) => Ok(true),
+        Some(_) => Err("fork must be True or False".into()),
+    }
+}
+
+fn parse_context_value(context: Option<&Value>) -> Result<Option<SpawnContext>, String> {
+    match context {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) => match text.as_str() {
+            "fresh" => Ok(Some(SpawnContext::Fresh)),
+            "fork" => Ok(Some(SpawnContext::Fork)),
+            "retrieve" => Ok(Some(SpawnContext::Retrieve)),
+            _ => Err(CONTEXT_VALUES.into()),
+        },
+        Some(_) => Err(CONTEXT_VALUES.into()),
     }
 }
 

@@ -34,39 +34,46 @@ pub fn date_json(value: Option<&Value>) -> Value {
     date_value(value).map_or(Value::Null, Value::from)
 }
 
+fn natural_run_len<T>(items: &[T], less: &impl Fn(&T, &T) -> bool) -> (usize, bool) {
+    let mut run = 2;
+    let descending = less(&items[1], &items[0]);
+    while run < items.len() {
+        let order_less = less(&items[run], &items[run - 1]);
+        if descending != order_less {
+            break;
+        }
+        run += 1;
+    }
+    (run, descending)
+}
+
+fn binary_insert<T>(items: &mut [T], start: usize, less: &impl Fn(&T, &T) -> bool) {
+    let (mut left, mut right) = (0, start);
+    while left < right {
+        let mid = left + (right - left) / 2;
+        if less(&items[start], &items[mid]) {
+            right = mid;
+        } else {
+            left = mid + 1;
+        }
+    }
+    items[left..=start].rotate_right(1);
+}
+
 /// `Array.prototype.sort` with a comparator, as V8 runs it on arrays under 64 elements (one natural
 /// run, then binary insertion). A `NaN` comparison counts as equal. Stable; never panics on an
 /// inconsistent comparator.
 // ponytail: V8 merges runs for 64+ elements; for consistent comparators any stable sort agrees.
 pub fn sort_by<T>(items: &mut [T], compare: impl Fn(&T, &T) -> f64) {
     let less = |a: &T, b: &T| compare(a, b) < 0.0;
-    let n = items.len();
-    if n < 2 {
+    if items.len() < 2 {
         return;
     }
-    let mut run = 2;
-    let descending = less(&items[1], &items[0]);
-    while run < n {
-        let order_less = less(&items[run], &items[run - 1]);
-        let equal_or_greater = !order_less;
-        if (descending && equal_or_greater) || (!descending && order_less) {
-            break;
-        }
-        run += 1;
-    }
+    let (run, descending) = natural_run_len(items, &less);
     if descending {
         items[..run].reverse();
     }
-    for start in run..n {
-        let (mut left, mut right) = (0, start);
-        while left < right {
-            let mid = left + (right - left) / 2;
-            if less(&items[start], &items[mid]) {
-                right = mid;
-            } else {
-                left = mid + 1;
-            }
-        }
-        items[left..=start].rotate_right(1);
+    for start in run..items.len() {
+        binary_insert(items, start, &less);
     }
 }

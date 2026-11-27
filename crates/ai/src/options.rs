@@ -199,3 +199,21 @@ pub fn pi_user_agent() -> String {
     let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").map_or_default(|r| r.trim().to_string());
     format!("pi ({platform} {release}; {arch})")
 }
+
+/// Clamped reasoning effort for OpenAI-style `stream_simple` callers (`None` when off or unset).
+pub(crate) fn simple_reasoning_effort(model: &Model, options: &SimpleStreamOptions) -> Option<String> {
+    options
+        .reasoning
+        .as_deref()
+        .map(|r| crate::models::clamp_thinking_level(model, r))
+        .filter(|e| *e != "off")
+        .map(str::to_string)
+}
+
+/// Validates that a non-empty API key is present on `base`.
+pub(crate) fn require_api_key(model: &Model, base: &StreamOptions) -> Result<(), String> {
+    if base.api_key.as_deref().is_none_or(str::is_empty) {
+        return Err(format!("No API key for provider: {}", model.provider));
+    }
+    Ok(())
+}

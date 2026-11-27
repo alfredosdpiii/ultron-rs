@@ -169,6 +169,80 @@ pub struct LoopDetector {
     lanes: HashMap<String, LaneLoop>,
 }
 
+fn record_loop_cell(state: &mut LaneLoop, hash: String, failed: bool, ename: Option<&str>, limits: LoopLimits) {
+    state.history.push((hash.clone(), failed));
+    if state.history.len() > limits.alternation * 2 + 2 {
+        state.history.remove(0);
+    }
+    let ename = ename.unwrap_or("").to_string();
+    if failed {
+        state.consecutive += 1;
+        state.total += 1;
+        state.streak_ename = Some(
+            if state.consecutive == 1 || state.streak_ename.as_deref() == Some(&ename) {
+                ename
+            } else {
+                String::new()
+            },
+        );
+    } else {
+        state.consecutive = 0;
+        state.streak_ename = None;
+    }
+    let n = state.history.len();
+    let repeat = n >= 3 && state.history[n - 3].0 == hash;
+    if !failed && !repeat {
+        state.level = 0;
+    }
+}
+
+fn make_trip(state: &mut LaneLoop, level: u8, reason: &'static str, count: usize) -> LoopTrip {
+    state.level = level;
+    if reason == "total" {
+        state.total_level = level;
+    }
+    let ename = (reason == "consecutive")
+        .then(|| state.streak_ename.clone().filter(|e| !e.is_empty()))
+        .flatten();
+    LoopTrip {
+        level,
+        reason,
+        count,
+        ename,
+    }
+}
+
+fn check_streak_trip(state: &mut LaneLoop, limits: LoopLimits, run: usize, alternating: bool) -> Option<LoopTrip> {
+    let mult = match state.level {
+        0 => 1,
+        1 => 2,
+        _ => return None,
+    };
+    let next_level = state.level + 1;
+    if limits.consecutive > 0 && state.consecutive >= limits.consecutive * mult {
+        let count = state.consecutive;
+        return Some(make_trip(state, next_level, "consecutive", count));
+    }
+    if limits.alternation > 0 && alternating && run >= limits.alternation * mult {
+        return Some(make_trip(state, next_level, "alternation", run));
+    }
+    None
+}
+
+fn check_total_trip(state: &mut LaneLoop, limits: LoopLimits, failed: bool) -> Option<LoopTrip> {
+    if limits.total == 0 || !failed {
+        return None;
+    }
+    let total = state.total;
+    if state.total_level == 0 && state.level == 0 && total >= limits.total {
+        return Some(make_trip(state, 1, "total", total));
+    }
+    if state.total_level == 1 && state.level < 2 && total >= limits.total * 2 {
+        return Some(make_trip(state, 2, "total", total));
+    }
+    None
+}
+
 impl LoopDetector {
     pub fn new(limits: LoopLimits) -> Self {
         Self {
@@ -186,76 +260,13 @@ impl LoopDetector {
         let limits = self.limits;
         let state = self.lanes.entry(lane.to_string()).or_default();
         let hash = jsrt::hash::sha256_hex(normalize_cell(code).as_bytes())[..16].to_string();
-        state.history.push((hash.clone(), failed));
-        if state.history.len() > limits.alternation * 2 + 2 {
-            state.history.remove(0);
-        }
-        let ename = ename.unwrap_or("").to_string();
-        if failed {
-            state.consecutive += 1;
-            state.total += 1;
-            state.streak_ename = Some(
-                if state.consecutive == 1 || state.streak_ename.as_deref() == Some(&ename) {
-                    ename
-                } else {
-                    String::new()
-                },
-            );
-        } else {
-            state.consecutive = 0;
-            state.streak_ename = None;
-        }
+        record_loop_cell(state, hash, failed, ename, limits);
         let n = state.history.len();
-        let repeat = n >= 3 && state.history[n - 3].0 == hash;
-        if !failed && !repeat {
-            state.level = 0;
-        }
         let hashes: Vec<&str> = state.history.iter().map(|(h, _)| h.as_str()).collect();
         let run = alternation_length(&hashes);
         let run_failures = state.history[n - run..].iter().filter(|(_, f)| *f).count();
         let alternating = run >= limits.alternation && run_failures * 2 >= run;
-        let trip = |state: &mut LaneLoop, level: u8, reason: &'static str, count: usize| {
-            state.level = level;
-            if reason == "total" {
-                state.total_level = level;
-            }
-            let ename = (reason == "consecutive")
-                .then(|| state.streak_ename.clone().filter(|e| !e.is_empty()))
-                .flatten();
-            Some(LoopTrip {
-                level,
-                reason,
-                count,
-                ename,
-            })
-        };
-        if state.level == 0 {
-            if limits.consecutive > 0 && state.consecutive >= limits.consecutive {
-                let count = state.consecutive;
-                return trip(state, 1, "consecutive", count);
-            }
-            if limits.alternation > 0 && alternating {
-                return trip(state, 1, "alternation", run);
-            }
-        } else if state.level == 1 {
-            if limits.consecutive > 0 && state.consecutive >= limits.consecutive * 2 {
-                let count = state.consecutive;
-                return trip(state, 2, "consecutive", count);
-            }
-            if limits.alternation > 0 && alternating && run >= limits.alternation * 2 {
-                return trip(state, 2, "alternation", run);
-            }
-        }
-        if limits.total > 0 && failed {
-            let total = state.total;
-            if state.total_level == 0 && state.level == 0 && total >= limits.total {
-                return trip(state, 1, "total", total);
-            }
-            if state.total_level == 1 && state.level < 2 && total >= limits.total * 2 {
-                return trip(state, 2, "total", total);
-            }
-        }
-        None
+        check_streak_trip(state, limits, run, alternating).or_else(|| check_total_trip(state, limits, failed))
     }
 
     pub fn reset(&mut self, lane: &str) {
@@ -454,24 +465,8 @@ impl CellHints {
         };
         let reply = result.and_then(Value::as_object);
         let running = reply.is_some_and(|r| r.get("running") == Some(&Value::Bool(true)));
-        if kind == "bash"
-            && let Some(reply) = reply
-            && !running
-        {
-            cell.bash_failed = bash_failed(
-                payload.get("command").and_then(Value::as_str).unwrap_or(""),
-                reply.get("exit_code").unwrap_or(&Value::Null),
-                reply.get("timed_out") == Some(&Value::Bool(true)),
-            );
-        }
-        if kind == "bash" && running {
-            let id = reply
-                .and_then(|r| r.get("job"))
-                .and_then(|j| j.get("id"))
-                .and_then(Value::as_str)
-                .unwrap_or("a job");
-            let waited = payload.get("yield_after").and_then(Value::as_f64);
-            cell.detached.push((id.to_string(), waited));
+        if kind == "bash" {
+            observe_bash(cell, payload, reply, running);
         }
         if BLOCKING_WAITS.contains(&kind) {
             cell.waits.push((started_at, now));
@@ -480,17 +475,7 @@ impl CellHints {
             }
         }
         if STATUS_CALLS.contains(&kind) {
-            if (kind == "shell.get" || kind == "shell.result") && !running {
-                return;
-            }
-            let key = match payload.get("id").and_then(Value::as_str) {
-                Some(id) => format!("{kind}:{id}"),
-                None => kind.to_string(),
-            };
-            match cell.status_calls.iter_mut().find(|(k, _)| *k == key) {
-                Some(entry) => entry.1 += 1,
-                None => cell.status_calls.push((key, 1)),
-            }
+            observe_status_call(cell, kind, payload, running);
         }
     }
 
@@ -534,141 +519,198 @@ impl CellHints {
         next_call: bool,
     ) -> Vec<(&'static str, String)> {
         let events = self.options.async_events;
+        let repeat = update_cell_streaks(state, cell, outcome);
         let mut found: Vec<(&'static str, String)> = Vec::new();
-        state.failure = match (outcome.ename, state.failure.take()) {
-            (Some(ename), Some((previous, count))) if previous == ename => Some((previous, count + 1)),
-            (Some(ename), _) => Some((ename.to_string(), 1)),
-            (None, _) => None,
-        };
-        let code = cell.code.trim().to_string();
-        state.repeat = if outcome.ename.is_none() && !cell.bash_failed {
-            match state.repeat.take() {
-                Some((previous, count)) if previous == code => Some((code, count + 1)),
-                _ => Some((code, 1)),
-            }
-        } else {
-            None
-        };
-        let repeat = state
-            .repeat
-            .as_ref()
-            .filter(|(_, count)| *count == CELL_REPEATS || *count == CELL_REPEATS * 2)
-            .map(|(_, count)| {
-                (
-                    "repeated-cell",
-                    format!(
-                        "This exact cell has now run {count} times in a row and succeeded each time; rerunning it will not tell you more. Use the output you have, keep values in variables instead of recomputing them, and wait for running work once (`await job.result()`, `await rlm.collect(...)`) instead of checking again."
-                    ),
-                )
-            });
-
-        if let Some((id, waited)) = cell.detached.first() {
-            let after = waited.map_or(String::new(), |w| format!(" after {} s", jsrt::number::to_string(w)));
-            found.push((
-                "job-detached",
-                if events && next_call {
-                    format!(
-                        "The command was still running{after}, so it continues as job {id}. Do other work meanwhile: its completion is reported as a <runtime_event> at the top of a later rlm result, and `await <result>.job.result()` waits for it when your answer needs it (nothing wakes you after you reply). (`yield_after=None` blocks until a command ends; `yield_after=0` detaches at once.)"
-                    )
-                } else if events {
-                    format!(
-                        "The command was still running{after}, so it continues as job {id}. Do not wait for it: do other work or end your turn; its completion arrives as a <runtime_event> that starts your next turn. (`yield_after=None` blocks until a command ends; `yield_after=0` detaches at once.)"
-                    )
-                } else {
-                    format!(
-                        "The command was still running{after}, so it continues as job {id}; `await <result>.job.result()` waits for it. (`yield_after=None` blocks until a command ends.)"
-                    )
-                },
-            ));
-        }
-        let waited_ms = union_ms(&cell.waits);
-        if events && !next_call && waited_ms as f64 >= self.options.blocked_seconds * 1000.0 {
-            let calls: Vec<&str> = cell
-                .wait_types
-                .iter()
-                .map(|t| {
-                    if t == "shell.result" {
-                        "job.result()"
-                    } else {
-                        "background.result()"
-                    }
-                })
-                .collect();
-            found.push((
-                "blocked-on-job",
-                format!(
-                    "This cell spent {} s waiting in {}. You could have ended your turn instead: completions arrive as <runtime_event> messages that start a new turn, so wait only when you need the result now.",
-                    jsrt::number::round(waited_ms as f64 / 1000.0) as i64,
-                    calls.join(", ")
-                ),
-            ));
-        }
-        let repeated = cell
-            .status_calls
-            .iter()
-            .find(|(_, count)| *count >= POLL_REPEATS)
-            .map(|(k, _)| k.clone());
-        let again = cell
-            .status_calls
-            .iter()
-            .map(|(k, _)| k)
-            .find(|k| state.previous_status.contains(*k))
-            .cloned();
-        let sleep_loop =
-            matches(&SLEEP, &cell.code) && matches(&LOOP, &cell.code) && matches(&STATUS_CHECK, &cell.code);
-        if repeated.is_some() || again.is_some() || sleep_loop {
-            let what = repeated.or(again);
-            let lead = match what {
-                Some(what) => format!("Repeated status checks ({})", what.replacen(':', " ", 1)),
-                None => "Sleeping in a loop around a status check".into(),
-            };
-            let advice = if events && next_call {
-                "Completions are reported on their own at the top of your next rlm result: do other work instead of checking or sleeping, and when only that result is left, wait once (`await job.result()`, `await rlm.collect(...)`)."
-            } else if events {
-                "Completions arrive as <runtime_event> messages on their own: do other work or end your turn instead of checking or sleeping."
-            } else {
-                "Wait once with `await job.result()`, `await rlm.collect(...)` or `await agents.result(id)` instead of checking and sleeping."
-            };
-            found.push(("poll-loop", format!("{lead} look like polling. {advice}")));
-        }
-        if let Some((ename, count)) = &state.failure
-            && *count >= FAILURE_STREAK
-        {
-            found.push((
-                "repeated-failure",
-                format!(
-                    "{ename} {count} cells in a row. Read the traceback carefully (the failing line and the message) and change your approach instead of retrying a variant of the same cell."
-                ),
-            ));
-        }
-        let truncated = matches(&TRUNCATION_MARKER, outcome.text);
-        let big_string_chars = BIG_STRING
-            .captures(outcome.text)
-            .ok()
-            .flatten()
-            .and_then(|c| c.get(1).map(|m| m.as_str().replace(',', "")))
-            .and_then(|digits| digits.parse::<u64>().ok())
-            .unwrap_or(0);
-        let handle_bytes = self.options.read_handle_bytes;
-        if matches(&FILE_READ, &cell.code) && (truncated || big_string_chars > handle_bytes) {
-            found.push((
-                "large-read",
-                format!(
-                    "This cell read a large file into a string. `await read(path)` returns a ContextHandle for files over {} KiB: use h.search(regex), h.lines(a, b), h.chunks(n) or rlm.map(task, h.chunks(n)) and print only what you need.",
-                    jsrt::number::round(handle_bytes as f64 / 1024.0) as i64
-                ),
-            ));
-        }
-        if truncated {
-            found.push((
-                "output-truncated",
-                "The output was cut in the middle. Keep large data in variables and print slices, counts or matches, or load big text as a handle (`h = await rlm.load(text_or_path)`; `h.search`, `h.lines`).".into(),
-            ));
-        }
-        if let Some(repeat) = repeat {
-            found.push(repeat);
-        }
+        found.extend(detached_hint(cell, events, next_call));
+        found.extend(blocked_hint(cell, events, next_call, self.options.blocked_seconds));
+        found.extend(poll_loop_hint(state, cell, events, next_call));
+        found.extend(repeated_failure_hint(state));
+        push_output_hints(cell, outcome, self.options.read_handle_bytes, &mut found);
+        found.extend(repeat);
         found
+    }
+}
+
+fn observe_bash(cell: &mut Cell, payload: &Map<String, Value>, reply: Option<&Map<String, Value>>, running: bool) {
+    if running {
+        let id = reply
+            .and_then(|r| r.get("job"))
+            .and_then(|j| j.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or("a job");
+        let waited = payload.get("yield_after").and_then(Value::as_f64);
+        cell.detached.push((id.to_string(), waited));
+    } else if let Some(reply) = reply {
+        cell.bash_failed = bash_failed(
+            payload.get("command").and_then(Value::as_str).unwrap_or(""),
+            reply.get("exit_code").unwrap_or(&Value::Null),
+            reply.get("timed_out") == Some(&Value::Bool(true)),
+        );
+    }
+}
+
+fn observe_status_call(cell: &mut Cell, kind: &str, payload: &Map<String, Value>, running: bool) {
+    if (kind == "shell.get" || kind == "shell.result") && !running {
+        return;
+    }
+    let key = match payload.get("id").and_then(Value::as_str) {
+        Some(id) => format!("{kind}:{id}"),
+        None => kind.to_string(),
+    };
+    match cell.status_calls.iter_mut().find(|(k, _)| *k == key) {
+        Some(entry) => entry.1 += 1,
+        None => cell.status_calls.push((key, 1)),
+    }
+}
+
+fn update_cell_streaks(
+    state: &mut LaneState,
+    cell: &Cell,
+    outcome: &CellOutcome<'_>,
+) -> Option<(&'static str, String)> {
+    state.failure = match (outcome.ename, state.failure.take()) {
+        (Some(ename), Some((previous, count))) if previous == ename => Some((previous, count + 1)),
+        (Some(ename), _) => Some((ename.to_string(), 1)),
+        (None, _) => None,
+    };
+    let code = cell.code.trim().to_string();
+    state.repeat = if outcome.ename.is_none() && !cell.bash_failed {
+        match state.repeat.take() {
+            Some((previous, count)) if previous == code => Some((code, count + 1)),
+            _ => Some((code, 1)),
+        }
+    } else {
+        None
+    };
+    state
+        .repeat
+        .as_ref()
+        .filter(|(_, count)| *count == CELL_REPEATS || *count == CELL_REPEATS * 2)
+        .map(|(_, count)| {
+            (
+                "repeated-cell",
+                format!(
+                    "This exact cell has now run {count} times in a row and succeeded each time; rerunning it will not tell you more. Use the output you have, keep values in variables instead of recomputing them, and wait for running work once (`await job.result()`, `await rlm.collect(...)`) instead of checking again."
+                ),
+            )
+        })
+}
+
+fn detached_hint(cell: &Cell, events: bool, next_call: bool) -> Option<(&'static str, String)> {
+    let (id, waited) = cell.detached.first()?;
+    let after = waited.map_or(String::new(), |w| format!(" after {} s", jsrt::number::to_string(w)));
+    let text = if events && next_call {
+        format!(
+            "The command was still running{after}, so it continues as job {id}. Do other work meanwhile: its completion is reported as a <runtime_event> at the top of a later rlm result, and `await <result>.job.result()` waits for it when your answer needs it (nothing wakes you after you reply). (`yield_after=None` blocks until a command ends; `yield_after=0` detaches at once.)"
+        )
+    } else if events {
+        format!(
+            "The command was still running{after}, so it continues as job {id}. Do not wait for it: do other work or end your turn; its completion arrives as a <runtime_event> that starts your next turn. (`yield_after=None` blocks until a command ends; `yield_after=0` detaches at once.)"
+        )
+    } else {
+        format!(
+            "The command was still running{after}, so it continues as job {id}; `await <result>.job.result()` waits for it. (`yield_after=None` blocks until a command ends.)"
+        )
+    };
+    Some(("job-detached", text))
+}
+
+fn blocked_hint(cell: &Cell, events: bool, next_call: bool, blocked_seconds: f64) -> Option<(&'static str, String)> {
+    let waited_ms = union_ms(&cell.waits);
+    if !events || next_call || (waited_ms as f64) < blocked_seconds * 1000.0 {
+        return None;
+    }
+    let calls: Vec<&str> = cell
+        .wait_types
+        .iter()
+        .map(|t| {
+            if t == "shell.result" {
+                "job.result()"
+            } else {
+                "background.result()"
+            }
+        })
+        .collect();
+    Some((
+        "blocked-on-job",
+        format!(
+            "This cell spent {} s waiting in {}. You could have ended your turn instead: completions arrive as <runtime_event> messages that start a new turn, so wait only when you need the result now.",
+            jsrt::number::round(waited_ms as f64 / 1000.0) as i64,
+            calls.join(", ")
+        ),
+    ))
+}
+
+fn poll_loop_hint(state: &LaneState, cell: &Cell, events: bool, next_call: bool) -> Option<(&'static str, String)> {
+    let repeated = cell
+        .status_calls
+        .iter()
+        .find(|(_, count)| *count >= POLL_REPEATS)
+        .map(|(k, _)| k.clone());
+    let again = cell
+        .status_calls
+        .iter()
+        .map(|(k, _)| k)
+        .find(|k| state.previous_status.contains(*k))
+        .cloned();
+    let sleep_loop = matches(&SLEEP, &cell.code) && matches(&LOOP, &cell.code) && matches(&STATUS_CHECK, &cell.code);
+    if repeated.is_none() && again.is_none() && !sleep_loop {
+        return None;
+    }
+    let lead = match repeated.or(again) {
+        Some(what) => format!("Repeated status checks ({})", what.replacen(':', " ", 1)),
+        None => "Sleeping in a loop around a status check".into(),
+    };
+    let advice = if events && next_call {
+        "Completions are reported on their own at the top of your next rlm result: do other work instead of checking or sleeping, and when only that result is left, wait once (`await job.result()`, `await rlm.collect(...)`)."
+    } else if events {
+        "Completions arrive as <runtime_event> messages on their own: do other work or end your turn instead of checking or sleeping."
+    } else {
+        "Wait once with `await job.result()`, `await rlm.collect(...)` or `await agents.result(id)` instead of checking and sleeping."
+    };
+    Some(("poll-loop", format!("{lead} look like polling. {advice}")))
+}
+
+fn repeated_failure_hint(state: &LaneState) -> Option<(&'static str, String)> {
+    let (ename, count) = state.failure.as_ref()?;
+    (*count >= FAILURE_STREAK).then(|| {
+        (
+            "repeated-failure",
+            format!(
+                "{ename} {count} cells in a row. Read the traceback carefully (the failing line and the message) and change your approach instead of retrying a variant of the same cell."
+            ),
+        )
+    })
+}
+
+fn push_output_hints(
+    cell: &Cell,
+    outcome: &CellOutcome<'_>,
+    handle_bytes: u64,
+    found: &mut Vec<(&'static str, String)>,
+) {
+    let truncated = matches(&TRUNCATION_MARKER, outcome.text);
+    let big_string_chars = BIG_STRING
+        .captures(outcome.text)
+        .ok()
+        .flatten()
+        .and_then(|c| c.get(1).map(|m| m.as_str().replace(',', "")))
+        .and_then(|digits| digits.parse::<u64>().ok())
+        .unwrap_or(0);
+    if matches(&FILE_READ, &cell.code) && (truncated || big_string_chars > handle_bytes) {
+        found.push((
+            "large-read",
+            format!(
+                "This cell read a large file into a string. `await read(path)` returns a ContextHandle for files over {} KiB: use h.search(regex), h.lines(a, b), h.chunks(n) or rlm.map(task, h.chunks(n)) and print only what you need.",
+                jsrt::number::round(handle_bytes as f64 / 1024.0) as i64
+            ),
+        ));
+    }
+    if truncated {
+        found.push((
+            "output-truncated",
+            "The output was cut in the middle. Keep large data in variables and print slices, counts or matches, or load big text as a handle (`h = await rlm.load(text_or_path)`; `h.search`, `h.lines`).".into(),
+        ));
     }
 }
 

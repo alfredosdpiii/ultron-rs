@@ -110,6 +110,55 @@ pub(super) struct CellsSection {
     pub(super) nudges: [f64; 3],
 }
 
+fn cell_lane_index(lane: Option<&str>) -> usize {
+    match lane_kind(lane) {
+        Lane::Root => 0,
+        Lane::Subagents => 1,
+        Lane::Frames | Lane::Other => 2,
+    }
+}
+
+fn record_assistant_calls(entry: &LogEntry, cells: &mut Cells, other_tools: &mut IndexMap<String, (f64, f64)>) {
+    for call in &entry.tool_calls {
+        if call.name != "rlm" {
+            other_tools.entry(call.name.clone()).or_default().0 += 1.0;
+            continue;
+        }
+        cells.count += 1.0;
+        record_call_apis(cells, call.apis.as_deref().unwrap_or_default());
+    }
+}
+
+fn record_tool_error(entry: &LogEntry, cells: &mut Cells, other_tools: &mut IndexMap<String, (f64, f64)>) {
+    if !entry.is_error {
+        return;
+    }
+    match entry.tool_name.as_deref() {
+        Some("rlm") => cells.failed += 1.0,
+        Some(name) => other_tools.entry(name.to_string()).or_default().1 += 1.0,
+        None => {}
+    }
+}
+
+fn format_cells_section(source: &str, by: &[Cells; 3], other_tools: &Value) -> Value {
+    let mut total = Cells::default();
+    for part in by {
+        total.count += part.count;
+        total.failed += part.failed;
+        for (api, n) in &part.apis {
+            *total.apis.entry(api.clone()).or_default() += n;
+        }
+    }
+    json!({
+        "source": source,
+        "total": cells_value(&total),
+        "root": cells_value(&by[0]),
+        "subagents": cells_value(&by[1]),
+        "other": cells_value(&by[2]),
+        "otherTools": other_tools,
+    })
+}
+
 pub(super) fn build_cells(
     log: &SessionLog,
     lanes: &[Option<String>],
@@ -122,39 +171,20 @@ pub(super) fn build_cells(
     let mut redactions = 0.0;
     let mut nudges = [0.0; 3];
     for (entry, lane) in log.entries.iter().zip(lanes) {
-        let kind = match lane_kind(lane.as_deref()) {
-            Lane::Root => 0,
-            Lane::Subagents => 1,
-            Lane::Frames | Lane::Other => 2,
-        };
+        let kind = cell_lane_index(lane.as_deref());
         match entry.kind {
-            EntryKind::Assistant => {
-                for call in &entry.tool_calls {
-                    if call.name != "rlm" {
-                        other_tools.entry(call.name.clone()).or_default().0 += 1.0;
-                        continue;
-                    }
-                    transcript[kind].count += 1.0;
-                    record_call_apis(&mut transcript[kind], call.apis.as_deref().unwrap_or_default());
-                }
-            }
+            EntryKind::Assistant => record_assistant_calls(entry, &mut transcript[kind], &mut other_tools),
             EntryKind::ToolResult => {
                 redactions += entry.redactions;
-                if !entry.is_error {
-                    continue;
-                }
-                match entry.tool_name.as_deref() {
-                    Some("rlm") => transcript[kind].failed += 1.0,
-                    Some(name) => other_tools.entry(name.to_string()).or_default().1 += 1.0,
-                    None => {}
-                }
+                record_tool_error(entry, &mut transcript[kind], &mut other_tools);
             }
             EntryKind::User => {
                 if let Some(nudge) = entry.nudge {
-                    nudges[["toolRounds", "wait", "skill"]
+                    let slot = ["toolRounds", "wait", "skill"]
                         .iter()
                         .position(|n| *n == nudge)
-                        .unwrap_or(0)] += 1.0;
+                        .unwrap_or(0);
+                    nudges[slot] += 1.0;
                 }
             }
             _ => {}
@@ -171,28 +201,10 @@ pub(super) fn build_cells(
             })
             .collect(),
     );
-    let cells_from = |source: &str, by: &[Cells; 3]| -> Value {
-        let mut total = Cells::default();
-        for part in by {
-            total.count += part.count;
-            total.failed += part.failed;
-            for (api, n) in &part.apis {
-                *total.apis.entry(api.clone()).or_default() += n;
-            }
-        }
-        json!({
-            "source": source,
-            "total": cells_value(&total),
-            "root": cells_value(&by[0]),
-            "subagents": cells_value(&by[1]),
-            "other": cells_value(&by[2]),
-            "otherTools": other_tools_value,
-        })
-    };
     let cells = if !external {
-        cells_from("transcript", &transcript)
+        format_cells_section("transcript", &transcript, &other_tools_value)
     } else if let Some(s) = stats {
-        cells_from("counters", &s.cells)
+        format_cells_section("counters", &s.cells, &other_tools_value)
     } else {
         unrecorded.insert(
             "cells".into(),

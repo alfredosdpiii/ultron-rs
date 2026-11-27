@@ -182,6 +182,14 @@ fn removed_ranges(diff: &str) -> Vec<(String, i64, i64)> {
     out
 }
 
+fn record_blame_meta(line: &str, sha: &str, names: &mut BTreeMap<String, String>, boundary: &mut HashSet<String>) {
+    if let Some(name) = line.strip_prefix("filename ") {
+        names.insert(sha.to_string(), name.to_string());
+    } else if line == "boundary" {
+        boundary.insert(sha.to_string());
+    }
+}
+
 /// `git blame --porcelain` of lines `start..=end` of `path` at `rev`: (commit, path in it, its line) of each line
 /// worth blaming (not blank or nearly so); never a boundary commit.
 fn blame(runner: &dyn Runner, repo: &str, rev: &str, path: &str, start: i64, end: i64) -> Vec<(String, BugLine)> {
@@ -200,21 +208,23 @@ fn blame(runner: &dyn Runner, repo: &str, rev: &str, path: &str, start: i64, end
     let mut found = Vec::new();
     for line in out.lines() {
         if let Some(content) = line.strip_prefix('\t') {
-            if let Some((sha, line)) = current.take()
+            if let Some((sha, line_no)) = current.take()
                 && !boundary.contains(&sha)
                 && content.trim().chars().count() >= 3
             {
-                let path = names.get(&sha).cloned().unwrap_or_else(|| path.to_string());
-                found.push((sha, BugLine { path, line }));
+                let file_path = names.get(&sha).cloned().unwrap_or_else(|| path.to_string());
+                found.push((
+                    sha,
+                    BugLine {
+                        path: file_path,
+                        line: line_no,
+                    },
+                ));
             }
         } else if let Some(head) = header.captures(line) {
             current = Some((head[1].to_string(), head[2].parse().unwrap_or(0)));
         } else if let Some((sha, _)) = &current {
-            if let Some(name) = line.strip_prefix("filename ") {
-                names.insert(sha.clone(), name.to_string());
-            } else if line == "boundary" {
-                boundary.insert(sha.clone());
-            }
+            record_blame_meta(line, sha, &mut names, &mut boundary);
         }
     }
     found
@@ -248,15 +258,13 @@ fn fix_subject(subject: &str) -> bool {
         .is_match(subject)
 }
 
-/// The cases of the repository at `repo` (newest first: reverted and fix-inducing up to `limit`, then up to
-/// `controls` controls).
-pub fn build_cases(runner: &dyn Runner, repo: &str, options: &EvalOptions) -> Result<Vec<Case>, String> {
-    let commits = history(runner, repo, options.scan)?;
-    let by_sha: BTreeMap<&str, &Commit> = commits.iter().map(|commit| (commit.sha.as_str(), commit)).collect();
+type FoundCases = BTreeMap<String, (CaseKind, Vec<String>, Vec<BugLine>)>;
+
+fn collect_reverts(commits: &[Commit]) -> (FoundCases, HashSet<String>) {
     let reverts = Regex::new(r"This reverts commit ([0-9a-f]{40})").expect("static pattern");
-    let mut found: BTreeMap<String, (CaseKind, Vec<String>, Vec<BugLine>)> = BTreeMap::new();
+    let mut found: FoundCases = BTreeMap::new();
     let mut excluded: HashSet<String> = HashSet::new();
-    for commit in &commits {
+    for commit in commits {
         let message = format!("{}\n{}", commit.subject, commit.body);
         if let Some(reverted) = reverts.captures(&message) {
             excluded.insert(commit.sha.clone());
@@ -267,55 +275,51 @@ pub fn build_cases(runner: &dyn Runner, repo: &str, options: &EvalOptions) -> Re
             entry.1.push(commit.sha.clone());
         }
     }
-    let fixes: Vec<&Commit> = commits
-        .iter()
-        .filter(|commit| commit.parents.len() == 1 && !excluded.contains(&commit.sha) && fix_subject(&commit.subject))
-        .collect();
-    let fixing: HashSet<&str> = fixes.iter().map(|fix| fix.sha.as_str()).collect();
-    let covered = if fixes.len() > options.max_fixes {
-        match options.max_fixes.checked_sub(1).map(|last| &fixes[last]) {
-            Some(last) => commits
-                .iter()
-                .position(|commit| commit.sha == last.sha)
-                .map_or(commits.len(), |at| at + 1),
-            None => 0,
-        }
-    } else {
-        commits.len()
+    (found, excluded)
+}
+
+fn blame_fix_commit(runner: &dyn Runner, repo: &str, fix: &Commit, found: &mut FoundCases) {
+    let parent = &fix.parents[0];
+    let Ok(diff) = git(
+        runner,
+        repo,
+        &[
+            "diff",
+            "-U0",
+            "--no-color",
+            "--no-renames",
+            "--no-ext-diff",
+            parent,
+            &fix.sha,
+        ],
+    ) else {
+        return;
     };
-    for fix in fixes.iter().take(options.max_fixes) {
-        let parent = &fix.parents[0];
-        let Ok(diff) = git(
-            runner,
-            repo,
-            &[
-                "diff",
-                "-U0",
-                "--no-color",
-                "--no-renames",
-                "--no-ext-diff",
-                parent,
-                &fix.sha,
-            ],
-        ) else {
-            continue;
-        };
-        for (path, start, end) in removed_ranges(&diff).into_iter().filter(|(path, _, _)| blamable(path)) {
-            for (sha, line) in blame(runner, repo, parent, &path, start, end) {
-                let entry = found
-                    .entry(sha)
-                    .or_insert_with(|| (CaseKind::FixInducing, Vec::new(), Vec::new()));
-                if !entry.1.contains(&fix.sha) {
-                    entry.1.push(fix.sha.clone());
-                }
-                if !entry.2.contains(&line) {
-                    entry.2.push(line);
-                }
+    for (path, start, end) in removed_ranges(&diff).into_iter().filter(|(path, _, _)| blamable(path)) {
+        for (sha, line) in blame(runner, repo, parent, &path, start, end) {
+            let entry = found
+                .entry(sha)
+                .or_insert_with(|| (CaseKind::FixInducing, Vec::new(), Vec::new()));
+            if !entry.1.contains(&fix.sha) {
+                entry.1.push(fix.sha.clone());
+            }
+            if !entry.2.contains(&line) {
+                entry.2.push(line);
             }
         }
     }
+}
+
+fn select_bug_cases(
+    runner: &dyn Runner,
+    repo: &str,
+    commits: &[Commit],
+    found: &FoundCases,
+    excluded: &HashSet<String>,
+    options: &EvalOptions,
+) -> Vec<Case> {
     let mut cases = Vec::new();
-    for commit in &commits {
+    for commit in commits {
         if cases.len() == options.limit {
             break;
         }
@@ -340,6 +344,63 @@ pub fn build_cases(runner: &dyn Runner, repo: &str, options: &EvalOptions) -> Re
             lines,
         });
     }
+    cases
+}
+
+fn select_control_cases(runner: &dyn Runner, repo: &str, candidates: &[&Commit], options: &EvalOptions) -> Vec<Case> {
+    if options.controls == 0 || candidates.is_empty() {
+        return Vec::new();
+    }
+    let step = (candidates.len() / options.controls).max(1);
+    let mut out = Vec::new();
+    for commit in candidates.iter().step_by(step) {
+        if out.len() == options.controls {
+            break;
+        }
+        if !reviewable(runner, repo, &commit.sha, options.max_lines) {
+            continue;
+        }
+        out.push(Case {
+            kind: CaseKind::Control,
+            sha: commit.sha.clone(),
+            parent: commit.parents[0].clone(),
+            subject: commit.subject.clone(),
+            by: Vec::new(),
+            lines: Vec::new(),
+        });
+    }
+    out
+}
+
+fn covered_commit_count(commits: &[Commit], fixes: &[&Commit], max_fixes: usize) -> usize {
+    if fixes.len() <= max_fixes {
+        return commits.len();
+    }
+    match max_fixes.checked_sub(1).map(|last| &fixes[last]) {
+        Some(last) => commits
+            .iter()
+            .position(|commit| commit.sha == last.sha)
+            .map_or(commits.len(), |at| at + 1),
+        None => 0,
+    }
+}
+
+/// The cases of the repository at `repo` (newest first: reverted and fix-inducing up to `limit`, then up to
+/// `controls` controls).
+pub fn build_cases(runner: &dyn Runner, repo: &str, options: &EvalOptions) -> Result<Vec<Case>, String> {
+    let commits = history(runner, repo, options.scan)?;
+    let by_sha: BTreeMap<&str, &Commit> = commits.iter().map(|commit| (commit.sha.as_str(), commit)).collect();
+    let (mut found, excluded) = collect_reverts(&commits);
+    let fixes: Vec<&Commit> = commits
+        .iter()
+        .filter(|commit| commit.parents.len() == 1 && !excluded.contains(&commit.sha) && fix_subject(&commit.subject))
+        .collect();
+    let fixing: HashSet<&str> = fixes.iter().map(|fix| fix.sha.as_str()).collect();
+    let covered = covered_commit_count(&commits, &fixes, options.max_fixes);
+    for fix in fixes.iter().take(options.max_fixes) {
+        blame_fix_commit(runner, repo, fix, &mut found);
+    }
+    let mut cases = select_bug_cases(runner, repo, &commits, &found, &excluded, options);
     let rest: Vec<&Commit> = commits[..covered]
         .iter()
         .filter(|commit| {
@@ -350,27 +411,7 @@ pub fn build_cases(runner: &dyn Runner, repo: &str, options: &EvalOptions) -> Re
                 && by_sha.contains_key(commit.parents[0].as_str())
         })
         .collect();
-    if options.controls > 0 && !rest.is_empty() {
-        let step = (rest.len() / options.controls).max(1);
-        let mut taken = 0;
-        for commit in rest.iter().step_by(step) {
-            if taken == options.controls {
-                break;
-            }
-            if !reviewable(runner, repo, &commit.sha, options.max_lines) {
-                continue;
-            }
-            taken += 1;
-            cases.push(Case {
-                kind: CaseKind::Control,
-                sha: commit.sha.clone(),
-                parent: commit.parents[0].clone(),
-                subject: commit.subject.clone(),
-                by: Vec::new(),
-                lines: Vec::new(),
-            });
-        }
-    }
+    cases.extend(select_control_cases(runner, repo, &rest, options));
     Ok(cases)
 }
 

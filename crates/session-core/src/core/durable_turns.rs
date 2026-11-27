@@ -55,8 +55,7 @@ pub(super) fn open_durable(
     child_context: Arc<super::context_children::ChildContext>,
     image_budget: usize,
 ) -> Result<Durable, String> {
-    let to_actor = tx.clone();
-    let to_actor = Mutex::new(to_actor);
+    let to_actor = Mutex::new(tx.clone());
     let bridge = Bridge::new(Arc::new(move |request| {
         let _ = sync::lock(&to_actor).send(Input::Turn(request));
     }));
@@ -65,57 +64,11 @@ pub(super) fn open_durable(
     let storage = crate::durable_store::open(session.clone(), Some(crate::turns::observer(bridge.clone(), committed)))
         .map_err(|e| e.message().to_string())?;
     let auto_retry = Arc::new(AtomicBool::new(true));
-    let retry = auto_retry.clone();
-    let retry_settings = config::settings::SettingsManager::for_worker(&env.cwd, &env.agent_dir(), &env.home)
-        .settings()
-        .get("retry")
-        .cloned()
-        .unwrap_or(Value::Null);
-    let settings_queues = queues;
-    let live: LiveSettings = Arc::new(move |settings: &mut Settings| {
-        let (steering, follow_up) = {
-            let queues = sync::lock(&settings_queues);
-            (queues.steering_all, queues.follow_up_all)
-        };
-        let mode = |all: bool| if all { QueueMode::All } else { QueueMode::OneAtATime };
-        settings.retry = ai::retry::RetryPolicy::from_settings(&retry_settings, retry.load(Ordering::SeqCst));
-        settings.steering_mode = mode(steering);
-        settings.follow_up_mode = mode(follow_up);
-    });
+    let live = build_live_settings(env, queues, auto_retry.clone());
     let root_session = Arc::new(std::sync::OnceLock::new());
     let child_costs: ChildCosts = Arc::default();
-    let (ended_costs, ended_stack) = (child_costs.clone(), Arc::downgrade(&lane.stack));
-    lane.stack.delegation.on_task_end(Arc::new(move |task: &Value| {
-        let cost = task["id"].as_str().and_then(|id| sync::lock(&ended_costs).remove(id));
-        if let Some(stack) = ended_stack.upgrade()
-            && let Some(context) = stack.context.get()
-        {
-            context.task_ended(task, cost);
-        }
-    }));
-    let context = child_context.clone();
-    let clock = lane::clock_enabled(env).then(|| lane::clock_zone(env));
-    let started = lock_session(session).metadata().created_at;
-    let footers = (lane.stack.config().result_footer && started > 0).then_some(started);
-    let subagents = children.clone();
-    let transform: crate::turns::TransformChild = Arc::new(move |conversation, messages: &mut Vec<ai::Message>| {
-        context.transform_request(conversation, messages);
-        let subagent = subagents.lane_of(conversation).is_some_and(|lane| {
-            matches!(
-                lanes::lane_names::parse_lane(&lane),
-                Some(lanes::lane_names::LaneOwner::Child(_))
-            )
-        });
-        if !subagent {
-            return;
-        }
-        if let Some(zone) = &clock {
-            add_clock_lines(messages, zone);
-        }
-        if let Some(started) = footers {
-            lane::add_result_footers(messages, started);
-        }
-    });
+    wire_delegation_hooks(lane, &children, &child_costs);
+    let transform = build_child_transform(session, lane, env, children.clone(), child_context.clone());
     let mut options = child_chat_options(
         session,
         lane,
@@ -133,15 +86,8 @@ pub(super) fn open_durable(
             fallback_system: crate::compose::Stack::system,
         },
     );
-    let (limit_children, limit_stack) = (children.clone(), Arc::downgrade(&lane.stack));
-    lane.stack.delegation.set_limit_reason(Arc::new(move |task: &str| {
-        let stack = limit_stack.upgrade()?;
-        let root = limit_children.usage_root_of_lane(&lanes::lane_names::child_lane(task), &stack.agents);
-        stack.usage.turn_budget_exhausted(root.as_deref()).ok().flatten()
-    }));
-    let trims = child_context;
     options.hooks.before_compaction = Some(Arc::new(move |conversation, tokens, threshold| {
-        trims.before_compaction(conversation, tokens, threshold)
+        child_context.before_compaction(conversation, tokens, threshold)
     }));
     let chat = ChatHarness::open(storage, options).map_err(harness_error)?;
     let root = chat.root(None).map_err(harness_error)?;
@@ -161,6 +107,72 @@ pub(super) fn open_durable(
         auto_retry,
         stop: Cancel::new(),
         children,
+    })
+}
+
+fn build_live_settings(env: &RunEnv, queues: Arc<Mutex<Queues>>, retry: Arc<AtomicBool>) -> LiveSettings {
+    let retry_settings = config::settings::SettingsManager::for_worker(&env.cwd, &env.agent_dir(), &env.home)
+        .settings()
+        .get("retry")
+        .cloned()
+        .unwrap_or(Value::Null);
+    Arc::new(move |settings: &mut Settings| {
+        let (steering, follow_up) = {
+            let queues = sync::lock(&queues);
+            (queues.steering_all, queues.follow_up_all)
+        };
+        let mode = |all: bool| if all { QueueMode::All } else { QueueMode::OneAtATime };
+        settings.retry = ai::retry::RetryPolicy::from_settings(&retry_settings, retry.load(Ordering::SeqCst));
+        settings.steering_mode = mode(steering);
+        settings.follow_up_mode = mode(follow_up);
+    })
+}
+
+fn wire_delegation_hooks(lane: &Lane, children: &Arc<crate::subagents::DurableChildren>, child_costs: &ChildCosts) {
+    let (ended_costs, ended_stack) = (child_costs.clone(), Arc::downgrade(&lane.stack));
+    lane.stack.delegation.on_task_end(Arc::new(move |task: &Value| {
+        let cost = task["id"].as_str().and_then(|id| sync::lock(&ended_costs).remove(id));
+        if let Some(stack) = ended_stack.upgrade()
+            && let Some(context) = stack.context.get()
+        {
+            context.task_ended(task, cost);
+        }
+    }));
+    let (limit_children, limit_stack) = (children.clone(), Arc::downgrade(&lane.stack));
+    lane.stack.delegation.set_limit_reason(Arc::new(move |task: &str| {
+        let stack = limit_stack.upgrade()?;
+        let root = limit_children.usage_root_of_lane(&lanes::lane_names::child_lane(task), &stack.agents);
+        stack.usage.turn_budget_exhausted(root.as_deref()).ok().flatten()
+    }));
+}
+
+fn build_child_transform(
+    session: &SharedSession,
+    lane: &Lane,
+    env: &RunEnv,
+    subagents: Arc<crate::subagents::DurableChildren>,
+    context: Arc<super::context_children::ChildContext>,
+) -> crate::turns::TransformChild {
+    let clock = lane::clock_enabled(env).then(|| lane::clock_zone(env));
+    let started = lock_session(session).metadata().created_at;
+    let footers = (lane.stack.config().result_footer && started > 0).then_some(started);
+    Arc::new(move |conversation, messages: &mut Vec<ai::Message>| {
+        context.transform_request(conversation, messages);
+        let subagent = subagents.lane_of(conversation).is_some_and(|lane| {
+            matches!(
+                lanes::lane_names::parse_lane(&lane),
+                Some(lanes::lane_names::LaneOwner::Child(_))
+            )
+        });
+        if !subagent {
+            return;
+        }
+        if let Some(zone) = &clock {
+            add_clock_lines(messages, zone);
+        }
+        if let Some(started) = footers {
+            lane::add_result_footers(messages, started);
+        }
     })
 }
 
@@ -724,55 +736,60 @@ impl Core {
     /// A generation is about to request the model: the turn's `turn_start`, the user messages it takes (queued ones
     /// commit with its `assistant.ready`), and the request it sends.
     pub(super) fn generation(&mut self, users: Vec<Message>, answer: Answer<Result<GenerationStart, StartError>>) {
-        let Some(run) = self.run.as_ref() else {
+        if self.run.is_none() {
             return answer.give(Err(StartError::Request("No run is in progress".into())));
-        };
-        if run.prompt_pending {
-            let (captured, run_id) = (run.captured.clone(), run.id.clone());
-            for message in captured {
-                self.emit(WatchEvent::MessageStart {
-                    run_id: Some(run_id.clone()),
-                    lane: MAIN_LANE.into(),
-                    message: message.clone(),
-                });
-                self.emit(WatchEvent::MessageEnd {
-                    run_id: Some(run_id.clone()),
-                    lane: MAIN_LANE.into(),
-                    message,
-                });
-            }
-            let prompt = self.run.as_ref().map_or(Value::Null, |r| r.prompt.clone());
-            if let Ok(message) = serde_json::from_value::<Message>(prompt) {
-                self.on_agent_event(AgentEvent::MessageStart {
-                    message: message.clone(),
-                });
-                self.on_agent_event(AgentEvent::MessageEnd { message });
-            }
         }
-        if let Err(error) = self.checkpoint_compaction() {
-            return answer.give(Err(StartError::Checkpoint(error)));
-        }
-        if let Err(error) = self.prompt_budget() {
+        self.announce_pending_prompt();
+        if let Err(error) = self.checkpoint_compaction().and_then(|_| self.prompt_budget()) {
             return answer.give(Err(StartError::Checkpoint(error)));
         }
         let Some(run) = self.run.as_ref() else {
             return answer.give(Err(StartError::Request("No run is in progress".into())));
         };
         let source_tip = run.journal.run().and_then(|r| r.source_tip().map(str::to_string));
-        let mut committed: Vec<String> = match self.context_messages(source_tip.as_deref()) {
-            Ok(messages) => {
-                let start = messages
-                    .iter()
-                    .rposition(|m| m["role"] == "assistant" || m["role"] == "toolResult")
-                    .map_or(0, |i| i + 1);
-                messages[start..]
-                    .iter()
-                    .filter(|m| m["role"] == "user")
-                    .map(message_text)
-                    .collect()
-            }
-            Err(_) => Vec::new(),
+        self.emit_fresh_users(users, source_tip.as_deref());
+        let settings = self.compaction_settings();
+        self.lane.stack.context_reminders.set_limit(
+            MAIN_LANE,
+            crate::context_reminder::lane_limit(&self.model, settings.enabled, settings.reserve_tokens),
+        );
+        let start = self
+            .request_messages(source_tip.as_deref())
+            .map(|messages| GenerationStart { messages })
+            .map_err(StartError::Request);
+        if let Ok(start) = &start {
+            self.observer_generation(&start.messages);
+        }
+        answer.give(start);
+    }
+
+    fn announce_pending_prompt(&mut self) {
+        let Some(run) = self.run.as_ref().filter(|run| run.prompt_pending) else {
+            return;
         };
+        let (captured, run_id, prompt) = (run.captured.clone(), run.id.clone(), run.prompt.clone());
+        for message in captured {
+            self.emit(WatchEvent::MessageStart {
+                run_id: Some(run_id.clone()),
+                lane: MAIN_LANE.into(),
+                message: message.clone(),
+            });
+            self.emit(WatchEvent::MessageEnd {
+                run_id: Some(run_id.clone()),
+                lane: MAIN_LANE.into(),
+                message,
+            });
+        }
+        if let Ok(message) = serde_json::from_value::<Message>(prompt) {
+            self.on_agent_event(AgentEvent::MessageStart {
+                message: message.clone(),
+            });
+            self.on_agent_event(AgentEvent::MessageEnd { message });
+        }
+    }
+
+    fn emit_fresh_users(&mut self, users: Vec<Message>, source_tip: Option<&str>) {
+        let mut committed = self.trailing_committed_user_texts(source_tip);
         let mut fresh = Vec::new();
         for user in users {
             let text = text_of(&user);
@@ -790,24 +807,26 @@ impl Core {
         let mut placed = placed.into_iter().skip(skip);
         self.on_agent_event(AgentEvent::TurnStart);
         for (index, message) in fresh.into_iter().enumerate() {
-            let queued = if index >= queued_from { placed.next() } else { None };
+            let queued = (index >= queued_from).then(|| placed.next()).flatten();
             let value = super::stored(&message);
             self.on_agent_event(AgentEvent::MessageStart { message });
             self.user_message_end(value, queued);
         }
-        let settings = self.compaction_settings();
-        self.lane.stack.context_reminders.set_limit(
-            MAIN_LANE,
-            crate::context_reminder::lane_limit(&self.model, settings.enabled, settings.reserve_tokens),
-        );
-        let start = self
-            .request_messages(source_tip.as_deref())
-            .map(|messages| GenerationStart { messages })
-            .map_err(StartError::Request);
-        if let Ok(start) = &start {
-            self.observer_generation(&start.messages);
-        }
-        answer.give(start);
+    }
+
+    fn trailing_committed_user_texts(&self, source_tip: Option<&str>) -> Vec<String> {
+        let Ok(messages) = self.context_messages(source_tip) else {
+            return Vec::new();
+        };
+        let start = messages
+            .iter()
+            .rposition(|m| m["role"] == "assistant" || m["role"] == "toolResult")
+            .map_or(0, |i| i + 1);
+        messages[start..]
+            .iter()
+            .filter(|m| m["role"] == "user")
+            .map(message_text)
+            .collect()
     }
 
     pub(super) fn on_turn(&mut self, request: Request) {
@@ -858,6 +877,39 @@ impl Core {
             .chat
             .commit(|tx| Ok(tx.submission_by_request(ROOT_CONVERSATION_ID, &prompt_entry)?))
             .map_err(harness_error)?;
+        self.install_reopened_run(
+            operation_id,
+            &id,
+            journal,
+            source_tip.as_deref(),
+            cancelled,
+            prompt.clone(),
+            submission.as_ref().map(|s| s.id),
+            resume_overflow,
+        );
+        self.resume_reopened_submission(
+            submission.is_some(),
+            cancelled,
+            &prompt,
+            prompt_entry,
+            source_tip.as_deref(),
+            &unreported,
+        )?;
+        Ok(id)
+    }
+
+    #[expect(clippy::too_many_arguments, reason = "internal reopen helper")]
+    fn install_reopened_run(
+        &mut self,
+        operation_id: &str,
+        id: &str,
+        journal: RunJournal,
+        source_tip: Option<&str>,
+        cancelled: bool,
+        prompt: Value,
+        submission: Option<SubmissionId>,
+        resume_overflow: Option<Value>,
+    ) {
         self.lane.stack.agents.begin_root_turn(operation_id);
         self.durable
             .children
@@ -865,18 +917,18 @@ impl Core {
         self.branches.run_started();
         self.lane.stack.host.begin_turn();
         self.run = Some(Running {
-            id: id.clone(),
+            id: id.to_string(),
             signal: AbortSignal::new(),
             journal,
             prompt_pending: false,
             turns: 0,
-            started_tip: source_tip.clone().map_or(Value::Null, Value::from),
+            started_tip: source_tip.map_or(Value::Null, Value::from),
             error: None,
             waiter: None,
             cancelled,
-            prompt: prompt.clone(),
+            prompt,
             captured: Vec::new(),
-            submission: submission.as_ref().map(|s| s.id),
+            submission,
             compaction_failed: false,
             resume_overflow,
             hiding: false,
@@ -885,11 +937,22 @@ impl Core {
         self.lane.stack.begin_turn();
         self.lane.stack.stats.touch();
         self.emit(WatchEvent::RunStart {
-            run_id: id.clone(),
+            run_id: id.to_string(),
             started_at: now_ms(),
             lane: MAIN_LANE.into(),
         });
-        if submission.is_none() && !cancelled {
+    }
+
+    fn resume_reopened_submission(
+        &mut self,
+        has_submission: bool,
+        cancelled: bool,
+        prompt: &Value,
+        prompt_entry: String,
+        source_tip: Option<&str>,
+        unreported: &[String],
+    ) -> Result<(), String> {
+        if !has_submission && !cancelled {
             self.durable.bridge.clear();
             let draft = SubmissionDraft::Input {
                 content: prompt["content"].clone(),
@@ -901,7 +964,7 @@ impl Core {
                 run.submission = Some(submitted.id);
             }
         } else {
-            self.catch_up(source_tip.as_deref(), &unreported)?;
+            self.catch_up(source_tip, unreported)?;
         }
         if !cancelled {
             self.submit_queued()?;
@@ -911,7 +974,7 @@ impl Core {
             self.abort_turn();
         }
         self.spawn_waiter();
-        Ok(id)
+        Ok(())
     }
 
     /// Project onto the transcript what the runtime committed for the run that the transcript does not hold yet:
@@ -929,73 +992,16 @@ impl Core {
             .collect();
         let transcript = self.run_messages(source_tip)?;
         let bridge = self.durable.bridge.clone();
-        let mut position = 0;
-        let mut pending_users: Vec<Message> = Vec::new();
-        let mut round: Option<HeldRound> = None;
+        let mut state = CatchUpState {
+            transcript,
+            position: 0,
+            pending_users: Vec::new(),
+            round: None,
+        };
         for (kind, message) in harness_messages {
-            let role = message["role"].as_str().unwrap_or_default().to_string();
-            let held = transcript.get(position).is_some_and(|t| t["role"] == role.as_str());
-            match kind.as_str() {
-                harness::chat::entries::USER => {
-                    if held {
-                        position += 1;
-                    } else if let Ok(user) = serde_json::from_value::<Message>(message) {
-                        pending_users.push(user);
-                    }
-                }
-                harness::chat::entries::ASSISTANT => {
-                    let Ok(answer) = serde_json::from_value::<ai::AssistantMessage>(message) else {
-                        continue;
-                    };
-                    if held {
-                        position += 1;
-                        let calls = answer
-                            .content
-                            .iter()
-                            .filter_map(|c| match c {
-                                ai::AssistantContent::ToolCall(call) => Some((call.id.clone(), call.name.clone())),
-                                _ => None,
-                            })
-                            .collect();
-                        round = Some((calls, Vec::new()));
-                        continue;
-                    }
-                    round = None;
-                    bridge.request(Request::Generation {
-                        users: std::mem::take(&mut pending_users),
-                        answer: Answer::default(),
-                    });
-                    bridge.answer_committed(answer);
-                }
-                harness::chat::entries::TOOL_RESULT => {
-                    if held {
-                        position += 1;
-                        continue;
-                    }
-                    let call_id = message["toolCallId"].as_str().unwrap_or_default().to_string();
-                    if let Some((calls, mut done)) = round.take() {
-                        if !unreported.contains(&call_id) {
-                            done.push((
-                                call_id,
-                                AgentToolResult {
-                                    content: serde_json::from_value(message["content"].clone()).unwrap_or_default(),
-                                    details: message.get("details").cloned().unwrap_or_else(|| json!({})),
-                                    usage: None,
-                                    terminate: None,
-                                },
-                                message["isError"] == true,
-                            ));
-                            round = Some((calls, done));
-                            continue;
-                        }
-                        bridge.resume_round(calls, done);
-                    }
-                    bridge.result_committed(&message);
-                }
-                _ => {}
-            }
+            state.step(&bridge, &kind, message, unreported);
         }
-        if let Some((calls, done)) = round.take() {
+        if let Some((calls, done)) = state.round.take() {
             bridge.resume_round(calls, done);
         }
         Ok(())
@@ -1061,8 +1067,18 @@ impl Core {
         if let Some(id) = id {
             return self.conversation_view(&self.other_conversation(id)?);
         }
-        let ids = self
-            .durable
+        let ids = self.ownerless_conversation_ids()?;
+        let mut views = Vec::new();
+        for id in ids {
+            if let Some(conversation) = self.durable.chat.conversation(id).map_err(harness_error)? {
+                views.push(self.conversation_view(&conversation)?);
+            }
+        }
+        Ok(json!({"conversations": views}))
+    }
+
+    fn ownerless_conversation_ids(&self) -> Result<Vec<durable::ConversationId>, String> {
+        self.durable
             .chat
             .commit(|tx| {
                 let mut ids = Vec::new();
@@ -1083,13 +1099,85 @@ impl Core {
                     }
                 }
             })
-            .map_err(harness_error)?;
-        let mut views = Vec::new();
-        for id in ids {
-            if let Some(conversation) = self.durable.chat.conversation(id).map_err(harness_error)? {
-                views.push(self.conversation_view(&conversation)?);
-            }
+            .map_err(harness_error)
+    }
+}
+
+struct CatchUpState {
+    transcript: Vec<Value>,
+    position: usize,
+    pending_users: Vec<Message>,
+    round: Option<HeldRound>,
+}
+
+impl CatchUpState {
+    fn step(&mut self, bridge: &Bridge, kind: &str, message: Value, unreported: &[String]) {
+        let role = message["role"].as_str().unwrap_or_default();
+        let held = self.transcript.get(self.position).is_some_and(|t| t["role"] == role);
+        match kind {
+            harness::chat::entries::USER => self.step_user(held, message),
+            harness::chat::entries::ASSISTANT => self.step_assistant(bridge, held, message),
+            harness::chat::entries::TOOL_RESULT => self.step_tool_result(bridge, held, message, unreported),
+            _ => {}
         }
-        Ok(json!({"conversations": views}))
+    }
+
+    fn step_user(&mut self, held: bool, message: Value) {
+        if held {
+            self.position += 1;
+        } else if let Ok(user) = serde_json::from_value::<Message>(message) {
+            self.pending_users.push(user);
+        }
+    }
+
+    fn step_assistant(&mut self, bridge: &Bridge, held: bool, message: Value) {
+        let Ok(answer) = serde_json::from_value::<ai::AssistantMessage>(message) else {
+            return;
+        };
+        if held {
+            self.position += 1;
+            let calls = answer
+                .content
+                .iter()
+                .filter_map(|c| match c {
+                    ai::AssistantContent::ToolCall(call) => Some((call.id.clone(), call.name.clone())),
+                    _ => None,
+                })
+                .collect();
+            self.round = Some((calls, Vec::new()));
+            return;
+        }
+        self.round = None;
+        bridge.request(Request::Generation {
+            users: std::mem::take(&mut self.pending_users),
+            answer: Answer::default(),
+        });
+        bridge.answer_committed(answer);
+    }
+
+    fn step_tool_result(&mut self, bridge: &Bridge, held: bool, message: Value, unreported: &[String]) {
+        if held {
+            self.position += 1;
+            return;
+        }
+        let call_id = message["toolCallId"].as_str().unwrap_or_default().to_string();
+        if let Some((calls, mut done)) = self.round.take() {
+            if !unreported.contains(&call_id) {
+                done.push((
+                    call_id,
+                    AgentToolResult {
+                        content: serde_json::from_value(message["content"].clone()).unwrap_or_default(),
+                        details: message.get("details").cloned().unwrap_or_else(|| json!({})),
+                        usage: None,
+                        terminate: None,
+                    },
+                    message["isError"] == true,
+                ));
+                self.round = Some((calls, done));
+                return;
+            }
+            bridge.resume_round(calls, done);
+        }
+        bridge.result_committed(&message);
     }
 }

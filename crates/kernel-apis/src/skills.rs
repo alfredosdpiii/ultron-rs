@@ -352,6 +352,68 @@ impl SkillsModule {
         self.handle_with_host(kind, payload, caller, &host, signal)
     }
 
+    fn handle_refresh(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        kernel::ops::fields("skills.refresh", payload)?;
+        let _exclusive = jsrt::sync::lock(&self.exclusive);
+        self.refresh_locked()
+    }
+
+    fn handle_list(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        kernel::ops::fields("skills.list", payload)?;
+        let snapshot = self.current()?;
+        let skills: Vec<Value> = snapshot
+            .skills
+            .iter()
+            .map(|s| json!({"name": s.name, "description": s.description, "version": s.version, "invocable": s.invocable}))
+            .collect();
+        Ok(json!({"generation": snapshot.generation, "skills": skills}))
+    }
+
+    fn handle_why(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        kernel::ops::fields("skills.why", payload)?;
+        let id = jsrt::payload::nonempty_string(payload.get("decision_id"), "decision_id")?;
+        let document = read_document(self.store.read()?)?;
+        document["decisions"]
+            .as_array()
+            .and_then(|decisions| decisions.iter().find(|decision| decision["id"] == id.as_str()))
+            .cloned()
+            .ok_or_else(|| format!("Unknown skill decision: {id}"))
+    }
+
+    fn handle_code_list(&self, payload: &Map<String, Value>) -> Result<Value, String> {
+        kernel::ops::fields("skills.code_list", payload)?;
+        let filter_kind = match payload.get("kind") {
+            None => None,
+            Some(Value::String(kind)) if kind == "code" || kind == "policy" => Some(kind.as_str()),
+            Some(_) => return Err("kind must be \"code\" or \"policy\"".into()),
+        };
+        let family = match payload.get("family") {
+            None => None,
+            value => Some(jsrt::payload::nonempty_string(value, "family")?),
+        };
+        Ok(Value::Array(self.code_skills()?.list(filter_kind, family.as_deref())))
+    }
+
+    fn handle_code_request(
+        &self,
+        kind: &str,
+        payload: &Map<String, Value>,
+        caller: Option<&str>,
+        signal: &Signal,
+    ) -> Result<Value, String> {
+        match kind {
+            "skills.propose_code" | "skills.propose_policy" | "skills.rollback" => {
+                self.change_code(kind, payload, caller, signal)
+            }
+            "skills.code_list" => self.handle_code_list(payload),
+            "skills.code_history" => {
+                kernel::ops::fields("skills.code_history", payload)?;
+                self.code_skills()?.history(payload.get("name"))
+            }
+            _ => Err(format!("Unsupported skills request: {kind}")),
+        }
+    }
+
     /// A request whose `skills.invoke` spawns through `host`.
     pub fn handle_with_host(
         &self,
@@ -362,55 +424,13 @@ impl SkillsModule {
         signal: &Signal,
     ) -> Result<Value, String> {
         match kind {
-            "skills.refresh" => {
-                kernel::ops::fields("skills.refresh", payload)?;
-                let _exclusive = jsrt::sync::lock(&self.exclusive);
-                self.refresh_locked()
-            }
-            "skills.list" => {
-                kernel::ops::fields("skills.list", payload)?;
-                let snapshot = self.current()?;
-                let skills: Vec<Value> = snapshot
-                    .skills
-                    .iter()
-                    .map(|s| json!({"name": s.name, "description": s.description, "version": s.version, "invocable": s.invocable}))
-                    .collect();
-                Ok(json!({"generation": snapshot.generation, "skills": skills}))
-            }
+            "skills.refresh" => self.handle_refresh(payload),
+            "skills.list" => self.handle_list(payload),
             "skills.select" => self.select(payload, caller),
             "skills.load" => self.load(payload, caller),
-            "skills.why" => {
-                kernel::ops::fields("skills.why", payload)?;
-                let id = jsrt::payload::nonempty_string(payload.get("decision_id"), "decision_id")?;
-                let document = read_document(self.store.read()?)?;
-                document["decisions"]
-                    .as_array()
-                    .and_then(|decisions| decisions.iter().find(|decision| decision["id"] == id.as_str()))
-                    .cloned()
-                    .ok_or_else(|| format!("Unknown skill decision: {id}"))
-            }
+            "skills.why" => self.handle_why(payload),
             "skills.invoke" => self.invoke(payload, caller, host),
-            "skills.propose_code" | "skills.propose_policy" | "skills.rollback" => {
-                self.change_code(kind, payload, caller, signal)
-            }
-            "skills.code_list" => {
-                kernel::ops::fields("skills.code_list", payload)?;
-                let filter_kind = match payload.get("kind") {
-                    None => None,
-                    Some(Value::String(kind)) if kind == "code" || kind == "policy" => Some(kind.as_str()),
-                    Some(_) => return Err("kind must be \"code\" or \"policy\"".into()),
-                };
-                let family = match payload.get("family") {
-                    None => None,
-                    value => Some(jsrt::payload::nonempty_string(value, "family")?),
-                };
-                Ok(Value::Array(self.code_skills()?.list(filter_kind, family.as_deref())))
-            }
-            "skills.code_history" => {
-                kernel::ops::fields("skills.code_history", payload)?;
-                self.code_skills()?.history(payload.get("name"))
-            }
-            _ => Err(format!("Unsupported skills request: {kind}")),
+            _ => self.handle_code_request(kind, payload, caller, signal),
         }
     }
 
@@ -418,12 +438,7 @@ impl SkillsModule {
     /// host: frontmatter never changes the child's model, tools or budget. Each invocation is journaled
     /// (`admitting`, then `spawned` with its task, or `failed` with the error).
     fn invoke(&self, payload: &Map<String, Value>, caller: Option<&str>, host: &dyn TaskHost) -> Result<Value, String> {
-        kernel::ops::fields("skills.invoke", payload)?;
-        let name = jsrt::payload::nonempty_string(payload.get("name"), "name")?;
-        let version = version_string(payload.get("version"))?;
-        let Some(input) = payload.get("input") else {
-            return Err("input must be JSON".into());
-        };
+        let (name, version, input) = parse_invoke_args(payload)?;
         let snapshot = self.current()?;
         let skill = Self::pinned(&snapshot, &name, Some(&version))?;
         if !skill.invocable {
@@ -596,41 +611,10 @@ impl SkillsModule {
     }
 
     fn select(&self, payload: &Map<String, Value>, caller: Option<&str>) -> Result<Value, String> {
-        kernel::ops::fields("skills.select", payload)?;
-        let query = jsrt::payload::nonempty_string(payload.get("query"), "query")?;
-        if jsrt::utf16::len(&query) > MAX_QUERY_CHARS {
-            return Err(format!("query must be at most {MAX_QUERY_CHARS} characters"));
-        }
-        let limit = match payload.get("limit") {
-            None => 5,
-            Some(value) => jsrt::number::safe_integer(value)
-                .filter(|limit| (1..=50).contains(limit) && value.is_number())
-                .ok_or("limit must be an integer between 1 and 50")?,
-        };
+        let (query, limit) = parse_select_args(payload)?;
         let snapshot = self.current()?;
         let terms = query_terms(&query);
-        let mut considered = Map::new();
-        let mut excluded = Vec::new();
-        let mut scored = Vec::new();
-        let mut ordered: Vec<&Skill> = snapshot.skills.iter().collect();
-        ordered.sort_by(|a, b| jsrt::collate::locale_compare(&a.name, &b.name));
-        for skill in ordered {
-            considered.insert(skill.name.clone(), skill.version.clone().into());
-            if !skill.invocable {
-                excluded.push(json!({"name": skill.name, "version": skill.version, "reason": "not_invocable"}));
-                continue;
-            }
-            if let Some(candidate) = score(skill, &terms, &query) {
-                scored.push(candidate);
-            }
-        }
-        scored.sort_by(|a, b| {
-            b["score"]
-                .as_i64()
-                .cmp(&a["score"].as_i64())
-                .then_with(|| a["name"].as_str().cmp(&b["name"].as_str()))
-        });
-        scored.truncate(limit as usize);
+        let (considered, excluded, scored) = score_catalog(&snapshot, &terms, &query, limit);
         let chosen: Vec<Value> = scored
             .iter()
             .map(|candidate| json!({"name": candidate["name"], "version": candidate["version"]}))
@@ -680,6 +664,60 @@ impl SkillsModule {
             "ignored_capability_requests": skill.ignored,
         }))
     }
+}
+
+fn parse_invoke_args(payload: &Map<String, Value>) -> Result<(String, String, &Value), String> {
+    kernel::ops::fields("skills.invoke", payload)?;
+    let name = jsrt::payload::nonempty_string(payload.get("name"), "name")?;
+    let version = version_string(payload.get("version"))?;
+    let input = payload.get("input").ok_or("input must be JSON")?;
+    Ok((name, version, input))
+}
+
+fn parse_select_args(payload: &Map<String, Value>) -> Result<(String, usize), String> {
+    kernel::ops::fields("skills.select", payload)?;
+    let query = jsrt::payload::nonempty_string(payload.get("query"), "query")?;
+    if jsrt::utf16::len(&query) > MAX_QUERY_CHARS {
+        return Err(format!("query must be at most {MAX_QUERY_CHARS} characters"));
+    }
+    let limit = match payload.get("limit") {
+        None => 5,
+        Some(value) => jsrt::number::safe_integer(value)
+            .filter(|limit| (1..=50).contains(limit) && value.is_number())
+            .ok_or("limit must be an integer between 1 and 50")?,
+    };
+    Ok((query, limit as usize))
+}
+
+fn score_catalog(
+    snapshot: &Snapshot,
+    terms: &[String],
+    query: &str,
+    limit: usize,
+) -> (Map<String, Value>, Vec<Value>, Vec<Value>) {
+    let mut considered = Map::new();
+    let mut excluded = Vec::new();
+    let mut scored = Vec::new();
+    let mut ordered: Vec<&Skill> = snapshot.skills.iter().collect();
+    ordered.sort_by(|a, b| jsrt::collate::locale_compare(&a.name, &b.name));
+    for skill in ordered {
+        considered.insert(skill.name.clone(), skill.version.clone().into());
+        if !skill.invocable {
+            excluded.push(json!({"name": skill.name, "version": skill.version, "reason": "not_invocable"}));
+            continue;
+        }
+        if let Some(candidate) = score(skill, terms, query) {
+            scored.push(candidate);
+        }
+    }
+    scored.sort_by(|a, b| {
+        b["score"]
+            .as_i64()
+            .cmp(&a["score"].as_i64())
+            .then_with(|| a["name"].as_str().cmp(&b["name"].as_str()))
+    });
+    scored.truncate(limit);
+    (considered, excluded, scored)
 }
 
 impl crate::ApiModule for SkillsModule {

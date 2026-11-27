@@ -52,51 +52,70 @@ struct Options {
     json: bool,
 }
 
-fn parse(args: &[String]) -> Result<Options, String> {
-    let mut options = Options::default();
-    let mut args = args.iter();
-    while let Some(arg) = args.next() {
-        let mut value = |name: &str| args.next().cloned().ok_or_else(|| format!("{name} needs a value"));
-        match arg.as_str() {
-            "--variants" => options.variants = Some(value("--variants")?),
-            "--recording" => options.recording = Some(value("--recording")?),
-            "--live" => options.live = true,
-            "--json" => options.json = true,
-            "--budget" => {
-                let budget = value("--budget")?;
-                options.budget = Some(
-                    budget
-                        .parse::<f64>()
-                        .ok()
-                        .filter(|b| b.is_finite() && *b > 0.0)
-                        .ok_or("--budget must be a positive number of USD")?,
-                );
-            }
-            "--max-calls" => {
-                let calls = value("--max-calls")?;
-                options.max_calls = Some(
-                    calls
-                        .parse::<u64>()
-                        .ok()
-                        .filter(|n| *n > 0)
-                        .ok_or("--max-calls must be a positive whole number")?,
-                );
-            }
-            flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
-            word if options.pipeline.is_empty() => options.pipeline = word.to_string(),
-            file => options.files.push(file.to_string()),
-        }
+fn next_value(args: &mut std::slice::Iter<'_, String>, name: &str) -> Result<String, String> {
+    args.next().cloned().ok_or_else(|| format!("{name} needs a value"))
+}
+
+fn parse_budget(args: &mut std::slice::Iter<'_, String>) -> Result<f64, String> {
+    next_value(args, "--budget")?
+        .parse::<f64>()
+        .ok()
+        .filter(|b| b.is_finite() && *b > 0.0)
+        .ok_or_else(|| "--budget must be a positive number of USD".to_string())
+}
+
+fn parse_max_calls(args: &mut std::slice::Iter<'_, String>) -> Result<u64, String> {
+    next_value(args, "--max-calls")?
+        .parse::<u64>()
+        .ok()
+        .filter(|n| *n > 0)
+        .ok_or_else(|| "--max-calls must be a positive whole number".to_string())
+}
+
+fn apply_value_option(
+    options: &mut Options,
+    arg: &str,
+    args: &mut std::slice::Iter<'_, String>,
+) -> Result<bool, String> {
+    match arg {
+        "--variants" => options.variants = Some(next_value(args, "--variants")?),
+        "--recording" => options.recording = Some(next_value(args, "--recording")?),
+        "--budget" => options.budget = Some(parse_budget(args)?),
+        "--max-calls" => options.max_calls = Some(parse_max_calls(args)?),
+        _ => return Ok(false),
     }
-    let pipeline = options.pipeline.as_str();
+    Ok(true)
+}
+
+fn apply_option(options: &mut Options, arg: &str, args: &mut std::slice::Iter<'_, String>) -> Result<(), String> {
+    if apply_value_option(options, arg, args)? {
+        return Ok(());
+    }
+    match arg {
+        "--live" => options.live = true,
+        "--json" => options.json = true,
+        flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
+        word if options.pipeline.is_empty() => options.pipeline = word.to_string(),
+        file => options.files.push(file.to_string()),
+    }
+    Ok(())
+}
+
+fn validate_live_options(options: &Options) -> Result<(), String> {
     if options.live && options.budget.is_none() {
         return Err("--live needs --budget <usd>".into());
     }
     if !options.live && (options.budget.is_some() || options.max_calls.is_some()) {
         return Err("--budget and --max-calls apply to --live runs".into());
     }
-    if options.live && pipeline == "autoreview" {
+    if options.live && options.pipeline == "autoreview" {
         return Err("autoreview has no --live: run `ultron autoreview eval <repo>` and pass its report".into());
     }
+    Ok(())
+}
+
+fn validate_pipeline_options(options: &Options) -> Result<(), String> {
+    let pipeline = options.pipeline.as_str();
     if !options.files.is_empty() && pipeline != "autoreview" {
         return Err(format!("unexpected argument {}", options.files[0]));
     }
@@ -106,6 +125,17 @@ fn parse(args: &[String]) -> Result<Options, String> {
     if options.variants.is_some() && pipeline == "autoreview" {
         return Err("autoreview variants are its reports and levels; --variants does not apply".into());
     }
+    Ok(())
+}
+
+fn parse(args: &[String]) -> Result<Options, String> {
+    let mut options = Options::default();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        apply_option(&mut options, arg, &mut iter)?;
+    }
+    validate_live_options(&options)?;
+    validate_pipeline_options(&options)?;
     Ok(options)
 }
 
@@ -138,54 +168,35 @@ struct Run<'a> {
     err: &'a mut dyn Write,
 }
 
-fn judge(run: &mut Run) -> Result<Vec<Measured>, String> {
-    let set = Arc::new(JudgeSet::load(optimize::judge::CASES)?);
-    let signal = kernel::Signal::new();
-    let (recording, mode) = if run.options.live {
-        let backends: Vec<String> = match &run.variants {
-            Some(variants) => {
-                let mut names: Vec<String> = Vec::new();
-                for (_, config) in variants {
-                    for name in config["provider"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(Value::as_str)
-                    {
-                        if !names.iter().any(|n| n == name) {
-                            names.push(name.to_string());
-                        }
-                    }
-                }
-                names
+fn live_judge_backends(variants: Option<&[(String, Value)]>) -> Vec<String> {
+    let Some(variants) = variants else {
+        return config::keys::JUDGE_BACKENDS
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
+    };
+    let mut names = Vec::new();
+    for (_, config) in variants {
+        for name in config["provider"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            if !names.iter().any(|n| n == name) {
+                names.push(name.to_string());
             }
-            None => config::keys::JUDGE_BACKENDS
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
-        };
-        let mut settings = crate::judge_cli::settings(run.env);
-        settings.budget_usd = run.options.budget;
-        settings.max_calls = run
-            .options
-            .max_calls
-            .unwrap_or((set.bench.cases.len() * backends.len()) as u64);
-        let recorder = Arc::new(Recorder::new(
-            Arc::new(blocking_http::ReqwestTransport::new()?),
-            set.clone(),
-        ));
-        let seat = judge::Seat::new(settings, crate::judge_cli::deps(run.env, false, recorder.clone()));
-        let runs = judge::bench::run(&seat, &set.bench, &backends, None, &signal);
-        for line in judge::bench::report(&runs) {
-            let _ = writeln!(run.err, "{line}");
         }
-        let recording = recorder.recording(format!("ultron optimize judge --live, {}", run.at));
-        let path = run
-            .store
-            .write("judge", "recordings", &run.stamp, &recording.to_json())?;
-        let _ = writeln!(run.err, "Recording: {}", path.display());
-        (recording, "live")
-    } else {
+    }
+    names
+}
+
+fn load_judge_recording(
+    run: &mut Run,
+    set: &Arc<JudgeSet>,
+    signal: &kernel::Signal,
+) -> Result<(Recording, &'static str), String> {
+    if !run.options.live {
         let text = match &run.options.recording {
             Some(file) => {
                 let path = run.env.cwd.join(file);
@@ -193,17 +204,44 @@ fn judge(run: &mut Run) -> Result<Vec<Measured>, String> {
             }
             None => optimize::judge::RECORDING.to_string(),
         };
-        (Recording::parse(&text)?, "offline")
-    };
-    let replay = Arc::new(Replay::new(set.clone(), recording.clone())?);
+        return Ok((Recording::parse(&text)?, "offline"));
+    }
+    let backends = live_judge_backends(run.variants.as_deref());
+    let mut settings = crate::judge_cli::settings(run.env);
+    settings.budget_usd = run.options.budget;
+    settings.max_calls = run
+        .options
+        .max_calls
+        .unwrap_or((set.bench.cases.len() * backends.len()) as u64);
+    let recorder = Arc::new(Recorder::new(
+        Arc::new(blocking_http::ReqwestTransport::new()?),
+        set.clone(),
+    ));
+    let seat = judge::Seat::new(settings, crate::judge_cli::deps(run.env, false, recorder.clone()));
+    let runs = judge::bench::run(&seat, &set.bench, &backends, None, signal);
+    for line in judge::bench::report(&runs) {
+        let _ = writeln!(run.err, "{line}");
+    }
+    let recording = recorder.recording(format!("ultron optimize judge --live, {}", run.at));
+    let path = run
+        .store
+        .write("judge", "recordings", &run.stamp, &recording.to_json())?;
+    let _ = writeln!(run.err, "Recording: {}", path.display());
+    Ok((recording, "live"))
+}
+
+fn fit_and_propose_judge(
+    run: &mut Run,
+    set: &Arc<JudgeSet>,
+    recording: &Recording,
+    replay: &Arc<Replay>,
+) -> Result<Vec<(String, Value)>, String> {
     let none: judge::backend::KeySource = Arc::new(|_: &str| Ok(None));
     let current = judge::Seat::new(
         crate::judge_cli::settings(run.env),
         judge::SeatDeps::new(replay.clone(), none.clone(), none),
     );
-    let fits = optimize::judge::fit(&set, &recording, &|kind, backend| {
-        current.threshold(Some(kind), backend)
-    });
+    let fits = optimize::judge::fit(set, recording, &|kind, backend| current.threshold(Some(kind), backend));
     for f in &fits {
         let shown = |t: Option<f64>| t.map_or_else(|| "none".to_string(), |t| format!("{t:.2}"));
         let _ = writeln!(
@@ -220,13 +258,21 @@ fn judge(run: &mut Run) -> Result<Vec<Measured>, String> {
             f.note
         );
     }
-    let proposal = optimize::judge::proposal(&set, &recording, &fits, &run.at);
+    let proposal = optimize::judge::proposal(set, recording, &fits, &run.at);
     let path = run.store.write("judge", "proposals", &run.stamp, &proposal)?;
     let _ = writeln!(run.err, "Threshold proposal (not applied): {}", path.display());
-    let variants = run
+    Ok(run
         .variants
         .take()
-        .unwrap_or_else(|| optimize::judge::default_variants(&fits));
+        .unwrap_or_else(|| optimize::judge::default_variants(&fits)))
+}
+
+fn judge(run: &mut Run) -> Result<Vec<Measured>, String> {
+    let set = Arc::new(JudgeSet::load(optimize::judge::CASES)?);
+    let signal = kernel::Signal::new();
+    let (recording, mode) = load_judge_recording(run, &set, &signal)?;
+    let replay = Arc::new(Replay::new(set.clone(), recording.clone())?);
+    let variants = fit_and_propose_judge(run, &set, &recording, &replay)?;
     let mut measured = Vec::new();
     for (name, config) in variants {
         optimize::judge::check_config(&config).map_err(|e| format!("variant {name}: {e}"))?;
@@ -240,48 +286,60 @@ fn judge(run: &mut Run) -> Result<Vec<Measured>, String> {
     Ok(measured)
 }
 
+fn default_memory_variants(live: bool) -> Vec<(String, Value)> {
+    let mut variants = vec![
+        ("reference".to_string(), json!({"backend": "reference"})),
+        (
+            "reference-min0.5".to_string(),
+            json!({"backend": "reference", "minScore": 0.5}),
+        ),
+    ];
+    if live {
+        variants.push(("hindsight".to_string(), json!({"backend": "hindsight"})));
+    }
+    variants
+}
+
+fn open_memory_backend(
+    run: &mut Run,
+    name: &str,
+    config: &Value,
+) -> Result<(Arc<dyn kernel_apis::MemoryBackend>, bool), String> {
+    if config["backend"] == "reference" {
+        return Ok((Arc::new(Reference::default()), false));
+    }
+    if !run.options.live {
+        return Err(format!(
+            "variant {name}: the {} backend runs only with --live",
+            config["backend"]
+        ));
+    }
+    let agent_dir = run.env.agent_dir();
+    let endpoint = hindsight::Endpoint::from_env(&|key| (run.env.var)(key), &run.env.cwd, &agent_dir)
+        .ok_or("Hindsight is not configured (hindsightUrl, ULTRON_HINDSIGHT_URL)")?;
+    let bank = format!("ultron-optimize-{}", run.stamp);
+    let mut options = hindsight::HindsightOptions::new(&endpoint.url, &bank, serde_json::Map::new());
+    options.ensure_bank = true;
+    let _ = writeln!(
+        run.err,
+        "{name}: throwaway bank {bank} on {} (left in place; Hindsight's own model spend is not metered here)",
+        endpoint.url
+    );
+    let backend = hindsight::HindsightBackend::new(options).map_err(|e| e.to_string())?;
+    Ok((Arc::new(backend), true))
+}
+
 fn memory(run: &mut Run) -> Result<Vec<Measured>, String> {
     let set = MemorySet::load(optimize::memory::SET)?;
     let signal = kernel::Signal::new();
-    let variants = run.variants.take().unwrap_or_else(|| {
-        let mut variants = vec![
-            ("reference".to_string(), json!({"backend": "reference"})),
-            (
-                "reference-min0.5".to_string(),
-                json!({"backend": "reference", "minScore": 0.5}),
-            ),
-        ];
-        if run.options.live {
-            variants.push(("hindsight".to_string(), json!({"backend": "hindsight"})));
-        }
-        variants
-    });
+    let variants = run
+        .variants
+        .take()
+        .unwrap_or_else(|| default_memory_variants(run.options.live));
     let mut measured = Vec::new();
     for (name, config) in variants {
         optimize::memory::check_config(&config).map_err(|e| format!("variant {name}: {e}"))?;
-        let live = config["backend"] != "reference";
-        let backend: Arc<dyn kernel_apis::MemoryBackend> = if live {
-            if !run.options.live {
-                return Err(format!(
-                    "variant {name}: the {} backend runs only with --live",
-                    config["backend"]
-                ));
-            }
-            let agent_dir = run.env.agent_dir();
-            let endpoint = hindsight::Endpoint::from_env(&|key| (run.env.var)(key), &run.env.cwd, &agent_dir)
-                .ok_or("Hindsight is not configured (hindsightUrl, ULTRON_HINDSIGHT_URL)")?;
-            let bank = format!("ultron-optimize-{}", run.stamp);
-            let mut options = hindsight::HindsightOptions::new(&endpoint.url, &bank, serde_json::Map::new());
-            options.ensure_bank = true;
-            let _ = writeln!(
-                run.err,
-                "{name}: throwaway bank {bank} on {} (left in place; Hindsight's own model spend is not metered here)",
-                endpoint.url
-            );
-            Arc::new(hindsight::HindsightBackend::new(options).map_err(|e| e.to_string())?)
-        } else {
-            Arc::new(Reference::default())
-        };
+        let (backend, live) = open_memory_backend(run, &name, &config)?;
         optimize::memory::load(&*backend, &set, &signal).map_err(|e| format!("variant {name}: {e}"))?;
         let mut point = optimize::memory::measure(&*backend, &set, &config, &signal);
         if live {
@@ -354,70 +412,83 @@ fn autoreview(run: &mut Run) -> Result<Vec<Measured>, String> {
     Ok(measured)
 }
 
-fn optimize(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
+fn write_points(options: &Options, env: &Env, points: &[Point], at: &str, out: &mut dyn Write) -> Result<(), String> {
     let io = |e: std::io::Error| e.to_string();
-    let options = match parse(args) {
-        Ok(options) => options,
-        Err(message) => {
-            writeln!(err, "Error: {message}\n{USAGE}").map_err(io)?;
-            return Ok(2);
-        }
-    };
-    let variants = match &options.variants {
-        Some(file) => Some(read_variants(&env.cwd.join(file))?),
-        None => None,
-    };
-    let store = Store::new(config::paths::AgentPaths::new(env.agent_dir()).optimize());
-    let now = jsrt::date::now_ms();
-    let mut run = Run {
-        options: &options,
-        env,
-        store: &store,
-        at: jsrt::date::iso_string(now),
-        stamp: format!("{now}"),
-        variants,
-        err,
-    };
-    let measured = match options.pipeline.as_str() {
-        "judge" => judge(&mut run)?,
-        "memory" => memory(&mut run)?,
-        _ => autoreview(&mut run)?,
-    };
-    let at = run.at.clone();
-    let mut points = Vec::new();
-    for (name, config, mut point) in measured {
-        point.variant = name;
-        point.version = store.variant(point.pipeline, &point.variant, &config, &at)?;
-        store.record(&point, &at)?;
-        points.push(point);
-    }
-    let on = frontier(&points);
+    let on = frontier(points);
     if options.json {
         let records: Vec<Value> = points
             .iter()
             .zip(&on)
             .map(|(p, on)| {
-                let mut record = p.to_json(&at);
+                let mut record = p.to_json(at);
                 record["frontier"] = json!(on);
                 record
             })
             .collect();
-        writeln!(out, "{}", json!({ "points": records })).map_err(io)?;
-    } else {
-        for (point, on) in points.iter().zip(&on) {
-            writeln!(out, "{}", point.line(*on)).map_err(io)?;
-        }
-        writeln!(
-            out,
-            "Kept in {}",
-            config::paths::AgentPaths::new(env.agent_dir())
-                .optimize()
-                .join(&options.pipeline)
-                .join("points.jsonl")
-                .display()
-        )
-        .map_err(io)?;
+        return writeln!(out, "{}", json!({ "points": records })).map_err(io);
     }
+    for (point, on) in points.iter().zip(&on) {
+        writeln!(out, "{}", point.line(*on)).map_err(io)?;
+    }
+    writeln!(
+        out,
+        "Kept in {}",
+        config::paths::AgentPaths::new(env.agent_dir())
+            .optimize()
+            .join(&options.pipeline)
+            .join("points.jsonl")
+            .display()
+    )
+    .map_err(io)
+}
+
+fn run_pipeline(run: &mut Run) -> Result<Vec<Measured>, String> {
+    match run.options.pipeline.as_str() {
+        "judge" => judge(run),
+        "memory" => memory(run),
+        _ => autoreview(run),
+    }
+}
+
+fn record_points(store: &Store, measured: Vec<Measured>, at: &str) -> Result<Vec<Point>, String> {
+    let mut points = Vec::new();
+    for (name, config, mut point) in measured {
+        point.variant = name;
+        point.version = store.variant(point.pipeline, &point.variant, &config, at)?;
+        store.record(&point, at)?;
+        points.push(point);
+    }
+    Ok(points)
+}
+
+fn optimize(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
+    let options = match parse(args) {
+        Ok(options) => options,
+        Err(message) => {
+            writeln!(err, "Error: {message}\n{USAGE}").map_err(|e| e.to_string())?;
+            return Ok(2);
+        }
+    };
+    let variants = options
+        .variants
+        .as_deref()
+        .map(|file| read_variants(&env.cwd.join(file)))
+        .transpose()?;
+    let store = Store::new(config::paths::AgentPaths::new(env.agent_dir()).optimize());
+    let now = jsrt::date::now_ms();
+    let at = jsrt::date::iso_string(now);
+    let mut run = Run {
+        options: &options,
+        env,
+        store: &store,
+        at: at.clone(),
+        stamp: format!("{now}"),
+        variants,
+        err,
+    };
+    let measured = run_pipeline(&mut run)?;
+    let points = record_points(&store, measured, &at)?;
+    write_points(&options, env, &points, &at, out)?;
     Ok(0)
 }
 

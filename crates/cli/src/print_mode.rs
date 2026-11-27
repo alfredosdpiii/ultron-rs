@@ -239,6 +239,60 @@ pub fn exit_on_signal(notify: impl Fn(i32) + Send + Sync + 'static) {
     }));
 }
 
+fn prompt_notices(result: &Result<ClientResult, String>, session_dir: &std::path::Path, offset: u64) -> Vec<String> {
+    let Ok(ClientResult::Prompted { session_id, .. }) = result else {
+        return Vec::new();
+    };
+    session_journal::catalog::find(session_dir, session_id)
+        .ok()
+        .flatten()
+        .map(|m| m.path)
+        .map_or_default(|path| route_notices(&path, offset))
+}
+
+fn remove_ephemeral_session(ephemeral: bool, result: &Result<ClientResult, String>, route: &Route) {
+    if !ephemeral {
+        return;
+    }
+    let Ok(ClientResult::Prompted { session_id, .. }) = result else {
+        return;
+    };
+    let Ok(connection) = client::runtime::Connection::connect(&route.path, &route.server_id) else {
+        return;
+    };
+    let target = connection.server_target();
+    let _ = connection.call(
+        target,
+        protocol::names::SESSION_MANAGEMENT,
+        "remove",
+        json!([session_id]),
+    );
+    connection.disconnect();
+}
+
+fn target_offset(target: &Target) -> u64 {
+    match target {
+        Target::Open(metadata) => std::fs::metadata(&metadata.path).map_or(0, |m| m.len()),
+        _ => 0,
+    }
+}
+
+fn finish_prompted(result: Result<ClientResult, String>, notices: Vec<String>) -> Result<Prompted, String> {
+    match result? {
+        ClientResult::Prompted {
+            server_id,
+            session_id,
+            text,
+        } => Ok(Prompted {
+            text,
+            server_id,
+            session_id,
+            notices,
+        }),
+        _ => Err("the client did not prompt".into()),
+    }
+}
+
 /// Run one prompted turn through this process's own server generation. A signal aborts the turn and exits with the
 /// signal's code once it ended; a lost worker or server is rejoined (the server restarted) and the turn's session
 /// followed to its end.
@@ -252,8 +306,12 @@ pub fn run_prompt(
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
     preflight(parsed, env, &target)?;
-    let json_mode = parsed.mode.as_deref() == Some("json");
-    let options = server_options(parsed, env, if json_mode { "json" } else { "print" })?;
+    let mode = if parsed.mode.as_deref() == Some("json") {
+        "json"
+    } else {
+        "print"
+    };
+    let options = server_options(parsed, env, mode)?;
     let start = server_start(env, &options);
     let Started { route, stop } = open_route(env, &start)?;
     let servers = Arc::new(Mutex::new(stop.into_iter().collect::<Vec<_>>()));
@@ -271,68 +329,25 @@ pub fn run_prompt(
         interrupt: Some(interrupt.clone()),
         reconnect: Some(Arc::new(move || {
             let started = start()?;
-            restarted
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .extend(started.stop);
+            jsrt::sync::lock(&restarted).extend(started.stop);
             Ok(started.route)
         })),
     };
-    let offset = match &target {
-        Target::Open(metadata) => std::fs::metadata(&metadata.path).map_or(0, |m| m.len()),
-        _ => 0,
-    };
+    let offset = target_offset(&target);
     let mut command = client_command(parsed, &target, Some(prompt.text));
     command.images = (!prompt.images.is_empty()).then_some(prompt.images);
     let ephemeral = std::mem::replace(&mut command.no_session, false);
     let result = run_client_with(&command, &route, &run_options);
-    let notices = match &result {
-        Ok(ClientResult::Prompted { session_id, .. }) => {
-            session_journal::catalog::find(&options.session_dir, session_id)
-                .ok()
-                .flatten()
-                .map(|m| m.path)
-                .map_or_default(|path| route_notices(&path, offset))
-        }
-        _ => Vec::new(),
-    };
-    if ephemeral
-        && let Ok(ClientResult::Prompted { session_id, .. }) = &result
-        && let Ok(connection) = client::runtime::Connection::connect(&route.path, &route.server_id)
-    {
-        let target = connection.server_target();
-        let _ = connection.call(
-            target,
-            protocol::names::SESSION_MANAGEMENT,
-            "remove",
-            json!([session_id]),
-        );
-        connection.disconnect();
-    }
-    for stop in servers
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .drain(..)
-    {
+    let notices = prompt_notices(&result, &options.session_dir, offset);
+    remove_ephemeral_session(ephemeral, &result, &route);
+    for stop in jsrt::sync::lock(&servers).drain(..) {
         stop();
     }
     if interrupt.load(Ordering::SeqCst) {
         std::process::exit(code.load(Ordering::SeqCst));
     }
     signals::clear_handler();
-    match result? {
-        ClientResult::Prompted {
-            server_id,
-            session_id,
-            text,
-        } => Ok(Prompted {
-            text,
-            server_id,
-            session_id,
-            notices,
-        }),
-        _ => Err("the client did not prompt".into()),
-    }
+    finish_prompted(result, notices)
 }
 
 /// What a prompted run prints: the text for `-p`, the "prompted" result as one JSON line for `--mode json`.

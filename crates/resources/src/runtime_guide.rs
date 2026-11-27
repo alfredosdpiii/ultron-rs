@@ -252,97 +252,108 @@ fn delegation_prompt(delivery: EventDelivery, host_waits: bool) -> String {
     format!("{DELEGATION_HEAD}{wait}{DELEGATION_TAIL}")
 }
 
-/// The runtime guide for the system prompt when `rlm` is among the active tools.
-pub fn rlm_runtime_prompt(active_tools: &[&str], options: &RuntimeGuideOptions) -> Option<String> {
-    if !active_tools.contains(&"rlm") {
-        return None;
-    }
-    let subagent = matches!(options.reader, GuideReader::Subagent { .. });
-    let delivery = match options.delivery {
+fn effective_delivery(delivery: EventDelivery, subagent: bool) -> EventDelivery {
+    match delivery {
         EventDelivery::Wake if subagent => EventDelivery::NextCall,
         other => other,
+    }
+}
+
+fn skills_section(active_tools: &[&str], subagent: bool) -> String {
+    let bash = if active_tools.contains(&"bash") {
+        BASH_SKILL_WITH_TOOL
+    } else if subagent {
+        BASH_SKILL_SUBAGENT
+    } else {
+        BASH_SKILL
     };
-    let skills = [
-        "## Skills",
-        if active_tools.contains(&"bash") {
-            BASH_SKILL_WITH_TOOL
-        } else if subagent {
-            BASH_SKILL_SUBAGENT
-        } else {
-            BASH_SKILL
-        },
-        READ_SKILL,
-        if active_tools.contains(&"edit") {
-            EDIT_SKILL_WITH_TOOL
-        } else {
-            EDIT_SKILL
-        },
-        PROJECT_ENV,
-    ];
-    let extension_tools = extension_tools_prompt(
-        &options.extension_tools,
-        &options.mcp_servers,
-        &options.native_extension_tools,
-        delivery,
-    );
+    let edit = if active_tools.contains(&"edit") {
+        EDIT_SKILL_WITH_TOOL
+    } else {
+        EDIT_SKILL
+    };
+    ["## Skills", bash, READ_SKILL, edit, PROJECT_ENV].join("\n")
+}
+
+fn runtime_section(options: &RuntimeGuideOptions, delivery: EventDelivery, subagent: bool) -> String {
     let events = match delivery {
         EventDelivery::Off => ASYNC_EVENTS_OFF,
         _ if subagent => ASYNC_EVENTS_SUBAGENT,
         EventDelivery::NextCall => ASYNC_EVENTS_NEXT_CALL,
         EventDelivery::Wake => ASYNC_EVENTS,
     };
-    let runtime = if options.hints {
+    let mut runtime = if options.hints {
         RUNTIME.replacen("before guessing.", &format!("before guessing. {HINTS_LINE}"), 1)
     } else {
         RUNTIME.to_string()
     };
+    if options.durable_apis && options.result_footer {
+        runtime.push('\n');
+        runtime.push_str(RESULT_FOOTER);
+    }
+    format!("{runtime}\n{events}")
+}
+
+fn delegation_section(options: &RuntimeGuideOptions, delivery: EventDelivery, persistent: bool, swarm: bool) -> String {
+    let delegation = delegation_prompt(delivery, options.host_waits);
+    if persistent {
+        format!("{delegation}\n{PERSISTENT_PROMPT} {CONTRACTS_PROMPT} `help(swarm)`.\n{DELEGATION_RUST}")
+    } else if options.durable_apis && swarm {
+        format!("{delegation}\n{CONTRACTS_PROMPT}\n{DELEGATION_RUST}")
+    } else if options.durable_apis {
+        format!("{delegation}\n{DELEGATION_RUST}")
+    } else {
+        delegation
+    }
+}
+
+fn other_apis_section(options: &RuntimeGuideOptions, persistent: bool, subagent: bool) -> String {
     let context = if options.external_root {
         format!("## Other APIs\n{CODE_SKILLS_PROMPT}\n{AGENT_CLASS_PROMPT}")
     } else {
         format!("## Other APIs\n{CONTEXT_PROMPT}\n{CODE_SKILLS_PROMPT}\n{AGENT_CLASS_PROMPT}")
     };
-    let runtime = if options.durable_apis && options.result_footer {
-        format!("{runtime}\n{RESULT_FOOTER}")
+    if !options.durable_apis {
+        return format!("{context}\n{MEMORY}");
+    }
+    let schedule = if persistent && !subagent {
+        format!("\n{SCHEDULE_PROMPT}")
     } else {
-        runtime
+        String::new()
     };
+    let procedure = match options.memory {
+        MemoryGuidance::Purpose => "",
+        MemoryGuidance::PurposeAndProcedure => MEMORY_PROCEDURE,
+    };
+    let topics = if options.memory_topics { MEMORY_TOPICS } else { "" };
+    format!(
+        "{context}\n{PROCEDURE_SKILLS_PROMPT}\n{MEMORY_RUST}{procedure}{TYPED_MEMORY}{topics}\n{SESSIONS_PROMPT}\n{JUDGE_PROMPT}\n{RELATIONS_PROMPT}\n{IMAGES_PROMPT}{schedule}\n{DIAGRAM_PROMPT}"
+    )
+}
+
+/// The runtime guide for the system prompt when `rlm` is among the active tools.
+pub fn rlm_runtime_prompt(active_tools: &[&str], options: &RuntimeGuideOptions) -> Option<String> {
+    if !active_tools.contains(&"rlm") {
+        return None;
+    }
+    let subagent = matches!(options.reader, GuideReader::Subagent { .. });
+    let delivery = effective_delivery(options.delivery, subagent);
+    let extension_tools = extension_tools_prompt(
+        &options.extension_tools,
+        &options.mcp_servers,
+        &options.native_extension_tools,
+        delivery,
+    );
+    let swarm = options.reader != GuideReader::Subagent { swarm: false };
+    let persistent = options.durable_apis && swarm && !(options.external_root && subagent);
     let mut parts = vec![
-        format!("{runtime}\n{events}"),
-        skills.join("\n"),
+        runtime_section(options, delivery, subagent),
+        skills_section(active_tools, subagent),
         SEARCH_FIRST.to_string(),
         format!("## Bounded inference\n{INFERENCE_PROMPT}"),
     ];
     parts.extend(extension_tools);
-    let delegation = delegation_prompt(delivery, options.host_waits);
-    let swarm = options.reader != GuideReader::Subagent { swarm: false };
-    let persistent = options.durable_apis && swarm && !(options.external_root && subagent);
-    if persistent {
-        parts.push(format!(
-            "{delegation}\n{PERSISTENT_PROMPT} {CONTRACTS_PROMPT} `help(swarm)`.\n{DELEGATION_RUST}"
-        ));
-    } else if options.durable_apis && swarm {
-        parts.push(format!("{delegation}\n{CONTRACTS_PROMPT}\n{DELEGATION_RUST}"));
-    } else if options.durable_apis {
-        parts.push(format!("{delegation}\n{DELEGATION_RUST}"));
-    } else {
-        parts.push(delegation);
-    }
-    if options.durable_apis {
-        let schedule = if persistent && !subagent {
-            format!("\n{SCHEDULE_PROMPT}")
-        } else {
-            String::new()
-        };
-        let procedure = match options.memory {
-            MemoryGuidance::Purpose => "",
-            MemoryGuidance::PurposeAndProcedure => MEMORY_PROCEDURE,
-        };
-        let topics = if options.memory_topics { MEMORY_TOPICS } else { "" };
-        parts.push(format!(
-            "{context}\n{PROCEDURE_SKILLS_PROMPT}\n{MEMORY_RUST}{procedure}{TYPED_MEMORY}{topics}\n{SESSIONS_PROMPT}\n{JUDGE_PROMPT}\n{RELATIONS_PROMPT}\n{IMAGES_PROMPT}{schedule}\n{DIAGRAM_PROMPT}"
-        ));
-    } else {
-        parts.push(format!("{context}\n{MEMORY}"));
-    }
+    parts.push(delegation_section(options, delivery, persistent, swarm));
+    parts.push(other_apis_section(options, persistent, subagent));
     Some(parts.join("\n\n"))
 }

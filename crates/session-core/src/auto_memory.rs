@@ -238,7 +238,21 @@ pub fn recall_message(recalled: &Recalled, timestamp: u64) -> Option<Value> {
              or forget it.",
         );
     }
-    for brief in &recalled.briefs {
+    append_recall_briefs(&mut content, &recalled.briefs);
+    append_recall_items(&mut content, &recalled.found, !recalled.briefs.is_empty());
+    let details = build_recall_details(recalled, stale);
+    Some(json!({
+        "role": "custom",
+        "customType": RECALLED_MEMORY,
+        "content": content,
+        "display": true,
+        "details": details,
+        "timestamp": timestamp,
+    }))
+}
+
+fn append_recall_briefs(content: &mut String, briefs: &[Value]) {
+    for brief in briefs {
         let title = match brief["id"].as_str() {
             Some(id) if id.starts_with("ultron-user-") => "User brief (across projects)",
             _ => "Project brief",
@@ -251,14 +265,13 @@ pub fn recall_message(recalled: &Recalled, timestamp: u64) -> Option<Value> {
         });
         content.push_str(&cut(brief["content"].as_str().unwrap_or("").trim(), DIGEST_CHARS));
     }
-    if !recalled.found.is_empty() {
-        content.push_str(if recalled.briefs.is_empty() {
-            ""
-        } else {
-            "\n\nRecalled:"
-        });
+}
+
+fn append_recall_items(content: &mut String, found: &[Value], has_briefs: bool) {
+    if !found.is_empty() && has_briefs {
+        content.push_str("\n\nRecalled:");
     }
-    for item in &recalled.found {
+    for item in found {
         let text = cut(item["text"].as_str().unwrap_or("").trim(), ENTRY_CHARS);
         let scope = item["scope"].as_str().unwrap_or("memory");
         content.push_str(&match (item["memoryId"].as_str(), item["id"].as_str()) {
@@ -270,6 +283,9 @@ pub fn recall_message(recalled: &Recalled, timestamp: u64) -> Option<Value> {
             content.push_str(&format!(" (stale: {why})"));
         }
     }
+}
+
+fn build_recall_details(recalled: &Recalled, stale: usize) -> Value {
     let ids: Vec<&Value> = recalled.found.iter().map(|item| &item["id"]).collect();
     let scopes: Vec<&Value> = recalled.found.iter().map(|item| &item["scope"]).collect();
     let mut details = json!({"ids": ids, "scopes": scopes});
@@ -279,14 +295,7 @@ pub fn recall_message(recalled: &Recalled, timestamp: u64) -> Option<Value> {
     if stale > 0 {
         details["stale"] = stale.into();
     }
-    Some(json!({
-        "role": "custom",
-        "customType": RECALLED_MEMORY,
-        "content": content,
-        "display": true,
-        "details": details,
-        "timestamp": timestamp,
-    }))
+    details
 }
 
 /// The part of a session no compaction summarized, as distilled when the session closes ([`tail_keep`]).
@@ -316,53 +325,65 @@ pub fn session_tail(entries: &[Value]) -> Option<Tail> {
     let mut users = 0;
     let mut through = None;
     for entry in &entries[start.map_or(0, |at| at + 1)..] {
-        let message = &entry["message"];
-        if entry["type"] != "message" {
+        let Some((who, line)) = tail_entry_line(entry) else {
             continue;
-        }
-        let who = match message["role"].as_str() {
-            Some("user") => "User",
-            Some("assistant") if message["stopReason"] == "stop" => "Agent",
-            _ => continue,
         };
-        let text = protocol::pi_message::content_text(&message["content"], "\n");
-        let text = text.trim();
-        if text.is_empty() {
-            continue;
-        }
         users += usize::from(who == "User");
-        lines.push(format!("{who}: {}", cut(text, TAIL_MESSAGE_CHARS)));
+        lines.push(line);
         through = entry["id"].as_str().map(str::to_string);
     }
     if users < TAIL_MIN_MESSAGES {
         return None;
     }
-    let size = |lines: &[String]| lines.iter().map(|line| line.chars().count() + 2).sum::<usize>();
-    if size(&lines) > TAIL_CHARS {
-        let first = lines.remove(0);
-        let mut newest = Vec::new();
-        let mut left = TAIL_CHARS.saturating_sub(first.chars().count() + 64);
-        while let Some(line) = lines.pop() {
-            let length = line.chars().count() + 2;
-            if length > left {
-                lines.push(line);
-                break;
-            }
-            left -= length;
-            newest.push(line);
-        }
-        let dropped = lines.len();
-        newest.reverse();
-        lines = std::iter::once(first)
-            .chain(std::iter::once(format!("[{dropped} messages left out]")))
-            .chain(newest)
-            .collect();
-    }
+    trim_tail_lines(&mut lines);
     Some(Tail {
         after,
         through: through?,
         text: lines.join("\n\n"),
     })
+}
+
+fn tail_entry_line(entry: &Value) -> Option<(&'static str, String)> {
+    if entry["type"] != "message" {
+        return None;
+    }
+    let message = &entry["message"];
+    let who = match message["role"].as_str() {
+        Some("user") => "User",
+        Some("assistant") if message["stopReason"] == "stop" => "Agent",
+        _ => return None,
+    };
+    let text = protocol::pi_message::content_text(&message["content"], "\n");
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some((who, format!("{who}: {}", cut(text, TAIL_MESSAGE_CHARS))))
+}
+
+fn trim_tail_lines(lines: &mut Vec<String>) {
+    let total: usize = lines.iter().map(|line| line.chars().count() + 2).sum();
+    if total <= TAIL_CHARS {
+        return;
+    }
+    let first = lines.remove(0);
+    let mut newest = Vec::new();
+    let mut left = TAIL_CHARS.saturating_sub(first.chars().count() + 64);
+    while let Some(line) = lines.pop() {
+        let length = line.chars().count() + 2;
+        if length > left {
+            lines.push(line);
+            break;
+        }
+        left -= length;
+        newest.push(line);
+    }
+    let dropped = lines.len();
+    newest.reverse();
+    *lines = std::iter::once(first)
+        .chain(std::iter::once(format!("[{dropped} messages left out]")))
+        .chain(newest)
+        .collect();
 }
 
 /// The most facts one keep stores.

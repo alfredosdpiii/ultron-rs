@@ -187,10 +187,34 @@ impl App {
     /// wide enough to split, on the chat screen with the graph closed; a pane the user closed stays closed for the
     /// rest of that turn and for the runs it already showed. It never closes the pane.
     pub(super) fn auto_open_rlm_pane(&mut self) {
+        let ids = self.rlm_pane_work_ids();
+        if !ids.iter().any(|id| !self.rlm_pane_handled.contains(id)) {
+            return;
+        }
+        if self.rlm_pane_open {
+            self.rlm_pane_handled.extend(ids);
+            return;
+        }
+        if !self.can_auto_open_rlm_pane() {
+            return;
+        }
+        self.rlm_pane_handled.extend(ids);
+        if self
+            .operation
+            .as_ref()
+            .is_some_and(|op| self.rlm_pane_handled.contains(&format!("op:{op}")))
+        {
+            return;
+        }
+        self.rlm_pane_open = true;
+        self.rlm_pane_focused = false;
+    }
+
+    fn rlm_pane_work_ids(&mut self) -> Vec<String> {
         use rlm_views::pane::{RunKind, build_dag_runs, pane_work_runs};
         let snapshot = self.rlm_snapshot();
         let runs = build_dag_runs(&snapshot);
-        let ids: Vec<String> = pane_work_runs(&runs, self.operation_started_ms)
+        pane_work_runs(&runs, self.operation_started_ms)
             .into_iter()
             .map(|run| match run.kind {
                 RunKind::Turn => format!(
@@ -202,28 +226,16 @@ impl App {
                 ),
                 _ => run.key.clone(),
             })
-            .collect();
-        if !ids.iter().any(|id| !self.rlm_pane_handled.contains(id)) {
-            return;
-        }
-        if self.rlm_pane_open {
-            self.rlm_pane_handled.extend(ids);
-            return;
-        }
-        if !self.rlm_pane_auto || self.cols < RLM_PANE_MIN_COLUMNS || self.qol.viewport_split {
-            return;
-        }
-        if self.selection.is_some() || self.panel.is_some() || self.overlay.is_some() {
-            return;
-        }
-        self.rlm_pane_handled.extend(ids);
-        if let Some(operation) = &self.operation
-            && self.rlm_pane_handled.contains(&format!("op:{operation}"))
-        {
-            return;
-        }
-        self.rlm_pane_open = true;
-        self.rlm_pane_focused = false;
+            .collect()
+    }
+
+    fn can_auto_open_rlm_pane(&self) -> bool {
+        self.rlm_pane_auto
+            && self.cols >= RLM_PANE_MIN_COLUMNS
+            && !self.qol.viewport_split
+            && self.selection.is_none()
+            && self.panel.is_none()
+            && self.overlay.is_none()
     }
 
     /// `#renderWaveSummary`: the live wave summary above the editor, hidden while the docked panel or the graph

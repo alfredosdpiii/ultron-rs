@@ -66,76 +66,68 @@ fn auth_json(auth: &AuthInput) -> Value {
     }
 }
 
+fn put_opt_str(map: &mut serde_json::Map<String, Value>, key: &str, value: &Option<String>) {
+    if let Some(value) = value {
+        map.insert(key.to_string(), json!(value));
+    }
+}
+
+fn connect_json(connect: &Option<TransportAddress>) -> Option<Value> {
+    match connect {
+        Some(TransportAddress::Radius(id)) => Some(json!({"transport": "radius", "serverId": id})),
+        Some(TransportAddress::Unix(path)) => Some(json!({"transport": "unix", "path": path.display().to_string()})),
+        None => None,
+    }
+}
+
+fn server_to_json(c: &ServerCommand) -> Value {
+    let mut map = serde_json::Map::new();
+    map.insert("command".into(), json!("server"));
+    if let Some(auth) = &c.auth {
+        map.insert("auth".into(), auth_json(auth));
+    }
+    put_opt_str(&mut map, "provider", &c.provider);
+    put_opt_str(&mut map, "model", &c.model);
+    if !c.plugin_packages.is_empty() {
+        map.insert("pluginPackages".into(), json!(c.plugin_packages));
+    }
+    put_opt_str(&mut map, "serverId", &c.server_id);
+    put_opt_str(&mut map, "sessionDir", &c.session_dir);
+    Value::Object(map)
+}
+
+fn client_to_json(c: &ClientCommand) -> Value {
+    let mut map = serde_json::Map::new();
+    map.insert("command".into(), json!("client"));
+    if let Some(auth) = &c.auth {
+        map.insert("auth".into(), auth_json(auth));
+    }
+    if let Some(connect) = connect_json(&c.connect) {
+        map.insert("connect".into(), connect);
+    }
+    put_opt_str(&mut map, "sessionId", &c.session_id);
+    if c.continue_ {
+        map.insert("continue".into(), json!(true));
+    }
+    if c.resume {
+        map.insert("resume".into(), json!(true));
+    }
+    put_opt_str(&mut map, "provider", &c.provider);
+    put_opt_str(&mut map, "model", &c.model);
+    if !c.plugin_packages.is_empty() {
+        map.insert("pluginPackages".into(), json!(c.plugin_packages));
+    }
+    put_opt_str(&mut map, "prompt", &c.prompt);
+    Value::Object(map)
+}
+
 impl Experimental {
     /// The command as the TypeScript parse answers it (`{command, ...}`, keys in its order).
     pub fn to_json(&self) -> Value {
-        let mut map = serde_json::Map::new();
-        let mut put = |key: &str, value: Value| {
-            map.insert(key.to_string(), value);
-        };
         match self {
-            Experimental::Server(c) => {
-                put("command", json!("server"));
-                if let Some(auth) = &c.auth {
-                    put("auth", auth_json(auth));
-                }
-                if let Some(provider) = &c.provider {
-                    put("provider", json!(provider));
-                }
-                if let Some(model) = &c.model {
-                    put("model", json!(model));
-                }
-                if !c.plugin_packages.is_empty() {
-                    put("pluginPackages", json!(c.plugin_packages));
-                }
-                if let Some(id) = &c.server_id {
-                    put("serverId", json!(id));
-                }
-                if let Some(dir) = &c.session_dir {
-                    put("sessionDir", json!(dir));
-                }
-            }
-            Experimental::Client(c) => {
-                put("command", json!("client"));
-                if let Some(auth) = &c.auth {
-                    put("auth", auth_json(auth));
-                }
-                match &c.connect {
-                    Some(TransportAddress::Radius(id)) => {
-                        put("connect", json!({"transport": "radius", "serverId": id}));
-                    }
-                    Some(TransportAddress::Unix(path)) => {
-                        put(
-                            "connect",
-                            json!({"transport": "unix", "path": path.display().to_string()}),
-                        );
-                    }
-                    None => {}
-                }
-                if let Some(id) = &c.session_id {
-                    put("sessionId", json!(id));
-                }
-                if c.continue_ {
-                    put("continue", json!(true));
-                }
-                if c.resume {
-                    put("resume", json!(true));
-                }
-                if let Some(provider) = &c.provider {
-                    put("provider", json!(provider));
-                }
-                if let Some(model) = &c.model {
-                    put("model", json!(model));
-                }
-                if !c.plugin_packages.is_empty() {
-                    put("pluginPackages", json!(c.plugin_packages));
-                }
-                if let Some(prompt) = &c.prompt {
-                    put("prompt", json!(prompt));
-                }
-            }
+            Experimental::Server(c) => server_to_json(c),
+            Experimental::Client(c) => client_to_json(c),
         }
-        Value::Object(map)
     }
 }
 
@@ -255,6 +247,34 @@ impl Parsed {
     }
 }
 
+fn extract_option_value(
+    option: &OptionSpec,
+    argument: &str,
+    name: &str,
+    equals: Option<usize>,
+    argv: &[String],
+    index: &mut usize,
+) -> Result<String, String> {
+    if option.flag {
+        if equals.is_some() {
+            return Err(format!("{name} does not take a value"));
+        }
+        return Ok(String::new());
+    }
+    let mut candidate = equals.map(|i| argument[i + 1..].to_string());
+    if candidate.is_none()
+        && let Some(next) = argv.get(*index)
+        && !next.starts_with('-')
+    {
+        candidate = Some(next.clone());
+        *index += 1;
+    }
+    match candidate {
+        Some(value) if !value.is_empty() => Ok(value),
+        _ => Err(format!("{name} requires a value")),
+    }
+}
+
 fn parse_options(argv: &[String], options: &[OptionSpec]) -> Parsed {
     let mut parsed = Parsed {
         values: HashMap::new(),
@@ -275,27 +295,11 @@ fn parse_options(argv: &[String], options: &[OptionSpec]) -> Parsed {
             break;
         };
         index += 1;
-        let value = if option.flag {
-            if equals.is_some() {
-                parsed.errors.push(format!("{name} does not take a value"));
+        let value = match extract_option_value(option, argument, name, equals, argv, &mut index) {
+            Ok(value) => value,
+            Err(error) => {
+                parsed.errors.push(error);
                 continue;
-            }
-            String::new()
-        } else {
-            let mut candidate = equals.map(|i| argument[i + 1..].to_string());
-            if candidate.is_none()
-                && let Some(next) = argv.get(index)
-                && !next.starts_with('-')
-            {
-                candidate = Some(next.clone());
-                index += 1;
-            }
-            match candidate {
-                Some(value) if !value.is_empty() => value,
-                _ => {
-                    parsed.errors.push(format!("{name} requires a value"));
-                    continue;
-                }
             }
         };
         let values = parsed.values.entry(option.name).or_default();
@@ -367,6 +371,41 @@ fn parse_server(argv: &[String]) -> Result<Experimental, Vec<String>> {
     }))
 }
 
+fn extract_client_prompt(remaining: &[String]) -> Option<String> {
+    let dashes = remaining.first().is_some_and(|a| a == "--");
+    let prompt_args = if dashes { &remaining[1..] } else { remaining };
+    (prompt_args.len() == 1 && (dashes || !prompt_args[0].starts_with('-')) && !prompt_args[0].is_empty())
+        .then(|| prompt_args[0].clone())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal validation helper for parsed client options"
+)]
+fn collect_client_errors(
+    parsed: &Parsed,
+    auth_errors: Vec<String>,
+    provider: &Option<String>,
+    model: &Option<String>,
+    session_id: &Option<String>,
+    continue_: bool,
+    resume: bool,
+    prompt: &Option<String>,
+) -> Vec<String> {
+    let mut errors = parsed.errors.clone();
+    errors.extend(auth_errors);
+    if provider.is_some() && model.is_none() {
+        errors.push("--provider requires --model".into());
+    }
+    if [session_id.is_some(), continue_, resume].iter().filter(|b| **b).count() > 1 {
+        errors.push("--session-id, --continue, and --resume are mutually exclusive".into());
+    }
+    if !parsed.remaining.is_empty() && prompt.is_none() {
+        errors.extend(unsupported_options("client", parsed));
+    }
+    errors
+}
+
 fn parse_client(argv: &[String]) -> Result<Experimental, Vec<String>> {
     let parsed = parse_options(argv, &CLIENT_OPTIONS);
     let (auth, auth_errors) = parse_auth(&parsed);
@@ -383,22 +422,17 @@ fn parse_client(argv: &[String]) -> Result<Experimental, Vec<String>> {
     let resume = parsed.flag("--resume") || parsed.flag("-r");
     let provider = parsed.text("--provider");
     let model = parsed.text("--model");
-    let remaining = &parsed.remaining;
-    let dashes = remaining.first().is_some_and(|a| a == "--");
-    let prompt_args = if dashes { &remaining[1..] } else { &remaining[..] };
-    let prompt = (prompt_args.len() == 1 && (dashes || !prompt_args[0].starts_with('-')) && !prompt_args[0].is_empty())
-        .then(|| prompt_args[0].clone());
-    let mut errors = parsed.errors.clone();
-    errors.extend(auth_errors);
-    if provider.is_some() && model.is_none() {
-        errors.push("--provider requires --model".into());
-    }
-    if [session_id.is_some(), continue_, resume].iter().filter(|b| **b).count() > 1 {
-        errors.push("--session-id, --continue, and --resume are mutually exclusive".into());
-    }
-    if !remaining.is_empty() && prompt.is_none() {
-        errors.extend(unsupported_options("client", &parsed));
-    }
+    let prompt = extract_client_prompt(&parsed.remaining);
+    let errors = collect_client_errors(
+        &parsed,
+        auth_errors,
+        &provider,
+        &model,
+        &session_id,
+        continue_,
+        resume,
+        &prompt,
+    );
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -436,54 +470,61 @@ fn decode_uri_component(value: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+fn invalid_connect_address(value: &str) -> String {
+    format!("Invalid --connect address \"{value}\"")
+}
+
+fn has_url_authority_extras(url: &url::Url) -> bool {
+    !url.username().is_empty() || url.password().is_some_and(|p| !p.is_empty()) || url.port().is_some()
+}
+
+fn parse_radius_address(value: &str, url: &url::Url, host: &str) -> Result<TransportAddress, String> {
+    let path = url.path();
+    let has_extra = has_url_authority_extras(url)
+        || (!path.is_empty() && path != "/")
+        || url.query().is_some_and(|q| !q.is_empty())
+        || url.fragment().is_some_and(|f| !f.is_empty());
+    if has_extra || value != format!("radius://{host}{path}") {
+        return Err(invalid_connect_address(value));
+    }
+    if !protocol::is_server_id(host) {
+        return Err("Radius transport address requires a lowercase UUIDv4 server ID".into());
+    }
+    Ok(TransportAddress::Radius(host.to_string()))
+}
+
+fn has_invalid_unix_syntax(value: &str, url: &url::Url) -> bool {
+    !value.starts_with("unix:///")
+        || value.starts_with("unix:////")
+        || value.contains('?')
+        || value.contains('#')
+        || url.as_str() != value
+}
+
+fn parse_unix_address(value: &str, url: &url::Url, host: &str) -> Result<TransportAddress, String> {
+    if !host.is_empty() || has_url_authority_extras(url) {
+        return Err("Unix transport address must not include an authority".into());
+    }
+    if has_invalid_unix_syntax(value, url) {
+        return Err(invalid_connect_address(value));
+    }
+    let path = decode_uri_component(url.path()).ok_or_else(|| invalid_connect_address(value))?;
+    if path.contains('\0') {
+        return Err(invalid_connect_address(value));
+    }
+    if !path.starts_with('/') {
+        return Err("Unix transport address requires an absolute path".into());
+    }
+    Ok(TransportAddress::Unix(PathBuf::from(path)))
+}
+
 /// `parseTransportAddress`: `radius://<lowercase UUIDv4 server id>` or `unix:///<absolute path>`.
 pub fn parse_transport_address(value: &str) -> Result<TransportAddress, String> {
-    let invalid = || format!("Invalid --connect address \"{value}\"");
-    let url = url::Url::parse(value).map_err(|_| invalid())?;
+    let url = url::Url::parse(value).map_err(|_| invalid_connect_address(value))?;
     let host = url.host_str().unwrap_or_default();
     match url.scheme() {
-        "radius" => {
-            let path = url.path();
-            if !url.username().is_empty()
-                || url.password().is_some_and(|p| !p.is_empty())
-                || url.port().is_some()
-                || (!path.is_empty() && path != "/")
-                || url.query().is_some_and(|q| !q.is_empty())
-                || url.fragment().is_some_and(|f| !f.is_empty())
-                || value != format!("radius://{host}{path}")
-            {
-                return Err(invalid());
-            }
-            if !protocol::is_server_id(host) {
-                return Err("Radius transport address requires a lowercase UUIDv4 server ID".into());
-            }
-            Ok(TransportAddress::Radius(host.to_string()))
-        }
-        "unix" => {
-            if !host.is_empty()
-                || url.port().is_some()
-                || !url.username().is_empty()
-                || url.password().is_some_and(|p| !p.is_empty())
-            {
-                return Err("Unix transport address must not include an authority".into());
-            }
-            if !value.starts_with("unix:///")
-                || value.starts_with("unix:////")
-                || value.contains('?')
-                || value.contains('#')
-                || url.as_str() != value
-            {
-                return Err(invalid());
-            }
-            let path = decode_uri_component(url.path()).ok_or_else(invalid)?;
-            if path.contains('\0') {
-                return Err(invalid());
-            }
-            if !path.starts_with('/') {
-                return Err("Unix transport address requires an absolute path".into());
-            }
-            Ok(TransportAddress::Unix(PathBuf::from(path)))
-        }
+        "radius" => parse_radius_address(value, &url, host),
+        "unix" => parse_unix_address(value, &url, host),
         scheme => Err(format!("Unsupported --connect transport \"{scheme}:\"")),
     }
 }
@@ -552,18 +593,7 @@ enum ServerEvent {
     Stop,
 }
 
-/// `runServerCommand`: an operator-held server (and its Radius relay) until SIGINT/SIGTERM or until it closes. It
-/// prints `Server: <id>` and `Socket: <path>`, then a `Radius: …` line per relay status change (a status reported
-/// while starting is printed after those lines, the latest only).
-pub fn run_server(command: &ServerCommand, env: &Env, out: &mut dyn Write) -> Result<i32, String> {
-    if !command.plugin_packages.is_empty() {
-        return Err("Plugin packages are not built by the Rust server".into());
-    }
-    let (events, received) = mpsc::channel::<ServerEvent>();
-    let statuses = events.clone();
-    let on_status: StatusSink = Arc::new(move |status: &RelayHostStatus| {
-        let _ = statuses.send(ServerEvent::Status(status.clone()));
-    });
+fn build_server_options(command: &ServerCommand, env: &Env, on_status: StatusSink) -> Result<ServerOptions, String> {
     let mut options = instance_server_options(
         env,
         command.session_dir.as_deref(),
@@ -578,30 +608,19 @@ pub fn run_server(command: &ServerCommand, env: &Env, out: &mut dyn Write) -> Re
         resolved_auth(env, &command.auth),
         Some(on_status),
     ));
-    let server = start_foreground_server(&options).map_err(io)?;
-    let stop = std::sync::Mutex::new(events.clone());
-    signals::set_handler(Arc::new(move |_| {
-        let _ = stop
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .send(ServerEvent::Stop);
-    }));
-    let closed = server.clone();
-    std::thread::spawn(move || {
-        closed.wait_closed();
-        let _ = events.send(ServerEvent::Stop);
-    });
-    writeln!(out, "Server: {}", server.server_id).map_err(io)?;
-    writeln!(out, "Socket: {}", server.socket_path.display()).map_err(io)?;
-    out.flush().map_err(io)?;
+    Ok(options)
+}
+
+fn report_relay_status(out: &mut dyn Write, previous: &mut String, status: &RelayHostStatus) -> Result<(), String> {
+    if let Some(line) = relay_status_line(previous, status) {
+        writeln!(out, "{line}").map_err(io)?;
+        out.flush().map_err(io)?;
+    }
+    Ok(())
+}
+
+fn drain_server_events(received: &mpsc::Receiver<ServerEvent>, out: &mut dyn Write) -> Result<(), String> {
     let mut previous = String::new();
-    let mut report = |out: &mut dyn Write, status: &RelayHostStatus| -> Result<(), String> {
-        if let Some(line) = relay_status_line(&mut previous, status) {
-            writeln!(out, "{line}").map_err(io)?;
-            out.flush().map_err(io)?;
-        }
-        Ok(())
-    };
     let mut stopped = false;
     let mut started = Vec::new();
     while let Ok(event) = received.try_recv() {
@@ -611,14 +630,44 @@ pub fn run_server(command: &ServerCommand, env: &Env, out: &mut dyn Write) -> Re
         }
     }
     if let Some(status) = pending_relay_status(started) {
-        report(out, &status)?;
+        report_relay_status(out, &mut previous, &status)?;
     }
     while !stopped {
         match received.recv() {
-            Ok(ServerEvent::Status(status)) => report(out, &status)?,
+            Ok(ServerEvent::Status(status)) => report_relay_status(out, &mut previous, &status)?,
             Ok(ServerEvent::Stop) | Err(_) => stopped = true,
         }
     }
+    Ok(())
+}
+
+/// `runServerCommand`: an operator-held server (and its Radius relay) until SIGINT/SIGTERM or until it closes. It
+/// prints `Server: <id>` and `Socket: <path>`, then a `Radius: …` line per relay status change (a status reported
+/// while starting is printed after those lines, the latest only).
+pub fn run_server(command: &ServerCommand, env: &Env, out: &mut dyn Write) -> Result<i32, String> {
+    if !command.plugin_packages.is_empty() {
+        return Err("Plugin packages are not built by the Rust server".into());
+    }
+    let (events, received) = mpsc::channel::<ServerEvent>();
+    let statuses = events.clone();
+    let on_status: StatusSink = Arc::new(move |status: &RelayHostStatus| {
+        let _ = statuses.send(ServerEvent::Status(status.clone()));
+    });
+    let options = build_server_options(command, env, on_status)?;
+    let server = start_foreground_server(&options).map_err(io)?;
+    let stop = std::sync::Mutex::new(events.clone());
+    signals::set_handler(Arc::new(move |_| {
+        let _ = jsrt::sync::lock(&stop).send(ServerEvent::Stop);
+    }));
+    let closed = server.clone();
+    std::thread::spawn(move || {
+        closed.wait_closed();
+        let _ = events.send(ServerEvent::Stop);
+    });
+    writeln!(out, "Server: {}", server.server_id).map_err(io)?;
+    writeln!(out, "Socket: {}", server.socket_path.display()).map_err(io)?;
+    out.flush().map_err(io)?;
+    drain_server_events(&received, out)?;
     signals::clear_handler();
     server.close();
     Ok(0)
@@ -648,10 +697,7 @@ pub enum ClientRoutes {
     Several(Vec<Route>),
 }
 
-/// `openClientRuntime`'s routes: the `--connect` address, else the instance's reachable servers, else a server
-/// activated for this client (with the command's model).
-pub fn client_routes(command: &ClientCommand, env: &Env) -> Result<ClientRoutes, String> {
-    let radius = matches!(command.connect, Some(TransportAddress::Radius(_)));
+fn validate_client_route_args(command: &ClientCommand, radius: bool) -> Result<(), String> {
     if command.auth.is_some() && !radius {
         return Err("Authentication is only supported for experimental Radius connections".into());
     }
@@ -664,6 +710,41 @@ pub fn client_routes(command: &ClientCommand, env: &Env) -> Result<ClientRoutes,
     if radius && !command.plugin_packages.is_empty() {
         return Err("Plugin package paths can only be configured on a local Unix server".into());
     }
+    Ok(())
+}
+
+fn discover_or_activate_unix_routes(command: &ClientCommand, env: &Env) -> Result<ClientRoutes, String> {
+    let options = instance_server_options(env, None, command.provider.clone(), command.model.clone())?;
+    let sockets = daemon::instance::socket_dir(&options.directory);
+    let discovered = client::discover_unix_servers(&sockets, client::DEFAULT_DISCOVERY_TIMEOUT).map_err(io)?;
+    if !discovered.is_empty() && command.model.is_some() {
+        return Err("Model selection is only valid when automatically activating a new server".into());
+    }
+    let mut routes: Vec<Route> = discovered
+        .into_iter()
+        .map(|found| Route {
+            server_id: found.server_id,
+            path: found.path,
+        })
+        .collect();
+    match routes.len() {
+        0 => {
+            let activated = activate_server(&options, false).map_err(io)?;
+            Ok(ClientRoutes::One(RemoteRoute::Unix(Route {
+                server_id: activated.server_id,
+                path: activated.path,
+            })))
+        }
+        1 => Ok(ClientRoutes::One(RemoteRoute::Unix(routes.remove(0)))),
+        _ => Ok(ClientRoutes::Several(routes)),
+    }
+}
+
+/// `openClientRuntime`'s routes: the `--connect` address, else the instance's reachable servers, else a server
+/// activated for this client (with the command's model).
+pub fn client_routes(command: &ClientCommand, env: &Env) -> Result<ClientRoutes, String> {
+    let radius = matches!(command.connect, Some(TransportAddress::Radius(_)));
+    validate_client_route_args(command, radius)?;
     let routes = match &command.connect {
         Some(TransportAddress::Radius(server_id)) => ClientRoutes::One(RemoteRoute::Radius {
             server_id: server_id.clone(),
@@ -673,32 +754,7 @@ pub fn client_routes(command: &ClientCommand, env: &Env) -> Result<ClientRoutes,
             )),
         }),
         Some(TransportAddress::Unix(path)) => ClientRoutes::One(RemoteRoute::Unix(route_from_explicit_path(path)?)),
-        None => {
-            let options = instance_server_options(env, None, command.provider.clone(), command.model.clone())?;
-            let sockets = daemon::instance::socket_dir(&options.directory);
-            let discovered = client::discover_unix_servers(&sockets, client::DEFAULT_DISCOVERY_TIMEOUT).map_err(io)?;
-            if !discovered.is_empty() && command.model.is_some() {
-                return Err("Model selection is only valid when automatically activating a new server".into());
-            }
-            let mut routes: Vec<Route> = discovered
-                .into_iter()
-                .map(|found| Route {
-                    server_id: found.server_id,
-                    path: found.path,
-                })
-                .collect();
-            match routes.len() {
-                0 => {
-                    let activated = activate_server(&options, false).map_err(io)?;
-                    ClientRoutes::One(RemoteRoute::Unix(Route {
-                        server_id: activated.server_id,
-                        path: activated.path,
-                    }))
-                }
-                1 => ClientRoutes::One(RemoteRoute::Unix(routes.remove(0))),
-                _ => ClientRoutes::Several(routes),
-            }
-        }
+        None => discover_or_activate_unix_routes(command, env)?,
     };
     if !command.plugin_packages.is_empty() {
         if matches!(routes, ClientRoutes::Several(_)) {
@@ -718,6 +774,52 @@ pub enum ServerChoice {
     Session { server: usize, session_id: String },
 }
 
+fn summary_session_id(summary: &Value) -> String {
+    summary["sessionId"].as_str().unwrap_or_default().to_string()
+}
+
+fn single_server_error(tui: bool) -> String {
+    if tui {
+        "Starting a Session requires exactly one server".to_string()
+    } else {
+        "Client prompt requires exactly one discovered server to create a Session".to_string()
+    }
+}
+
+fn newest_session(servers: &[(String, Vec<Value>)]) -> Option<(usize, String)> {
+    let modified = |s: &Value| s["modifiedAt"].as_f64().unwrap_or(0.0);
+    servers
+        .iter()
+        .enumerate()
+        .flat_map(|(index, (server, sessions))| sessions.iter().map(move |s| (index, server, s)))
+        .min_by(|(_, a_server, a), (_, b_server, b)| {
+            modified(b)
+                .partial_cmp(&modified(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a_server.cmp(b_server))
+                .then_with(|| summary_session_id(a).cmp(&summary_session_id(b)))
+        })
+        .map(|(index, _, summary)| (index, summary_session_id(summary)))
+}
+
+fn match_session_server(servers: &[(String, Vec<Value>)], id: String, tui: bool) -> Result<ServerChoice, String> {
+    let matches: Vec<usize> = servers
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, sessions))| sessions.iter().any(|s| summary_session_id(s) == id))
+        .map(|(index, _)| index)
+        .collect();
+    match matches.as_slice() {
+        [server] => Ok(ServerChoice::Session {
+            server: *server,
+            session_id: id,
+        }),
+        [] if tui => Err(single_server_error(tui)),
+        [] => Err(format!("No discovered server contains session {id}")),
+        _ => Err(format!("Session {id} is available from more than one server")),
+    }
+}
+
 /// The session selection over several servers, each `(server id, its session directory's summaries)`: `runClient`'s
 /// (`runClientOperation`), or with `tui` the client TUI's (`prepareClientSession`). Creating a Session needs exactly
 /// one server, so with several only an existing one is chosen.
@@ -726,64 +828,31 @@ pub fn choose_server(
     servers: &[(String, Vec<Value>)],
     tui: bool,
 ) -> Result<ServerChoice, String> {
-    let id_of = |summary: &Value| summary["sessionId"].as_str().unwrap_or_default().to_string();
     let mut session_id = command.session_id.clone();
     if session_id.is_none() && command.prompt.is_none() && !tui {
         let mut sessions: Vec<(String, String)> = servers
             .iter()
-            .flat_map(|(server, sessions)| sessions.iter().map(move |s| (server.clone(), id_of(s))))
+            .flat_map(|(server, sessions)| sessions.iter().map(move |s| (server.clone(), summary_session_id(s))))
             .collect();
         sessions.sort();
         return Ok(ServerChoice::List(sessions));
     }
-    let single = || {
+    if session_id.is_none()
+        && (command.continue_ || command.resume)
+        && let Some((index, id)) = newest_session(servers)
+    {
         if tui {
-            "Starting a Session requires exactly one server".to_string()
-        } else {
-            "Client prompt requires exactly one discovered server to create a Session".to_string()
-        }
-    };
-    if session_id.is_none() && (command.continue_ || command.resume) {
-        let modified = |s: &Value| s["modifiedAt"].as_f64().unwrap_or(0.0);
-        let newest = servers
-            .iter()
-            .enumerate()
-            .flat_map(|(index, (server, sessions))| sessions.iter().map(move |s| (index, server, s)))
-            .min_by(|(_, a_server, a), (_, b_server, b)| {
-                modified(b)
-                    .partial_cmp(&modified(a))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| a_server.cmp(b_server))
-                    .then_with(|| id_of(a).cmp(&id_of(b)))
+            return Ok(ServerChoice::Session {
+                server: index,
+                session_id: id,
             });
-        if let Some((index, _, summary)) = newest {
-            if tui {
-                return Ok(ServerChoice::Session {
-                    server: index,
-                    session_id: id_of(summary),
-                });
-            }
-            session_id = Some(id_of(summary));
         }
+        session_id = Some(id);
     }
     let Some(id) = session_id else {
-        return Err(single());
+        return Err(single_server_error(tui));
     };
-    let matches: Vec<usize> = servers
-        .iter()
-        .enumerate()
-        .filter(|(_, (_, sessions))| sessions.iter().any(|s| id_of(s) == id))
-        .map(|(index, _)| index)
-        .collect();
-    match matches.as_slice() {
-        [server] => Ok(ServerChoice::Session {
-            server: *server,
-            session_id: id,
-        }),
-        [] if tui => Err(single()),
-        [] => Err(format!("No discovered server contains session {id}")),
-        _ => Err(format!("Session {id} is available from more than one server")),
-    }
+    match_session_server(servers, id, tui)
 }
 
 /// A server's session summaries (its `ultron.session-directory` state).
@@ -803,15 +872,14 @@ fn server_sessions(route: &Route) -> Result<Vec<Value>, String> {
     sessions
 }
 
-/// `runClientCommand`: the TUI on a terminal without a prompt (`runClientTui`), else `runClient`'s listing
-/// (`<server id>\t<session id>` lines), attachment (`… attached`) or prompted answer (streamed as it arrives). Of
-/// several discovered servers, the one holding the selected session is used (`choose_server`). A Radius client's
-/// prompt survives its relay connection dropping: the reconnector brings it back and the client rejoins the session,
-/// printing the rest of the answer.
-pub fn run_client(command: &ClientCommand, env: &Env, out: &mut dyn Write) -> Result<i32, String> {
-    let tui = command.prompt.is_none() && crate::interactive::is_terminal();
-    let (route, chosen) = match client_routes(command, env)? {
-        ClientRoutes::One(route) => (route, None),
+fn resolve_client_route(
+    command: &ClientCommand,
+    env: &Env,
+    tui: bool,
+    out: &mut dyn Write,
+) -> Result<Option<(RemoteRoute, Option<String>)>, String> {
+    match client_routes(command, env)? {
+        ClientRoutes::One(route) => Ok(Some((route, None))),
         ClientRoutes::Several(routes) => {
             let servers = routes
                 .iter()
@@ -822,13 +890,93 @@ pub fn run_client(command: &ClientCommand, env: &Env, out: &mut dyn Write) -> Re
                     for (server_id, session_id) in sessions {
                         writeln!(out, "{server_id}\t{session_id}").map_err(io)?;
                     }
-                    return Ok(0);
+                    Ok(None)
                 }
                 ServerChoice::Session { server, session_id } => {
-                    (RemoteRoute::Unix(routes[server].clone()), Some(session_id))
+                    Ok(Some((RemoteRoute::Unix(routes[server].clone()), Some(session_id))))
                 }
             }
         }
+    }
+}
+
+fn stream_event_listener(streamed: Arc<std::sync::Mutex<Option<String>>>) -> client::runtime::EventListener {
+    Arc::new(move |event: &Value| {
+        let mut current = jsrt::sync::lock(&streamed);
+        if event["type"] == "message_start" && current.is_some() {
+            *current = Some(String::new());
+        }
+        if event["type"] == "message_update"
+            && event["frame"]["type"] == "text_delta"
+            && let Some(delta) = event["frame"]["delta"].as_str()
+        {
+            current.get_or_insert_with(String::new).push_str(delta);
+            let mut stdout = std::io::stdout();
+            let _ = stdout.write_all(delta.as_bytes());
+            let _ = stdout.flush();
+        }
+    })
+}
+
+fn write_prompted_output(
+    text: &str,
+    streamed: &std::sync::Mutex<Option<String>>,
+    out: &mut dyn Write,
+) -> Result<(), String> {
+    let partial = jsrt::sync::lock(streamed).clone();
+    match partial {
+        None => writeln!(out, "{text}").map_err(io),
+        Some(partial) => match text.strip_prefix(partial.as_str()) {
+            Some(rest) => writeln!(out, "{rest}").map_err(io),
+            None => writeln!(out, "\n{text}").map_err(io),
+        },
+    }
+}
+
+fn write_client_result(
+    result: ClientResult,
+    streamed: &std::sync::Mutex<Option<String>>,
+    out: &mut dyn Write,
+) -> Result<(), String> {
+    match result {
+        ClientResult::Attached { server_id, session_id } => {
+            writeln!(out, "{server_id}\t{session_id}\tattached").map_err(io)?;
+        }
+        ClientResult::Prompted { text, .. } => write_prompted_output(&text, streamed, out)?,
+        ClientResult::List(sessions) => {
+            for (server_id, session_id) in sessions {
+                writeln!(out, "{server_id}\t{session_id}").map_err(io)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn execute_client_request(
+    route: &RemoteRoute,
+    connection: Arc<client::runtime::Connection>,
+    request: &client::runtime::ClientCommand,
+    options: &client::runtime::RunOptions,
+) -> Result<ClientResult, String> {
+    match route {
+        RemoteRoute::Radius { server_id, auth } => {
+            let reopen = client::radius::RadiusReopen::new(server_id, auth.clone());
+            let reopen = move |session: &str| reopen.reopen(session);
+            client::runtime::run_client_reopening(request, connection, options, Some(&reopen))
+        }
+        RemoteRoute::Unix(_) => client::runtime::run_client_on(request, connection, options),
+    }
+}
+
+/// `runClientCommand`: the TUI on a terminal without a prompt (`runClientTui`), else `runClient`'s listing
+/// (`<server id>\t<session id>` lines), attachment (`… attached`) or prompted answer (streamed as it arrives). Of
+/// several discovered servers, the one holding the selected session is used (`choose_server`). A Radius client's
+/// prompt survives its relay connection dropping: the reconnector brings it back and the client rejoins the session,
+/// printing the rest of the answer.
+pub fn run_client(command: &ClientCommand, env: &Env, out: &mut dyn Write) -> Result<i32, String> {
+    let tui = command.prompt.is_none() && crate::interactive::is_terminal();
+    let Some((route, chosen)) = resolve_client_route(command, env, tui, out)? else {
+        return Ok(0);
     };
     let continue_ = command.continue_ || command.resume;
     let session_id = chosen.or_else(|| command.session_id.clone());
@@ -843,22 +991,6 @@ pub fn run_client(command: &ClientCommand, env: &Env, out: &mut dyn Write) -> Re
     }
     let connection = route.connect().map_err(client::lost::message)?;
     let streamed = Arc::new(std::sync::Mutex::new(None::<String>));
-    let streaming = streamed.clone();
-    let on_event: client::runtime::EventListener = Arc::new(move |event: &Value| {
-        let mut current = streaming.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if event["type"] == "message_start" && current.is_some() {
-            *current = Some(String::new());
-        }
-        if event["type"] == "message_update"
-            && event["frame"]["type"] == "text_delta"
-            && let Some(delta) = event["frame"]["delta"].as_str()
-        {
-            current.get_or_insert_with(String::new).push_str(delta);
-            let mut stdout = std::io::stdout();
-            let _ = stdout.write_all(delta.as_bytes());
-            let _ = stdout.flush();
-        }
-    });
     let request = client::runtime::ClientCommand {
         session_id,
         continue_,
@@ -866,39 +998,10 @@ pub fn run_client(command: &ClientCommand, env: &Env, out: &mut dyn Write) -> Re
         ..Default::default()
     };
     let options = client::runtime::RunOptions {
-        on_event: Some(on_event),
+        on_event: Some(stream_event_listener(streamed.clone())),
         ..Default::default()
     };
-    let result = match &route {
-        RemoteRoute::Radius { server_id, auth } => {
-            let reopen = client::radius::RadiusReopen::new(server_id, auth.clone());
-            let reopen = move |session: &str| reopen.reopen(session);
-            client::runtime::run_client_reopening(&request, connection, &options, Some(&reopen))?
-        }
-        RemoteRoute::Unix(_) => client::runtime::run_client_on(&request, connection, &options)?,
-    };
-    match result {
-        ClientResult::Attached { server_id, session_id } => {
-            writeln!(out, "{server_id}\t{session_id}\tattached").map_err(io)?;
-        }
-        ClientResult::Prompted { text, .. } => {
-            let partial = streamed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
-            match partial {
-                None => writeln!(out, "{text}").map_err(io)?,
-                Some(partial) => match text.strip_prefix(partial.as_str()) {
-                    Some(rest) => writeln!(out, "{rest}").map_err(io)?,
-                    None => writeln!(out, "\n{text}").map_err(io)?,
-                },
-            }
-        }
-        ClientResult::List(sessions) => {
-            for (server_id, session_id) in sessions {
-                writeln!(out, "{server_id}\t{session_id}").map_err(io)?;
-            }
-        }
-    }
+    let result = execute_client_request(&route, connection, &request, &options)?;
+    write_client_result(result, &streamed, out)?;
     Ok(0)
 }

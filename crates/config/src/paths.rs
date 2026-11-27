@@ -222,13 +222,7 @@ pub fn create_private_if_missing(path: &Path, content: &str) -> std::io::Result<
     }
 }
 
-/// Replace `path` with `content`: written to a new temporary file in the same directory (created with `mode`,
-/// less the umask), flushed to disk, then renamed over `path`, and the directory flushed. A crash, kill or full
-/// disk leaves the old file or the new one, never a truncated or partial one. A symbolic link is followed: its
-/// target is replaced and the link kept.
-pub fn write_atomic(path: &Path, content: &[u8], mode: u32) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
+fn atomic_target(path: &Path) -> std::io::Result<(PathBuf, PathBuf, String)> {
     let target = match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => std::fs::canonicalize(path)?,
         _ => path.to_path_buf(),
@@ -238,7 +232,12 @@ pub fn write_atomic(path: &Path, content: &[u8], mode: u32) -> std::io::Result<(
         _ => PathBuf::from("."),
     };
     let name = target.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
-    let (temporary, mut file) = loop {
+    Ok((target, dir, name))
+}
+
+fn open_atomic_temp(dir: &Path, name: &str, mode: u32) -> std::io::Result<(PathBuf, std::fs::File)> {
+    use std::os::unix::fs::OpenOptionsExt;
+    loop {
         let temporary = dir.join(format!(
             ".{name}.{}.{}.tmp",
             std::process::id(),
@@ -250,11 +249,21 @@ pub fn write_atomic(path: &Path, content: &[u8], mode: u32) -> std::io::Result<(
             .mode(mode)
             .open(&temporary)
         {
-            Ok(file) => break (temporary, file),
+            Ok(file) => return Ok((temporary, file)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
         }
-    };
+    }
+}
+
+/// Replace `path` with `content`: written to a new temporary file in the same directory (created with `mode`,
+/// less the umask), flushed to disk, then renamed over `path`, and the directory flushed. A crash, kill or full
+/// disk leaves the old file or the new one, never a truncated or partial one. A symbolic link is followed: its
+/// target is replaced and the link kept.
+pub fn write_atomic(path: &Path, content: &[u8], mode: u32) -> std::io::Result<()> {
+    use std::io::Write;
+    let (target, dir, name) = atomic_target(path)?;
+    let (temporary, mut file) = open_atomic_temp(&dir, &name, mode)?;
     let written = file
         .write_all(content)
         .and_then(|()| file.sync_all())

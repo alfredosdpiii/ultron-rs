@@ -139,7 +139,8 @@ fn mcp_proxy_oauth_sign_in_discovers_through_the_injected_proxy() {
     assert!(result.is_err());
     let seen = proxy.drain();
     assert!(
-        seen.contains(&"GET http://mcp.invalid/.well-known/oauth-protected-resource/mcp HTTP/1.1".to_string()),
+        seen.iter()
+            .any(|line| line == "GET http://mcp.invalid/.well-known/oauth-protected-resource/mcp HTTP/1.1"),
         "{seen:?}"
     );
     assert!(seen.iter().all(|line| line.contains("http://mcp.invalid/")), "{seen:?}");

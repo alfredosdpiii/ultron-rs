@@ -109,6 +109,173 @@ impl InstancesModule {
         instance["pinned"] = pinned.into();
         instance
     }
+
+    fn validate_retain_task(host: &dyn TaskHost, task_id: &str, caller: Option<&str>) -> Result<String, String> {
+        let task = host
+            .tasks()?
+            .into_iter()
+            .find(|task| task["id"] == task_id)
+            .ok_or("Unknown Ultron task")?;
+        if task["parentId"].as_str() != caller {
+            return Err("Only the task's parent can retain it".into());
+        }
+        if task["state"] != "completed" {
+            return Err("Only a completed task can be retained".into());
+        }
+        let definition = task["definition"].as_str().unwrap_or("").to_string();
+        if host.strategy(&definition)? != "rlm" {
+            return Err("Only RLM tasks have a lane to retain".into());
+        }
+        Ok(definition)
+    }
+
+    fn retain(&self, state: &mut State, current: Value, request: &Request<'_>, now: i64) -> Result<Value, String> {
+        kernel::ops::fields("instances.retain", request.payload)?;
+        let task_id = text(request.payload.get("task_id"), "task_id")?;
+        let existing = current["instances"]
+            .as_array()
+            .and_then(|items| items.iter().find(|item| item["task_id"] == task_id.as_str()))
+            .cloned();
+        if let Some(existing) = existing {
+            assert_owner(&existing, request.caller_task)?;
+            let pinned = existing["state"] == "open" && Self::pin(state, &existing, request.host);
+            return Ok(Self::with_pinned(existing, pinned));
+        }
+        let definition = Self::validate_retain_task(request.host, &task_id, request.caller_task)?;
+        let lane = request
+            .host
+            .task_lane(&task_id)
+            .unwrap_or_else(|| format!("ultron.{}.{task_id}", definition.split('@').next().unwrap_or("")));
+        let record = json!({
+            "id": format!("ultron-instance-{}", jsrt::random::uuid_v4()),
+            "task_id": task_id,
+            "definition": definition,
+            "lane": lane,
+            "owner": request.caller_task,
+            "state": "open",
+            "created_at": now,
+            "closed_at": null,
+            "invocations": [],
+        });
+        let mut next = current;
+        if let Some(Value::Array(items)) = next.get_mut("instances") {
+            items.push(record.clone());
+        }
+        self.commit(state, next)?;
+        let pinned = Self::pin(state, &record, request.host);
+        Ok(Self::with_pinned(record, pinned))
+    }
+
+    fn ensure_idle(host: &dyn TaskHost, instance: &Value) -> Result<(), String> {
+        let last = instance["invocations"]
+            .as_array()
+            .and_then(|items| items.last())
+            .map_or_else(|| instance["task_id"].clone(), |item| item["task_id"].clone());
+        let last_state = host
+            .tasks()?
+            .into_iter()
+            .find(|task| task["id"] == last)
+            .map(|task| task["state"].as_str().unwrap_or("").to_string());
+        if last_state.is_some_and(|state| !TERMINAL.contains(&state.as_str())) {
+            return Err("Instance is busy with a previous invocation".into());
+        }
+        Ok(())
+    }
+
+    fn build_invoke_spawn<'a>(
+        instance: &Value,
+        payload: &'a serde_json::Map<String, Value>,
+    ) -> Result<(Value, &'a Value), String> {
+        let input = payload.get("input").ok_or("input must be JSON")?;
+        let mut spawn = json!({
+            "definition": instance["definition"],
+            "input": input,
+            "lane": instance["lane"],
+        });
+        if let Some(key) = payload.get("key").filter(|key| !key.is_null()) {
+            let key = text(Some(key), "key")?;
+            spawn["key"] = format!("instance:{}:{key}", instance["id"].as_str().unwrap_or("")).into();
+        }
+        Ok((spawn, input))
+    }
+
+    fn record_invocation(
+        &self,
+        state: &mut State,
+        mut next: Value,
+        index: usize,
+        task_id: &Value,
+        input: &Value,
+        now: i64,
+    ) -> Result<(), String> {
+        let invoked = next["instances"][index]["invocations"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["task_id"] == *task_id));
+        if !invoked {
+            if let Some(Value::Array(items)) = next["instances"][index].get_mut("invocations") {
+                items.push(json!({
+                    "task_id": task_id,
+                    "at": now,
+                    "input_sha256": jsrt::hash::sha256_hex(jsrt::json::stringify(input).as_bytes()),
+                }));
+            }
+            self.commit(state, next)?;
+        }
+        Ok(())
+    }
+
+    fn invoke(&self, state: &mut State, current: Value, request: &Request<'_>, now: i64) -> Result<Value, String> {
+        kernel::ops::fields("instances.invoke", request.payload)?;
+        let index = find_index(&current, request.payload.get("id"))?;
+        let instance = current["instances"][index].clone();
+        assert_owner(&instance, request.caller_task)?;
+        if instance["state"] != "open" {
+            return Err("Instance is closed".into());
+        }
+        Self::ensure_idle(request.host, &instance)?;
+        let (spawn, input) = Self::build_invoke_spawn(&instance, request.payload)?;
+        let task = request.host.spawn(&spawn, request.caller_task)?;
+        self.record_invocation(state, current, index, &task["id"], input, now)?;
+        Ok(json!({"instance_id": instance["id"], "task_id": task["id"]}))
+    }
+
+    fn close(&self, state: &mut State, current: Value, request: &Request<'_>, now: i64) -> Result<Value, String> {
+        kernel::ops::fields("instances.close", request.payload)?;
+        let index = find_index(&current, request.payload.get("id"))?;
+        let instance = current["instances"][index].clone();
+        assert_owner(&instance, request.caller_task)?;
+        if instance["state"] == "closed" {
+            return Ok(instance);
+        }
+        let mut next = current;
+        next["instances"][index]["state"] = "closed".into();
+        next["instances"][index]["closed_at"] = now.into();
+        let closed = next["instances"][index].clone();
+        self.commit(state, next)?;
+        Self::unpin(state, &instance, request.host);
+        Ok(closed)
+    }
+
+    fn get(current: &Value, request: &Request<'_>) -> Result<Value, String> {
+        kernel::ops::fields("instances.get", request.payload)?;
+        let index = find_index(current, request.payload.get("id"))?;
+        let instance = current["instances"][index].clone();
+        assert_owner(&instance, request.caller_task)?;
+        Ok(instance)
+    }
+
+    fn list(current: &Value, request: &Request<'_>) -> Result<Value, String> {
+        kernel::ops::fields("instances.list", request.payload)?;
+        Ok(Value::Array(
+            current["instances"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|instance| request.caller_task.is_none_or(|caller| instance["owner"] == caller))
+                .cloned()
+                .collect(),
+        ))
+    }
 }
 
 impl ApiModule for InstancesModule {
@@ -130,142 +297,13 @@ impl ApiModule for InstancesModule {
     fn handle(&self, request: &Request<'_>) -> Result<Value, String> {
         let mut state = jsrt::sync::lock(&self.state);
         let current = self.load(&mut state)?;
-        let host = request.host;
-        let caller = request.caller_task;
-        let now = self.now.as_ref().map_or_else(|| host.now(), |now| now());
-        let payload = request.payload;
+        let now = self.now.as_ref().map_or_else(|| request.host.now(), |now| now());
         match request.kind {
-            "instances.retain" => {
-                kernel::ops::fields("instances.retain", payload)?;
-                let task_id = text(payload.get("task_id"), "task_id")?;
-                let existing = current["instances"]
-                    .as_array()
-                    .and_then(|items| items.iter().find(|item| item["task_id"] == task_id.as_str()))
-                    .cloned();
-                if let Some(existing) = existing {
-                    assert_owner(&existing, caller)?;
-                    let pinned = existing["state"] == "open" && Self::pin(&mut state, &existing, host);
-                    return Ok(Self::with_pinned(existing, pinned));
-                }
-                let task = host
-                    .tasks()?
-                    .into_iter()
-                    .find(|task| task["id"] == task_id.as_str())
-                    .ok_or("Unknown Ultron task")?;
-                if task["parentId"].as_str() != caller {
-                    return Err("Only the task's parent can retain it".into());
-                }
-                if task["state"] != "completed" {
-                    return Err("Only a completed task can be retained".into());
-                }
-                let definition = task["definition"].as_str().unwrap_or("").to_string();
-                if host.strategy(&definition)? != "rlm" {
-                    return Err("Only RLM tasks have a lane to retain".into());
-                }
-                let lane = host
-                    .task_lane(&task_id)
-                    .unwrap_or_else(|| format!("ultron.{}.{task_id}", definition.split('@').next().unwrap_or("")));
-                let record = json!({
-                    "id": format!("ultron-instance-{}", jsrt::random::uuid_v4()),
-                    "task_id": task_id,
-                    "definition": definition,
-                    "lane": lane,
-                    "owner": caller,
-                    "state": "open",
-                    "created_at": now,
-                    "closed_at": null,
-                    "invocations": [],
-                });
-                let mut next = current;
-                if let Some(Value::Array(items)) = next.get_mut("instances") {
-                    items.push(record.clone());
-                }
-                self.commit(&mut state, next)?;
-                let pinned = Self::pin(&mut state, &record, host);
-                Ok(Self::with_pinned(record, pinned))
-            }
-            "instances.invoke" => {
-                kernel::ops::fields("instances.invoke", payload)?;
-                let index = find_index(&current, payload.get("id"))?;
-                let instance = current["instances"][index].clone();
-                assert_owner(&instance, caller)?;
-                if instance["state"] != "open" {
-                    return Err("Instance is closed".into());
-                }
-                let input = payload.get("input").ok_or("input must be JSON")?;
-                let last = instance["invocations"]
-                    .as_array()
-                    .and_then(|items| items.last())
-                    .map_or_else(|| instance["task_id"].clone(), |item| item["task_id"].clone());
-                let last_state = host
-                    .tasks()?
-                    .into_iter()
-                    .find(|task| task["id"] == last)
-                    .map(|task| task["state"].as_str().unwrap_or("").to_string());
-                if last_state.is_some_and(|state| !TERMINAL.contains(&state.as_str())) {
-                    return Err("Instance is busy with a previous invocation".into());
-                }
-                let mut spawn = json!({
-                    "definition": instance["definition"],
-                    "input": input,
-                    "lane": instance["lane"],
-                });
-                if let Some(key) = payload.get("key").filter(|key| !key.is_null()) {
-                    let key = text(Some(key), "key")?;
-                    spawn["key"] = format!("instance:{}:{key}", instance["id"].as_str().unwrap_or("")).into();
-                }
-                let task = host.spawn(&spawn, caller)?;
-                let invoked = instance["invocations"]
-                    .as_array()
-                    .is_some_and(|items| items.iter().any(|item| item["task_id"] == task["id"]));
-                if !invoked {
-                    let mut next = current;
-                    if let Some(Value::Array(items)) = next["instances"][index].get_mut("invocations") {
-                        items.push(json!({
-                            "task_id": task["id"],
-                            "at": now,
-                            "input_sha256": jsrt::hash::sha256_hex(jsrt::json::stringify(input).as_bytes()),
-                        }));
-                    }
-                    self.commit(&mut state, next)?;
-                }
-                Ok(json!({"instance_id": instance["id"], "task_id": task["id"]}))
-            }
-            "instances.close" => {
-                kernel::ops::fields("instances.close", payload)?;
-                let index = find_index(&current, payload.get("id"))?;
-                let instance = current["instances"][index].clone();
-                assert_owner(&instance, caller)?;
-                if instance["state"] == "closed" {
-                    return Ok(instance);
-                }
-                let mut next = current;
-                next["instances"][index]["state"] = "closed".into();
-                next["instances"][index]["closed_at"] = now.into();
-                let closed = next["instances"][index].clone();
-                self.commit(&mut state, next)?;
-                Self::unpin(&mut state, &instance, host);
-                Ok(closed)
-            }
-            "instances.get" => {
-                kernel::ops::fields("instances.get", payload)?;
-                let index = find_index(&current, payload.get("id"))?;
-                let instance = current["instances"][index].clone();
-                assert_owner(&instance, caller)?;
-                Ok(instance)
-            }
-            "instances.list" => {
-                kernel::ops::fields("instances.list", payload)?;
-                Ok(Value::Array(
-                    current["instances"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter(|instance| caller.is_none_or(|caller| instance["owner"] == caller))
-                        .cloned()
-                        .collect(),
-                ))
-            }
+            "instances.retain" => self.retain(&mut state, current, request, now),
+            "instances.invoke" => self.invoke(&mut state, current, request, now),
+            "instances.close" => self.close(&mut state, current, request, now),
+            "instances.get" => Self::get(&current, request),
+            "instances.list" => Self::list(&current, request),
             other => Err(format!("Unknown instance request: {other}")),
         }
     }

@@ -208,6 +208,28 @@ pub struct ComposedColumn {
     pub selection: Option<(usize, usize)>,
 }
 
+fn trim_blank_edges(segment: &[String]) -> (usize, usize) {
+    let mut head = 0;
+    let mut tail = segment.len();
+    while head < tail && !has_non_blank(&segment[head]) {
+        head += 1;
+    }
+    while tail > head && !has_non_blank(&segment[tail - 1]) {
+        tail -= 1;
+    }
+    (head, tail)
+}
+
+fn push_gutter_rows(lines: &mut Vec<String>, rows: &[String]) {
+    for row in rows {
+        lines.push(if row.is_empty() {
+            String::new()
+        } else {
+            format!("  {row}")
+        });
+    }
+}
+
 /// `composeOutlineColumn`: gutter-prefixed rows of `child_rows[from..to]` with a dotted outline around
 /// `targets[selected]` (only its non-blank core; edge spacers stay outside).
 #[expect(
@@ -236,14 +258,7 @@ pub fn compose_outline_column(
             && t.end <= to
         {
             let segment: Vec<String> = (t.start..t.end).flat_map(|c| child_rows[c].iter().cloned()).collect();
-            let mut head = 0;
-            let mut tail = segment.len();
-            while head < tail && !has_non_blank(&segment[head]) {
-                head += 1;
-            }
-            while tail > head && !has_non_blank(&segment[tail - 1]) {
-                tail -= 1;
-            }
+            let (head, tail) = trim_blank_edges(&segment);
             lines.extend(std::iter::repeat_n(String::new(), head));
             let sel_start = lines.len();
             lines.extend(outline_rows(paint, &segment[head..tail], inner, style));
@@ -252,13 +267,7 @@ pub fn compose_outline_column(
             index = t.end;
             continue;
         }
-        for row in &child_rows[index] {
-            lines.push(if row.is_empty() {
-                String::new()
-            } else {
-                format!("  {row}")
-            });
-        }
+        push_gutter_rows(&mut lines, &child_rows[index]);
         index += 1;
     }
     ComposedColumn { lines, selection }

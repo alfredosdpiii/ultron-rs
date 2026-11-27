@@ -11,6 +11,39 @@ pub fn parse_json(text: &str) -> Result<Value, serde_json::Error> {
 
 const VALID_JSON_ESCAPES: &[char] = &['"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u'];
 
+fn repair_escape(chars: &[char], index: usize, repaired: &mut String) -> usize {
+    let Some(&next) = chars.get(index + 1) else {
+        repaired.push_str("\\\\");
+        return 1;
+    };
+    if next == 'u' {
+        let digits: String = chars.iter().skip(index + 2).take(4).collect();
+        if digits.len() == 4 && digits.chars().all(|d| d.is_ascii_hexdigit()) {
+            repaired.push_str("\\u");
+            repaired.push_str(&digits);
+            return 6;
+        }
+    }
+    if VALID_JSON_ESCAPES.contains(&next) {
+        repaired.push('\\');
+        repaired.push(next);
+        return 2;
+    }
+    repaired.push_str("\\\\");
+    1
+}
+
+fn push_control_escape(c: char, repaired: &mut String) {
+    match c {
+        '\u{8}' => repaired.push_str("\\b"),
+        '\u{c}' => repaired.push_str("\\f"),
+        '\n' => repaired.push_str("\\n"),
+        '\r' => repaired.push_str("\\r"),
+        '\t' => repaired.push_str("\\t"),
+        other => repaired.push_str(&format!("\\u{:04x}", other as u32)),
+    }
+}
+
 /// Escapes raw control characters inside strings and doubles backslashes before invalid escapes.
 pub fn repair_json(json: &str) -> String {
     let chars: Vec<char> = json.chars().collect();
@@ -21,9 +54,7 @@ pub fn repair_json(json: &str) -> String {
         let c = chars[index];
         if !in_string {
             repaired.push(c);
-            if c == '"' {
-                in_string = true;
-            }
+            in_string = c == '"';
             index += 1;
             continue;
         }
@@ -34,39 +65,11 @@ pub fn repair_json(json: &str) -> String {
             continue;
         }
         if c == '\\' {
-            let Some(&next) = chars.get(index + 1) else {
-                repaired.push_str("\\\\");
-                index += 1;
-                continue;
-            };
-            if next == 'u' {
-                let digits: String = chars.iter().skip(index + 2).take(4).collect();
-                if digits.len() == 4 && digits.chars().all(|d| d.is_ascii_hexdigit()) {
-                    repaired.push_str("\\u");
-                    repaired.push_str(&digits);
-                    index += 6;
-                    continue;
-                }
-            }
-            if VALID_JSON_ESCAPES.contains(&next) {
-                repaired.push('\\');
-                repaired.push(next);
-                index += 2;
-                continue;
-            }
-            repaired.push_str("\\\\");
-            index += 1;
+            index += repair_escape(&chars, index, &mut repaired);
             continue;
         }
         if (c as u32) <= 0x1f {
-            match c {
-                '\u{8}' => repaired.push_str("\\b"),
-                '\u{c}' => repaired.push_str("\\f"),
-                '\n' => repaired.push_str("\\n"),
-                '\r' => repaired.push_str("\\r"),
-                '\t' => repaired.push_str("\\t"),
-                other => repaired.push_str(&format!("\\u{:04x}", other as u32)),
-            }
+            push_control_escape(c, &mut repaired);
         } else {
             repaired.push(c);
         }
@@ -165,30 +168,33 @@ impl Partial {
         false
     }
 
+    fn keyword(&mut self) -> Option<Value> {
+        type Keyword = (&'static str, usize, fn() -> Value);
+        const KEYWORDS: [Keyword; 6] = [
+            ("null", 0, || Value::Null),
+            ("true", 0, || Value::Bool(true)),
+            ("false", 0, || Value::Bool(false)),
+            ("Infinity", 0, || Value::Null),
+            ("-Infinity", 1, || Value::Null),
+            ("NaN", 0, || Value::Null),
+        ];
+        for (word, min_rest, make) in KEYWORDS {
+            if self.literal(word, min_rest) {
+                return Some(make());
+            }
+        }
+        None
+    }
+
     fn any(&mut self) -> Option<Value> {
         self.skip_blank();
-        if self.i >= self.s.len() {
-            return None;
+        let ch = self.at(self.i)?;
+        match ch {
+            '"' => self.string(),
+            '{' => self.object(),
+            '[' => self.array(),
+            _ => self.keyword().or_else(|| self.number()),
         }
-        match self.s[self.i] {
-            '"' => return self.string(),
-            '{' => return self.object(),
-            '[' => return self.array(),
-            _ => {}
-        }
-        if self.literal("null", 0) {
-            return Some(Value::Null);
-        }
-        if self.literal("true", 0) {
-            return Some(Value::Bool(true));
-        }
-        if self.literal("false", 0) {
-            return Some(Value::Bool(false));
-        }
-        if self.literal("Infinity", 0) || self.literal("-Infinity", 1) || self.literal("NaN", 0) {
-            return Some(Value::Null);
-        }
-        self.number()
     }
 
     fn string(&mut self) -> Option<Value> {

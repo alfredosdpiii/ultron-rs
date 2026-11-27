@@ -265,9 +265,21 @@ pub fn http_fetch_with(proxy: ai::net::ProxyEnv) -> Fetch {
     })
 }
 
-fn plain_get(url: &url::Url, request: &FetchRequest) -> Result<FetchResponse, String> {
+fn try_connect_addr(addr: &std::net::SocketAddr, deadline: Instant) -> Result<Option<std::net::TcpStream>, String> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err("timed out".into());
+    }
+    match std::net::TcpStream::connect_timeout(addr, left) {
+        Ok(s) => Ok(Some(s)),
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Err("timed out".into()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn connect_plain(url: &url::Url, deadline: Instant) -> Result<std::net::TcpStream, String> {
     use std::net::ToSocketAddrs;
-    let deadline = Instant::now() + request.timeout;
     let host_name = url.host_str().unwrap_or_default();
     let host = host_name.trim_start_matches('[').trim_end_matches(']');
     let port = url.port().unwrap_or(80);
@@ -275,35 +287,22 @@ fn plain_get(url: &url::Url, request: &FetchRequest) -> Result<FetchResponse, St
         .to_socket_addrs()
         .map_err(|_| "host not found".to_string())?
         .collect();
-    let mut stream = None;
     let mut refused = false;
     for addr in &addrs {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Err("timed out".into());
-        }
-        match std::net::TcpStream::connect_timeout(addr, left) {
-            Ok(s) => {
-                stream = Some(s);
-                break;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => refused = true,
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => return Err("timed out".into()),
-            Err(e) => return Err(e.to_string()),
+        match try_connect_addr(addr, deadline)? {
+            Some(s) => return Ok(s),
+            None => refused = true,
         }
     }
-    let Some(mut stream) = stream else {
-        return Err(if refused || addrs.is_empty() {
-            "connection refused".into()
-        } else {
-            "fetch failed".into()
-        });
-    };
-    let left = deadline
-        .saturating_duration_since(Instant::now())
-        .max(Duration::from_millis(1));
-    let _ = stream.set_read_timeout(Some(left));
-    let _ = stream.set_write_timeout(Some(left));
+    Err(if refused || addrs.is_empty() {
+        "connection refused".into()
+    } else {
+        "fetch failed".into()
+    })
+}
+
+fn build_plain_request(url: &url::Url, headers: &[(String, String)]) -> String {
+    let host_name = url.host_str().unwrap_or_default();
     let host_header = match url.port() {
         Some(port) => format!("{host_name}:{port}"),
         None => host_name.to_string(),
@@ -312,20 +311,22 @@ fn plain_get(url: &url::Url, request: &FetchRequest) -> Result<FetchResponse, St
         "GET {} HTTP/1.1\r\nhost: {host_header}\r\nconnection: close\r\naccept: */*\r\n",
         &url[url::Position::BeforePath..url::Position::AfterQuery]
     );
-    for (name, value) in &request.headers {
+    for (name, value) in headers {
         head.push_str(&format!("{name}: {value}\r\n"));
     }
     head.push_str("\r\n");
-    let timed = |e: std::io::Error| {
-        if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) {
-            "timed out".to_string()
-        } else {
-            e.to_string()
-        }
-    };
-    stream.write_all(head.as_bytes()).map_err(timed)?;
-    let mut raw = Vec::new();
-    stream.read_to_end(&mut raw).map_err(timed)?;
+    head
+}
+
+fn io_timeout_error(e: std::io::Error) -> String {
+    if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) {
+        "timed out".to_string()
+    } else {
+        e.to_string()
+    }
+}
+
+fn parse_plain_response(raw: &[u8]) -> Result<FetchResponse, String> {
     let split = raw.windows(4).position(|w| w == b"\r\n\r\n").ok_or("fetch failed")?;
     let head = String::from_utf8_lossy(&raw[..split]).to_string();
     let mut body = raw[split + 4..].to_vec();
@@ -344,6 +345,21 @@ fn plain_get(url: &url::Url, request: &FetchRequest) -> Result<FetchResponse, St
         status,
         body: String::from_utf8_lossy(&body).into_owned(),
     })
+}
+
+fn plain_get(url: &url::Url, request: &FetchRequest) -> Result<FetchResponse, String> {
+    let deadline = Instant::now() + request.timeout;
+    let mut stream = connect_plain(url, deadline)?;
+    let left = deadline
+        .saturating_duration_since(Instant::now())
+        .max(Duration::from_millis(1));
+    let _ = stream.set_read_timeout(Some(left));
+    let _ = stream.set_write_timeout(Some(left));
+    let head = build_plain_request(url, &request.headers);
+    stream.write_all(head.as_bytes()).map_err(io_timeout_error)?;
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).map_err(io_timeout_error)?;
+    parse_plain_response(&raw)
 }
 
 fn dechunk(mut data: &[u8]) -> Vec<u8> {

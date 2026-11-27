@@ -53,6 +53,15 @@ fn relation_row(relation: &Relation) -> Value {
     })
 }
 
+fn map_neo4j_transport_error(error: TransportError, shown: &str) -> String {
+    match error {
+        TransportError::Timeout => format!("Neo4j did not answer within {}s", TIMEOUT.as_secs()),
+        TransportError::Aborted => "the Neo4j request was cancelled".to_string(),
+        TransportError::TooLarge => "Neo4j's answer was too large".to_string(),
+        TransportError::Failed => format!("Neo4j at {shown} could not be reached"),
+    }
+}
+
 impl Neo4j {
     pub fn new(transport: Arc<dyn Transport>, settings: Neo4jSettings, password: Password) -> Neo4j {
         Neo4j {
@@ -70,18 +79,10 @@ impl Neo4j {
         }
         let shown = config::auth::display_url(&self.settings.url);
         config::auth::secure_url(&self.settings.url).map_err(|why| format!("graph.neo4j.url: {why}"))?;
-        let mut headers = vec![
-            ("content-type".to_string(), "application/json".to_string()),
-            ("accept".to_string(), "application/json".to_string()),
-        ];
-        if let Some(password) = (self.password)(&self.settings.url).map_err(|why| format!("Neo4j: {why}"))? {
-            let credentials = jsrt::base64::encode(format!("{}:{password}", self.settings.user));
-            headers.push(("authorization".to_string(), format!("Basic {credentials}")));
-        }
         let request = HttpRequest {
             method: "POST".into(),
             url: format!("{}/db/{database}/query/v2", self.settings.url),
-            headers,
+            headers: self.build_headers()?,
             body: Some(
                 json!({"statement": statement, "parameters": parameters})
                     .to_string()
@@ -91,19 +92,30 @@ impl Neo4j {
         let response = self
             .transport
             .send(request, MAX_BYTES, TIMEOUT, signal)
-            .map_err(|error| match error {
-                TransportError::Timeout => format!("Neo4j did not answer within {}s", TIMEOUT.as_secs()),
-                TransportError::Aborted => "the Neo4j request was cancelled".to_string(),
-                TransportError::TooLarge => "Neo4j's answer was too large".to_string(),
-                TransportError::Failed => format!("Neo4j at {shown} could not be reached"),
-            })?;
-        match response.status {
+            .map_err(|error| map_neo4j_transport_error(error, &shown))?;
+        self.check_response(response.status, &response.body)
+    }
+
+    fn build_headers(&self) -> Result<Vec<(String, String)>, String> {
+        let mut headers = vec![
+            ("content-type".to_string(), "application/json".to_string()),
+            ("accept".to_string(), "application/json".to_string()),
+        ];
+        if let Some(password) = (self.password)(&self.settings.url).map_err(|why| format!("Neo4j: {why}"))? {
+            let credentials = jsrt::base64::encode(format!("{}:{password}", self.settings.user));
+            headers.push(("authorization".to_string(), format!("Basic {credentials}")));
+        }
+        Ok(headers)
+    }
+
+    fn check_response(&self, status: u16, body: &[u8]) -> Result<(), String> {
+        match status {
             200..=299 => {}
             401 | 403 => return Err(format!("Neo4j refused the credentials of {}", self.settings.user)),
             status => return Err(format!("Neo4j answered HTTP {status}")),
         }
-        let body: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
-        match body
+        let parsed: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+        match parsed
             .get("errors")
             .and_then(Value::as_array)
             .and_then(|errors| errors.first())

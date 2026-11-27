@@ -282,7 +282,7 @@ fn interactive_commands_escape_cancels_a_manual_compaction() {
     // Idle again: Esc no longer aborts anything.
     let before = calls(&c).len();
     app.handle_input("\x1b");
-    assert!(!calls(&c)[before..].contains(&"abort".to_string()), "{:?}", calls(&c));
+    assert!(!calls(&c)[before..].iter().any(|i| i == "abort"), "{:?}", calls(&c));
 }
 
 /// A run's retry (interactive-mode.ts `auto_retry_start` / `auto_retry_end`): the countdown without an error line,
@@ -1062,7 +1062,7 @@ fn interactive_commands_escape_cancels_a_branch_summary() {
     let before = calls(&c).len();
     app.handle_input("\x1b");
     app.handle_input("\x1b");
-    assert!(!calls(&c)[before..].contains(&"abort".to_string()), "{:?}", calls(&c));
+    assert!(!calls(&c)[before..].iter().any(|i| i == "abort"), "{:?}", calls(&c));
     // A navigation without a summary is not cancelled by Esc.
     app.apply(LaneEvent::Tree {
         tree: json!([{"entry": entry("u1", None, "user", "ask"), "children": [
@@ -1076,7 +1076,7 @@ fn interactive_commands_escape_cancels_a_branch_summary() {
     assert_eq!(calls(&c).last().unwrap(), "navigate Some(\"a1\") false None");
     let before = calls(&c).len();
     app.handle_input("\x1b");
-    assert!(!calls(&c)[before..].contains(&"abort".to_string()), "{:?}", calls(&c));
+    assert!(!calls(&c)[before..].iter().any(|i| i == "abort"), "{:?}", calls(&c));
 }
 
 fn listing(path: &str, name: Option<&str>, first: &str, modified: i64) -> interactive::lane::SessionListing {
@@ -1243,12 +1243,12 @@ fn interactive_commands_settings_theme_and_model_thinking() {
     app.handle_input("\r");
     let all = calls(&c);
     assert!(
-        all.contains(
-            &"setting modelThinkingLevel={\"level\":\"minimal\",\"modelId\":\"a\",\"provider\":\"anthropic\"}"
-                .to_string()
-        ) || all
-            .iter()
-            .any(|x| x.starts_with("setting modelThinkingLevel=") && x.contains("minimal")),
+        all.iter()
+            .any(|i| i
+                == "setting modelThinkingLevel={\"level\":\"minimal\",\"modelId\":\"a\",\"provider\":\"anthropic\"}")
+            || all
+                .iter()
+                .any(|x| x.starts_with("setting modelThinkingLevel=") && x.contains("minimal")),
         "{all:?}"
     );
     // The current model's override applies now.
@@ -1579,7 +1579,7 @@ fn interactive_commands_mode_picker_switches_the_mode() {
     let (mut parity, pc) = app_with(interactive::qol::QolSettings::parity(), vec![model("a", true)]);
     submit(&mut parity, "/mode engineering");
     assert!(screen(&mut parity).contains("Unknown slash command: /mode"));
-    assert!(!calls(&pc).contains(&"read_mode".to_string()));
+    assert!(!calls(&pc).iter().any(|i| i == "read_mode"));
 }
 
 /// `/engineering [true|false]` as client-tui-pi-commands.ts `setEngineeringMode`: report, set, usage.

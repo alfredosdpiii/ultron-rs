@@ -51,7 +51,9 @@ fn delegation_verdict_bounded_flattens_javascript_whitespace() {
     let payload = json!({"status": "a\u{85}b\u{feff}\u{feff}c"});
     let problems = validate_verdict(payload.as_object().unwrap(), None).unwrap_err();
     assert!(
-        problems.contains(&"status must be \"passed\", \"failed\" or \"blocked\", not \"a\u{85}b c\"".to_string()),
+        problems
+            .iter()
+            .any(|i| i == "status must be \"passed\", \"failed\" or \"blocked\", not \"a\u{85}b c\""),
         "{problems:?}"
     );
 }

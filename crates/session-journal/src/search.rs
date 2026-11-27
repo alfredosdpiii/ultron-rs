@@ -87,6 +87,20 @@ pub fn replay(path: &Path) -> Result<State, String> {
     replay_until(path, &|| false)
 }
 
+fn apply_valid_writes(state: &mut State, writes: Vec<Value>) {
+    if state.validate(&writes).is_ok() {
+        state.apply(writes);
+    }
+}
+
+fn replay_v3(path: &Path, state: &mut State) -> Result<(), String> {
+    let source = LegacyV3Source::read(path, &mut crate::TestClock::new(0, 0))?;
+    for write in source.writes(None)? {
+        apply_valid_writes(state, vec![write]);
+    }
+    Ok(())
+}
+
 /// [`replay`], skipping the rest of a format-4 file once `stop` says so (the state is then partial).
 fn replay_until(path: &Path, stop: &dyn Fn() -> bool) -> Result<State, String> {
     let (line, _) =
@@ -97,23 +111,13 @@ fn replay_until(path: &Path, stop: &dyn Fn() -> bool) -> Result<State, String> {
             path,
             |_| stop(),
             |writes| {
-                if let Some(writes) = writes
-                    && state.validate(&writes).is_ok()
-                {
-                    state.apply(writes);
+                if let Some(writes) = writes {
+                    apply_valid_writes(&mut state, writes);
                 }
             },
         )
         .map_err(|e| format!("Failed to read session {}: {e}", path.display()))?,
-        Ok(ParsedHeader::V3(_)) => {
-            let source = LegacyV3Source::read(path, &mut crate::TestClock::new(0, 0))?;
-            for write in source.writes(None)? {
-                let writes = vec![write];
-                if state.validate(&writes).is_ok() {
-                    state.apply(writes);
-                }
-            }
-        }
+        Ok(ParsedHeader::V3(_)) => replay_v3(path, &mut state)?,
         Err(_) => return Err(format!("Not a session file: {}", path.display())),
     }
     Ok(state)
@@ -418,6 +422,71 @@ fn snippet(text: &str, at: usize, width: usize) -> String {
     out
 }
 
+fn grep_entries(metadata: &Metadata, entries: &[&Value], query: &Query, found: &mut Found) {
+    let mut in_session = 0;
+    for entry in entries {
+        if in_session >= query.per_session || found.hits.len() >= query.limit {
+            found.truncated = true;
+            break;
+        }
+        let Some(text) = entry_text(entry, usize::MAX) else {
+            continue;
+        };
+        if !query.roles.is_empty() && !query.roles.contains(&text.role) {
+            continue;
+        }
+        let Some((at, matches)) = query.matcher.find(&text.text) else {
+            continue;
+        };
+        in_session += 1;
+        found.hits.push(Hit {
+            session: metadata.id.clone(),
+            cwd: metadata.cwd.clone(),
+            span: SpanRef::entry(&metadata.id, &text.id),
+            entry: text.id,
+            seq: text.seq,
+            timestamp: text.timestamp,
+            role: text.role,
+            tool: text.tool,
+            snippet: snippet(&text.text, at, query.snippet),
+            matches,
+        });
+    }
+}
+
+fn grep_session(metadata: &Metadata, query: &Query, stop: &dyn Fn() -> bool, found: &mut Found) -> bool {
+    if let Some(skipped) = over_bound(metadata, query.max_bytes) {
+        found.errors.push(skipped);
+        return false;
+    }
+    if !query.matcher.may_match(&metadata.path, stop) {
+        return false;
+    }
+    let state = match replay_until(&metadata.path, stop) {
+        Ok(_) if stop() => {
+            found.truncated = true;
+            return true;
+        }
+        Ok(state) => state,
+        Err(error) => {
+            found.errors.push(error);
+            return false;
+        }
+    };
+    let entries = match &query.branch {
+        Branch::All => state.entries().iter().collect(),
+        Branch::Lane(lane) => match lane_path(&state, lane) {
+            Ok(path) => path,
+            Err(error) => {
+                found.errors.push(format!("{}: {error}", metadata.id));
+                return false;
+            }
+        },
+    };
+    grep_entries(metadata, &entries, query, found);
+    false
+}
+
 /// Search the sessions under `roots`. `stop` is asked between sessions and while one is read (a cancelled request
 /// ends the search early, as `truncated`). A session file over `query.max_bytes` is not searched: it is named in
 /// `errors`.
@@ -433,62 +502,8 @@ pub fn grep(roots: &[PathBuf], query: &Query, stop: &dyn Fn() -> bool) -> Found 
             break;
         }
         found.searched += 1;
-        if let Some(skipped) = over_bound(metadata, query.max_bytes) {
-            found.errors.push(skipped);
-            continue;
-        }
-        if !query.matcher.may_match(&metadata.path, stop) {
-            continue;
-        }
-        let state = match replay_until(&metadata.path, stop) {
-            Ok(_) if stop() => {
-                found.truncated = true;
-                break;
-            }
-            Ok(state) => state,
-            Err(error) => {
-                found.errors.push(error);
-                continue;
-            }
-        };
-        let entries = match &query.branch {
-            Branch::All => state.entries().iter().collect(),
-            Branch::Lane(lane) => match lane_path(&state, lane) {
-                Ok(path) => path,
-                Err(error) => {
-                    found.errors.push(format!("{}: {error}", metadata.id));
-                    continue;
-                }
-            },
-        };
-        let mut in_session = 0;
-        for entry in entries {
-            if in_session >= query.per_session || found.hits.len() >= query.limit {
-                found.truncated = true;
-                break;
-            }
-            let Some(text) = entry_text(entry, usize::MAX) else {
-                continue;
-            };
-            if !query.roles.is_empty() && !query.roles.contains(&text.role) {
-                continue;
-            }
-            let Some((at, matches)) = query.matcher.find(&text.text) else {
-                continue;
-            };
-            in_session += 1;
-            found.hits.push(Hit {
-                session: metadata.id.clone(),
-                cwd: metadata.cwd.clone(),
-                span: SpanRef::entry(&metadata.id, &text.id),
-                entry: text.id,
-                seq: text.seq,
-                timestamp: text.timestamp,
-                role: text.role,
-                tool: text.tool,
-                snippet: snippet(&text.text, at, query.snippet),
-                matches,
-            });
+        if grep_session(metadata, query, stop, &mut found) {
+            break;
         }
     }
     found
@@ -517,27 +532,25 @@ pub struct Span {
     pub truncated: bool,
 }
 
-/// The entries of a span with text, oldest first: from `from` (default: the root) to `to` (default: the lane's
-/// tip) on the lane's branch, or on the branch ending at `to` when `to` is on another one. `from` must be on that
-/// branch, at or before `to`.
-pub fn read(roots: &[PathBuf], query: &ReadQuery) -> Result<Span, String> {
-    let metadata = find(roots, &query.span.session)?;
-    let state = replay(&metadata.path)?;
-    let lane = lane_path(&state, &query.lane)?;
-    let path = match &query.span.to {
-        None => lane,
-        Some(to) if lane.iter().any(|e| str_field(e, "id") == to) => lane,
+fn resolve_span_path<'a>(state: &'a State, session_id: &str, query: &ReadQuery) -> Result<Vec<&'a Value>, String> {
+    let lane = lane_path(state, &query.lane)?;
+    match &query.span.to {
+        None => Ok(lane),
+        Some(to) if lane.iter().any(|e| str_field(e, "id") == to) => Ok(lane),
         Some(to) => {
             if state.entry(to).is_none() {
-                return Err(format!("No entry {to} in session {}", metadata.id));
+                return Err(format!("No entry {to} in session {session_id}"));
             }
-            state.branch_path_refs(Some(to))?
+            state.branch_path_refs(Some(to))
         }
-    };
+    }
+}
+
+fn resolve_span_bounds(path: &[&Value], session_id: &str, query: &ReadQuery) -> Result<(usize, usize), String> {
     let position = |id: &str| path.iter().position(|e| str_field(e, "id") == id);
     let end = match &query.span.to {
         None => path.len().saturating_sub(1),
-        Some(to) => position(to).ok_or_else(|| format!("No entry {to} in session {}", metadata.id))?,
+        Some(to) => position(to).ok_or_else(|| format!("No entry {to} in session {session_id}"))?,
     };
     let start = match &query.span.from {
         None => 0,
@@ -545,13 +558,23 @@ pub fn read(roots: &[PathBuf], query: &ReadQuery) -> Result<Span, String> {
             Some(at) if at <= end => at,
             _ => {
                 return Err(format!(
-                    "Entry {from} is not on the branch before {} in session {}",
+                    "Entry {from} is not on the branch before {} in session {session_id}",
                     query.span.to.as_deref().unwrap_or("the tip"),
-                    metadata.id
                 ));
             }
         },
     };
+    Ok((start, end))
+}
+
+/// The entries of a span with text, oldest first: from `from` (default: the root) to `to` (default: the lane's
+/// tip) on the lane's branch, or on the branch ending at `to` when `to` is on another one. `from` must be on that
+/// branch, at or before `to`.
+pub fn read(roots: &[PathBuf], query: &ReadQuery) -> Result<Span, String> {
+    let metadata = find(roots, &query.span.session)?;
+    let state = replay(&metadata.path)?;
+    let path = resolve_span_path(&state, &metadata.id, query)?;
+    let (start, end) = resolve_span_bounds(&path, &metadata.id, query)?;
     let texts: Vec<(usize, EntryText)> = path
         .iter()
         .enumerate()

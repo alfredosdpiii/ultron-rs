@@ -40,40 +40,64 @@ fn newline(out: &mut String, gap: &str, level: usize) {
     }
 }
 
+fn write_array(out: &mut String, items: &[Value], gap: &str, level: usize) {
+    if items.is_empty() {
+        out.push_str("[]");
+        return;
+    }
+    out.push('[');
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        newline(out, gap, level + 1);
+        write_value(out, item, gap, level + 1);
+    }
+    newline(out, gap, level);
+    out.push(']');
+}
+
+fn write_object(out: &mut String, map: &Map<String, Value>, gap: &str, level: usize) {
+    if map.is_empty() {
+        out.push_str("{}");
+        return;
+    }
+    out.push('{');
+    let separator = if gap.is_empty() { ":" } else { ": " };
+    for (index, (key, item)) in object_entries(map).into_iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        newline(out, gap, level + 1);
+        write_string(out, key);
+        out.push_str(separator);
+        write_value(out, item, gap, level + 1);
+    }
+    newline(out, gap, level);
+    out.push('}');
+}
+
 fn write_value(out: &mut String, value: &Value, gap: &str, level: usize) {
     match value {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Number(n) => out.push_str(&crate::number::json_to_string(n)),
         Value::String(s) => write_string(out, s),
-        Value::Array(items) if items.is_empty() => out.push_str("[]"),
-        Value::Array(items) => {
-            out.push('[');
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                newline(out, gap, level + 1);
-                write_value(out, item, gap, level + 1);
-            }
-            newline(out, gap, level);
-            out.push(']');
-        }
-        Value::Object(map) if map.is_empty() => out.push_str("{}"),
-        Value::Object(map) => {
-            out.push('{');
-            for (i, (key, item)) in object_entries(map).into_iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                newline(out, gap, level + 1);
-                write_string(out, key);
-                out.push_str(if gap.is_empty() { ":" } else { ": " });
-                write_value(out, item, gap, level + 1);
-            }
-            newline(out, gap, level);
-            out.push('}');
-        }
+        Value::Array(items) => write_array(out, items, gap, level),
+        Value::Object(map) => write_object(out, map, gap, level),
+    }
+}
+
+fn escape_json_char(c: char) -> Option<&'static str> {
+    match c {
+        '"' => Some("\\\""),
+        '\\' => Some("\\\\"),
+        '\u{8}' => Some("\\b"),
+        '\u{c}' => Some("\\f"),
+        '\n' => Some("\\n"),
+        '\r' => Some("\\r"),
+        '\t' => Some("\\t"),
+        _ => None,
     }
 }
 
@@ -82,16 +106,12 @@ fn write_value(out: &mut String, value: &Value, gap: &str, level: usize) {
 fn write_string(out: &mut String, s: &str) {
     out.push('"');
     for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
+        if let Some(escaped) = escape_json_char(c) {
+            out.push_str(escaped);
+        } else if (c as u32) < 0x20 {
+            out.push_str(&format!("\\u{:04x}", c as u32));
+        } else {
+            out.push(c);
         }
     }
     out.push('"');
@@ -188,6 +208,18 @@ pub fn parse(text: &str) -> Result<Value, String> {
         return Err(parser.located("Unexpected non-whitespace character after JSON", parser.pos));
     }
     Ok(value)
+}
+
+fn simple_escape(escaped: u16) -> Option<u16> {
+    match escaped {
+        0x22 | 0x5c | 0x2f => Some(escaped),
+        0x62 => Some(0x08),
+        0x66 => Some(0x0c),
+        0x6e => Some(0x0a),
+        0x72 => Some(0x0d),
+        0x74 => Some(0x09),
+        _ => None,
+    }
 }
 
 /// What a token at an unexpected place is.
@@ -349,6 +381,20 @@ impl Parser<'_> {
         Ok(code)
     }
 
+    fn read_escape(&mut self) -> Result<u16, String> {
+        self.pos += 1;
+        let Some(escaped) = self.peek() else {
+            return Err(self.unexpected(Token::End));
+        };
+        if escaped == 0x75 {
+            self.pos += 1;
+            return self.hex();
+        }
+        let decoded = simple_escape(escaped).ok_or_else(|| self.expected("Bad escaped character"))?;
+        self.pos += 1;
+        Ok(decoded)
+    }
+
     fn string(&mut self) -> Result<String, String> {
         self.pos += 1;
         let mut out: Vec<u16> = Vec::new();
@@ -361,28 +407,7 @@ impl Parser<'_> {
                     self.pos += 1;
                     return Ok(String::from_utf16_lossy(&out));
                 }
-                0x5c => {
-                    self.pos += 1;
-                    let Some(escaped) = self.peek() else {
-                        return Err(self.unexpected(Token::End));
-                    };
-                    let decoded = match escaped {
-                        0x22 | 0x5c | 0x2f => escaped,
-                        0x62 => 0x08,
-                        0x66 => 0x0c,
-                        0x6e => 0x0a,
-                        0x72 => 0x0d,
-                        0x74 => 0x09,
-                        0x75 => {
-                            self.pos += 1;
-                            out.push(self.hex()?);
-                            continue;
-                        }
-                        _ => return Err(self.expected("Bad escaped character")),
-                    };
-                    out.push(decoded);
-                    self.pos += 1;
-                }
+                0x5c => out.push(self.read_escape()?),
                 0..0x20 => return Err(self.expected("Bad control character in string literal")),
                 _ => {
                     out.push(unit);

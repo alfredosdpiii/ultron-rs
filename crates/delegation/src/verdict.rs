@@ -62,9 +62,7 @@ fn bounded(value: &str, limit: usize) -> String {
     format!("{}…", utf16::head_lossy(&flat, limit - 1))
 }
 
-/// Checks an `rlm.finish` payload: the normalized verdict, or every problem found.
-pub fn validate_verdict(payload: &Map<String, Value>, workspace: Option<&str>) -> Result<Value, Vec<String>> {
-    let mut problems = Vec::new();
+fn check_unknown_verdict_fields(payload: &Map<String, Value>, problems: &mut Vec<String>) {
     for key in payload.keys() {
         if !["status", "summary", "outputs", "evidence", "changed_files", "left"].contains(&key.as_str()) {
             problems.push(format!(
@@ -72,6 +70,9 @@ pub fn validate_verdict(payload: &Map<String, Value>, workspace: Option<&str>) -
             ));
         }
     }
+}
+
+fn validate_verdict_status<'a>(payload: &'a Map<String, Value>, problems: &mut Vec<String>) -> Option<&'a str> {
     let status = payload.get("status");
     let status_text = status.and_then(Value::as_str).filter(|s| VERDICT_STATUSES.contains(s));
     if status_text.is_none() {
@@ -81,6 +82,10 @@ pub fn validate_verdict(payload: &Map<String, Value>, workspace: Option<&str>) -
             bounded(&shown, 200)
         ));
     }
+    status_text
+}
+
+fn validate_verdict_summary<'a>(payload: &'a Map<String, Value>, problems: &mut Vec<String>) -> &'a str {
     let summary = payload
         .get("summary")
         .and_then(Value::as_str)
@@ -94,10 +99,13 @@ pub fn validate_verdict(payload: &Map<String, Value>, workspace: Option<&str>) -
             utf16::len(summary)
         ));
     }
-    let null = Value::Null;
-    let outputs = match payload.get("outputs").unwrap_or(&null) {
-        Value::Null => json!({}),
-        other => other.clone(),
+    summary
+}
+
+fn validate_verdict_outputs(payload: &Map<String, Value>, problems: &mut Vec<String>) -> Value {
+    let outputs = match payload.get("outputs") {
+        None | Some(Value::Null) => json!({}),
+        Some(other) => other.clone(),
     };
     if !outputs.is_object() {
         problems.push("outputs must be a JSON object (a dict of named results)".into());
@@ -106,50 +114,70 @@ pub fn validate_verdict(payload: &Map<String, Value>, workspace: Option<&str>) -
             "outputs exceed {OUTPUTS_BYTES} bytes; write large results to a file and return its path"
         ));
     }
-    let raw_evidence = match payload.get("evidence").unwrap_or(&null) {
-        Value::Null => json!([]),
-        other => other.clone(),
+    outputs
+}
+
+fn collect_evidence_items(items: &[Value], problems: &mut Vec<String>) -> Vec<String> {
+    let mut evidence = Vec::new();
+    for item in items {
+        let Some(text) = item.as_str().filter(|t| !t.trim().is_empty()) else {
+            problems.push("every evidence item must be a nonempty string".into());
+            break;
+        };
+        if utf16::len(text) > EVIDENCE_CHARS {
+            problems.push(format!(
+                "an evidence item is over {EVIDENCE_CHARS} characters; quote the deciding lines only"
+            ));
+            break;
+        }
+        evidence.push(text.trim().to_string());
+    }
+    if items.len() > EVIDENCE_ITEMS {
+        problems.push(format!(
+            "evidence has {} items; give at most {EVIDENCE_ITEMS}",
+            items.len()
+        ));
+    }
+    evidence
+}
+
+fn validate_verdict_evidence(
+    payload: &Map<String, Value>,
+    status_text: Option<&str>,
+    problems: &mut Vec<String>,
+) -> Vec<String> {
+    let raw_evidence = match payload.get("evidence") {
+        None | Some(Value::Null) => json!([]),
+        Some(other) => other.clone(),
     };
-    let mut evidence: Vec<String> = Vec::new();
-    match raw_evidence.as_array() {
-        None => problems.push("evidence must be a list of strings".into()),
-        Some(items) => {
-            for item in items {
-                let Some(text) = item.as_str().filter(|t| !t.trim().is_empty()) else {
-                    problems.push("every evidence item must be a nonempty string".into());
-                    break;
-                };
-                if utf16::len(text) > EVIDENCE_CHARS {
-                    problems.push(format!(
-                        "an evidence item is over {EVIDENCE_CHARS} characters; quote the deciding lines only"
-                    ));
-                    break;
-                }
-                evidence.push(text.trim().to_string());
-            }
-            if items.len() > EVIDENCE_ITEMS {
-                problems.push(format!(
-                    "evidence has {} items; give at most {EVIDENCE_ITEMS}",
-                    items.len()
-                ));
-            }
-            if status_text == Some("passed") {
-                if evidence.is_empty() {
-                    problems.push("\"passed\" needs evidence: the commands you ran with their exit codes or counts, and the files (with lines) that show the result".into());
-                } else if !evidence.iter().any(|e| is_concrete_evidence(e)) {
-                    problems.push(format!(
-                        "\"passed\" evidence must be concrete, and none of it is: name a command with its outcome (\"npm test: exit 0, 42 passed\") or a file with lines (\"src/app.ts:40-52 handles the empty case\"), not {}",
-                        bounded(&Value::String(evidence[0].clone()).to_string(), 80)
-                    ));
-                }
-            }
+    let Some(items) = raw_evidence.as_array() else {
+        problems.push("evidence must be a list of strings".into());
+        return Vec::new();
+    };
+    let evidence = collect_evidence_items(items, problems);
+    if status_text == Some("passed") {
+        if evidence.is_empty() {
+            problems.push("\"passed\" needs evidence: the commands you ran with their exit codes or counts, and the files (with lines) that show the result".into());
+        } else if !evidence.iter().any(|e| is_concrete_evidence(e)) {
+            problems.push(format!(
+                "\"passed\" evidence must be concrete, and none of it is: name a command with its outcome (\"npm test: exit 0, 42 passed\") or a file with lines (\"src/app.ts:40-52 handles the empty case\"), not {}",
+                bounded(&Value::String(evidence[0].clone()).to_string(), 80)
+            ));
         }
     }
-    let raw_files = match payload.get("changed_files").unwrap_or(&null) {
-        Value::Null => json!([]),
-        other => other.clone(),
+    evidence
+}
+
+fn validate_verdict_changed_files(
+    payload: &Map<String, Value>,
+    workspace: Option<&str>,
+    problems: &mut Vec<String>,
+) -> Vec<String> {
+    let raw_files = match payload.get("changed_files") {
+        None | Some(Value::Null) => json!([]),
+        Some(other) => other.clone(),
     };
-    let mut changed: Vec<String> = Vec::new();
+    let mut changed = Vec::new();
     match raw_files.as_array() {
         Some(items) if items.iter().all(|i| i.as_str().is_some_and(|t| !t.trim().is_empty())) => {
             if items.len() > CHANGED_FILES {
@@ -168,9 +196,14 @@ pub fn validate_verdict(payload: &Map<String, Value>, workspace: Option<&str>) -
         }
         _ => problems.push("changed_files must be a list of file paths (relative to the working directory)".into()),
     }
-    let mut left: Vec<String> = Vec::new();
-    match payload.get("left").unwrap_or(&null) {
-        Value::Null => {}
+    changed
+}
+
+fn validate_verdict_left(payload: &Map<String, Value>, problems: &mut Vec<String>) -> Vec<String> {
+    let Some(raw) = payload.get("left").filter(|v| !v.is_null()) else {
+        return Vec::new();
+    };
+    match raw {
         Value::Array(items) if items.iter().all(|i| i.as_str().is_some_and(|t| !t.trim().is_empty())) => {
             if items.len() > LEFT_ITEMS {
                 problems.push(format!(
@@ -178,14 +211,29 @@ pub fn validate_verdict(payload: &Map<String, Value>, workspace: Option<&str>) -
                     items.len()
                 ));
             }
-            left = items
+            items
                 .iter()
                 .filter_map(Value::as_str)
                 .map(|item| bounded(item, LEFT_CHARS))
-                .collect();
+                .collect()
         }
-        _ => problems.push("left must be a list of nonempty strings, one per thing left undone or found broken".into()),
+        _ => {
+            problems.push("left must be a list of nonempty strings, one per thing left undone or found broken".into());
+            Vec::new()
+        }
     }
+}
+
+/// Checks an `rlm.finish` payload: the normalized verdict, or every problem found.
+pub fn validate_verdict(payload: &Map<String, Value>, workspace: Option<&str>) -> Result<Value, Vec<String>> {
+    let mut problems = Vec::new();
+    check_unknown_verdict_fields(payload, &mut problems);
+    let status_text = validate_verdict_status(payload, &mut problems);
+    let summary = validate_verdict_summary(payload, &mut problems);
+    let outputs = validate_verdict_outputs(payload, &mut problems);
+    let evidence = validate_verdict_evidence(payload, status_text, &mut problems);
+    let changed = validate_verdict_changed_files(payload, workspace, &mut problems);
+    let left = validate_verdict_left(payload, &mut problems);
     if !problems.is_empty() {
         return Err(problems);
     }
@@ -209,10 +257,8 @@ pub fn left_items(result: &Value) -> Vec<String> {
         .map_or_default(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
 }
 
-/// One-line tag for a completion event: `[passed, verified]`, `[failed, contradicted; ...]`, `[unverified]`.
-pub fn verdict_tag(result: &Value) -> Option<String> {
-    let worktree = &result["worktree"];
-    let unmerged = match (worktree["commit"].as_str(), worktree["changed_files"].as_array()) {
+fn unmerged_worktree_note(worktree: &Value) -> String {
+    match (worktree["commit"].as_str(), worktree["changed_files"].as_array()) {
         (Some(_), Some(files)) => {
             let branch = match &worktree["branch"] {
                 Value::String(s) => s.clone(),
@@ -222,38 +268,48 @@ pub fn verdict_tag(result: &Value) -> Option<String> {
             format!("{} file(s) on {branch}, not merged yet", files.len())
         }
         _ => String::new(),
-    };
+    }
+}
+
+fn verdict_object_tag(result: &Value, unmerged: String, contract: String) -> String {
     let check = &result["check"];
     let list = |key: &str| check[key].as_array().cloned().unwrap_or_default();
+    let unobserved = list("unobserved");
+    let mut extra = vec![unmerged, contract];
+    if !unobserved.is_empty() {
+        let first: Vec<&str> = unobserved.iter().take(3).filter_map(Value::as_str).collect();
+        extra.push(format!("declared but unchanged: {}", first.join(", ")));
+    }
+    if !list("unreported").is_empty() {
+        extra.push(format!("{} undeclared change(s)", list("unreported").len()));
+    }
+    if !list("outside").is_empty() {
+        extra.push(format!("{} change(s) outside its worktree", list("outside").len()));
+    }
+    let left = left_items(result).len();
+    if left > 0 {
+        extra.push(format!("{left} left undone"));
+    }
+    extra.retain(|e| !e.is_empty());
+    let outcome = check["outcome"].as_str().unwrap_or("unchecked");
+    let status = result["verdict"]["status"].as_str().unwrap_or_default();
+    let tail = if extra.is_empty() {
+        String::new()
+    } else {
+        format!("; {}", extra.join("; "))
+    };
+    format!("[{status}, {outcome}{tail}]")
+}
+
+/// One-line tag for a completion event: `[passed, verified]`, `[failed, contradicted; ...]`, `[unverified]`.
+pub fn verdict_tag(result: &Value) -> Option<String> {
+    let unmerged = unmerged_worktree_note(&result["worktree"]);
+    let check = &result["check"];
     let contract = check["contract"]["verdict"]
         .as_str()
         .map_or(String::new(), |verdict| format!("contract {verdict}"));
     if result["verdict"].is_object() {
-        let unobserved = list("unobserved");
-        let mut extra = vec![unmerged, contract];
-        if !unobserved.is_empty() {
-            let first: Vec<&str> = unobserved.iter().take(3).filter_map(Value::as_str).collect();
-            extra.push(format!("declared but unchanged: {}", first.join(", ")));
-        }
-        if !list("unreported").is_empty() {
-            extra.push(format!("{} undeclared change(s)", list("unreported").len()));
-        }
-        if !list("outside").is_empty() {
-            extra.push(format!("{} change(s) outside its worktree", list("outside").len()));
-        }
-        let left = left_items(result).len();
-        if left > 0 {
-            extra.push(format!("{left} left undone"));
-        }
-        extra.retain(|e| !e.is_empty());
-        let outcome = check["outcome"].as_str().unwrap_or("unchecked");
-        let status = result["verdict"]["status"].as_str().unwrap_or_default();
-        let tail = if extra.is_empty() {
-            String::new()
-        } else {
-            format!("; {}", extra.join("; "))
-        };
-        return Some(format!("[{status}, {outcome}{tail}]"));
+        return Some(verdict_object_tag(result, unmerged, contract));
     }
     if result["unverified"] == true {
         let rejected = if check["outcome"] == "invalid" {

@@ -22,11 +22,16 @@ class AgentMessages:
         if receiver_role not in {"parent", "child"}:
             raise ValueError("receiver_role must be parent or child")
         payload: dict[str, Any] = {"message": message, "receiver_role": receiver_role}
-        if receiver_name is not None: payload["receiver_name"] = receiver_name
-        if receiver_id is not None: payload["receiver_id"] = receiver_id
-        if key is not None: payload["key"] = key
-        if ttl_ms is not None: payload["ttl_ms"] = ttl_ms
-        if steer: payload["steer"] = True
+        if receiver_name is not None:
+            payload["receiver_name"] = receiver_name
+        if receiver_id is not None:
+            payload["receiver_id"] = receiver_id
+        if key is not None:
+            payload["key"] = key
+        if ttl_ms is not None:
+            payload["ttl_ms"] = ttl_ms
+        if steer:
+            payload["steer"] = True
         result = await self._bridge.request("agent_message.send", payload)
         return result if isinstance(result, dict) else {"result": result}
 

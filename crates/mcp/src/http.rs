@@ -74,20 +74,7 @@ impl SseParser {
         self.data_bytes = 0;
     }
 
-    fn line(&mut self, raw: &str, out: &mut Vec<SseItem>) -> Result<(), String> {
-        let line = raw.strip_suffix('\r').unwrap_or(raw);
-        if line.is_empty() {
-            self.dispatch(out);
-            return Ok(());
-        }
-        if line.starts_with(':') {
-            return Ok(());
-        }
-        let (field, value) = match line.find(':') {
-            Some(colon) => (&line[..colon], &line[colon + 1..]),
-            None => (line, ""),
-        };
-        let value = value.strip_prefix(' ').unwrap_or(value);
+    fn apply_field(&mut self, field: &str, value: &str, out: &mut Vec<SseItem>) -> Result<(), String> {
         match field {
             "data" => {
                 self.data_bytes += value.len() + usize::from(!self.data.is_empty());
@@ -107,6 +94,23 @@ impl SseParser {
             _ => {}
         }
         Ok(())
+    }
+
+    fn line(&mut self, raw: &str, out: &mut Vec<SseItem>) -> Result<(), String> {
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        if line.is_empty() {
+            self.dispatch(out);
+            return Ok(());
+        }
+        if line.starts_with(':') {
+            return Ok(());
+        }
+        let (field, value) = match line.find(':') {
+            Some(colon) => (&line[..colon], &line[colon + 1..]),
+            None => (line, ""),
+        };
+        let value = value.strip_prefix(' ').unwrap_or(value);
+        self.apply_field(field, value, out)
     }
 
     pub fn feed(&mut self, bytes: &[u8]) -> Result<Vec<SseItem>, String> {
@@ -378,6 +382,34 @@ impl Shared {
         ))
     }
 
+    fn handle_sse_item(&self, item: SseItem, cursor: &mut Cursor, on_message: &mut dyn FnMut(&Value)) {
+        let event = match item {
+            SseItem::Id(id) => {
+                cursor.last_event_id = Some(id);
+                return;
+            }
+            SseItem::Retry(ms) => {
+                cursor.retry_ms = Some(ms);
+                return;
+            }
+            SseItem::Event(event) => event,
+        };
+        cursor.received = true;
+        if event.data.trim().is_empty() || event.event.as_deref().is_some_and(|e| e != "message") {
+            return;
+        }
+        match serde_json::from_str::<Value>(&event.data)
+            .map_err(|e| Error::Other(e.to_string()))
+            .and_then(parse_message)
+        {
+            Ok(message) => {
+                on_message(&message);
+                self.emit(Incoming::Message(message));
+            }
+            Err(error) => self.emit(Incoming::Error(error.to_string())),
+        }
+    }
+
     /// Reads an SSE body (`consumeSse`), emitting JSON-RPC messages: every `id` field moves the cursor's last event
     /// id, every valid `retry` field its server delay, and an event with data marks it as having received one.
     fn consume(
@@ -403,31 +435,7 @@ impl Shared {
             }
             .map_err(Error::Other)?;
             for item in items {
-                let event = match item {
-                    SseItem::Id(id) => {
-                        cursor.last_event_id = Some(id);
-                        continue;
-                    }
-                    SseItem::Retry(ms) => {
-                        cursor.retry_ms = Some(ms);
-                        continue;
-                    }
-                    SseItem::Event(event) => event,
-                };
-                cursor.received = true;
-                if event.data.trim().is_empty() || event.event.as_deref().is_some_and(|e| e != "message") {
-                    continue;
-                }
-                match serde_json::from_str::<Value>(&event.data)
-                    .map_err(|e| Error::Other(e.to_string()))
-                    .and_then(parse_message)
-                {
-                    Ok(message) => {
-                        on_message(&message);
-                        self.emit(Incoming::Message(message));
-                    }
-                    Err(error) => self.emit(Incoming::Error(error.to_string())),
-                }
+                self.handle_sse_item(item, cursor, on_message);
             }
             if n == 0 {
                 return Ok(());
@@ -493,32 +501,56 @@ impl Shared {
         Ok(Some(response))
     }
 
+    fn emit_response_stream_failure(&self, id: &Value, failure: Option<Error>) {
+        if self.closed() {
+            return;
+        }
+        let reason = match failure {
+            None => "stream ended without a response".to_string(),
+            Some(error) => error.to_string(),
+        };
+        self.emit(Incoming::Message(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": INTERNAL_ERROR, "message": format!("MCP response stream failed: {reason}") },
+        })));
+    }
+
+    fn consume_response_once(&self, stream: Response, id: &Value, cursor: &mut Cursor) -> (bool, Option<Error>) {
+        let mut answered = false;
+        let mut on_message = |m: &Value| {
+            if m.get("method").is_none() && m["id"] == *id {
+                answered = true;
+            }
+        };
+        let failure = self.consume(stream, cursor, &mut on_message).err();
+        (answered, failure)
+    }
+
+    fn can_resume_response_stream(&self, failure: &Option<Error>, cursor: &Cursor, attempt: u32) -> bool {
+        !failure.as_ref().is_some_and(|f| !is_retryable(f))
+            && cursor.last_event_id.is_some()
+            && attempt < self.max_retries()
+    }
+
     /// `consumeResponseStream`: the SSE stream answering request `id`. When it ends or breaks before the response
     /// and the server assigned event ids, it is resumed with GET and `Last-Event-ID` (backoff, or the server's
     /// `retry`), up to the reconnect limit; an attempt that delivered events resets the count. Otherwise only this
     /// request fails.
     fn consume_response_stream(&self, body: Response, id: &Value) {
         let mut cursor = Cursor::default();
-        let mut answered = false;
         let mut stream = Some(body);
         let mut failure: Option<Error> = None;
         let mut attempt: u32 = 0;
         loop {
-            if let Some(stream) = stream.take() {
-                let mut on_message = |m: &Value| {
-                    if m.get("method").is_none() && m["id"] == *id {
-                        answered = true;
-                    }
-                };
-                failure = self.consume(stream, &mut cursor, &mut on_message).err();
+            if let Some(next_stream) = stream.take() {
+                let (answered, err) = self.consume_response_once(next_stream, id, &mut cursor);
+                failure = err;
+                if answered || self.closed() {
+                    return;
+                }
             }
-            if answered || self.closed() {
-                return;
-            }
-            if failure.as_ref().is_some_and(|f| !is_retryable(f)) {
-                break;
-            }
-            if cursor.last_event_id.is_none() || attempt >= self.max_retries() {
+            if !self.can_resume_response_stream(&failure, &cursor, attempt) {
                 break;
             }
             if cursor.received {
@@ -541,18 +573,19 @@ impl Shared {
                 }
             }
         }
-        if self.closed() {
-            return;
-        }
-        let reason = match failure {
-            None => "stream ended without a response".to_string(),
-            Some(error) => error.to_string(),
+        self.emit_response_stream_failure(id, failure);
+    }
+
+    fn poll_get_stream_once(&self, cursor: &mut Cursor, attempt: &mut u32) -> Result<bool, Error> {
+        let Some(response) = self.open_sse_stream(cursor.last_event_id.as_deref())? else {
+            return Ok(false);
         };
-        self.emit(Incoming::Message(json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": { "code": INTERNAL_ERROR, "message": format!("MCP response stream failed: {reason}") },
-        })));
+        let opened_at = Instant::now();
+        self.consume(response, cursor, &mut |_| {})?;
+        if cursor.received || opened_at.elapsed() > self.max_delay() {
+            *attempt = 0;
+        }
+        Ok(true)
     }
 
     /// The server-to-client GET stream, reopened with backoff (or the server's `retry`) while it keeps failing
@@ -561,18 +594,7 @@ impl Shared {
         let mut cursor = Cursor::default();
         let mut attempt: u32 = 0;
         while !self.closed() {
-            let outcome = self
-                .open_sse_stream(cursor.last_event_id.as_deref())
-                .and_then(|opened| {
-                    let Some(response) = opened else { return Ok(false) };
-                    let opened_at = Instant::now();
-                    self.consume(response, &mut cursor, &mut |_| {})?;
-                    if cursor.received || opened_at.elapsed() > self.max_delay() {
-                        attempt = 0;
-                    }
-                    Ok(true)
-                });
-            match outcome {
+            match self.poll_get_stream_once(&mut cursor, &mut attempt) {
                 Ok(false) => return,
                 Ok(true) => {}
                 Err(error) => {
@@ -618,6 +640,67 @@ fn is_retryable(error: &Error) -> bool {
     }
 }
 
+impl HttpTransport {
+    fn maybe_start_get_stream(&self, message: &Value) {
+        let shared = &self.0;
+        if message["method"] != "notifications/initialized" || shared.options.open_get_stream == Some(false) {
+            return;
+        }
+        let first = {
+            let mut state = sync::lock(&shared.state);
+            let first = !state.get_started && !state.closed;
+            state.get_started = true;
+            first
+        };
+        if first {
+            let shared = Arc::clone(shared);
+            std::thread::spawn(move || shared.run_get_stream());
+        }
+    }
+
+    fn emit_json_response(&self, response: Response) -> Result<(), Error> {
+        let bytes = response.bytes().map_err(|e| network_error(&e))?;
+        let body: Value = serde_json::from_slice(&bytes).map_err(|e| Error::Other(e.to_string()))?;
+        let items = match body {
+            Value::Array(items) => items,
+            other => vec![other],
+        };
+        for item in items {
+            self.0.emit(Incoming::Message(parse_message(item)?));
+        }
+        Ok(())
+    }
+
+    fn handle_request_response(&self, message: &Value, response: Response) -> Result<(), Error> {
+        let shared = &self.0;
+        let status = response.status().as_u16();
+        let method = message["method"].as_str().unwrap_or_default();
+        if status == 202 || status == 204 {
+            return Err(http_failure(
+                HttpErrorKind::Status,
+                status,
+                format!("MCP server accepted request {method} without a response"),
+                "",
+            ));
+        }
+        match content_type(&response).as_deref() {
+            Some("application/json") => self.emit_json_response(response),
+            Some("text/event-stream") => {
+                let shared = Arc::clone(shared);
+                let id = message["id"].clone();
+                std::thread::spawn(move || shared.consume_response_stream(response, &id));
+                Ok(())
+            }
+            other => Err(http_failure(
+                HttpErrorKind::Status,
+                status,
+                format!("Unsupported MCP response content type: {}", other.unwrap_or("missing")),
+                "",
+            )),
+        }
+    }
+}
+
 impl Transport for HttpTransport {
     fn start(&self, sink: Sink) -> Result<(), Error> {
         let mut state = sync::lock(&self.0.state);
@@ -652,57 +735,12 @@ impl Transport for HttpTransport {
         })?;
         let response = shared.check(response)?;
         shared.capture_session(&response);
-        let status = response.status().as_u16();
         if !is_request(message) {
             drop(response);
-            let start_get =
-                message["method"] == "notifications/initialized" && shared.options.open_get_stream != Some(false) && {
-                    let mut state = sync::lock(&shared.state);
-                    let first = !state.get_started && !state.closed;
-                    state.get_started = true;
-                    first
-                };
-            if start_get {
-                let shared = Arc::clone(shared);
-                std::thread::spawn(move || shared.run_get_stream());
-            }
+            self.maybe_start_get_stream(message);
             return Ok(());
         }
-        let method = message["method"].as_str().unwrap_or_default();
-        if status == 202 || status == 204 {
-            return Err(http_failure(
-                HttpErrorKind::Status,
-                status,
-                format!("MCP server accepted request {method} without a response"),
-                "",
-            ));
-        }
-        match content_type(&response).as_deref() {
-            Some("application/json") => {
-                let bytes = response.bytes().map_err(|e| network_error(&e))?;
-                let body: Value = serde_json::from_slice(&bytes).map_err(|e| Error::Other(e.to_string()))?;
-                let items = match body {
-                    Value::Array(items) => items,
-                    other => vec![other],
-                };
-                for item in items {
-                    shared.emit(Incoming::Message(parse_message(item)?));
-                }
-                Ok(())
-            }
-            Some("text/event-stream") => {
-                let shared = Arc::clone(shared);
-                let id = message["id"].clone();
-                std::thread::spawn(move || shared.consume_response_stream(response, &id));
-                Ok(())
-            }
-            other => Err(http_failure(
-                HttpErrorKind::Status,
-                status,
-                format!("Unsupported MCP response content type: {}", other.unwrap_or("missing")),
-                "",
-            )),
-        }
+        self.handle_request_response(message, response)
     }
 
     fn close(&self) {

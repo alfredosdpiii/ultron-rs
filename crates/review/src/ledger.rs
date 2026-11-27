@@ -90,36 +90,47 @@ pub struct FateInput {
     pub merged: bool,
 }
 
+fn reaction_fate(thread: Option<&ThreadState>) -> Option<(FateKind, &'static str)> {
+    let (up, down) = thread.map_or((0, 0), |thread| (thread.thumbs_up, thread.thumbs_down));
+    if down > 0 && up == 0 {
+        Some((FateKind::Rejected, "thumbs down on the comment"))
+    } else if up > 0 && down == 0 {
+        Some((FateKind::Accepted, "thumbs up on the comment"))
+    } else {
+        None
+    }
+}
+
+fn is_merged_open(finding: &PostedFinding, status: &str, merged: bool) -> bool {
+    merged && finding.comment_id.is_some() && finding.severity != "nit" && matches!(status, "open" | "still_present")
+}
+
+fn decide_finding_fate(finding: &PostedFinding, input: &FateInput) -> Option<(FateKind, &'static str)> {
+    let status = input.statuses.get(&finding.id).unwrap_or(&finding.status).as_str();
+    let thread = finding.comment_id.and_then(|id| input.threads.get(&id));
+    if let Some(reaction) = reaction_fate(thread) {
+        return Some(reaction);
+    }
+    if status == "fixed" {
+        return Some((FateKind::Accepted, "fixed in a later commit"));
+    }
+    let resolved_by_human = thread.is_some_and(|t| t.resolved && !input.resolved_by_us.contains(&t.id));
+    if resolved_by_human && status != "not_applicable" && finding.severity != "nit" {
+        return Some((FateKind::Rejected, "the thread was resolved without a fix"));
+    }
+    is_merged_open(finding, status, input.merged).then_some((FateKind::Rejected, MERGED_OPEN))
+}
+
 /// The fates the current observation settles. A finding with nothing new about it yields none. A finding never posted
 /// as a review comment (listed only in the review body: over the comment budget, or off the diff) is not rejected by
 /// a merge: nobody could react to it (fisher-ki-saas#2945: 199 of 200 findings "merged with the finding open").
 pub fn fates_of(input: &FateInput) -> Vec<Fate> {
-    let mut out = Vec::new();
-    for finding in &input.findings {
-        let status = input.statuses.get(&finding.id).unwrap_or(&finding.status).as_str();
-        let thread = finding.comment_id.and_then(|id| input.threads.get(&id));
-        let (up, down) = thread.map_or((0, 0), |thread| (thread.thumbs_up, thread.thumbs_down));
-        let resolved_by_human =
-            thread.is_some_and(|thread| thread.resolved && !input.resolved_by_us.contains(&thread.id));
-        let decided = if down > 0 && up == 0 {
-            Some((FateKind::Rejected, "thumbs down on the comment"))
-        } else if up > 0 && down == 0 {
-            Some((FateKind::Accepted, "thumbs up on the comment"))
-        } else if status == "fixed" {
-            Some((FateKind::Accepted, "fixed in a later commit"))
-        } else if resolved_by_human && status != "not_applicable" && finding.severity != "nit" {
-            Some((FateKind::Rejected, "the thread was resolved without a fix"))
-        } else if input.merged
-            && finding.comment_id.is_some()
-            && finding.severity != "nit"
-            && (status == "open" || status == "still_present")
-        {
-            Some((FateKind::Rejected, MERGED_OPEN))
-        } else {
-            None
-        };
-        if let Some((fate, how)) = decided {
-            out.push(Fate {
+    input
+        .findings
+        .iter()
+        .filter_map(|finding| {
+            let (fate, how) = decide_finding_fate(finding, input)?;
+            Some(Fate {
                 id: finding.id.clone(),
                 pull: input.pull.clone(),
                 file: finding.file.clone(),
@@ -131,10 +142,9 @@ pub fn fates_of(input: &FateInput) -> Vec<Fate> {
                 fate,
                 how: how.to_string(),
                 at: input.now.clone(),
-            });
-        }
-    }
-    out
+            })
+        })
+        .collect()
 }
 
 /// How a merge with a posted finding still open is recorded.

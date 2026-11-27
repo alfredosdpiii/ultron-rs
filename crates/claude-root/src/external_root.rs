@@ -316,18 +316,41 @@ impl ExternalRoot {
         self.close_turn(&mut state);
     }
 
+    fn ensure_cell_turn(&self) -> String {
+        let mut state = self.lock();
+        let turn = match state.turn.clone() {
+            Some(turn) => turn,
+            None => self.open_turn(&mut state),
+        };
+        state.cells += 1;
+        turn
+    }
+
+    fn collect_cell_nudges(&self, turn: &str, is_error: bool) -> Vec<String> {
+        let running = self.host.pending_root_notifications();
+        let notes: Vec<String> = {
+            let mut nudgers = jsrt::sync::lock(&self.nudgers);
+            let (rounds, skill) = &mut *nudgers;
+            [
+                rounds.turn_ended(turn, 1, running),
+                skill.turn_ended(turn, 1, usize::from(is_error), running),
+            ]
+            .into_iter()
+            .flatten()
+            .collect()
+        };
+        if let Some(stats) = &self.stats {
+            for note in &notes {
+                stats.nudge(note);
+            }
+        }
+        notes
+    }
+
     /// Run one cell in the root kernel: the rlm tool's own result, with waiting events first and notes last. A
     /// turn whose budget is spent refuses the cell.
     pub fn run_cell(&self, code: &str, signal: &AbortSignal) -> CellResult {
-        let turn = {
-            let mut state = self.lock();
-            let turn = match state.turn.clone() {
-                Some(turn) => turn,
-                None => self.open_turn(&mut state),
-            };
-            state.cells += 1;
-            turn
-        };
+        let turn = self.ensure_cell_turn();
         let lead = self.take_events().map_or_default(|e| format!("{e}\n"));
         if let Some(exhausted) = self.host.turn_budget_exhausted(&self.host.root_id_of_run(&turn)) {
             if let Some(stats) = &self.stats {
@@ -347,23 +370,7 @@ impl ExternalRoot {
         if signal.aborted() {
             self.host.root_aborted(&self.host.root_id_of_run(&turn));
         }
-        let running = self.host.pending_root_notifications();
-        let notes: Vec<String> = {
-            let mut nudgers = jsrt::sync::lock(&self.nudgers);
-            let (rounds, skill) = &mut *nudgers;
-            [
-                rounds.turn_ended(&turn, 1, running),
-                skill.turn_ended(&turn, 1, usize::from(is_error), running),
-            ]
-            .into_iter()
-            .flatten()
-            .collect()
-        };
-        if let Some(stats) = &self.stats {
-            for note in &notes {
-                stats.nudge(note);
-            }
-        }
+        let notes = self.collect_cell_nudges(&turn, is_error);
         let first = content
             .iter()
             .find(|part| part["type"] == "text")

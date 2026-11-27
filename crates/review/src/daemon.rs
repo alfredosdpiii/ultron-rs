@@ -72,32 +72,35 @@ pub struct Discovered {
     pub author: Option<String>,
 }
 
+fn prune_dir(dir: &str, now: i64, limit: f64) -> usize {
+    let mut removed = 0;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    for entry in entries {
+        let Ok(entry) = entry else { break };
+        let Ok(file_type) = entry.file_type() else { break };
+        if !file_type.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(modified) = std::fs::metadata(&path).and_then(|m| m.modified()) else {
+            break;
+        };
+        if now as f64 - jsrt::date::mtime_ms(modified) <= limit {
+            continue;
+        }
+        let _ = std::fs::remove_file(&path);
+        removed += 1;
+    }
+    removed
+}
+
 /// Remove files in `dirs` last modified more than `days` ago. Never fails: a directory that cannot be read (or a
 /// file that cannot be read in it) ends that directory's pruning.
 pub fn prune_old(dirs: &[&str], now: i64, days: u32) -> usize {
-    let mut removed = 0;
     let limit = f64::from(days) * DAY_MS as f64;
-    for dir in dirs {
-        let mut prune = || -> std::io::Result<()> {
-            for entry in std::fs::read_dir(dir)? {
-                let entry = entry?;
-                if !entry.file_type()?.is_file() {
-                    continue;
-                }
-                let path = entry.path();
-                let modified = std::fs::metadata(&path)?.modified()?;
-                let mtime_ms = jsrt::date::mtime_ms(modified);
-                if now as f64 - mtime_ms <= limit {
-                    continue;
-                }
-                let _ = std::fs::remove_file(&path);
-                removed += 1;
-            }
-            Ok(())
-        };
-        let _ = prune();
-    }
-    removed
+    dirs.iter().map(|dir| prune_dir(dir, now, limit)).sum()
 }
 
 /// Open pull requests on which this account's last review requested changes: it is blocking them, so they are
@@ -125,6 +128,56 @@ pub fn blocked_pulls(state: &AutoreviewState, account: &Account) -> Vec<PullRef>
     out
 }
 
+fn add_discovered(
+    found: &mut IndexMap<String, Discovered>,
+    pull: PullRef,
+    reason: &str,
+    updated_at: Option<&str>,
+    author: Option<String>,
+) {
+    let entry = found.entry(pull_key(&pull)).or_insert_with(|| Discovered {
+        pull,
+        reasons: Vec::new(),
+        notified_at: None,
+        author: None,
+    });
+    if let Some(author) = author.filter(|author| !author.is_empty()) {
+        entry.author = Some(author);
+    }
+    if !entry.reasons.iter().any(|known| known == reason) {
+        entry.reasons.push(reason.into());
+    }
+    if let Some(at) = updated_at.and_then(jsrt::date::parse_date)
+        && entry.notified_at.is_none_or(|known| at > known)
+    {
+        entry.notified_at = Some(at);
+    }
+}
+
+fn discover_search(
+    github: &GitHub,
+    now: i64,
+    blocked: &[PullRef],
+    found: &mut IndexMap<String, Discovered>,
+) -> Result<(), Error> {
+    let login = github.account.login.clone();
+    let day = jsrt::date::iso_string(now - SEARCH_WINDOW_MS)[..10].to_string();
+    for (pull, author) in
+        github.search_with_authors(&format!("is:open is:pr review-requested:{login} archived:false"))?
+    {
+        add_discovered(found, pull, "review_requested", None, Some(author));
+    }
+    for (pull, author) in
+        github.search_with_authors(&format!("is:pr mentions:{login} updated:>={day} archived:false"))?
+    {
+        add_discovered(found, pull, "search_mention", None, Some(author));
+    }
+    for pull in blocked {
+        add_discovered(found, pull.clone(), "requested_changes", None, None);
+    }
+    Ok(())
+}
+
 /// Pull requests that may need a review by this account, and the account's next notification cursor.
 pub fn discover(
     github: &GitHub,
@@ -134,47 +187,20 @@ pub fn discover(
     blocked: &[PullRef],
 ) -> Result<(Vec<Discovered>, AccountState), Error> {
     let mut found: IndexMap<String, Discovered> = IndexMap::new();
-    let mut add = |pull: PullRef, reason: &str, updated_at: Option<&str>, author: Option<String>| {
-        let entry = found.entry(pull_key(&pull)).or_insert_with(|| Discovered {
-            pull,
-            reasons: Vec::new(),
-            notified_at: None,
-            author: None,
-        });
-        if let Some(author) = author.filter(|author| !author.is_empty()) {
-            entry.author = Some(author);
-        }
-        if !entry.reasons.iter().any(|known| known == reason) {
-            entry.reasons.push(reason.into());
-        }
-        if let Some(at) = updated_at.and_then(jsrt::date::parse_date)
-            && entry.notified_at.is_none_or(|known| at > known)
-        {
-            entry.notified_at = Some(at);
-        }
-    };
     let last = state.last_poll_at.as_deref().and_then(jsrt::date::parse_date);
     let since = jsrt::date::iso_string(last.map_or(now - FIRST_POLL_WINDOW_MS, |last| last - SINCE_OVERLAP_MS));
     let page = github.notifications(&since, state.last_modified.as_deref(), None)?;
     for notified in page.pulls {
-        add(notified.pull, &notified.reason, Some(&notified.updated_at), None);
+        add_discovered(
+            &mut found,
+            notified.pull,
+            &notified.reason,
+            Some(&notified.updated_at),
+            None,
+        );
     }
     if search {
-        let login = github.account.login.clone();
-        let day = jsrt::date::iso_string(now - SEARCH_WINDOW_MS)[..10].to_string();
-        for (found, author) in
-            github.search_with_authors(&format!("is:open is:pr review-requested:{login} archived:false"))?
-        {
-            add(found, "review_requested", None, Some(author));
-        }
-        for (found, author) in
-            github.search_with_authors(&format!("is:pr mentions:{login} updated:>={day} archived:false"))?
-        {
-            add(found, "search_mention", None, Some(author));
-        }
-        for pull in blocked {
-            add(pull.clone(), "requested_changes", None, None);
-        }
+        discover_search(github, now, blocked, &mut found)?;
     }
     let mut next = state.clone();
     next.last_poll_at = Some(jsrt::date::iso_string(now));
@@ -623,6 +649,81 @@ impl Daemon {
         }
     }
 
+    fn enqueue_polled(
+        &self,
+        account: &Account,
+        now: i64,
+        pulls: Vec<Discovered>,
+        interval: Option<f64>,
+        bans: &BanList,
+    ) {
+        let shared = &self.shared;
+        let deps = &shared.deps.reviewer;
+        let mut inner = shared.lock();
+        if let Some(interval) = interval {
+            inner.poll_seconds = deps.config.poll_seconds.0.max(interval);
+        }
+        for pull in pulls {
+            let pull_name = pull_key(&pull.pull);
+            if let Some(author) = &pull.author {
+                inner.authors.insert(pull_name.clone(), author.clone());
+            }
+            if let Some(author) = inner.authors.get(&pull_name).cloned()
+                && bans.banned(account, &author).is_some()
+            {
+                shared.note_banned(&mut inner, account, &pull.pull, &author);
+                continue;
+            }
+            inner.enqueue(
+                Candidate {
+                    account: account.clone(),
+                    pull: pull.pull,
+                    reasons: pull.reasons,
+                    picked_at: now,
+                    notified_at: pull.notified_at,
+                },
+                0.0,
+            );
+        }
+    }
+
+    fn poll_account(&self, account: &Account, search: bool, bans: &BanList) {
+        let shared = &self.shared;
+        let deps = &shared.deps.reviewer;
+        let key = account_key(account);
+        let now = shared.now();
+        if shared.lock().paused(account, now as f64) {
+            return;
+        }
+        let tokens = deps.tokens.clone();
+        let owner = account.clone();
+        let github = GitHub::new(
+            deps.runner.clone(),
+            account.clone(),
+            Arc::new(move || tokens.env(&owner)),
+            Some(deps.now.clone()),
+        );
+        let all = deps.store.read();
+        let saved = all.accounts.get(&key).cloned().unwrap_or_default();
+        let blocked = if search {
+            blocked_pulls(&all, account)
+        } else {
+            Vec::new()
+        };
+        let polled = discover(&github, &saved, now, search, &blocked).and_then(|(pulls, mut state)| {
+            state.paused_until = None;
+            let interval = state.poll_interval;
+            deps.store.update(|current| {
+                current.accounts.insert(key.clone(), state);
+            })?;
+            Ok((pulls, interval))
+        });
+        match polled {
+            Ok((pulls, interval)) => self.enqueue_polled(account, now, pulls, interval.map(|n| n.0), bans),
+            Err(error) => shared.failed(account, &error),
+        }
+    }
+
     /// Poll every account once and note what was found.
     pub fn poll(&self) {
         let shared = &self.shared;
@@ -632,69 +733,10 @@ impl Daemon {
             inner.cycles += 1;
             search
         };
-        let deps = &shared.deps.reviewer;
-        let bans = deps.bans.refresh();
+        let bans = shared.deps.reviewer.bans.refresh();
         self.drop_banned(&bans);
         for account in &shared.deps.accounts {
-            let key = account_key(account);
-            let now = shared.now();
-            if shared.lock().paused(account, now as f64) {
-                continue;
-            }
-            let tokens = deps.tokens.clone();
-            let owner = account.clone();
-            let github = GitHub::new(
-                deps.runner.clone(),
-                account.clone(),
-                Arc::new(move || tokens.env(&owner)),
-                Some(deps.now.clone()),
-            );
-            let all = deps.store.read();
-            let saved = all.accounts.get(&key).cloned().unwrap_or_default();
-            let blocked = if search {
-                blocked_pulls(&all, account)
-            } else {
-                Vec::new()
-            };
-            let polled = discover(&github, &saved, now, search, &blocked).and_then(|(pulls, mut state)| {
-                state.paused_until = None;
-                let interval = state.poll_interval;
-                deps.store.update(|current| {
-                    current.accounts.insert(key.clone(), state);
-                })?;
-                Ok((pulls, interval))
-            });
-            match polled {
-                Ok((pulls, interval)) => {
-                    let mut inner = shared.lock();
-                    if let Some(interval) = interval {
-                        inner.poll_seconds = deps.config.poll_seconds.0.max(interval.0);
-                    }
-                    for pull in pulls {
-                        let pull_name = pull_key(&pull.pull);
-                        if let Some(author) = &pull.author {
-                            inner.authors.insert(pull_name.clone(), author.clone());
-                        }
-                        if let Some(author) = inner.authors.get(&pull_name).cloned()
-                            && bans.banned(account, &author).is_some()
-                        {
-                            shared.note_banned(&mut inner, account, &pull.pull, &author);
-                            continue;
-                        }
-                        inner.enqueue(
-                            Candidate {
-                                account: account.clone(),
-                                pull: pull.pull,
-                                reasons: pull.reasons,
-                                picked_at: now,
-                                notified_at: pull.notified_at,
-                            },
-                            0.0,
-                        );
-                    }
-                }
-                Err(error) => shared.failed(account, &error),
-            }
+            self.poll_account(account, search, &bans);
         }
     }
 

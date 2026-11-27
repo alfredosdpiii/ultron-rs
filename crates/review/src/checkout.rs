@@ -265,14 +265,38 @@ impl CheckoutManager {
             .clone()
     }
 
-    /// Clone or update the cached repository, fetch the pull request, and check out its head.
-    pub fn prepare(&self, r: &PullRef, pull: &PullHeads, env: &Env) -> Result<Checkout, Error> {
+    fn validate_pull_ref(r: &PullRef) -> Result<(), Error> {
         let safe = Regex::new(r"^[A-Za-z0-9._-]+$").expect("static pattern");
         for part in [&r.host, &r.owner, &r.repo] {
             if !safe.is_match(part) || part == "." || part == ".." {
                 return Err(Error::Other(format!("unsafe repository name: {part}")));
             }
         }
+        Ok(())
+    }
+
+    fn ensure_bare_repo(&self, r: &PullRef, dir: &str, env: &Env) -> Result<(), Error> {
+        if Path::new(dir).join("HEAD").exists() {
+            return Ok(());
+        }
+        make_private_dir(&parent(dir)).map_err(|e| Error::Other(e.to_string()))?;
+        let temporary = format!("{dir}.{}.{}.tmp", std::process::id(), random_hex(3));
+        let url = format!("https://{}/{}/{}.git", r.host, r.owner, r.repo);
+        let cloned = self
+            .git
+            .must(
+                &["clone", "--quiet", "--filter=blob:none", "--bare", &url, &temporary],
+                env,
+                CLONE_TIMEOUT_MS,
+            )
+            .and_then(|_| std::fs::rename(&temporary, dir).map_err(|e| Error::Other(e.to_string())));
+        let _ = std::fs::remove_dir_all(&temporary);
+        cloned
+    }
+
+    /// Clone or update the cached repository, fetch the pull request, and check out its head.
+    pub fn prepare(&self, r: &PullRef, pull: &PullHeads, env: &Env) -> Result<Checkout, Error> {
+        Self::validate_pull_ref(r)?;
         let dir = self.repo_dir(r);
         let pull_ref = format!("refs/autoreview/pull/{}", r.number);
         let base_ref = format!("refs/autoreview/base/{}", r.number);
@@ -285,21 +309,7 @@ impl CheckoutManager {
         let lock = self.lock(&dir);
         let merge_base = {
             let _serial = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !Path::new(&dir).join("HEAD").exists() {
-                make_private_dir(&parent(&dir)).map_err(|e| Error::Other(e.to_string()))?;
-                let temporary = format!("{dir}.{}.{}.tmp", std::process::id(), random_hex(3));
-                let url = format!("https://{}/{}/{}.git", r.host, r.owner, r.repo);
-                let cloned = self
-                    .git
-                    .must(
-                        &["clone", "--quiet", "--filter=blob:none", "--bare", &url, &temporary],
-                        env,
-                        CLONE_TIMEOUT_MS,
-                    )
-                    .and_then(|_| std::fs::rename(&temporary, &dir).map_err(|e| Error::Other(e.to_string())));
-                let _ = std::fs::remove_dir_all(&temporary);
-                cloned?;
-            }
+            self.ensure_bare_repo(r, &dir, env)?;
             self.git.must(
                 &[
                     "-C",
