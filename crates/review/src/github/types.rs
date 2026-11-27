@@ -150,21 +150,27 @@ pub fn parse_api_output(stdout: &str) -> ApiOutput {
 
 /// `https://api.github.com/repos/o/r/pulls/7` (or `.../issues/7`, or a web URL) as a PullRef.
 pub fn pull_ref_from_url(url: &str, host: &str) -> Option<PullRef> {
-    let pattern = Regex::new(r"/([^/]+)/([^/]+)/(?:pulls|pull|issues)/([0-9]+)(?:[/?#][^\n\r\u{2028}\u{2029}]*)?$")
-        .expect("static pattern");
-    let found = pattern.captures(url)?;
+    static PATTERN: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"/([^/]+)/([^/]+)/(?:pulls|pull|issues)/([0-9]+)(?:[/?#][^\n\r\u{2028}\u{2029}]*)?$")
+            .expect("static pattern")
+    });
+    let found = PATTERN.captures(url)?;
     Some(PullRef::new(host, &found[1], &found[2], found[3].parse().ok()?))
 }
 
 /// `owner/repo#N` or a pull request URL.
 pub fn parse_pull_target(target: &str, default_host: &str) -> Option<PullRef> {
-    let short = Regex::new(r"^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#([0-9]+)$").expect("static pattern");
-    if let Some(found) = short.captures(target) {
+    static SHORT: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#([0-9]+)$").expect("static pattern")
+    });
+    if let Some(found) = SHORT.captures(target) {
         return Some(PullRef::new(default_host, &found[1], &found[2], found[3].parse().ok()?));
     }
-    let url = Regex::new(r"^https?://([^/]+)/([^/]+)/([^/]+)/pull/([0-9]+)(?:[/?#][^\n\r\u{2028}\u{2029}]*)?$")
-        .expect("static pattern");
-    let found = url.captures(target)?;
+    static URL: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"^https?://([^/]+)/([^/]+)/([^/]+)/pull/([0-9]+)(?:[/?#][^\n\r\u{2028}\u{2029}]*)?$")
+            .expect("static pattern")
+    });
+    let found = URL.captures(target)?;
     Some(PullRef::new(&found[1], &found[2], &found[3], found[4].parse().ok()?))
 }
 

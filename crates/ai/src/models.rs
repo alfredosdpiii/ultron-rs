@@ -84,7 +84,7 @@ pub fn antigravity_model(id: &str) -> Option<Model> {
         "api": ANTIGRAVITY_API,
         "provider": ANTIGRAVITY_PROVIDER,
         "baseUrl": "antigravity-cli://agy",
-        "reasoning": false,
+        "reasoning": true,
         "input": ["text", "image"],
         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
         "contextWindow": context_window,
@@ -93,12 +93,17 @@ pub fn antigravity_model(id: &str) -> Option<Model> {
     .ok()
 }
 
+const MAX_INTERNED_MODELS: usize = 128;
+
 fn antigravity_interned(id: &str) -> Option<&'static Model> {
     static INTERNED: LazyLock<std::sync::Mutex<std::collections::HashMap<String, &'static Model>>> =
         LazyLock::new(Default::default);
     let mut table = jsrt::sync::lock(&INTERNED);
     if let Some(found) = table.get(id) {
         return Some(found);
+    }
+    if table.len() >= MAX_INTERNED_MODELS {
+        return None;
     }
     let built: &'static Model = Box::leak(Box::new(antigravity_model(id)?));
     table.insert(id.to_string(), built);

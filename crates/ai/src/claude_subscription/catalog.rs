@@ -250,6 +250,8 @@ pub fn model(id: &str) -> Option<Model> {
     })
 }
 
+const MAX_INTERNED_MODELS: usize = 128;
+
 static INTERNED: LazyLock<Mutex<HashMap<String, &'static Model>>> = LazyLock::new(Mutex::default);
 
 /// [`model`] with a `'static` lifetime for the built-in catalog lookup; each distinct valid id is built once.
@@ -257,6 +259,9 @@ pub fn interned(id: &str) -> Option<&'static Model> {
     let mut table = jsrt::sync::lock(&INTERNED);
     if let Some(found) = table.get(id) {
         return Some(found);
+    }
+    if table.len() >= MAX_INTERNED_MODELS {
+        return None;
     }
     let built: &'static Model = Box::leak(Box::new(model(id)?));
     table.insert(id.to_string(), built);

@@ -103,7 +103,11 @@ fn push_emoticon_suggestions(items: &mut Vec<AutocompleteItem>, query: &str) {
         if items.len() >= MAX_EMOJI_SUGGESTIONS {
             break;
         }
-        if pattern.len() >= wanted.len() && pattern.to_lowercase()[..wanted.len()] == wanted {
+        if pattern
+            .as_bytes()
+            .get(..wanted.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(wanted.as_bytes()))
+        {
             items.push(AutocompleteItem {
                 value: (*ch).to_string(),
                 label: format!("{ch}  {pattern}"),

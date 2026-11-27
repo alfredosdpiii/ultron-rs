@@ -154,8 +154,13 @@ impl Component for WhatsNewNotice {
 
 /// `/##\s+\[?(\d+\.\d+\.\d+)\]?/`: the first version heading.
 fn newest_version(markdown: &str) -> Option<String> {
-    let re = fancy_regex::Regex::new(r"##\s+\[?(\d+\.\d+\.\d+)\]?").expect("version pattern");
-    re.captures(markdown).ok().flatten().map(|caps| caps[1].to_string())
+    static VERSION: std::sync::LazyLock<fancy_regex::Regex> =
+        std::sync::LazyLock::new(|| fancy_regex::Regex::new(r"##\s+\[?(\d+\.\d+\.\d+)\]?").expect("version pattern"));
+    VERSION
+        .captures(markdown)
+        .ok()
+        .flatten()
+        .map(|caps| caps[1].to_string())
 }
 
 /// `showNewVersionNotification`'s block.

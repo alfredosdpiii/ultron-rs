@@ -117,12 +117,19 @@ async fn from_http_attempt(
 ) -> std::result::Result<AwsCredentials, HttpAttemptError> {
     let mut headers = HeaderMap::new();
     let authorization = match token_file {
-        Some(path) => Some(std::fs::read_to_string(path).map_err(|e| {
-            HttpAttemptError::Fatal(CredentialError::plain(
-                "Error",
-                jsrt::fs::error_message(&e, "open", Path::new(path)),
-            ))
-        })?),
+        Some(path) => {
+            let owned = path.to_string();
+            let text = tokio::task::spawn_blocking(move || std::fs::read_to_string(&owned))
+                .await
+                .map_err(|e| HttpAttemptError::Fatal(CredentialError::plain("Error", e.to_string())))?
+                .map_err(|e| {
+                    HttpAttemptError::Fatal(CredentialError::plain(
+                        "Error",
+                        jsrt::fs::error_message(&e, "open", Path::new(path)),
+                    ))
+                })?;
+            Some(text)
+        }
         None => token.map(str::to_string),
     };
     if let Some(authorization) = authorization {

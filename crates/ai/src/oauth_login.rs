@@ -115,11 +115,12 @@ pub fn parse_authorization_input(input: &str) -> AuthorizationInput {
     }
     if value.contains("code=") {
         let query = value.strip_prefix('?').unwrap_or(value);
-        let url = reqwest::Url::parse(&format!("http://x/?{query}")).expect("query URL");
-        return AuthorizationInput {
-            code: get(&url, "code"),
-            state: get(&url, "state"),
-        };
+        if let Ok(url) = reqwest::Url::parse(&format!("http://x/?{query}")) {
+            return AuthorizationInput {
+                code: get(&url, "code"),
+                state: get(&url, "state"),
+            };
+        }
     }
     AuthorizationInput {
         code: Some(value.to_owned()),

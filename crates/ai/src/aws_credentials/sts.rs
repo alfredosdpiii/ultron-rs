@@ -148,7 +148,10 @@ pub(super) async fn from_token_file(input: &ChainInput<'_>, config: Option<WebId
     else {
         return Err(CredentialError::next("Web identity configuration not specified"));
     };
-    let token = std::fs::read(&token_file)
+    let owned_file = token_file.clone();
+    let token = tokio::task::spawn_blocking(move || std::fs::read(&owned_file))
+        .await
+        .map_err(|e| CredentialError::plain("Error", e.to_string()))?
         .map_err(|e| CredentialError::plain("Error", jsrt::fs::error_message(&e, "open", Path::new(&token_file))))?
         .into_iter()
         .map(|b| (b & 0x7f) as char)

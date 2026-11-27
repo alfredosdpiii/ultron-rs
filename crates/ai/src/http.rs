@@ -585,6 +585,7 @@ pub struct ReqwestTransport {
     idle: Option<Duration>,
     /// How `client` was built, so a client presenting a certificate can be built alike (`None`: a caller's client).
     config: Option<crate::net::ClientConfig>,
+    http1_client: Arc<OnceLock<reqwest::Client>>,
 }
 
 impl ReqwestTransport {
@@ -615,6 +616,7 @@ impl ReqwestTransport {
             timeout,
             idle: None,
             config: Some(config),
+            http1_client: Arc::default(),
         }
     }
 
@@ -624,6 +626,7 @@ impl ReqwestTransport {
             timeout,
             idle: None,
             config: None,
+            http1_client: Arc::default(),
         }
     }
 
@@ -635,6 +638,18 @@ impl ReqwestTransport {
                 .or_else(|| crate::net::ClientConfig::default().client().ok())
                 .unwrap_or_default()
         })
+    }
+
+    fn http1_client(&self) -> Result<reqwest::Client, String> {
+        if let Some(client) = self.http1_client.get() {
+            return Ok(client.clone());
+        }
+        let builder = match &self.config {
+            Some(config) => config.builder()?,
+            None => reqwest::Client::builder().no_proxy(),
+        };
+        let built = builder.http1_only().build().map_err(|e| e.to_string())?;
+        Ok(self.http1_client.get_or_init(|| built).clone())
     }
 
     /// Fail a request whose headers, or whose next body chunk, take longer than `idle` (`None`: wait forever).
@@ -685,6 +700,7 @@ impl Transport for ReqwestTransport {
             timeout: self.timeout,
             idle: self.idle,
             config: self.config.clone(),
+            http1_client: Arc::default(),
         }))
     }
 
@@ -700,6 +716,7 @@ impl Transport for ReqwestTransport {
             timeout: self.timeout,
             idle: self.idle,
             config: self.config.clone(),
+            http1_client: Arc::default(),
         }))
     }
 
@@ -710,6 +727,7 @@ impl Transport for ReqwestTransport {
             timeout: self.timeout,
             idle: self.idle,
             config: self.config.clone(),
+            http1_client: Arc::default(),
         }))
     }
 
@@ -724,11 +742,7 @@ impl Transport for ReqwestTransport {
         headers: HeaderMap,
     ) -> BoxFuture<'_, Result<Box<dyn crate::websocket::WebSocketConnection>, String>> {
         Box::pin(async move {
-            let builder = match &self.config {
-                Some(config) => config.builder()?,
-                None => reqwest::Client::builder().no_proxy(),
-            };
-            let client = builder.http1_only().build().map_err(|e| e.to_string())?;
+            let client = self.http1_client()?;
             crate::websocket::connect(&client, &url, &headers).await
         })
     }

@@ -331,10 +331,10 @@ pub fn ack_body(line: &str, sha: &str, art: &str) -> String {
     if banner.is_empty() {
         return body;
     }
-    let longest = Regex::new("`+")
-        .expect("static pattern")
-        .find_iter(banner)
-        .map(|run| run.as_str().len())
+    let longest = banner
+        .as_bytes()
+        .split(|&byte| byte != b'`')
+        .map(<[u8]>::len)
         .fold(2, usize::max);
     let fence = "`".repeat(longest + 1);
     let full = format!("{body}\n\n{fence}text\n{banner}\n{fence}");
