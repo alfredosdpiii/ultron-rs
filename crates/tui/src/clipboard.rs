@@ -85,8 +85,50 @@ pub(crate) fn wsl_temp_file(extension: &str) -> std::path::PathBuf {
     jsrt::fs::temp_dir().join(format!("pi-wsl-clip-{}-{nanos}-{n}.{extension}", std::process::id()))
 }
 
+const CLIPBOARD_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn linux_paste_commands(var: &dyn Fn(&str) -> Option<String>) -> Vec<(&'static str, &'static [&'static str])> {
+    let set = |name: &str| var(name).is_some_and(|v| !v.is_empty());
+    let mut commands: Vec<(&'static str, &'static [&'static str])> = Vec::new();
+    if set("TERMUX_VERSION") {
+        commands.push(("termux-clipboard-get", &[]));
+    }
+    if set("WAYLAND_DISPLAY") {
+        commands.push(("wl-paste", &["--no-newline"]));
+    }
+    if set("DISPLAY") {
+        commands.push(("xclip", &["-selection", "clipboard", "-o"]));
+        commands.push(("xsel", &["--clipboard", "--output"]));
+    }
+    commands
+}
+
+impl SystemClipboard {
+    fn var(&self, name: &str) -> Option<String> {
+        self.vars.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone())
+    }
+
+    fn try_linux_paste(&self) -> Option<String> {
+        if jsrt::process::platform() != "linux" {
+            return None;
+        }
+        let commands = linux_paste_commands(&|name| self.var(name));
+        for (command, args) in commands {
+            if let Some(bytes) =
+                crate::proc::run(command, self.path.as_deref(), args, None, Some(CLIPBOARD_READ_TIMEOUT))
+            {
+                return Some(String::from_utf8_lossy(&bytes).into_owned());
+            }
+        }
+        None
+    }
+}
+
 impl Clipboard for SystemClipboard {
     fn get_text(&mut self) -> Result<String, String> {
+        if let Some(text) = self.try_linux_paste() {
+            return Ok(text);
+        }
         self.board()?.get_text().map_err(|e| e.to_string())
     }
 
@@ -103,6 +145,9 @@ impl Clipboard for SystemClipboard {
     }
 
     fn set_text(&mut self, text: &str) -> Result<(), String> {
+        if jsrt::process::platform() == "linux" && self.copy_checked(text).is_ok() {
+            return Ok(());
+        }
         self.board()?.set_text(text.to_string()).map_err(|e| e.to_string())
     }
 
@@ -263,5 +308,23 @@ fn image_reply(image: ClipboardImage) -> ClipboardReply {
     ClipboardReply::Image {
         data: jsrt::base64::encode(image.bytes),
         mime_type: image.mime_type,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::linux_paste_commands;
+
+    #[test]
+    fn linux_paste_commands_prefers_wayland_then_x11() {
+        let vars = |name: &str| match name {
+            "WAYLAND_DISPLAY" => Some("wayland-1".into()),
+            "DISPLAY" => Some(":0".into()),
+            _ => None,
+        };
+        let commands = linux_paste_commands(&vars);
+        let names: Vec<&str> = commands.iter().map(|(cmd, _)| *cmd).collect();
+        assert_eq!(names, vec!["wl-paste", "xclip", "xsel"]);
+        assert_eq!(commands[0].1, &["--no-newline"]);
     }
 }
