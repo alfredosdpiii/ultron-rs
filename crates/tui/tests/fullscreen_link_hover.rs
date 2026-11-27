@@ -411,3 +411,35 @@ fn tui_links_with_control_characters_stay_plain_text() {
         Some("https://x.dev/ok")
     );
 }
+
+/// A press on a link is the viewport's gesture to its end: its drag and its release reach the viewport even with
+/// Option let go and over an item that takes the mouse, so an Option-press released without Option still opens, an
+/// Option-press that drags opens nothing, and the item sees neither.
+#[test]
+fn tui_fullscreen_a_link_press_keeps_its_drag_and_release() {
+    let keys = keys();
+    let mut view = hovering();
+    let opened: Arc<Mutex<Vec<String>>> = Arc::default();
+    let sink = Arc::clone(&opened);
+    view.open_url = Some(Arc::new(move |url: &str| sink.lock().unwrap().push(url.to_string())));
+    let lines = ["PR: https://github.com/a/b/pull/1 is open", "second row"];
+    paint(&mut view, &lines);
+    let mut items = ItemsTakingTheMouse::default();
+    let now = Instant::now();
+    for data in ["\x1b[<8;11;1M", "\x1b[<0;11;1m"] {
+        view.handle_input_with(data, &keys, now, &mut items);
+    }
+    assert_eq!(items.events, 0);
+    assert_eq!(*opened.lock().unwrap(), ["https://github.com/a/b/pull/1"]);
+    let later = now + Duration::from_secs(2);
+    for data in ["\x1b[<8;11;1M", "\x1b[<32;14;1M", "\x1b[<0;14;1m"] {
+        view.handle_input_with(data, &keys, later, &mut items);
+    }
+    assert_eq!(items.events, 0);
+    assert_eq!(opened.lock().unwrap().len(), 1);
+    let after = later + Duration::from_secs(2);
+    for data in ["\x1b[<0;11;1M", "\x1b[<0;11;1m"] {
+        view.handle_input_with(data, &keys, after, &mut items);
+    }
+    assert!(items.events > 0, "the gesture ended: a plain click is the item's again");
+}

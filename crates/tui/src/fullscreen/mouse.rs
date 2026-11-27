@@ -189,7 +189,8 @@ impl FullscreenViewport {
     /// component under the pointer, right-click paste, then text selection. Hover is only a look, and the transcript
     /// items under the pointer take motion too, so a motion notes the pointer before they see it; a motion that moved
     /// neither hover is [`ViewportInput::Unchanged`]. A primary click on a link it would open skips those items:
-    /// links take precedence over enclosing click regions.
+    /// links take precedence over enclosing click regions. A press the viewport took (a selection or a link) keeps its
+    /// drag and release, whatever is under the pointer and whichever modifiers are held by then.
     pub(super) fn handle_mouse(&mut self, ev: Sgr, now: Instant, targets: &mut dyn MouseTargets) -> ViewportInput {
         let kind = classify_sgr_kind(ev);
         let event = self.mouse_event(kind, ev.button, ev.x, ev.y, None);
@@ -204,7 +205,9 @@ impl FullscreenViewport {
         if kind == MouseEventType::Move {
             self.point_at(ev.x, ev.y);
         }
-        if !self.primary_click_on_link(ev)
+        let viewport_gesture = self.press_active && kind != MouseEventType::Press;
+        if !viewport_gesture
+            && !self.primary_click_on_link(ev)
             && let Some(d) = targets.dispatch_at(&event)
         {
             self.dispatch_target_press(d, kind, ev);
