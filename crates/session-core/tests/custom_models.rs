@@ -92,10 +92,12 @@ fn session_core_custom_models_resolve_from_models_json() {
     assert_eq!(stored.base_url, "http://127.0.0.1:9/v1");
     let deepseek = lane::catalog_model("deepseek", "deepseek-flash", &env).unwrap();
     assert_eq!(deepseek.base_url, "http://127.0.0.1:9/ds");
-    // Subagent models resolve the same way; unknown ones are refused.
+    // Subagent models resolve known models and dynamic IDs on configured OpenAI-compat providers;
+    // unknown providers are still refused.
     let config = session_core::compose::Config::from_env(&env);
     assert_eq!(config.model("stubproxy", "sol").unwrap().id, "sol");
-    assert!(config.model("stubproxy", "zzz").is_none());
+    assert_eq!(config.model("stubproxy", "zzz").unwrap().id, "zzz");
+    assert!(config.model("nosuch", "zzz").is_none());
 }
 
 #[test]

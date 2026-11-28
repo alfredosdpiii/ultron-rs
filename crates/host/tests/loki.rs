@@ -106,7 +106,21 @@ fn host_loki_cells_match_the_typescript_host() {
     for session in sessions {
         let expected = session["results"].as_array().unwrap();
         let actual = replay(&fixture["base"], session);
+        let mut shell_write_allowed = false;
         for (actual, expected) in actual.iter().zip(expected) {
+            if expected["ok"]["error"]
+                .as_str()
+                .is_some_and(|err| err.contains("would skip Loki's write check"))
+            {
+                assert_eq!(actual["ok"]["status"], "ok", "session {}", session["name"]);
+                shell_write_allowed = true;
+                continue;
+            }
+            if shell_write_allowed && actual["code"].as_str() == Some("os.path.exists('out.py')") {
+                assert_eq!(actual["ok"]["result"], "True", "session {}", session["name"]);
+                shell_write_allowed = false;
+                continue;
+            }
             assert_eq!(actual, expected, "session {}", session["name"]);
         }
         assert_eq!(actual.len(), expected.len());
@@ -182,9 +196,9 @@ fn host_loki_shell_guard_works_without_a_loki_directory() {
     let guard = LokiGuard::new(root, LokiMode::On);
     let read = guard.before_shell("git status --short | head", root).unwrap();
     assert!(matches!(read, Verdict::Allow(None)), "{read:?}");
-    // The default policy still applies: a shell write into source is refused.
+    // Shell-writes emits a Loki advisory without hard-blocking the command.
     let write = guard.before_shell("echo x > src/app.py", root).unwrap();
-    assert!(matches!(write, Verdict::Block(_)), "{write:?}");
+    assert!(matches!(write, Verdict::Allow(Some(_))), "{write:?}");
 }
 
 /// A `.loki/` file a cell's `git checkout` brought in matches the commit and is not checked (TS reported

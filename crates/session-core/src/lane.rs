@@ -412,8 +412,23 @@ pub fn catalog_model(provider: &str, id: &str, env: &Env) -> Result<Model, Strin
     let registry = registry(env);
     let model = registry
         .find(provider, id)
+        .or_else(|| dynamic_custom_provider_model(&registry, provider, id))
         .ok_or_else(|| format!("Model \"{provider}/{id}\" not found"))?;
     Ok(for_requests(&registry, model, env))
+}
+
+fn dynamic_custom_provider_model(registry: &ModelRegistry, provider: &str, id: &str) -> Option<Model> {
+    let trimmed = id.trim();
+    if trimmed.is_empty() || registry.config().provider(provider).is_none() {
+        return None;
+    }
+    let mut template = registry
+        .models(provider)
+        .into_iter()
+        .find(|m| matches!(m.api.as_str(), "openai-completions" | "openai-responses"))?;
+    template.id = trimmed.to_string();
+    template.name = trimmed.to_string();
+    Some(template)
 }
 
 /// `model` ready for requests: models.json headers resolved per request, and the base URL of the provider's stored

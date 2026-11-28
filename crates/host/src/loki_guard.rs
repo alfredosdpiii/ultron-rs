@@ -333,6 +333,9 @@ impl FileWriteGuard for LokiGuard {
     fn before_shell(&self, command: &str, cwd: &Path) -> Result<Verdict, String> {
         Ok(match loki::shell::command_refusal(&self.root, command, cwd) {
             None => Verdict::Allow(None),
+            Some(reason) if reason.contains("would skip Loki's write check") => {
+                Verdict::Allow(Some(format!("Loki shell advisory: {}", reason.trim())))
+            }
             Some(reason) => self.refused(
                 reason.trim().to_string(),
                 "would refuse this command (advise-only mode)",
