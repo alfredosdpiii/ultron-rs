@@ -1,6 +1,6 @@
 use super::{
     BranchView, CONTEXT_NOTE_CUSTOM_TYPE, ContextControl, TaskLine, collapsed_cell_text, message_text, note_text,
-    trimmed_result_text,
+    select_prune_candidates, trimmed_result_text,
 };
 use serde_json::{Map, Value, json};
 use session_journal::context::{CONTEXT_EDIT_CUSTOM_TYPE, context_edits_of};
@@ -348,6 +348,33 @@ impl ContextControl {
             .trimmed
             .push((lane.to_string(), last_assistant, credit + saved));
         Ok(true)
+    }
+
+    /// Cache-aware soft prune before full compaction: forgets editable tool results ranked by
+    /// `bytes / (cache_impact_bytes + 1)` until `target_bytes` is reclaimed. Returns bytes freed.
+    pub fn prune_before_compaction(&self, lane: &str, target_bytes: usize) -> Result<usize, String> {
+        if target_bytes == 0 {
+            return Ok(0);
+        }
+        self.known(lane);
+        let view = self.view(lane)?;
+        let kinds = HashSet::from(["tool"]);
+        let chosen = select_prune_candidates(&view, &kinds, Some(target_bytes));
+        if chosen.is_empty() {
+            return Ok(0);
+        }
+        let before = Self::visible_bytes(&view);
+        let edits: Vec<Value> = chosen
+            .iter()
+            .map(|c| json!({"targetId": c.id, "replacement": null}))
+            .collect();
+        self.append(
+            lane,
+            CONTEXT_EDIT_CUSTOM_TYPE,
+            json!({"edits": edits, "source": "ctx.prune", "reason": "cache-aware pre-compaction prune"}),
+        )?;
+        let after = Self::visible_bytes(&self.view(lane)?);
+        Ok(before.saturating_sub(after))
     }
 
     /// Notes and pinned items that the newest compaction cut off, as one bounded text block.

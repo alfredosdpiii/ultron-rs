@@ -339,6 +339,23 @@ impl FileWriteGuard for LokiGuard {
             ),
         })
     }
+
+    fn open_blocking(&self) -> Vec<(String, usize)> {
+        if self.mode == LokiMode::Off {
+            return Vec::new();
+        }
+        let open = jsrt::sync::lock(&self.open);
+        let Some(blocking) = open.get("blocking") else {
+            return Vec::new();
+        };
+        let mut items: Vec<(String, usize)> = blocking
+            .iter()
+            .filter(|(_, keys)| !keys.is_empty())
+            .map(|(path, keys)| (path.clone(), keys.len()))
+            .collect();
+        items.sort_by(|a, b| a.0.cmp(&b.0));
+        items
+    }
 }
 
 impl LokiGuard {

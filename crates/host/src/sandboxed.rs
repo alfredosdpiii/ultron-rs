@@ -61,6 +61,10 @@ impl Guard for SandboxGuard {
     fn is_checking(&self) -> bool {
         self.inner.is_checking()
     }
+
+    fn open_blocking_findings(&self) -> Option<String> {
+        self.inner.open_blocking_findings()
+    }
 }
 
 /// The environment a sandbox policy is built from: the host's base environment (the session's, see

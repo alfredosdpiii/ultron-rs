@@ -114,6 +114,10 @@ pub trait FileWriteGuard: Send + Sync {
     fn after_timeout(&self) -> Duration {
         DEFAULT_AFTER_CELL_TIMEOUT
     }
+    /// Open blocking findings already shown in earlier cells: `(relative_path, count)`.
+    fn open_blocking(&self) -> Vec<(String, usize)> {
+        Vec::new()
+    }
 }
 
 /// Something that wants the files each cell changed without being a guard: no verdicts, no statistics, no records.
@@ -468,6 +472,30 @@ impl FileHooks {
         } else {
             text
         })
+    }
+
+    /// Open blocking findings across enabled guards that were already shown in earlier cells and remain unfixed.
+    pub fn open_blocking_findings(&self) -> Option<String> {
+        let mut lines = Vec::new();
+        for registered in self.guards() {
+            if !registered.guard.enabled() {
+                continue;
+            }
+            let open = registered.guard.open_blocking();
+            if open.is_empty() {
+                continue;
+            }
+            let summary = open
+                .iter()
+                .map(|(path, count)| format!("{count} in {path}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(format!(
+                "[{}] Unresolved blocking findings remain: {summary}",
+                registered.guard.name()
+            ));
+        }
+        (!lines.is_empty()).then(|| lines.join("\n"))
     }
 
     /// A path for notes: relative to the session directory when inside it.
@@ -1019,6 +1047,10 @@ impl Guard for FileHooks {
     fn is_checking(&self) -> bool {
         FileHooks::is_checking(self)
     }
+
+    fn open_blocking_findings(&self) -> Option<String> {
+        FileHooks::open_blocking_findings(self)
+    }
 }
 
 #[cfg(test)]
@@ -1034,5 +1066,26 @@ mod tests {
         assert_eq!(inside(root, Path::new("/r/..x")), None);
         assert_eq!(resolve_lexical(root, "a/../b/./c"), Path::new("/r/b/c"));
         assert_eq!(resolve_lexical(root, "/abs/../x"), Path::new("/x"));
+    }
+
+    struct OpenStub;
+    impl FileWriteGuard for OpenStub {
+        fn name(&self) -> &str {
+            "Loki"
+        }
+        fn open_blocking(&self) -> Vec<(String, usize)> {
+            vec![("src/app.rs".into(), 2)]
+        }
+    }
+
+    #[test]
+    fn host_file_hooks_reports_open_blocking_findings() {
+        let mut hooks = FileHooks::new("/r");
+        assert_eq!(hooks.open_blocking_findings(), None);
+        hooks.add(Box::new(OpenStub));
+        assert_eq!(
+            hooks.open_blocking_findings().as_deref(),
+            Some("[Loki] Unresolved blocking findings remain: 2 in src/app.rs")
+        );
     }
 }

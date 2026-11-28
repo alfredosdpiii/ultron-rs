@@ -31,6 +31,8 @@ use std::sync::Arc;
 pub const MAX_EMPTY: u32 = 2;
 /// Turns continued for failed `turnEndChecks` since the user's last input.
 pub const MAX_CHECK_CONTINUES: u32 = 5;
+/// Times per user turn the host reminds the agent about unresolved open blocking Loki findings.
+pub const MAX_LOKI_REMINDERS: u32 = 1;
 pub const CHECKS_KEY: &str = "turnEndChecks";
 pub const STATE_KEY: &str = "turn_guard";
 pub const EMPTY_TEXT: &str = "Your last reply was empty. Continue the work; if it is done, say in a sentence or two what was done and what is left.";
@@ -45,6 +47,8 @@ pub(super) struct TurnGuard {
     left_seen: HashSet<String>,
     /// Turns continued for failed checks since the user's last input.
     check_continues: u32,
+    /// Reminders sent for already-shown open blocking Loki findings since the user's last input.
+    loki_reminded: u32,
     /// The checks running off the actor: their number and the signal that stops them.
     checking: Option<(u64, Signal)>,
     check_seq: u64,
@@ -161,6 +165,7 @@ impl Core {
     pub(super) fn turn_guard_user_input(&mut self) {
         self.turn_guard.empty = 0;
         self.turn_guard.check_continues = 0;
+        self.turn_guard.loki_reminded = 0;
         self.turn_guard_cancel();
     }
 
@@ -224,7 +229,9 @@ impl Core {
             config::settings::SettingsManager::create(&self.env.cwd, &config.agent_dir, config.project_trusted);
         let checks = parse_checks(settings.settings()).unwrap_or_default();
         if checks.is_empty() && !self.lane.stack.host.is_checking() {
-            if let Some(findings) = self.lane.stack.host.take_pending(MAIN_LANE) {
+            let pending = self.lane.stack.host.take_pending(MAIN_LANE);
+            let findings = pending.or_else(|| self.take_open_blocking_reminder());
+            if let Some(findings) = findings {
                 self.apply_turn_check(Vec::new(), Some(findings));
             }
             return;
@@ -266,12 +273,22 @@ impl Core {
         self.report_activity();
     }
 
+    fn take_open_blocking_reminder(&mut self) -> Option<String> {
+        if self.turn_guard.loki_reminded >= MAX_LOKI_REMINDERS {
+            return None;
+        }
+        let open = self.lane.stack.host.open_blocking_findings()?;
+        self.turn_guard.loki_reminded += 1;
+        Some(open)
+    }
+
     /// The checks numbered `id` ended with `failed`: the turn continues with them, unless it has moved on.
     pub(super) fn turn_checked(&mut self, id: u64, failed: Vec<String>, findings: Option<String>) {
         if self.turn_guard.checking.as_ref().map(|(current, _)| *current) != Some(id) {
             return;
         }
         self.turn_guard.checking = None;
+        let findings = findings.or_else(|| self.take_open_blocking_reminder());
         self.apply_turn_check(failed, findings);
         self.report_activity();
     }

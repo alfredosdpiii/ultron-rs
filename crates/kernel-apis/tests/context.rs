@@ -454,4 +454,9 @@ fn kernel_apis_context_cache_impact_export_and_injection_safety() {
     assert!(pruned["edit_id"].is_string());
     assert!(pruned["freed_bytes"].as_u64().unwrap() >= 100);
     assert!(!pruned["pruned"].as_array().unwrap().is_empty());
+
+    let fake2 = Fake::seeded();
+    let control2 = ContextControl::new(Arc::new(fake2));
+    let freed = control2.prune_before_compaction("main", 100).unwrap();
+    assert!(freed >= 100);
 }

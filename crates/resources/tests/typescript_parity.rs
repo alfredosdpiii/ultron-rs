@@ -451,7 +451,7 @@ fn resources_runtime_guide_names_the_swarm_apis_only_when_the_host_serves_them()
     let end = at + swarm[at..].find(close).unwrap() + close.len();
     assert!(swarm[at..end].contains("`help(swarm)`.\n`context=\"retrieve\"`"));
     let ergonomics = swarm.find("\n- Batch concurrent awaits with").unwrap();
-    let procedure = swarm.find("\n- A skill with a `procedure:`").unwrap();
+    let procedure = swarm.find("\n- Procedure skills (`procedure:`):").unwrap();
     assert!(ergonomics < procedure);
     let close = "(`help(skills.run)`).";
     let memory = procedure + swarm[procedure..].find(close).unwrap() + close.len();

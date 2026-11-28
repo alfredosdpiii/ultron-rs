@@ -585,6 +585,17 @@ fn render_usage_notes(lines: &mut Vec<String>, total: &Value, mode: &str) {
             plural(unmeasured, "sub-agent")
         ));
     }
+    let cache_read = n(total, "/cacheRead");
+    let prompt_tokens = n(total, "/input") + cache_read;
+    if cache_read > 0.0 && prompt_tokens > 0.0 {
+        let pct = jsrt::number::round(cache_read / prompt_tokens * 100.0);
+        notes.push(format!(
+            "cache hit: {}% ({} cached of {} prompt tokens).",
+            jsrt::number::to_string(pct),
+            format_tokens(cache_read),
+            format_tokens(prompt_tokens),
+        ));
+    }
     for note in notes {
         lines.push(format!("  {note}"));
     }

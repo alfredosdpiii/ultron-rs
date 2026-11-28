@@ -71,6 +71,10 @@ pub trait Guard: Send + Sync {
     fn settled(&self);
     /// Whether any after-cell check is still running in the background.
     fn is_checking(&self) -> bool;
+    /// Open blocking findings already shown in earlier cells that remain unfixed.
+    fn open_blocking_findings(&self) -> Option<String> {
+        None
+    }
 }
 
 pub struct AllowAll;
@@ -417,6 +421,11 @@ impl Host {
     /// Whether any after-cell check is still running in the background.
     pub fn is_checking(&self) -> bool {
         self.guard.is_checking()
+    }
+
+    /// Open blocking findings already shown in earlier cells that remain unfixed.
+    pub fn open_blocking_findings(&self) -> Option<String> {
+        self.guard.open_blocking_findings()
     }
 
     /// `cwd` is where commands run; job spill files go to `jobs_dir/<id>.log`, blocking-bash spill files to

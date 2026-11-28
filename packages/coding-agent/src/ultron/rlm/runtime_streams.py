@@ -70,6 +70,7 @@ class _MiddleTextIO(io.TextIOBase):
         self._spill_dir = spill_dir
         self._spill = None
         self._spill_path: str | None = None
+        self._spill_error: str | None = None
         self._spilled = 0
 
     def writable(self) -> bool:
@@ -94,7 +95,8 @@ class _MiddleTextIO(io.TextIOBase):
         directory, self._spill_dir = self._spill_dir, None
         try:
             self._spill_path, self._spill = _open_spill(directory, self._name)
-        except OSError:
+        except OSError as error:
+            self._spill_error = str(error)
             return
         self._spill_bytes(bytes(self._head) + bytes(self._tail))
 
@@ -159,6 +161,8 @@ class _MiddleTextIO(io.TextIOBase):
         if self._spill_path is not None:
             whole = "full" if self._spilled >= self._total else f"first {self._spilled} bytes of"
             where = f"; {whole} {self._name} in {self._spill_path}"
+        elif self._spill_error is not None:
+            where = f"; spill failed: {self._spill_error}"
         return (
             head
             + f"\n[... {self._total - kept} bytes truncated{where} ...]\n"
