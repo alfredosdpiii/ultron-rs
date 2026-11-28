@@ -224,7 +224,8 @@ fn wire_context_control(
             root: branches.clone(),
             children: child_context.clone(),
         }))
-        .with_trim(!env.flag_off(kernel_apis::context_control::COMPACTION_TRIM_ENV)),
+        .with_trim(!env.flag_off(kernel_apis::context_control::COMPACTION_TRIM_ENV))
+        .with_cache_prune(!env.flag_off(kernel_apis::context_control::COMPACTION_PRUNE_ENV)),
     );
     child_context.observe(&context);
     let _ = lane.stack.context.set(context.clone());

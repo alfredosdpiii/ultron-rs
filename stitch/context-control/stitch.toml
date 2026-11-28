@@ -1,0 +1,14 @@
+[project]
+name = "ultron-context-control"
+language = "rust"
+stitch_version = "0.2.0"
+
+[source]
+path = "../.."
+
+[rust.dependencies]
+ultron-session-journal = { path = "/src/crates/session-journal" }
+serde_json = "1"
+
+[fuzz]
+timeout_ms = 2000

@@ -334,7 +334,21 @@ impl ContextControl {
             return Ok(false);
         };
         if edits.is_empty() || (tokens - credit - saved) as f64 > target {
-            return Ok(false);
+            if !self.cache_prune {
+                return Ok(false);
+            }
+            let needed_tokens = ((tokens - credit) as f64 - target).ceil().max(1.0) as usize;
+            let freed_bytes = self.prune_before_compaction(lane, needed_tokens.saturating_mul(4))?;
+            let pruned_tokens = (freed_bytes / 4) as i64;
+            if pruned_tokens <= 0 || (tokens - credit - pruned_tokens) as f64 > target {
+                return Ok(false);
+            }
+            let mut tracking = jsrt::sync::lock(&self.tracking);
+            tracking.trimmed.retain(|(name, _, _)| name != lane);
+            tracking
+                .trimmed
+                .push((lane.to_string(), last_assistant, credit + pruned_tokens));
+            return Ok(true);
         }
         edits.reverse();
         self.append(

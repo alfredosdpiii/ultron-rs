@@ -25,6 +25,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 pub const COMPACTION_TRIM_ENV: &str = "ULTRON_COMPACTION_TRIM";
+pub const COMPACTION_PRUNE_ENV: &str = "ULTRON_COMPACTION_PRUNE";
 
 pub const CONTEXT_NOTE_CUSTOM_TYPE: &str = "ultron:context-note";
 pub const CONTEXT_PIN_CUSTOM_TYPE: &str = "ultron:context-pin";
@@ -338,6 +339,7 @@ pub struct ContextControl {
     branches: Arc<dyn ContextBranches>,
     clock: Clock,
     trim: bool,
+    cache_prune: bool,
     /// (lane, entry) appended by this module that the branch does not show yet.
     pending: Mutex<Vec<(String, Value)>>,
     tracking: Mutex<Tracking>,
@@ -358,6 +360,7 @@ impl ContextControl {
             branches,
             clock: system_clock(),
             trim: true,
+            cache_prune: false,
             pending: Mutex::new(Vec::new()),
             tracking: Mutex::new(tracking),
             state_cache: Mutex::new(None),
@@ -367,6 +370,12 @@ impl ContextControl {
     /// Trim old tool results before a threshold compaction (default on; `ULTRON_COMPACTION_TRIM=off` turns it off).
     pub fn with_trim(mut self, trim: bool) -> Self {
         self.trim = trim;
+        self
+    }
+
+    /// Fall back to cache-aware soft pruning before a threshold compaction when trimming alone is not enough.
+    pub fn with_cache_prune(mut self, cache_prune: bool) -> Self {
+        self.cache_prune = cache_prune;
         self
     }
 
