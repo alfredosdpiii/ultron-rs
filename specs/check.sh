@@ -13,7 +13,18 @@ set -euo pipefail
 
 EVERYSTATE_VERSION=0.3.1
 
-dir=${1:?usage: specs/check.sh <spec dir> [config ...]}
+if [ $# -eq 0 ]; then
+  root=$(cd "$(dirname "$0")" && pwd)
+  overall=0
+  for spec_dir in "$root"/*/; do
+    [ -f "$spec_dir/expected" ] || continue
+    echo "=== $(basename "$spec_dir") ==="
+    "$0" "$spec_dir" || overall=1
+  done
+  exit $overall
+fi
+
+dir=${1:?usage: specs/check.sh [spec dir [config ...]]}
 shift
 dir=$(cd "$dir" && pwd)
 specs=("$dir"/*.tla)
@@ -27,7 +38,7 @@ mkdir "$work/tla"
 cp "${specs[0]}" "$work/tla/"
 
 if [ -n "${EVERYSTATE:-}" ]; then checker=("$EVERYSTATE")
-elif command -v everystate > /dev/null; then checker=(everystate)
+elif command -v everystate > /dev/null && everystate --version > /dev/null 2>&1; then checker=(everystate)
 else checker=(npx --yes "everystate@$EVERYSTATE_VERSION")
 fi
 

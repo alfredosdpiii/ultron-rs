@@ -1,0 +1,17 @@
+[project]
+name = "ultron-parsers"
+language = "rust"
+stitch_version = "0.2.0"
+
+[source]
+path = "../.."
+
+[rust.dependencies]
+ultron-jsrt = { path = "/src/crates/jsrt" }
+ultron-mcp = { path = "/src/crates/mcp" }
+ultron-model-scope = { path = "/src/crates/model-scope" }
+ultron-usage = { path = "/src/crates/usage" }
+serde_json = "1"
+
+[fuzz]
+timeout_ms = 2000

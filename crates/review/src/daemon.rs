@@ -338,6 +338,8 @@ struct Inner {
     banned_noted: HashSet<String>,
     /// Bot-authored pull requests already skipped, by task key: bypassed if @mentioned.
     bot_skipped: IndexSet<String>,
+    /// Last logged skip reason per task key, so unchanged skips are logged once.
+    last_skip_reason: IndexMap<String, String>,
     /// Merged or closed pull requests already skipped, by pull key: not re-fetched on subsequent polls.
     terminal_pulls: IndexSet<String>,
     /// Bumped by every finished task, ended sleep and stop: what the loop waits on.
@@ -368,6 +370,17 @@ impl Inner {
             self.bot_skipped.shift_remove_index(0);
         }
         self.bot_skipped.insert(key)
+    }
+
+    fn should_log_skip(&mut self, key: String, reason: &str) -> bool {
+        if self.last_skip_reason.get(&key).is_some_and(|prev| prev == reason) {
+            return false;
+        }
+        if !self.last_skip_reason.contains_key(&key) && self.last_skip_reason.len() >= MAX_TERMINAL_PULLS {
+            self.last_skip_reason.shift_remove_index(0);
+        }
+        self.last_skip_reason.insert(key, reason.to_string());
+        true
     }
 
     fn enqueue(&mut self, candidate: Candidate, not_before: f64) {
@@ -554,11 +567,13 @@ impl Shared {
                     if is_terminal_skip(reason) {
                         self.lock().mark_terminal_pull(pull_key(&candidate.pull));
                     }
+                    let task = task_key(&candidate.account, &candidate.pull);
                     let log_skip = if is_bot_skip(reason) {
-                        self.lock()
-                            .mark_bot_skipped(task_key(&candidate.account, &candidate.pull))
+                        self.lock().mark_bot_skipped(task)
+                    } else if self.banned_outcome(&candidate, &outcome) {
+                        false
                     } else {
-                        !self.banned_outcome(&candidate, &outcome)
+                        self.lock().should_log_skip(task, reason)
                     };
                     if log_skip {
                         self.log(&format!(
@@ -572,6 +587,7 @@ impl Shared {
             }
             Ok(Preparation::Due(prepared)) => {
                 let mut inner = self.lock();
+                inner.last_skip_reason.shift_remove(key);
                 inner
                     .authors
                     .insert(pull_key(&prepared.candidate.pull), prepared.pull.author.clone());
@@ -645,6 +661,7 @@ impl Daemon {
                     authors: HashMap::new(),
                     banned_noted: HashSet::new(),
                     bot_skipped: IndexSet::new(),
+                    last_skip_reason: IndexMap::new(),
                     terminal_pulls: IndexSet::new(),
                     events: 0,
                     stopped: false,
