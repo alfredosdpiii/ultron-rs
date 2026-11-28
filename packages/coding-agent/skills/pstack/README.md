@@ -6,7 +6,7 @@ port changes the mechanics so they run in Ultron's REPL: subagents are `rlm.spaw
 judges and reviewers are `rlm.infer` frames, model panels come from `rlm.find_models`, long runs are `/goal`, and
 nothing polls or spawns a subagent just to read files.
 
-The port tracks upstream pstack 0.15.43 (commit `e1cc031` of cursor/plugins); diff from there when syncing again.
+The port tracks upstream pstack 0.15.48 (commit `9e278fe` of cursor/plugins); diff from there when syncing again.
 
 pstack is MIT licensed; its license is [LICENSE](LICENSE) in this directory, and each ported `SKILL.md` names its
 source. Changes from the original: Cursor-only mechanics replaced or removed, `poteto-mode` renamed `rigor`, the
@@ -23,7 +23,7 @@ they need Node, and take everystate from npm's cache at the version `scripts/pac
 - `/skill:<name>` runs one skill directly: architect, arena, automate-me, benchmark-checklist, blast-radius, bro,
   correct, create-formal-verification-skill, create-verification-skill, figure-it-out, how, in-your-own-words,
   interrogate, ketchup, ketchup-video, maintain-formal-verification-skill, maintain-verification-skill, no-comments,
-  recall, reflect, sharpen, show-me-your-work, statechart, swarm, tdd, teach, technical-writing,
+  recall, reflect, reframe, sharpen, show-me-your-work, statechart, swarm, tdd, teach, technical-writing,
   typescript-best-practices, unslop, why.
 - The 24 engineering principles are skills too (`/skill:principle-fix-root-causes`, `principle-prove-it-works`, ...);
   the other skills read the ones a step needs.

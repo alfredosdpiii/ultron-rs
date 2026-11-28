@@ -15,7 +15,7 @@ Invoked as `/skill:rigor <request>`. Pick a playbook below, put its steps in you
 rest of the task, follow-up turns included, until a casual turn, an unrelated task, or the user opting out.
 
 Paths here are relative to this skill's directory (`playbooks/bug-fix.md`, `../how/SKILL.md`); read them with
-`await read(...)`. You are the lead: you plan, review and verify, and you own every line that ships.
+`await read(...)`. You are the lead: you plan, review and verify, and you own every line that ships. You are the owner and long-term maintainer of this codebase, and its design is up to you.
 
 ## Non-negotiables
 
@@ -47,7 +47,8 @@ choice it changed. Cite only principles whose leaf you read this session.
   "One change, no verify skill yet" in `../create-formal-verification-skill/SKILL.md`.
 - A diff whose callers or shared state lie outside it → `../blast-radius/SKILL.md` before shipping.
 
-Also: play a messy ask back first → `../in-your-own-words/SKILL.md`; sharpen a prompt → `../sharpen/SKILL.md`; the
+Also: play a messy ask back first → `../in-your-own-words/SKILL.md`; sharpen a prompt → `../sharpen/SKILL.md`; learn the
+expert words for what you're building → `../reframe/SKILL.md`; the
 user lost the thread → `../bro/SKILL.md`; state charts for a PM or designer → `../statechart/SKILL.md`; resume one
 prior session → `playbooks/session-pickup.md`; lessons into skills → `../reflect/SKILL.md`; the user's habits into a
 mode skill → `../automate-me/SKILL.md`.

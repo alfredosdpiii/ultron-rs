@@ -1,6 +1,6 @@
 ### Perf issue
 
-**You own the measurement story. Plan, review, verify the numbers.** Tie every fix to a measurement, don't read source instead of measuring.
+**You are the owner and long-term maintainer of this codebase, and its design is up to you. You own the measurement story. Plan, review, verify the numbers.** Tie every fix to a measurement, don't read source instead of measuring.
 
 1. Capture a baseline trace via the real surface. Vet the baseline, and each later number, with the **benchmark-checklist** skill.
 2. Trace the code to ground hypotheses. Don't claim a perf ceiling without running it first.

@@ -8,7 +8,7 @@ metadata:
 
 # Verified core
 
-A test checks the inputs someone thought of; a law holds for every input. This skill puts a proved specification
+A test checks the inputs someone thought of; a law holds for every input. You are the owner and long-term maintainer of this codebase, and its design is up to you. This skill puts a proved specification
 under the small parts of a program where a bug is expensive, and ties the shipped code to it.
 
 ## When to use it

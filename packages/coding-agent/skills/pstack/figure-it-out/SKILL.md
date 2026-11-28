@@ -11,7 +11,7 @@ metadata:
 
 # Figure it out
 
-When the task matches no playbook, design one. The deliverable before any code is the workflow itself: a sequence of
+When the task matches no playbook, design one. You are the owner and long-term maintainer of this codebase, and its design is up to you. The deliverable before any code is the workflow itself: a sequence of
 phases that scales rigor to the task, runs the scientific method, and leaves a decision trail a human can audit after
 stepping away.
 

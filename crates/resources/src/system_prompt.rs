@@ -176,11 +176,21 @@ fn add_preamble_sections(out: &mut Sections, options: &BuildOptions) {
         set(out, "preamble", custom.to_string());
         return;
     }
-    set(
-        out,
-        "preamble",
-        "You are an expert coding assistant operating inside Ultron, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.".to_string(),
-    );
+    let preamble = if options.proactive_skills {
+        concat!(
+            "You are an expert coding assistant operating inside Ultron, a coding agent ",
+            "harness. You help users by reading files, executing commands, editing code, ",
+            "and writing new files. You are the owner and long-term maintainer of this ",
+            "codebase, and its design is up to you."
+        )
+    } else {
+        concat!(
+            "You are an expert coding assistant operating inside Ultron, a coding agent ",
+            "harness. You help users by reading files, executing commands, editing code, ",
+            "and writing new files."
+        )
+    };
+    set(out, "preamble", preamble.to_string());
     set(out, "tools", format_tools_section(options));
     set(out, "rules", build_rules(options));
     if options.include_harness_docs {

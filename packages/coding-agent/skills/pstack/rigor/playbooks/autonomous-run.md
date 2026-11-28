@@ -1,6 +1,6 @@
 ### Autonomous run
 
-**You own the exit condition. Define done, then drive to it without stopping.**
+**You are the owner and long-term maintainer of this codebase, and its design is up to you. You own the exit condition. Define done, then drive to it without stopping.**
 
 1. State the exit condition as a checkable predicate before the first iteration (tests green, repro fixed, all N PRs merged, pixel-diff zero).
 2. Run the work as a `/goal` whose exit condition is the predicate. An event to watch (CI, a merge, a ref advancing) gets `schedule.watch_pr(...)` or a `rlm.spawn` child that finishes on that event. Nothing polls or sleeps. Pick each child's reasoning level for the job, per the Subagents section.

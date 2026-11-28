@@ -22,7 +22,7 @@ SC = "<absolute path of this skill's directory>/scripts/statechart"
 print(await bash(f"{SC} SPEC.tla [--config FILE] [--view FILE] [--out DIR]"))
 ```
 
-`scripts/statechart.ts` is TypeScript. The `statechart` wrapper picks a runtime that executes TypeScript (Node 22.18 to 22.x, Node 23.6 or later, Bun 1.1.5 or later, or Deno 2.0 or later); wrong use prints the full usage.
+`scripts/statechart.ts` is TypeScript. The `statechart` wrapper is a POSIX shell script that picks a runtime that executes TypeScript (Node 22.18 to 22.x, Node 23.6 or later, Bun 1.1.5 or later, or Deno 2.0 or later); wrong use prints the full usage. On native Windows, run `node --disable-warning=ExperimentalWarning <skill dir>/scripts/statechart.ts` with Node 22.18 to 22.x, or Node 23.6 or later.
 
 The checker is everystate, a TLA+ model checker with TLC's command line, output and verdicts as one native binary, so nothing here needs Java. It comes from npm's cache at the version `scripts/package.json` pins (the first run needs the network), or set `EVERYSTATE_JAVA` to the path of an `everystate-java` you have. The report and the notes below say TLC, because the output is TLC's. A large model can take minutes; start a long one as a job (`bash(..., yield_after=0)`) and do other work until its event arrives.
 

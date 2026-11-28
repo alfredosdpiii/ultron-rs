@@ -222,14 +222,25 @@ pub fn playbook_message(text: &str, rigor_dir: &Path, shown: &[String], timestam
     let spec = if NO_SPEC.contains(&file) {
         ""
     } else {
-        " Before the first edit, also write what the finished work must do: `import spec_api; \
-         print(spec_api.write(title, goal, [one sentence per behaviour a check can show true or false]))`; \
-         `help(spec_api)` has the rest."
+        concat!(
+            " Before the first edit, also write what the finished work must do: ",
+            "`import spec_api; print(spec_api.write(title, goal, [one sentence per ",
+            "behaviour a check can show true or false]))`; `help(spec_api)` has the rest. ",
+            "You are the owner and long-term maintainer of this codebase, and its design ",
+            "is up to you."
+        )
     };
     let head = format!(
-        "[playbook] This request reads as a {title}. Follow rigor's {title} playbook below: put its steps in \
-         state[\"plan\"] before your first edit and work through them; a step you skip stays with `skip: <reason>`. \
-         Name a better-fitting playbook in one line if this one is wrong. Paths are relative to {dir}.{spec}"
+        concat!(
+            "[playbook] This request reads as a {title}. Follow rigor's {title} ",
+            "playbook below: put its steps in state[\"plan\"] before your first edit ",
+            "and work through them; a step you skip stays with `skip: <reason>`. ",
+            "Name a better-fitting playbook in one line if this one is wrong. ",
+            "Paths are relative to {dir}.{spec}"
+        ),
+        title = title,
+        dir = dir,
+        spec = spec,
     );
     let content = if body.chars().count() > MAX_PLAYBOOK_CHARS {
         format!("{head}\nRead {} now, before the first edit.", path.display())

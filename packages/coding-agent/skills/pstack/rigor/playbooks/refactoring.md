@@ -1,6 +1,6 @@
 ### Refactoring
 
-**You own the contract. The structure changes. The behavior does not.** Distinct from Feature, which adds behavior, and Bug fix, which corrects it.
+**You are the owner and long-term maintainer of this codebase, and its design is up to you. You own the contract. The structure changes. The behavior does not.** Distinct from Feature, which adds behavior, and Bug fix, which corrects it.
 
 Independent parts start together: spawn the slower part (`rlm.spawn`, self-contained brief) and do another yourself; never ask which comes first.
 
