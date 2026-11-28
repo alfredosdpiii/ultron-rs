@@ -53,3 +53,8 @@ evals/quality/fixtures/**/.generate.log
 
 # Release tarballs built by scripts/pack-release.mjs
 dist-release/
+
+# STITCH++ fuzzing campaigns and build artifacts
+stitch/*/.stitch/
+stitch/*/campaigns/
+stitch/*/out/

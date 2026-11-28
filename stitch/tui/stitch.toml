@@ -1,0 +1,13 @@
+[project]
+name = "ultron-tui"
+language = "rust"
+stitch_version = "0.2.0"
+
+[source]
+path = "../.."
+
+[rust.dependencies]
+ultron-tui = { path = "/src/crates/tui" }
+
+[fuzz]
+timeout_ms = 2000

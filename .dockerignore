@@ -1,0 +1,9 @@
+target/
+crates/*/target/
+.git/
+node_modules/
+stitch/
+dist/
+dist-release/
+__pycache__/
+*.pyc
