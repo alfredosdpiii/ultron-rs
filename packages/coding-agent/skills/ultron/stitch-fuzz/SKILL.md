@@ -66,5 +66,5 @@ Every `stitch/` project pins `stitch_version` in `stitch.toml`. Always run the e
 When reviewing a PR that modifies a parser, renderer, codec, serializer, or stateful library API:
 
 1. If the repo already has a `stitch/<target>/` harness covering the changed files, run `BUILDX_BUILDER=default uvx --from stitch-fuzz==0.2.0 stitch build && stitch check && stitch probe --secs 30` against the PR head.
-2. Otherwise, write a minimal harness targeting only the functions changed in the PR diff and run a 20–30s `stitch probe`.
+2. Otherwise, write a minimal ephemeral harness targeting only the functions changed in the PR diff inside `~/.ultron/stitch/ephemeral/<repo>-<id>` (or `$ULTRON_STITCH_DIR/<repo>-<id>`, never `/tmp`) and run a 20–30s `stitch probe`.
 3. For any crash `<id>`, run `stitch exec <id> --rev <base_sha>` vs `<head_sha>` to prove the PR introduced the crash (no crash on base, crash on head) before reporting a blocking review finding.

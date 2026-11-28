@@ -22,10 +22,20 @@ from review_api import FileDiff, _text
 
 STITCH_ENV_FLAG = "ULTRON_REVIEW_STITCH"
 STITCH_PROBE_SECS_ENV = "ULTRON_REVIEW_STITCH_SECS"
+STITCH_DIR_ENV = "ULTRON_STITCH_DIR"
 DEFAULT_PROBE_SECS = 20
 MIN_PROBE_SECS = 5
 MAX_PROBE_SECS = 120
 STITCH_CMD_TIMEOUT_S = 180.0
+
+
+def stitch_ephemeral_dir(name: str = "") -> Path:
+    """Dedicated directory outside `/tmp` for ephemeral STITCH++ review harnesses."""
+    override = os.environ.get(STITCH_DIR_ENV, "").strip()
+    base = Path(override).expanduser() if override else Path.home() / ".ultron" / "stitch" / "ephemeral"
+    target = base / name if name else base
+    target.mkdir(parents=True, exist_ok=True)
+    return target
 
 _CRATE_PATH_RE = re.compile(r"\bcrates/([A-Za-z0-9_-]+)/")
 _DISABLED_VALUES = frozenset({"0", "false", "no", "off"})

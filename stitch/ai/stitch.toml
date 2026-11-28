@@ -1,0 +1,14 @@
+[project]
+name = "ultron-ai"
+language = "rust"
+stitch_version = "0.2.0"
+
+[source]
+path = "../.."
+
+[rust.dependencies]
+ultron-ai = { path = "/src/crates/ai" }
+serde_json = "1"
+
+[fuzz]
+timeout_ms = 2000

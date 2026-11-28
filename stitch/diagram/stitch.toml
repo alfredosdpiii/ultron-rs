@@ -1,0 +1,14 @@
+[project]
+name = "ultron-diagram"
+language = "rust"
+stitch_version = "0.2.0"
+
+[source]
+path = "../.."
+
+[rust.dependencies]
+ultron-diagram = { path = "/src/crates/diagram" }
+ultron-theme = { path = "/src/crates/theme" }
+
+[fuzz]
+timeout_ms = 2000

@@ -58,6 +58,16 @@ fn is_terminal_skip(reason: &str) -> bool {
     reason.starts_with("the pull request is merged") || reason.starts_with("the pull request is closed")
 }
 
+fn is_bot_skip(reason: &str) -> bool {
+    reason.contains("(autoreview.skipBots)")
+}
+
+fn has_mention_reason(reasons: &[String]) -> bool {
+    reasons
+        .iter()
+        .any(|reason| reason == "mention" || reason == "search_mention")
+}
+
 fn is_large(pull: &crate::github::PullRequest) -> bool {
     pull.additions + pull.deletions >= LARGE_PULL_LINES
 }
@@ -326,6 +336,8 @@ struct Inner {
     authors: HashMap<String, String>,
     /// The banned pull requests already logged, by task key: logged once, not every poll.
     banned_noted: HashSet<String>,
+    /// Bot-authored pull requests already skipped, by task key: bypassed if @mentioned.
+    bot_skipped: IndexSet<String>,
     /// Merged or closed pull requests already skipped, by pull key: not re-fetched on subsequent polls.
     terminal_pulls: IndexSet<String>,
     /// Bumped by every finished task, ended sleep and stop: what the loop waits on.
@@ -346,6 +358,16 @@ impl Inner {
             self.terminal_pulls.shift_remove_index(0);
         }
         self.terminal_pulls.insert(key);
+    }
+
+    fn mark_bot_skipped(&mut self, key: String) -> bool {
+        if self.bot_skipped.contains(&key) {
+            return false;
+        }
+        if self.bot_skipped.len() >= MAX_TERMINAL_PULLS {
+            self.bot_skipped.shift_remove_index(0);
+        }
+        self.bot_skipped.insert(key)
     }
 
     fn enqueue(&mut self, candidate: Candidate, not_before: f64) {
@@ -532,7 +554,13 @@ impl Shared {
                     if is_terminal_skip(reason) {
                         self.lock().mark_terminal_pull(pull_key(&candidate.pull));
                     }
-                    if !self.banned_outcome(&candidate, &outcome) {
+                    let log_skip = if is_bot_skip(reason) {
+                        self.lock()
+                            .mark_bot_skipped(task_key(&candidate.account, &candidate.pull))
+                    } else {
+                        !self.banned_outcome(&candidate, &outcome)
+                    };
+                    if log_skip {
                         self.log(&format!(
                             "{} as {}: skipped ({reason})",
                             pull_key(&candidate.pull),
@@ -616,6 +644,7 @@ impl Daemon {
                     pruned_at: None,
                     authors: HashMap::new(),
                     banned_noted: HashSet::new(),
+                    bot_skipped: IndexSet::new(),
                     terminal_pulls: IndexSet::new(),
                     events: 0,
                     stopped: false,
@@ -687,6 +716,12 @@ impl Daemon {
         for pull in pulls {
             let pull_name = pull_key(&pull.pull);
             if inner.terminal_pulls.contains(&pull_name) {
+                continue;
+            }
+            let bot_key = task_key(account, &pull.pull);
+            if has_mention_reason(&pull.reasons) {
+                inner.bot_skipped.shift_remove(&bot_key);
+            } else if inner.bot_skipped.contains(&bot_key) {
                 continue;
             }
             if let Some(author) = &pull.author {

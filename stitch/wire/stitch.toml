@@ -1,0 +1,17 @@
+[project]
+name = "ultron-wire"
+language = "rust"
+stitch_version = "0.2.0"
+
+[source]
+path = "../.."
+
+[rust.dependencies]
+ultron-websocket = { path = "/src/crates/websocket" }
+ultron-chord-delta = { path = "/src/crates/chord-delta" }
+ultron-compaction = { path = "/src/crates/compaction" }
+ultron-theme = { path = "/src/crates/theme" }
+serde_json = "1"
+
+[fuzz]
+timeout_ms = 2000

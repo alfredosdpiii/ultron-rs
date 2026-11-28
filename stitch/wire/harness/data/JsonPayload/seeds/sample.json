@@ -1,0 +1,1 @@
+{"role":"assistant","content":[{"type":"toolCall","name":"read","arguments":{"path":"src/lib.rs"}}]}
