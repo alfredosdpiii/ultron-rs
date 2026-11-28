@@ -80,6 +80,7 @@ impl App {
             }),
             Slash::Autoreview => self.cmd_autoreview(args),
             Slash::Review => self.cmd_review(args),
+            Slash::Learning => self.cmd_learning(args),
             Slash::Goal => self.send(LaneCommand::Goal(args.to_string())),
             Slash::Observer => self.send(LaneCommand::Observer(args.to_string())),
             _ => return false,
@@ -283,6 +284,20 @@ impl App {
     fn cmd_review(&mut self, args: &str) {
         self.show_status("Reviewing changes…");
         let message = format!("/review {args}").trim().to_string();
+        if self.operation.is_some() {
+            let id = self.enqueue(QueueKind::Steer, message, Vec::new());
+            self.status = format!("Queued {id}.");
+        } else {
+            self.send(LaneCommand::Prompt {
+                text: message,
+                images: Vec::new(),
+            });
+        }
+    }
+
+    fn cmd_learning(&mut self, args: &str) {
+        self.show_status("Learning mode…");
+        let message = format!("/learning {args}").trim().to_string();
         if self.operation.is_some() {
             let id = self.enqueue(QueueKind::Steer, message, Vec::new());
             self.status = format!("Queued {id}.");

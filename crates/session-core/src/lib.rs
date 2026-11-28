@@ -35,6 +35,7 @@ pub mod journal;
 pub mod kept_contracts;
 pub mod lane;
 mod lane_reuse;
+pub mod learning_command;
 pub mod local_resources;
 pub mod loki_notice;
 pub mod memory_children;

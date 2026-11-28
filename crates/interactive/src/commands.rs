@@ -78,6 +78,7 @@ pub enum Slash {
     Thinking,
     Compact,
     Review,
+    Learning,
     Reload,
     Mode,
     Persona,
@@ -92,7 +93,7 @@ pub enum Slash {
 
 impl Slash {
     /// Every command, in the order the editor's autocomplete lists them (the client TUI's, then the Rust-only ones).
-    pub const ALL: [Slash; 49] = [
+    pub const ALL: [Slash; 50] = [
         Slash::Name,
         Slash::Session,
         Slash::Usage,
@@ -132,6 +133,7 @@ impl Slash {
         Slash::Thinking,
         Slash::Compact,
         Slash::Review,
+        Slash::Learning,
         Slash::Reload,
         Slash::Mode,
         Slash::Persona,
@@ -144,7 +146,7 @@ impl Slash {
         Slash::DementedElves,
     ];
 
-    const SPECS: [(Slash, &'static str, &'static str, &'static str, Tier); 49] = [
+    const SPECS: [(Slash, &'static str, &'static str, &'static str, Tier); 50] = [
         (Slash::Name, "name", "<name>", "Set session display name", Tier::Client),
         (
             Slash::Session,
@@ -380,6 +382,13 @@ impl Slash {
             "review",
             "[base-ref|PR|path...] [--only bugs,security,arch,tests,ai] [--budget 300k] [--model p/m] [--post]",
             "Review code changes: specialist reviewer frames, then a verifier per finding",
+            Tier::Client,
+        ),
+        (
+            Slash::Learning,
+            "learning",
+            "[topic | progress | graph | practice | drill <subskill> | list | off]",
+            "Socratic + Ultralearning mode: diagnostic placement, skill map, calibration rail, and knowledge graph",
             Tier::Client,
         ),
         (

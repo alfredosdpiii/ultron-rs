@@ -77,6 +77,7 @@ impl Core {
     /// template's `/name args` expanded. The persona's keep-going notice, if any.
     fn user_text(&mut self, message: &str) -> (String, Option<String>) {
         let message = crate::review_command::expand_review_command(message);
+        let message = crate::learning_command::expand_learning_command(&message);
         let notice = self.persona_user_input(&message);
         self.turn_guard_user_input();
         (self.expand_prompt_template(message), notice)
