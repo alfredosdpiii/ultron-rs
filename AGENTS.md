@@ -14,10 +14,12 @@ terminal coding agent whose model has one tool, a persistent Python REPL. The `u
 
 A change is done when it works and is verified, not when it is written:
 
-- `cargo fmt --all -- --check` is clean.
-- `cargo clippy --workspace --all-targets --locked -- -D warnings` is clean.
+- `./scripts/verify.sh` is clean (`cargo fmt`, `strip-comments.py`, `ruff`, `loki hygiene`, `clippy -D warnings`, and
+  `ultron-workspace-checks`).
 - The tests you touched or that cover the change pass; for runtime, host, kernel, prompt or TUI changes, the whole
   `scripts/nextest.sh --workspace --locked`.
+- When touching a crate covered by a STITCH++ harness (`stitch/tui`, `stitch/context-control`), run
+  `BUILDX_BUILDER=default uvx --from stitch-fuzz==0.2.0 stitch build && stitch check && stitch probe --secs 30`.
 - Before a release: the above, plus `scripts/rust-release.sh` and a secret scan of the tree and of the commits since
   the last release.
 
@@ -58,35 +60,24 @@ bar above or something genuinely needs the user; don't end a turn by announcing 
 
 ## Design
 
-The codebase was untangled around one question: should these pieces change together? Keep it that way. Before
-adding code, decide what it changes with and put it there.
+Keep pieces that change together together, and keep boundaries clean:
 
-- **No hidden links.** Pieces that must change together live together. No copied logic or values (one owner, one
-  helper: `jsrt`, `config::keys`, `config::auth`, `config::paths`, `signals`, `session_journal::catalog`,
-  `delegation::usage`). No module reading a global or file another module sets without going through that module's
-  API. Keep a feature's code in one crate or folder, not split by layer. No call order or convention callers just
-  have to know: make it a type, a single entry point, or a check in `crates/workspace-checks`.
-- **No needless links.** Callers depend on behavior, not internals. Stable code never imports more volatile code;
-  check the dependency direction when adding a crate dependency. A general function takes no parameter only one
-  caller understands. Prefer deep modules: a small interface over a lot of behavior.
-- **No surplus.** No pass-through wrappers, no extension points or settings for things that never vary, no dead code.
-  Delete what nothing uses.
-- **Special cases are design debt.** An `if` for one value, a parameter for one caller, a swallowed error, a retry or
-  sleep, a disabled test: each is a requirement the design missed. Fix the design so the case follows from it; keep
-  a special case only when the system really needs it, and say why next to it.
-- **Explicit state machines.** A lifecycle with more than two states is an enum with one transition function, not
-  several bools, Options or status strings set from many places. Settle what a state owes (a reply, a cancel, a
-  reservation) before replacing it. Never hold a lock while calling code that can call back into it. State that must
-  survive a restart is written before it is acted on, files are written atomically (`config::paths::write_private`:
-  temp file, fsync, rename), and recovery handles every persisted state by name. A protocol across threads,
-  processes or restarts gets a TLA+ spec in `specs/` (see `specs/check.sh` and its verify skills) that models both
-  the bug class and the fix.
+- **No hidden links.** One owner, one helper (`jsrt`, `config::keys`, `config::auth`, `config::paths`, `signals`,
+  `session_journal::catalog`, `delegation::usage`). Keep a feature in one crate/folder; encode call-order invariants
+  in types, a single entry point, or `crates/workspace-checks`.
+- **No needless links or surplus.** Depend on behavior, not internals; check dependency direction; prefer deep
+  modules; delete pass-through wrappers and dead code.
+- **Special cases are design debt.** Fix the design instead of piling on one-caller flags, swallowed errors, retries,
+  or sleeps; keep a special case only when required and document why.
+- **Explicit state machines.** Lifecycles with >2 states are enums with one transition function. Settle what a state
+  owes before replacing it; never hold a lock across callbacks; write restart-critical state atomically
+  (`config::paths::write_private`) before acting. Protocols across threads/processes/restarts get a TLA+ spec in
+  `specs/` (`specs/check.sh`); parsers, renderers, and stateful APIs get STITCH++ harnesses in `stitch/`.
 - **Fail closed** on unreadable security state (trust, approvals, credentials).
-- **Comments** say what the code cannot: an outside constraint, a reason, a workaround and the problem behind it.
-  Don't restate the code.
-- **Tests** check behavior and fail on a regression, and only then. A test that repeats the implementation, depends
-  on internals, or cannot fail is removed or rewritten. A bug fix comes with a test that fails without the fix.
-- A typical change lands in one place. If yours touches many, look for the missing owner first.
+- **Comments.** Inline `//` comments in `crates/*/src` fail `no_non_exempt_inline_comments_in_src` (use `///`/`//!`
+  doc comments for external constraints, reasons, or workarounds; never restate code).
+- **Tests** check behavior and fail on regression. Every bug fix ships with a failing-before-fix regression test.
+- If a change touches many places, look for the missing owner first.
 
 ## Code
 
