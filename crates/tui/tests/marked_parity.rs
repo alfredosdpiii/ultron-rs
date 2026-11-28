@@ -191,3 +191,11 @@ fn tui_marked_em_strong_skip_branch_like_ts() {
         assert_eq!(md.render(40), [want], "{doc:?}");
     }
 }
+
+#[test]
+fn tui_marked_blockquote_multibyte_and_list_merge_do_not_panic() {
+    let c1 = ">>>\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}`k\x07mLHl( |\n >>>\x7f\u{fffd} |\n >>>\x7f\u{fffd}eeeefeeeeeece |\n >>>\x7f\u{fffd} |\n >>eeeeWWWWWWWWWWWWWWWkkzk\x1b]`i\0\x01>>>>>( |\n >>>\x7f->ps:/00:> |\n\\ atkkz";
+    let c3 = "> - ~~~~~~~~\0\0swarr| \n--\0\u{fffd}\nbigwed -\u{fffd}\x7f- 1\x7f- 1 \n-col1 }\u{fffd}c\u{fffd}";
+    assert!(!tui::lex(c1).is_empty());
+    assert!(!tui::lex(c3).is_empty());
+}

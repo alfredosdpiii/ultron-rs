@@ -372,6 +372,22 @@ fn upgrade_loose_text_blocks(list: &mut Block) {
     }
 }
 
+fn safe_prefix(s: &str, trim_bytes: usize) -> &str {
+    let mut end = s.len().saturating_sub(trim_bytes);
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+fn safe_suffix(s: &str, start_bytes: usize) -> &str {
+    let mut start = start_bytes.min(s.len());
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    &s[start..]
+}
+
 impl Lexer {
     fn try_block_newline(&self, src: &str, tokens: &mut Vec<Block>) -> Option<usize> {
         let c = exec(&rules::NEWLINE, src)?;
@@ -554,7 +570,10 @@ impl Lexer {
                 .try_block_step_early(src, tokens)
                 .or_else(|| self.try_block_step_late(whole, src, &mut latex_start, tokens, &mut last_paragraph_clipped))
             {
-                src = &src[len..];
+                if len >= src.len() {
+                    break;
+                }
+                src = safe_suffix(src, len);
                 continue;
             }
             break;
@@ -577,7 +596,7 @@ impl Lexer {
                 let rest = lines.join("\n");
                 let w = format!("{last_raw}\n{}", replace(&rules::BQ_PREFIX, &rest, ""));
                 let quote = self.blockquote(&w)?;
-                *text = format!("{}{}", &text[..text.len() - last_text_len], quote.text);
+                *text = format!("{}{}", safe_prefix(text, last_text_len), quote.text);
                 if let Some(slot) = tokens.last_mut() {
                     *slot = quote;
                 }
@@ -589,9 +608,12 @@ impl Lexer {
                 let last_raw = last.raw.clone();
                 let joined = format!("{last_raw}\n{}", lines.join("\n"));
                 let list = self.list(&joined)?;
-                *raw = format!("{}{}", &raw[..raw.len() - last_raw.len()], list.raw);
-                *text = format!("{}{}", &text[..text.len() - last_raw.len()], list.raw);
-                *lines = joined[list.raw.len()..].split('\n').map(str::to_string).collect();
+                *raw = format!("{}{}", safe_prefix(raw, last_raw.len()), list.raw);
+                *text = format!("{}{}", safe_prefix(text, last_raw.len()), list.raw);
+                *lines = safe_suffix(&joined, list.raw.len())
+                    .split('\n')
+                    .map(str::to_string)
+                    .collect();
                 if let Some(slot) = tokens.last_mut() {
                     *slot = list;
                 }
