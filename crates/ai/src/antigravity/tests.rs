@@ -474,8 +474,9 @@ fn normalize_usage_fills_missing_totals_and_falls_back_to_context_used() {
             cumulative.output,
             cumulative.total_tokens
         ),
-        (161_267, 0, 29_442, 161_267)
+        (6_599, 154_668, 29_442, 161_267)
     );
+    assert_eq!(cumulative.input + cumulative.cache_read, 161_267);
 }
 
 #[tokio::test]

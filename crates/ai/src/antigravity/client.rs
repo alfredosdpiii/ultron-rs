@@ -48,10 +48,17 @@ pub(super) fn normalize_usage(result: &Value, context_used: u64) -> Usage {
     let raw_total = count("totalTokens");
     let doubled_context = context_used.saturating_add(output).saturating_mul(2);
     if context_used > 0 && (cache_read > context_used || raw_total > doubled_context) {
+        let raw_prompt = raw_input.saturating_add(cache_read);
+        let scaled_cache = if raw_prompt > 0 {
+            ((u128::from(context_used) * u128::from(cache_read)) / u128::from(raw_prompt)) as u64
+        } else {
+            0
+        };
+        let scaled_input = context_used.saturating_sub(scaled_cache);
         return Usage {
-            input: context_used,
+            input: scaled_input,
             output,
-            cache_read: 0,
+            cache_read: scaled_cache,
             cache_write: 0,
             reasoning: (thought > 0).then_some(thought),
             total_tokens: context_used,
