@@ -34,6 +34,28 @@ pub const fn new_topic_sentinel() -> &'static str {
     NEW_TOPIC_VALUE
 }
 
+/// Filesystem-safe slug matching `learning_api.topic_slug`.
+pub fn topic_slug(topic: &str) -> String {
+    let mut slug = String::new();
+    let mut prev_dash = true;
+    for ch in topic.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash {
+            slug.push('-');
+            prev_dash = true;
+        }
+    }
+    slug.trim_end_matches('-').chars().take(80).collect()
+}
+
+/// Returns true if a saved topic JSON for `topic` already exists in `dir`.
+pub fn has_saved_topic(dir: &Path, topic: &str) -> bool {
+    let slug = topic_slug(topic);
+    !slug.is_empty() && dir.join(format!("{slug}.json")).is_file()
+}
+
 /// Reads the persisted active topic name from `_active.json`, if present.
 pub fn active_topic(dir: &Path) -> Option<String> {
     let text = std::fs::read_to_string(dir.join(ACTIVE_FILE)).ok()?;
@@ -139,6 +161,8 @@ mod tests {
         .unwrap();
 
         let topics = list_topics(&dir);
+        assert!(has_saved_topic(&dir, "Rust Lifetimes"));
+        assert!(!has_saved_topic(&dir, "CUDA Programming"));
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(topics.len(), 2);
         assert_eq!(topics[0].topic, "Rust Lifetimes");

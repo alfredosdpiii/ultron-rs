@@ -133,6 +133,8 @@ enum Purpose {
     Mode(Vec<String>),
     /// `/learning`: saved topics in `~/.ultron/learning/` plus "+ Start a new topic".
     LearningTopic,
+    /// `/learning <new-topic>`: pick starting level (beginner teach-first, hands-on, probe, advanced).
+    LearningStart(String),
     /// `/autoreview on`: the `gh` accounts, `(login, host)`, to review as.
     AutoreviewAccount(Vec<(String, String)>),
     /// "Summarize branch?" before navigating to this entry.

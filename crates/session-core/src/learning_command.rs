@@ -35,6 +35,76 @@ fn topic_hint(raw: &str) -> String {
     }
 }
 
+fn parse_start_mode(trimmed: &str) -> (Option<&'static str>, &str) {
+    for (flag, mode) in [
+        ("--beginner ", "beginner"),
+        ("--hands-on ", "hands-on"),
+        ("--probe ", "probe"),
+        ("--advanced ", "advanced"),
+    ] {
+        if let Some(rest) = trimmed.strip_prefix(flag) {
+            return (Some(mode), rest.trim());
+        }
+    }
+    (None, trimmed)
+}
+
+const BEGINNER_ONBOARDING: &str = concat!(
+    "2. Otherwise start Phase 1A (Teach-First Beginner Onboarding — DO NOT quiz yet): ",
+    "narrow broad topics into 4-6 approachable milestones and save via ",
+    "`learning_api.start(...)` at level 0. Give a concise plain-English mental model + ",
+    "roadmap, then teach Milestone 1 clearly with a concrete analogy and tiny example. ",
+    "End with ONE gentle check-for-understanding question strictly on what you just ",
+    "explained to begin the Socratic loop.",
+);
+
+const HANDS_ON_ONBOARDING: &str = concat!(
+    "2. Otherwise start Phase 1A (Hands-On First — DO NOT quiz yet): narrow the topic ",
+    "into 4-6 milestones and save via `learning_api.start(...)` at level 0. Show a brief ",
+    "roadmap, then walk through (and run in the REPL when possible) one tiny concrete ",
+    "example explaining what each piece does. End with ONE small prediction or ",
+    "modification question on that example.",
+);
+
+const PROBE_ONBOARDING: &str = concat!(
+    "2. Otherwise start Phase 1B (Diagnostic Probe): split into 4-10 subskills + ",
+    "Concepts/Facts/Procedures, say you will ask 3-5 diagnostic questions before ",
+    "teaching, and ask ONLY Question 1 now.",
+);
+
+const ADVANCED_ONBOARDING: &str = concat!(
+    "2. Otherwise start Phase 1B (Advanced Diagnostic): skip introductory basics, split ",
+    "into 4-10 subskills focusing on internals, invariants, and edge cases, say you will ",
+    "ask 3-5 targeted diagnostic questions, and ask ONLY Question 1 now.",
+);
+
+const DEFAULT_ONBOARDING: &str = concat!(
+    "2. Otherwise DO NOT assume prior knowledge or start quizzing yet: ask ONE short ",
+    "question asking whether the learner is brand new (teach me first from scratch with ",
+    "a roadmap & example) or already has background (quick 3-5 question diagnostic to ",
+    "find their edge), and wait for their reply.",
+);
+
+fn new_topic_prompt(trimmed: &str) -> String {
+    let (mode, topic) = parse_start_mode(trimmed);
+    let literal = serde_json::to_string(topic).unwrap_or_else(|_| "\"\"".into());
+    let onboarding = match mode {
+        Some("beginner") => BEGINNER_ONBOARDING,
+        Some("hands-on") => HANDS_ON_ONBOARDING,
+        Some("probe") => PROBE_ONBOARDING,
+        Some("advanced") => ADVANCED_ONBOARDING,
+        _ => DEFAULT_ONBOARDING,
+    };
+    format!(
+        "/learning {trimmed}\n\nEnter `/learning` mode for topic: {topic}\n\n\
+Follow `/skill:learning` strictly (Worked-Example Teach-First for beginners, Socratic Tutor + \
+LearnHarness Probe->Teach, 6-stop Confidence Rail, `A ∧ B ⟹ C` Proposition Graph + Ultralearning):\n\
+1. Check `learning_api.load({literal})` in one REPL cell; if found, print \
+`learning_api.render_dashboard({literal})` and resume from the bottleneck or due review.\n\
+{onboarding}"
+    )
+}
+
 /// Model-facing prompt for `/learning <args>`.
 pub fn learning_prompt(args: &str) -> String {
     let trimmed = jsrt::string::trim(args);
@@ -87,16 +157,7 @@ Then resume `/skill:learning` from the bottleneck or due review and ask ONE ques
     if trimmed.is_empty() {
         return EMPTY_PROMPT.into();
     }
-    let literal = serde_json::to_string(trimmed).unwrap_or_else(|_| "\"\"".into());
-    format!(
-        "/learning {trimmed}\n\nEnter `/learning` mode for topic: {trimmed}\n\n\
-Follow `/skill:learning` strictly (Socratic Tutor + LearnHarness Probe->Teach, \
-6-stop Confidence Rail, `A ∧ B ⟹ C` Proposition Graph + Ultralearning + active retrieval):\n\
-1. Check `learning_api.load({literal})` in one REPL cell; if found, print \
-`learning_api.render_dashboard({literal})` and resume from the bottleneck or due review.\n\
-2. Otherwise start Phase 1 (Probe): split into 4-10 subskills + Concepts/Facts/Procedures, \
-say you will ask 3-5 diagnostic questions before teaching, and ask ONLY Question 1 now."
-    )
+    new_topic_prompt(trimmed)
 }
 
 /// Expands `/learning [args]` into the learning-mode prompt; any other text is returned unchanged.
@@ -121,13 +182,22 @@ mod tests {
     fn expands_learning_subcommands() {
         assert_eq!(expand_learning_command("hello"), "hello");
         assert_eq!(expand_learning_command("/learningfoo"), "/learningfoo");
-        assert!(expand_learning_command("/learning").contains("learning_api.list_topics()"));
-        assert!(expand_learning_command("/learning rust lifetimes").contains("Phase 1 (Probe)"));
-        assert!(expand_learning_command("/learning progress").contains("render_dashboard"));
-        assert!(expand_learning_command("/learning switch rust").contains("learning_api.switch"));
-        assert!(expand_learning_command("/learning graph").contains("diagram.mermaid"));
-        assert!(expand_learning_command("/learning practice").contains("WITHOUT naming"));
-        assert!(expand_learning_command("/learning drill borrow-checker").contains("Ultralearning Drill"));
-        assert!(expand_learning_command("/learning off").contains("Exit learning mode"));
+        let cases = [
+            ("/learning", "learning_api.list_topics()"),
+            ("/learning cuda programming", "DO NOT assume prior knowledge"),
+            ("/learning --beginner cuda programming", "Teach-First Beginner"),
+            ("/learning --hands-on cuda programming", "Hands-On First"),
+            ("/learning --probe rust lifetimes", "Phase 1B (Diagnostic Probe)"),
+            ("/learning --advanced rust lifetimes", "Advanced Diagnostic"),
+            ("/learning progress", "render_dashboard"),
+            ("/learning switch rust", "learning_api.switch"),
+            ("/learning graph", "diagram.mermaid"),
+            ("/learning practice", "WITHOUT naming"),
+            ("/learning drill borrow-checker", "Ultralearning Drill"),
+            ("/learning off", "Exit learning mode"),
+        ];
+        for (input, expected) in cases {
+            assert!(expand_learning_command(input).contains(expected), "{input}");
+        }
     }
 }

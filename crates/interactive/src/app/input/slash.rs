@@ -301,6 +301,31 @@ impl App {
             self.open_learning_picker();
             return;
         }
+        let first_word = trimmed.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+        let is_subcommand = matches!(
+            first_word.as_str(),
+            "off"
+                | "exit"
+                | "stop"
+                | "list"
+                | "progress"
+                | "switch"
+                | "graph"
+                | "practice"
+                | "drill"
+                | "--beginner"
+                | "--hands-on"
+                | "--probe"
+                | "--advanced"
+        );
+        if !is_subcommand {
+            let exists = crate::learning_topics::learning_dir()
+                .is_some_and(|dir| crate::learning_topics::has_saved_topic(&dir, trimmed));
+            if !exists {
+                self.open_learning_start_picker(trimmed);
+                return;
+            }
+        }
         self.send_learning_prompt(trimmed);
     }
 

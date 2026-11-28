@@ -560,6 +560,50 @@ impl App {
         self.send_learning_prompt(&format!("switch {value}"));
     }
 
+    /// `/learning <new-topic>`: pick how to start before sending the first prompt.
+    pub(super) fn open_learning_start_picker(&mut self, topic: &str) {
+        let items = vec![
+            SelectItem {
+                value: "beginner".to_string(),
+                label: "Beginner — teach me first".to_string(),
+                description: Some(
+                    "Mental model + roadmap, teach concept 1 clearly with an example, then start the Socratic loop"
+                        .to_string(),
+                ),
+            },
+            SelectItem {
+                value: "hands-on".to_string(),
+                label: "Hands-on — build an example first".to_string(),
+                description: Some(
+                    "Teach by walking through & running a tiny concrete example first, then Socratic checks"
+                        .to_string(),
+                ),
+            },
+            SelectItem {
+                value: "probe".to_string(),
+                label: "Familiar — quick diagnostic first".to_string(),
+                description: Some("3–5 short questions to map your exact edge, then drill your gaps".to_string()),
+            },
+            SelectItem {
+                value: "advanced".to_string(),
+                label: "Advanced — skip basics, probe hard".to_string(),
+                description: Some(
+                    "Skip fundamentals, test edge cases & internals, and drill straight into bottlenecks".to_string(),
+                ),
+            },
+        ];
+        self.open_selection(
+            &format!("Start \"{topic}\" — how do you want to begin?"),
+            items,
+            Some("beginner"),
+            Purpose::LearningStart(topic.to_string()),
+        );
+    }
+
+    pub(in crate::app) fn handle_learning_start_choice(&mut self, topic: &str, mode: &str) {
+        self.send_learning_prompt(&format!("--{mode} {topic}"));
+    }
+
     /// `/autoreview on`: one account is reviewed as; with several, the user picks one or all of them.
     pub(super) fn autoreview_accounts(&mut self, accounts: Vec<(String, String)>) {
         match accounts.as_slice() {
