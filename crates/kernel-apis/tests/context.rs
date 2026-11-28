@@ -460,3 +460,64 @@ fn kernel_apis_context_cache_impact_export_and_injection_safety() {
     let freed = control2.prune_before_compaction("main", 100).unwrap();
     assert!(freed >= 100);
 }
+
+#[test]
+fn pre_compaction_cache_prune_delays_compaction_and_preserves_prefix() {
+    let early_tool = "a".repeat(3000);
+    let late_tool = "b".repeat(3000);
+    let make_fake = || {
+        let mut lanes = Map::new();
+        lanes.insert(
+            "main".into(),
+            json!([
+                {"id": "u1", "type": "message", "message": {"role": "user", "content": "start"}},
+                {"id": "t_early", "type": "message", "message": {"role": "toolResult", "content": [{"type": "text", "text": early_tool}]}},
+                {"id": "a1", "type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "mid"}]}},
+                {"id": "t_late", "type": "message", "message": {"role": "toolResult", "content": [{"type": "text", "text": late_tool}]}},
+                {"id": "a2", "type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "done"}]}}
+            ]),
+        );
+        Fake(Arc::new(Mutex::new(Branches {
+            lanes,
+            seq: 5,
+            appended: 0,
+            deferred: false,
+            held: Vec::new(),
+            lane: "main".into(),
+        })))
+    };
+
+    let without_prune = ContextControl::new(Arc::new(make_fake())).with_cache_prune(false);
+    let declined_without = without_prune
+        .before_compaction("main", "threshold", 1500, Some(2000), 500)
+        .unwrap();
+    assert!(
+        !declined_without,
+        "without cache_prune, <8192-char tool results cannot avoid compaction"
+    );
+
+    let fake_with = make_fake();
+    let with_prune = ContextControl::new(Arc::new(fake_with.clone())).with_cache_prune(true);
+    let declined_with = with_prune
+        .before_compaction("main", "threshold", 1500, Some(2000), 500)
+        .unwrap();
+    assert!(
+        declined_with,
+        "with cache_prune, pre-compaction prune should reclaim enough to delay compaction"
+    );
+
+    let entries = fake_with.entries("main").unwrap();
+    let edit_entry = entries.last().unwrap();
+    assert_eq!(edit_entry["data"]["source"], json!("ctx.prune"));
+    let targets: Vec<&str> = edit_entry["data"]["edits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["targetId"].as_str())
+        .collect();
+    assert_eq!(
+        targets,
+        vec!["t_late"],
+        "must prune late low-cache-impact result first, preserving early prefix"
+    );
+}

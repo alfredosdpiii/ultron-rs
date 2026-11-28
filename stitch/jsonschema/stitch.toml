@@ -1,0 +1,14 @@
+[project]
+name = "ultron-jsonschema"
+language = "rust"
+stitch_version = "0.2.0"
+
+[source]
+path = "../.."
+
+[rust.dependencies]
+ultron-jsonschema = { path = "/src/crates/jsonschema" }
+serde_json = "1"
+
+[fuzz]
+timeout_ms = 2000

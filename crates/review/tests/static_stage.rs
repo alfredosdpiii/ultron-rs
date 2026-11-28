@@ -718,3 +718,70 @@ print(json.dumps({'verify_models': rlm.verify_models, 'loki_kept': len(loki_find
     assert_eq!(got["verify_models"], json!(["claude-code/haiku"]), "{got}");
     assert_eq!(got["loki_kept"], json!(0), "{got}");
 }
+
+#[test]
+fn review_static_stitch_proves_regression_against_base() {
+    let dir = tempfile::tempdir().expect("dir");
+    let repo = dir.path();
+    git(repo, &["init", "-q", "-b", "main"]);
+    std::fs::create_dir_all(repo.join("crates/demo/src")).expect("demo");
+    std::fs::create_dir_all(repo.join("stitch/demo")).expect("stitch");
+    std::fs::write(
+        repo.join("crates/demo/src/lib.rs"),
+        "pub fn parse(s: &str) -> usize { s.len() }\n",
+    )
+    .expect("base lib");
+    std::fs::write(
+        repo.join("stitch/demo/stitch.toml"),
+        "[project]\nname = \"demo\"\nlanguage = \"rust\"\nstitch_version = \"0.2.0\"\n\n[rust.dependencies]\ndemo = { path = \"/src/crates/demo\" }\n",
+    )
+    .expect("toml");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "base"]);
+    let base = git(repo, &["rev-parse", "HEAD"]);
+    std::fs::write(
+        repo.join("crates/demo/src/lib.rs"),
+        "pub fn parse(s: &str) -> usize {\n    s.as_bytes()[0] as usize\n}\n",
+    )
+    .expect("head lib");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "head"]);
+    let head = git(repo, &["rev-parse", "HEAD"]);
+
+    let body = r"
+scope, git, _ = a._scope({'repoDir': repo, 'base': base, 'head': head}, None)
+calls = []
+def fake_which(name):
+    return {'docker': '/fake/docker', 'uvx': '/fake/uvx'}.get(name)
+def fake_exec(argv, cwd, env, timeout):
+    calls.append(argv)
+    if 'crashes' in argv:
+        return 0, json.dumps([
+            {'id': 'c1', 'message': 'panic in crates/demo/src/lib.rs:2 index out of bounds'},
+            {'id': 'c2', 'message': 'pre-existing panic in crates/demo/src/lib.rs'},
+        ])
+    if 'exec' in argv and 'c1' in argv:
+        return 0, 'no crash'
+    if 'exec' in argv and 'c2' in argv:
+        return 1, 'crash: panic'
+    return 0, 'ok'
+
+out = asyncio.run(st.run_static(
+    object(), scope.files, scope.read_file, a._rev_reader(git, base),
+    which=fake_which, executor=fake_exec, repo_root=repo, base_rev=base,
+))
+stitch_stage = next(s for s in out['stages'] if s['name'] == 'stitch')
+stitch_findings = [f for f in out['findings'] if f.get('source') == 'static:stitch']
+print(json.dumps({
+    'status': stitch_stage['status'],
+    'findings': [[f['file'], f['line'], f['severity'], f['host_confirmed'], f['claim']] for f in stitch_findings],
+    'calls': len(calls),
+}))
+";
+    let got = engine(dir.path(), &base, &head, body);
+    assert_eq!(got["status"], json!("findings"), "{got}");
+    assert_eq!(got["findings"].as_array().map(Vec::len), Some(1), "{got}");
+    assert_eq!(got["findings"][0][0], json!("crates/demo/src/lib.rs"), "{got}");
+    assert_eq!(got["findings"][0][2], json!("blocker"), "{got}");
+    assert_eq!(got["findings"][0][3], json!(true), "{got}");
+}

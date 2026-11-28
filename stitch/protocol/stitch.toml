@@ -1,0 +1,15 @@
+[project]
+name = "ultron-protocol"
+language = "rust"
+stitch_version = "0.2.0"
+
+[source]
+path = "../.."
+
+[rust.dependencies]
+ultron-protocol = { path = "/src/crates/protocol" }
+ultron-session-file = { path = "/src/crates/session-file" }
+serde_json = "1"
+
+[fuzz]
+timeout_ms = 2000

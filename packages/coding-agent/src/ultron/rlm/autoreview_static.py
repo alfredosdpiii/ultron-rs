@@ -147,6 +147,8 @@ async def run_static(
     *,
     which: Which | None = None,
     executor: Executor | None = None,
+    repo_root: str | None = None,
+    base_rev: str | None = None,
 ) -> dict[str, Any]:
     """Run every stage over the changed files (not deleted, not binary)."""
     resolved_which = which or shutil.which
@@ -184,6 +186,21 @@ async def run_static(
         stages["loki"].ms = int((time.monotonic() - started) * 1000)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+    if repo_root:
+        from autoreview_stitch import discover_matching_harnesses, run_stitch_stage
+
+        changed_paths = [item.path for item in files if item.status != "deleted" and not item.binary]
+        if discover_matching_harnesses(repo_root, changed_paths):
+            stitch_stage = _Stage("stitch")
+            run_sync_stage(
+                stitch_stage,
+                lambda stage: run_stitch_stage(
+                    stage, repo_root, files, base_rev, resolved_which, resolved_executor, env_fn
+                ),
+            )
+            stages["stitch"] = stitch_stage
+
     return format_static_result(stages)
 
 

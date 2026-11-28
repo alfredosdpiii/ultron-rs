@@ -6,7 +6,6 @@ import contextlib
 import contextvars
 import io
 import json
-import math
 import os
 import re
 import signal
@@ -78,6 +77,32 @@ from runtime_snapshot import (
     _persistable_namespace as _snapshot_persistable,
     restore_snapshot_file,
     save_snapshot_file,
+)
+from runtime_image import (
+    _cleanup_temp_image as _cleanup_temp_image,
+    _figure_png as _figure_png,
+    _format_view_image_reply as _format_view_image_reply,
+    _image_kind as _image_kind,
+    _pil_png as _pil_png,
+    _resolve_image_input as _resolve_image_input,
+    _write_temp_image as _write_temp_image,
+    view_image_with_bridge,
+)
+from runtime_limits import (
+    _EXIT_CPU as _EXIT_CPU,
+    _EXIT_INTERNAL as _EXIT_INTERNAL,
+    _EXIT_MEMORY as _EXIT_MEMORY,
+    _MAX_CPU_SECONDS as _MAX_CPU_SECONDS,
+    _MAX_MEMORY_MB as _MAX_MEMORY_MB,
+    RlmCpuLimitExceeded as RlmCpuLimitExceeded,
+    _apply_memory_limit as _apply_memory_limit,
+    _arm_cpu_limit as _arm_cpu_limit,
+    _become_subreaper as _become_subreaper,
+    _cpu_used as _cpu_used,
+    _disable_core_dumps as _disable_core_dumps,
+    _env_limit as _env_limit,
+    _memory_limit_note as _memory_limit_note,
+    apply_resource_limits,
 )
 from runtime_streams import (
     _CellStream,
@@ -899,121 +924,9 @@ async def read(path: str | os.PathLike[str]) -> Any:
     return handle
 
 
-def _image_kind(head: bytes) -> str | None:
-    """The image format named by a file's magic bytes (png, jpeg, gif, webp), or None."""
-    if head.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "png"
-    if head.startswith(b"\xff\xd8\xff"):
-        return "jpeg"
-    if head.startswith((b"GIF87a", b"GIF89a")):
-        return "gif"
-    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
-        return "webp"
-    return None
-
-
-def _figure_png(source: Any) -> bytes | None:
-    """PNG bytes of a matplotlib figure (or pyplot, or an Axes), else None."""
-    figure = source
-    if not hasattr(figure, "savefig") and hasattr(figure, "get_figure"):
-        figure = figure.get_figure()
-    if not callable(getattr(figure, "savefig", None)):
-        return None
-    buffer = io.BytesIO()
-    figure.savefig(buffer, format="png", bbox_inches="tight")
-    return buffer.getvalue()
-
-
-def _pil_png(source: Any) -> bytes | None:
-    """PNG bytes of a PIL image when PIL is available, else None."""
-    try:
-        from PIL import Image as PILImage  # type: ignore[import-not-found]
-    except Exception:
-        return None
-    if not isinstance(source, PILImage.Image):
-        return None
-    image = source
-    if image.mode not in ("1", "L", "LA", "P", "RGB", "RGBA"):
-        image = image.convert("RGBA")
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return buffer.getvalue()
-
-
-def _resolve_image_input(path_or_bytes: Any) -> tuple[Path | None, bytes | None]:
-    if isinstance(path_or_bytes, (str, os.PathLike)):
-        if not str(path_or_bytes):
-            raise ValueError("view_image path must be a non-empty string")
-        filepath = worktree_path(Path(path_or_bytes))
-        if not filepath.is_absolute():
-            filepath = Path.cwd() / filepath
-        if not filepath.is_file():
-            raise FileNotFoundError(f"{path_or_bytes} not found")
-        with filepath.open("rb") as handle:
-            if _image_kind(handle.read(16)) is None:
-                raise ValueError(f"{path_or_bytes} is not a png, jpeg, gif or webp image")
-        return filepath, None
-    if isinstance(path_or_bytes, (bytes, bytearray, memoryview)):
-        return None, bytes(path_or_bytes)
-    data = _pil_png(path_or_bytes)
-    if data is None:
-        data = _figure_png(path_or_bytes)
-    if data is None:
-        raise TypeError(
-            "view_image takes a path, image bytes, a PIL image or a matplotlib figure, "
-            f"not {type(path_or_bytes).__name__}"
-        )
-    return None, data
-
-
-def _write_temp_image(data: bytes) -> tuple[Path, str]:
-    kind = _image_kind(data[:16])
-    if kind is None:
-        raise ValueError("view_image bytes are not a png, jpeg, gif or webp image")
-    import tempfile
-
-    descriptor, temporary = tempfile.mkstemp(prefix="ultron-view-image-", suffix=f".{kind}")
-    with os.fdopen(descriptor, "wb") as handle:
-        handle.write(data)
-    return Path(temporary), temporary
-
-
-def _cleanup_temp_image(temporary: str | None) -> None:
-    if temporary is not None:
-        with contextlib.suppress(OSError):
-            os.unlink(temporary)
-
-
-def _format_view_image_reply(reply: Any) -> str:
-    if not isinstance(reply, dict):
-        return str(reply)
-    description = str(reply.get("description", "image attached"))
-    note = reply.get("note")
-    return f"{description}\n{note}" if note else description
-
-
 async def view_image(path_or_bytes: Any, *, detail: str | None = None) -> str:
-    """Show an image to the model: it is attached to this cell's tool result as an image.
-
-    Accepts a path (png, jpeg, gif or webp, detected from the file's bytes, not its extension), raw image bytes,
-    a PIL image, or a matplotlib figure (rendered to PNG). Oversized images are downscaled to the model's limits;
-    ``detail="low"`` caps the long side at 512 px. At most 8 images per cell. Returns a short description
-    (dimensions, format, bytes). The image itself never appears in printed output.
-    """
-    if detail is not None and detail not in ("low", "high", "auto"):
-        raise ValueError("view_image detail must be None, 'low', 'high' or 'auto'")
-    filepath, data = _resolve_image_input(path_or_bytes)
-    temporary: str | None = None
-    if data is not None:
-        filepath, temporary = _write_temp_image(data)
-    payload: dict[str, Any] = {"path": str(filepath)}
-    if detail is not None:
-        payload["detail"] = detail
-    try:
-        reply = await _STATE.bridge.request("rlm.view_image", payload)
-    finally:
-        _cleanup_temp_image(temporary)
-    return _format_view_image_reply(reply)
+    """Show an image to the model: it is attached to this cell's tool result as an image."""
+    return await view_image_with_bridge(_STATE.bridge, path_or_bytes, detail=detail)
 
 
 _FILE_HOOKS_STICKY = os.environ.get("ULTRON_FILE_HOOKS") == "1"
@@ -1143,53 +1056,7 @@ async def edit(path: str, old_str: str, new_str: str) -> str:
     return f"Edited {path}"
 
 
-def _env_limit(name: str) -> int:
-    try:
-        return max(0, int(os.environ.get(name, "0")))
-    except ValueError:
-        return 0
-
-
-# Resource limits come from the host, which resolves defaults and overrides. 0 disables one.
-# Memory is RLIMIT_DATA per process, inherited by every subprocess a cell spawns. CPU is a per-cell budget:
-# the soft RLIMIT_CPU is re-armed at each cell start, and the host kills the kernel if a cell overruns it.
-_MAX_MEMORY_MB = _env_limit("ULTRON_RLM_MAX_MEMORY_MB")
-_MAX_CPU_SECONDS = _env_limit("ULTRON_RLM_MAX_CPU_SECONDS")
-# Exit codes the host maps to "exceeded its memory/CPU limit" when the runtime cannot report in-band.
-_EXIT_MEMORY = 86
-_EXIT_CPU = 87
-_EXIT_INTERNAL = 70
-
-
-class RlmCpuLimitExceeded(BaseException):
-    """Raised in the cell when it uses more than ULTRON_RLM_MAX_CPU_SECONDS of CPU time."""
-
-
-def _cpu_used() -> float:
-    import resource
-
-    usage = resource.getrusage(resource.RUSAGE_SELF)
-    return usage.ru_utime + usage.ru_stime
-
-
-def _arm_cpu_limit() -> None:
-    """Give the process `_MAX_CPU_SECONDS` more CPU before SIGXCPU; children inherit the soft limit."""
-    if _MAX_CPU_SECONDS <= 0:
-        return
-    try:
-        import resource
-
-        _soft, hard = resource.getrlimit(resource.RLIMIT_CPU)
-        soft = math.ceil(_cpu_used()) + _MAX_CPU_SECONDS
-        if hard != resource.RLIM_INFINITY:
-            soft = min(soft, hard)
-        resource.setrlimit(resource.RLIMIT_CPU, (soft, hard))
-    except (ImportError, OSError, ValueError):
-        pass
-
-
 def _on_cpu_limit(_signum: int, _frame: Any) -> None:
-    # Re-arm first so the error path gets a fresh budget instead of a signal every second.
     _arm_cpu_limit()
     if _STATE.cell_active:
         raise RlmCpuLimitExceeded(
@@ -1197,59 +1064,8 @@ def _on_cpu_limit(_signum: int, _frame: Any) -> None:
         )
 
 
-def _disable_core_dumps(resource: Any) -> None:
-    # No process in the kernel's tree dumps core when hitting resource limits.
-    if hasattr(resource, "RLIMIT_CORE"):
-        with contextlib.suppress(ValueError, OSError):
-            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-
-
-def _apply_memory_limit(resource: Any) -> None:
-    # macOS reserves ~400 GiB of virtual address space on Apple Silicon, so RLIMIT_DATA
-    # cannot meaningfully cap memory there.
-    if _MAX_MEMORY_MB <= 0 or not hasattr(resource, "RLIMIT_DATA") or sys.platform == "darwin":
-        return
-    limit = _MAX_MEMORY_MB * 1024 * 1024
-    with contextlib.suppress(ValueError, OSError):
-        _soft, hard = resource.getrlimit(resource.RLIMIT_DATA)
-        if hard != resource.RLIM_INFINITY:
-            limit = min(limit, hard)
-        # The hard limit is lowered too, so cell code cannot raise it again for itself or its children.
-        resource.setrlimit(resource.RLIMIT_DATA, (limit, limit))
-
-
 def _apply_resource_limits() -> None:
-    try:
-        import resource
-    except ImportError:
-        return
-    _disable_core_dumps(resource)
-    _apply_memory_limit(resource)
-    if _MAX_CPU_SECONDS > 0 and hasattr(signal, "SIGXCPU"):
-        signal.signal(signal.SIGXCPU, _on_cpu_limit)
-        _arm_cpu_limit()
-
-
-def _become_subreaper() -> None:
-    # A cell may start a process that double-forks (or setsid()s and forks) so its parent exits. Linux would
-    # reparent such an orphan to init or a subreaper outside the kernel, where the host's tree memory watchdog
-    # neither counts nor kills it. As a child subreaper the kernel adopts every orphaned descendant instead.
-    if not sys.platform.startswith("linux"):
-        return
-    try:
-        import ctypes
-
-        libc = ctypes.CDLL(None, use_errno=True)
-        libc.prctl(36, 1, 0, 0, 0)  # PR_SET_CHILD_SUBREAPER
-    except (OSError, AttributeError):
-        pass
-
-
-def _memory_limit_note() -> str:
-    return (
-        f"RLM kernel exceeded its memory limit ({_MAX_MEMORY_MB} MiB per process, ULTRON_RLM_MAX_MEMORY_MB); "
-        "the allocation failed and the kernel keeps running"
-    )
+    apply_resource_limits(_on_cpu_limit)
 
 
 class RuntimeState:

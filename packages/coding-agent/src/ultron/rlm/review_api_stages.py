@@ -370,7 +370,14 @@ async def _run_static_stage(
         import autoreview_static as static_checks
 
         read_base = _static_base_reader(git, scope)
-        static_out = await static_checks.run_static(rlm, scope.files, scope.read_file, read_base)
+        static_out = await static_checks.run_static(
+            rlm,
+            scope.files,
+            scope.read_file,
+            read_base,
+            repo_root=scope.root,
+            base_rev=scope.base,
+        )
         not_checked += static_checks.notes(static_out)
         all_static = list(static_out.get("findings") or []) + static_checks.orphaned_private_helpers(git, scope)
         found_static = [item for item in all_static if item.get("host_confirmed")]

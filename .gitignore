@@ -55,6 +55,7 @@ evals/quality/fixtures/**/.generate.log
 dist-release/
 
 # STITCH++ fuzzing campaigns and build artifacts
+stitch/*/.dockerignore
 stitch/*/.stitch/
 stitch/*/campaigns/
 stitch/*/out/
