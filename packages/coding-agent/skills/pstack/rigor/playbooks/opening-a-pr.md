@@ -4,7 +4,7 @@ Run at the end of every other playbook that changes code.
 
 Work from a git worktree off trunk, and keep unrelated work out of it. Children that edit files get `worktree=True` and come back through `rlm.merge`. Rebase into small, landable commits. Strip slop from the diff, then `../no-comments/SKILL.md`, then `../unslop/SKILL.md`.
 
-**Self-review.** Run `r = await review_api.run(rlm, "main")` after `import review_api`, then `print(r.report)`. Fix what holds up in one fix round. Then stop: findings left after that are reported in the PR, not acted on, and the fix round is not reviewed again. Only that one review round runs, however many children the change used.
+**Self-review.** Run `r = await review_api.run(rlm, "main")` after `import review_api`, then `print(r.report)`. Fix what holds up in one fix round (if a finding suspects a panic, bounds, or UTF-8 bug in a parser/stateful API, prove or refute it with `playbooks/fuzzing.md` / STITCH++). Then stop: findings left after that are reported in the PR, not acted on, and the fix round is not reviewed again. Only that one review round runs, however many children the change used.
 
 **Title.** `type(scope): subject`, naming a real symbol when one carries the change. No trailing period.
 

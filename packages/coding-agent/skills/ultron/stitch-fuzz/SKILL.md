@@ -60,3 +60,11 @@ Every `stitch/` project pins `stitch_version` in `stitch.toml`. Always run the e
 - Pass `--json` to any `stitch` command whose output you parse programmatically.
 - If `docker buildx` defaults to a `docker-container` builder and fails to resolve local `stitch/*` base images, prefix commands with `BUILDX_BUILDER=default`.
 - Ensure the target repo has a `.dockerignore` excluding `target/`, `.git/`, and `node_modules/` when using `[source] path = ...` so Docker doesn't transfer gigabytes of build artifacts.
+
+## PR Diff Proving (Review & Regression Triage)
+
+When reviewing a PR that modifies a parser, renderer, codec, serializer, or stateful library API:
+
+1. If the repo already has a `stitch/<target>/` harness covering the changed files, run `BUILDX_BUILDER=default uvx --from stitch-fuzz==0.2.0 stitch build && stitch check && stitch probe --secs 30` against the PR head.
+2. Otherwise, write a minimal harness targeting only the functions changed in the PR diff and run a 20–30s `stitch probe`.
+3. For any crash `<id>`, run `stitch exec <id> --rev <base_sha>` vs `<head_sha>` to prove the PR introduced the crash (no crash on base, crash on head) before reporting a blocking review finding.

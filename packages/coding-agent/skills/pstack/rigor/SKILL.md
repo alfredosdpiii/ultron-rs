@@ -45,6 +45,9 @@ choice it changed. Cite only principles whose leaf you read this session.
 - Long or unattended work → `../show-me-your-work/SKILL.md`.
 - A change to a state machine, a retry path, a race or a parser → write the model and run the checker in this task:
   "One change, no verify skill yet" in `../create-formal-verification-skill/SKILL.md`.
+- A parser, renderer, codec, serializer, or stateful library API (or crash/panic hardening) → `playbooks/fuzzing.md`
+  (`/skill:stitch-fuzz`); if a `stitch/<target>/` harness already covers the touched crate, run `stitch build`,
+  `stitch check`, and a short `stitch probe --secs 30` before shipping.
 - A diff whose callers or shared state lie outside it → `../blast-radius/SKILL.md` before shipping.
 
 Also: play a messy ask back first → `../in-your-own-words/SKILL.md`; sharpen a prompt → `../sharpen/SKILL.md`; learn the
@@ -176,6 +179,7 @@ multi-day program of many PRs routes to Orchestrate.
 - **Refactoring.** Behavior-preserving change to structure.
 - **Prototype.** A throwaway sketch to decide a design or settle an empirical fork.
 - **Visual parity.** Pixel-exact UI equivalence for web UIs (optional).
+- **Fuzzing.** Coverage-guided stateful API fuzzing with STITCH++ (`stitch-fuzz`) to find and prove panics, crashes, or invariant violations.
 - **Authoring a skill.** Writing or editing a SKILL.md or a code skill.
 - **Eval.** Test how a skill, prompt or structure change affects agent behavior before promoting it.
 - **Babysit.** Drive a PR or stack to merge-ready: conflicts, review threads, CI.
