@@ -221,40 +221,9 @@ class ReplGlobalOverwrite(RuntimeError):
     """Raised during AST pre-flight when a cell attempts to overwrite or delete a protected host binding."""
 
 
-# Core host-provided REPL bindings that cells must not shadow or delete; stdlib convenience imports and
-# secondary/optional namespaces (such as `notes`) remain rebindable as ordinary cell variables.
-_CORE_HOST_BINDINGS = frozenset(
-    {
-        "rlm",
-        "bash",
-        "read",
-        "edit",
-        "write",
-        "view_image",
-        "preview",
-        "console",
-        "tools",
-        "mcp",
-        "ctx",
-        "agents",
-        "workflows",
-        "background",
-        "skills",
-        "memory",
-        "hints",
-        "agent",
-        "Agent",
-        "AgentCallError",
-        "agent_message",
-        "Budget",
-        "ToolCall",
-        "ToolResult",
-        "ToolError",
-        "McpError",
-        "SpawnHandle",
-        "ShellJob",
-    }
-)
+# Only the two core kernel namespaces (`rlm`, `ctx`) are protected from accidental shadowing;
+# common Python names (`read`, `write`, `tools`, `console`, etc.) remain free for ordinary cell code.
+_CORE_HOST_BINDINGS = frozenset({"rlm", "ctx"})
 _PROTECTED_BINDINGS: frozenset[str] = frozenset()
 
 

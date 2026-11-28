@@ -2,7 +2,7 @@
 
 use super::bridge;
 use super::catalog;
-use super::prompt::{PROMPT_BUDGET, prompt_blocks_with_system, system_text};
+use super::prompt::{prompt_blocks_with_system, prompt_budget, system_text};
 use crate::env::ProviderEnv;
 use crate::types::{
     AssistantContent, Message, Model, TextContent, ThinkingContent, ToolCall, TranscriptContext, Usage,
@@ -422,7 +422,7 @@ impl Agy {
         .await?;
         Ok(Step::Prompt(prompt_blocks_with_system(
             messages,
-            PROMPT_BUDGET,
+            prompt_budget(),
             append.is_none(),
         )?))
     }

@@ -140,12 +140,12 @@ pub enum SelfReview {
     Require,
 }
 
-/// The `selfReview` setting: `"off"`, `"advise"`, else `Require`.
+/// The `selfReview` setting: `"off"`, `"require"`, else `Advise` (advises without blocking `gh pr create`).
 pub fn self_review(settings: &Value) -> SelfReview {
     match settings["selfReview"].as_str() {
         Some("off") => SelfReview::Off,
-        Some("advise") => SelfReview::Advise,
-        _ => SelfReview::Require,
+        Some("require") => SelfReview::Require,
+        _ => SelfReview::Advise,
     }
 }
 

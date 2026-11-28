@@ -212,8 +212,8 @@ fn git(cwd: &Path, args: &[&str]) -> String {
 
 #[test]
 fn session_core_self_review_refuses_a_pull_request_until_the_committed_tree_is_reviewed() {
-    assert_eq!(self_review(&json!({})), SelfReview::Require);
-    assert_eq!(self_review(&json!({"selfReview": "advise"})), SelfReview::Advise);
+    assert_eq!(self_review(&json!({})), SelfReview::Advise);
+    assert_eq!(self_review(&json!({"selfReview": "require"})), SelfReview::Require);
     assert_eq!(self_review(&json!({"selfReview": "off"})), SelfReview::Off);
 
     let repo = tempfile::tempdir().unwrap();

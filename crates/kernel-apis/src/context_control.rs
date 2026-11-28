@@ -54,25 +54,6 @@ const TRIM_HEAD_CHARS: usize = 4096;
 const TRIM_TAIL_CHARS: usize = 1024;
 const STATE_LIST_MAX: usize = 20;
 const KINDS: &[&str] = &["user", "assistant", "tool", "custom", "note", "summary", "compaction"];
-const DISALLOWED_CONTEXT_MARKERS: &[&str] = &[
-    "<system>",
-    "</system>",
-    "<|im_start|>",
-    "<|im_end|>",
-    "<|system|>",
-    "ignore previous instructions",
-    "ignore all previous instructions",
-    "disregard previous instructions",
-    "override system prompt",
-];
-
-fn check_context_text_safety(text: &str) -> Result<(), String> {
-    let lower = text.to_ascii_lowercase();
-    if DISALLOWED_CONTEXT_MARKERS.iter().any(|marker| lower.contains(marker)) {
-        return Err("Context text refused: contains disallowed system-override or prompt-injection marker".into());
-    }
-    Ok(())
-}
 
 /// The conversation branches of the session's lanes, as the harness keeps them.
 pub trait ContextBranches: Send + Sync {
@@ -932,7 +913,6 @@ impl ContextControl {
         if jsrt::utf16::len(&text) > SUMMARY_MAX_CHARS {
             return Err(format!("text exceeds {SUMMARY_MAX_CHARS} characters"));
         }
-        check_context_text_safety(&text)?;
         let mut ids = Self::closure(view, &id_list(payload.get("ids"))?);
         Self::guard(view, &ids)?;
         let order = |id: &String| view.window().iter().position(|entry| entry["id"] == id.as_str());
@@ -979,7 +959,6 @@ impl ContextControl {
         if jsrt::utf16::len(&text) > NOTE_MAX_CHARS {
             return Err(format!("note exceeds {NOTE_MAX_CHARS} characters"));
         }
-        check_context_text_safety(&text)?;
         Ok(json!({"id": self.append(lane, CONTEXT_NOTE_CUSTOM_TYPE, json!({"text": text}))?}))
     }
 

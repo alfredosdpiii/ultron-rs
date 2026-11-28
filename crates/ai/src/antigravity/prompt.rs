@@ -6,9 +6,16 @@ use serde_json::{Value, json};
 use std::io;
 
 /// `agy` silently drops the end of a single `session/prompt` past ~179K characters (~70K tokens), which holds the
-/// newest messages. Keep each individual prompt under 150K characters; in session mode `agy` holds the full
-/// conversation history across turns (up to the model's real context window).
+/// newest messages. Default each individual prompt to 150K characters, overridable via `ULTRON_AGY_PROMPT_BUDGET`.
 pub(super) const PROMPT_BUDGET: usize = 150_000;
+
+pub(super) fn prompt_budget() -> usize {
+    std::env::var("ULTRON_AGY_PROMPT_BUDGET")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&n| n >= 16_000)
+        .unwrap_or(PROMPT_BUDGET)
+}
 const RULES: &str = "For tool calls use only the ultron MCP server, never native tools. An MCP timeout or dropped tool wait does not mean the underlying Ultron cell or job stopped; check `await rlm.cells()` or `await rlm.job(...)` before retrying mutating work.";
 
 /// Collects all non-empty system prompt texts from `messages` for ACP `_meta.antigravity.systemPrompt.append`.
@@ -243,7 +250,7 @@ pub(super) fn delta_prompt(messages: &[Message]) -> Option<Vec<Value>> {
         "New messages in this Ultron conversation; continue at the final one. {RULES}\nMessages: [{}]",
         json.join(",")
     );
-    if text.len() > PROMPT_BUDGET {
+    if text.len() > prompt_budget() {
         return None;
     }
     let mut blocks = Vec::with_capacity(1 + images.len());

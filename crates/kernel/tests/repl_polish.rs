@@ -29,21 +29,21 @@ fn kernel_ast_preflight_blocks_overwriting_protected_host_bindings_without_side_
     let dir = tempfile::tempdir().unwrap();
     let kernel = kernel_in(dir.path(), null_handler());
 
-    // Blocked forms: assignment, augmented assignment, del, def, async def, class, import, for, with, except,
+    // Blocked forms: assignment, del, def, async def, class, import, for, with, except,
     // walrus (including inside comprehension), and `global <protected>` mutated inside a function.
     let blocked = [
-        "side_effect = 1\nbash = 123",
-        "del edit",
-        "def write(): pass",
-        "async def read(): pass",
+        "side_effect = 1\nrlm = 123",
+        "del ctx",
+        "def rlm(): pass",
+        "async def ctx(): pass",
         "class rlm: pass",
-        "import math as preview",
-        "from math import sin as console",
-        "for mcp in [1]: pass",
-        "with open('/dev/null') as tools: pass",
+        "import math as ctx",
+        "from math import sin as rlm",
+        "for ctx in [1]: pass",
+        "with open('/dev/null') as rlm: pass",
         "try:\n    1/0\nexcept ZeroDivisionError as ctx:\n    pass",
-        "[x for x in [1] if (bash := x)]",
-        "def sneak():\n    global bash\n    bash = lambda *a: None",
+        "[x for x in [1] if (rlm := x)]",
+        "def sneak():\n    global ctx\n    ctx = lambda *a: None",
     ];
 
     for code in blocked {
@@ -58,30 +58,28 @@ fn kernel_ast_preflight_blocks_overwriting_protected_host_bindings_without_side_
     }
 
     // Because AST pre-flight ran before execution, `side_effect` from the first blocked cell was never bound.
-    let check = run(
-        &kernel,
-        "'side_effect' in globals() and callable(bash) and callable(write)",
-    );
+    let check = run(&kernel, "'side_effect' in globals() and hasattr(rlm, 'infer')");
     assert_eq!(check.status, Status::Ok);
     assert_eq!(check.result.as_deref(), Some("False"));
 
-    // Allowed forms: local variables/params in functions, class methods, comprehension targets, stdlib re-imports.
+    // Allowed forms: ordinary Python names (read, write, tools), local variables/params, stdlib re-imports.
     let allowed = run(
         &kernel,
         concat!(
             "import os, json, re, asyncio\n",
             "from pathlib import Path\n",
+            "tools = ['ok']\n",
             "def f(read, edit=1):\n",
             "    bash = read + edit\n",
             "    return bash\n",
             "class C:\n",
             "    def write(self): return 7\n",
             "vals = [bash for bash in range(3)]\n",
-            "(f(2), C().write(), vals, callable(bash))"
+            "(f(2), C().write(), vals, tools[0])"
         ),
     );
     assert_eq!(allowed.status, Status::Ok, "{allowed:?}");
-    assert_eq!(allowed.result.as_deref(), Some("(3, 7, [0, 1, 2], True)"));
+    assert_eq!(allowed.result.as_deref(), Some("(3, 7, [0, 1, 2], 'ok')"));
 }
 
 #[test]

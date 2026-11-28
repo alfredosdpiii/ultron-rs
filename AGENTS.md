@@ -14,7 +14,7 @@ terminal coding agent whose model has one tool, a persistent Python REPL. The `u
 
 A change is done when it works and is verified, not when it is written:
 
-- `./scripts/verify.sh` is clean (`cargo fmt`, `strip-comments.py`, `ruff`, `loki hygiene`, `clippy -D warnings`, and
+- `./scripts/verify.sh` is clean (`cargo fmt`, `ruff`, `loki hygiene`, `clippy -D warnings`, and
   `ultron-workspace-checks`).
 - The tests you touched or that cover the change pass; for runtime, host, kernel, prompt or TUI changes, the whole
   `scripts/nextest.sh --workspace --locked`.

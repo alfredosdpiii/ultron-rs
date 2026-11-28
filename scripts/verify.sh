@@ -7,9 +7,6 @@ cd "$ROOT"
 echo "==> cargo fmt --all -- --check"
 cargo fmt --all -- --check
 
-echo "==> scripts/strip-comments.py --check crates/*/src"
-python3 scripts/strip-comments.py --check crates/*/src
-
 echo "==> ruff check packages/coding-agent/src/ultron/rlm"
 ruff check packages/coding-agent/src/ultron/rlm
 

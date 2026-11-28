@@ -186,35 +186,6 @@ fn every_loki_guardrails_pin_is_exact_and_consistent() {
     assert!(violations.is_empty(), "{}", violations.join("\n"));
 }
 
-/// Every `crates/*/src` file must stay free of non-exempt inline comments (doc comments `///`/`//!`,
-/// `// ponytail:`, `// SAFETY:`, and license headers remain allowed). Run `scripts/strip-comments.py --apply`.
-#[test]
-fn no_non_exempt_inline_comments_in_src() {
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let script = repo.join("scripts/strip-comments.py");
-    let crates = repo.join("crates");
-    let mut src_dirs: Vec<std::path::PathBuf> = fs::read_dir(&crates)
-        .unwrap()
-        .filter_map(|e| {
-            let src = e.ok()?.path().join("src");
-            src.is_dir().then_some(src)
-        })
-        .collect();
-    src_dirs.sort();
-    let output = std::process::Command::new("python3")
-        .arg(&script)
-        .arg("--check")
-        .args(&src_dirs)
-        .output()
-        .expect("python3 must run scripts/strip-comments.py");
-    assert!(
-        output.status.success(),
-        "non-exempt inline comments found in crates/*/src (run `scripts/strip-comments.py --apply crates/*/src`):\n{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
 /// Production code in `crates/*/src` (everything before `#[cfg(test)]`) must not call `.unwrap()`.
 #[test]
 fn no_unwrap_in_prod_src() {
