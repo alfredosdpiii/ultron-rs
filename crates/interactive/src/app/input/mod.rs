@@ -513,6 +513,53 @@ impl App {
         }
     }
 
+    /// `/learning` (or `/learning switch`): pick a saved topic from `~/.ultron/learning/` or start a new one.
+    pub(super) fn open_learning_picker(&mut self) {
+        let topics =
+            crate::learning_topics::learning_dir().map_or_default(|dir| crate::learning_topics::list_topics(&dir));
+        let active_value = topics.iter().find(|t| t.active).map(|t| t.topic.clone());
+        let mut items: Vec<SelectItem> = topics
+            .into_iter()
+            .map(|t| {
+                let label = if t.active {
+                    format!("{} (active)", t.topic)
+                } else {
+                    t.topic.clone()
+                };
+                let desc = if t.due_count > 0 {
+                    format!("{}% mastery · {} review(s) due", t.mastery_pct, t.due_count)
+                } else {
+                    format!("{}% mastery · up to date", t.mastery_pct)
+                };
+                SelectItem {
+                    value: t.topic,
+                    label,
+                    description: Some(desc),
+                }
+            })
+            .collect();
+        items.push(SelectItem {
+            value: crate::learning_topics::new_topic_sentinel().to_string(),
+            label: "+ Start a new topic".to_string(),
+            description: Some("Type `/learning <topic>` to start a new Socratic session".to_string()),
+        });
+        self.open_selection(
+            "Select learning topic (~/.ultron/learning):",
+            items,
+            active_value.as_deref(),
+            Purpose::LearningTopic,
+        );
+    }
+
+    pub(in crate::app) fn handle_learning_topic_choice(&mut self, value: &str) {
+        if value == crate::learning_topics::new_topic_sentinel() {
+            self.editor.set_text("/learning ");
+            self.show_status("Type a topic after `/learning ` and press Enter");
+            return;
+        }
+        self.send_learning_prompt(&format!("switch {value}"));
+    }
+
     /// `/autoreview on`: one account is reviewed as; with several, the user picks one or all of them.
     pub(super) fn autoreview_accounts(&mut self, accounts: Vec<(String, String)>) {
         match accounts.as_slice() {

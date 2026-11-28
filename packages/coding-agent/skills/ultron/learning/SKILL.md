@@ -65,8 +65,9 @@ Following LearnHarness's **Probe → Teach** separation and Jane Street's `socra
 
 ## Subcommands & Escape Hatches
 
-- `/learning <topic>` — start or resume learning `<topic>`
-- `/learning progress` — print `learning_api.render_dashboard(topic)`
+- `/learning` or `/learning switch` — open the interactive TUI topic picker (lists saved topics in `~/.ultron/learning/` with mastery % & due-review counts, plus `+ Start a new topic`)
+- `/learning <topic>` / `/learning switch <topic>` — start, resume, or switch the persisted active topic (`~/.ultron/learning/_active.json`)
+- `/learning progress` — print `learning_api.render_dashboard()` for the active topic
 - `/learning graph` — print the `A ∧ B ⟹ C` chain table and render `await diagram.mermaid(learning_api.mermaid_graph(topic))`
 - `/learning practice [topic]` — interleaved retrieval session drawing from stored propositions/subskills **without naming the concept up front**
 - `/learning drill <subskill>` — Ultralearning Drill focused tightly on one bottleneck subskill

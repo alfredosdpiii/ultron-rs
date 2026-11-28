@@ -46,9 +46,24 @@ pub fn learning_prompt(args: &str) -> String {
         return LIST_PROMPT.into();
     }
     if lowered == "progress" || lowered.starts_with("progress ") {
-        let hint = topic_hint(trimmed.get(8..).unwrap_or(""));
-        return format!("/learning {trimmed}\n\nRender the learning dashboard for {hint} in one REPL cell ",)
-            + "with `print(learning_api.render_dashboard(topic))` and relay it verbatim.";
+        let topic = trimmed.get(8..).map_or("", str::trim);
+        let call = if topic.is_empty() {
+            "learning_api.render_dashboard()".to_string()
+        } else {
+            let lit = serde_json::to_string(topic).unwrap_or_else(|_| "\"\"".into());
+            format!("learning_api.render_dashboard({lit})")
+        };
+        return format!("/learning {trimmed}\n\nRun one REPL cell: `import learning_api; print({call})` ")
+            + "and relay the dashboard verbatim.";
+    }
+    if lowered.starts_with("switch ") {
+        let topic = trimmed.get(7..).map_or("", str::trim);
+        let lit = serde_json::to_string(topic).unwrap_or_else(|_| "\"\"".into());
+        return format!(
+            "/learning {trimmed}\n\nSwitch active learning topic to `{topic}` in one REPL cell:\n\n\
+import learning_api\nlearning_api.switch({lit})\nprint(learning_api.render_dashboard({lit}))\n\n\
+Then resume `/skill:learning` from the bottleneck or due review and ask ONE question."
+        );
     }
     if lowered == "graph" || lowered.starts_with("graph ") {
         let hint = topic_hint(trimmed.get(5..).unwrap_or(""));
@@ -109,6 +124,7 @@ mod tests {
         assert!(expand_learning_command("/learning").contains("learning_api.list_topics()"));
         assert!(expand_learning_command("/learning rust lifetimes").contains("Phase 1 (Probe)"));
         assert!(expand_learning_command("/learning progress").contains("render_dashboard"));
+        assert!(expand_learning_command("/learning switch rust").contains("learning_api.switch"));
         assert!(expand_learning_command("/learning graph").contains("diagram.mermaid"));
         assert!(expand_learning_command("/learning practice").contains("WITHOUT naming"));
         assert!(expand_learning_command("/learning drill borrow-checker").contains("Ultralearning Drill"));

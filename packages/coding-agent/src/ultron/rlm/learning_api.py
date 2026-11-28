@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 LEARNING_DIR_ENV = "ULTRON_LEARNING_DIR"
+ACTIVE_STATE_FILE = "_active.json"
 CONFIDENCE_STOPS = (0, 30, 50, 70, 90, 100)
 CONFIDENCE_ANSI = (
     "\x1b[38;2;239;68;68m",   # 0   red
@@ -62,27 +63,81 @@ def _snap_confidence(value: int | float) -> int:
     return min(CONFIDENCE_STOPS, key=lambda stop: abs(stop - num))
 
 
+def _active_path() -> Path:
+    return learning_dir() / ACTIVE_STATE_FILE
+
+
+def active_topic() -> str | None:
+    """Return the persisted active learning topic name, or None."""
+    path = _active_path()
+    if not path.is_file():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    topic = data.get("topic") if isinstance(data, dict) else None
+    return topic if isinstance(topic, str) and topic.strip() else None
+
+
+def set_active(topic: str) -> None:
+    """Persist `topic` as the active learning topic across sessions."""
+    payload = {"topic": topic.strip(), "slug": topic_slug(topic), "updated_at": _now_iso()}
+    path = _active_path()
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _resolve_topic(topic: str | None) -> str:
+    if topic and topic.strip():
+        return topic.strip()
+    current = active_topic()
+    if current:
+        return current
+    topics = list_topics()
+    if topics:
+        latest = max(topics, key=lambda item: item.get("updated_at", ""))
+        return str(latest["topic"])
+    raise FileNotFoundError("No active or saved learning topic found")
+
+
 def _save(state: dict[str, Any]) -> Path:
     state["updated_at"] = _now_iso()
     path = topic_path(state["topic"])
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     tmp.replace(path)
+    set_active(state["topic"])
     return path
 
 
-def load(topic: str) -> dict[str, Any] | None:
-    """Load a saved learning session by topic name or slug, or return None."""
+def load(topic: str | None = None) -> dict[str, Any] | None:
+    """Load a saved learning session by topic name/slug (or active topic if omitted), or None."""
+    if topic is None or not topic.strip():
+        current = active_topic()
+        if not current:
+            return None
+        topic = current
     path = topic_path(topic)
     if not path.is_file():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def switch(topic: str) -> dict[str, Any]:
+    """Switch the persisted active topic to an existing saved topic and return its state."""
+    state = load(topic)
+    if state is None:
+        raise FileNotFoundError(f"No saved learning session for {topic!r}")
+    set_active(state["topic"])
+    return state
+
+
 def list_topics() -> list[dict[str, Any]]:
     """Return summaries of all saved learning topics."""
+    current = active_topic()
     items: list[dict[str, Any]] = []
     for path in sorted(learning_dir().glob("*.json")):
+        if path.name == ACTIVE_STATE_FILE:
+            continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -93,12 +148,25 @@ def list_topics() -> list[dict[str, Any]]:
             {
                 "topic": data["topic"],
                 "slug": path.stem,
+                "active": data["topic"] == current,
                 "phase": data.get("phase", "teach"),
                 "mastery_pct": overall_mastery_pct(data),
+                "due_count": _due_count(data),
                 "updated_at": data.get("updated_at", ""),
             }
         )
     return items
+
+
+def _due_count(state: dict[str, Any]) -> int:
+    turn = int(state.get("turn", 0))
+    return sum(
+        1
+        for item in state.get("subskills", [])
+        if item["level"] > 0
+        and item["last_turn"] > 0
+        and (turn - int(item["last_turn"])) >= int(item.get("interval_turns", 3))
+    )
 
 
 def start(
@@ -247,7 +315,7 @@ def add_proposition(
     return state
 
 
-def due_reviews(topic: str) -> list[dict[str, Any]]:
+def due_reviews(topic: str | None = None) -> list[dict[str, Any]]:
     """Return subskills due for interleaved spaced retrieval."""
     state = load(topic)
     if state is None:
@@ -263,7 +331,7 @@ def due_reviews(topic: str) -> list[dict[str, Any]]:
     return due
 
 
-def bottleneck(topic: str) -> dict[str, Any] | None:
+def bottleneck(topic: str | None = None) -> dict[str, Any] | None:
     """Return the lowest-mastery subskill below target level (for Ultralearning Drill)."""
     state = load(topic)
     if state is None or not state["subskills"]:
@@ -394,11 +462,12 @@ def mermaid_graph(state: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def render_dashboard(topic: str, *, ansi: bool = True) -> str:
+def render_dashboard(topic: str | None = None, *, ansi: bool = True) -> str:
     """Render the full terminal learning dashboard (skill map, calibration rail, chains)."""
-    state = load(topic)
+    resolved = _resolve_topic(topic)
+    state = load(resolved)
     if state is None:
-        return f"No saved learning session for {topic!r}."
+        return f"No saved learning session for {resolved!r}."
     parts = [
         render_skill_map(state),
         render_calibration(state, ansi=ansi),

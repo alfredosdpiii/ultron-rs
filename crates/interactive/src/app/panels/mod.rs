@@ -372,6 +372,7 @@ impl App {
                 self.status = format!("Thinking level: {value}.");
             }
             Purpose::Mode(always_skills) => self.handle_mode_choice(&value, &always_skills),
+            Purpose::LearningTopic => self.handle_learning_topic_choice(&value),
             Purpose::AutoreviewAccount(accounts) => self.handle_autoreview_choice(&accounts, &value),
             Purpose::ExtensionSelect { id } => {
                 self.answer_extension_dialog(&id, serde_json::json!({ "value": value }));

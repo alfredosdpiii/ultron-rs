@@ -26,6 +26,7 @@ pub mod inspection;
 pub mod keybindings;
 pub mod lane;
 pub mod lane_watch;
+pub mod learning_topics;
 pub mod login_dialog;
 pub mod model_hub;
 pub mod modes;

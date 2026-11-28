@@ -296,6 +296,15 @@ impl App {
     }
 
     fn cmd_learning(&mut self, args: &str) {
+        let trimmed = args.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("switch") {
+            self.open_learning_picker();
+            return;
+        }
+        self.send_learning_prompt(trimmed);
+    }
+
+    pub(in crate::app) fn send_learning_prompt(&mut self, args: &str) {
         self.show_status("Learning mode…");
         let message = format!("/learning {args}").trim().to_string();
         if self.operation.is_some() {

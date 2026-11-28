@@ -131,6 +131,8 @@ enum Purpose {
     Thinking,
     /// `/mode`: the always-on skills the status names after a choice.
     Mode(Vec<String>),
+    /// `/learning`: saved topics in `~/.ultron/learning/` plus "+ Start a new topic".
+    LearningTopic,
     /// `/autoreview on`: the `gh` accounts, `(login, host)`, to review as.
     AutoreviewAccount(Vec<(String, String)>),
     /// "Summarize branch?" before navigating to this entry.
